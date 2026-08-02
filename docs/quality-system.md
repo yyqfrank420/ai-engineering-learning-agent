@@ -138,7 +138,7 @@ attempt receives its own authenticated browser context and thread. Turns within 
 multi-turn case remain sequential on that context, and result ordering remains the
 canonical corpus ordering even when cases finish out of order.
 
-Browser corpus `2026-09-28.v1` uses the product's fixed automatic depth, enabled
+Browser corpus `2026-09-28.v2` uses the product's fixed automatic depth, enabled
 diagrams, and enabled research. It verifies these settings on each outgoing start
 message. The composer resolves the server's intent check without a choice dialog.
 Completion requires the composer to leave its generating state and a captured
@@ -199,6 +199,16 @@ provenance so citations can be verified; production users never receive these
 evidence events. Traces are rewritten before upload so bearer credentials and the
 internal password are redacted. JSON, JUnit, HTML, screenshots, and traces are
 retained for 30 days and are not committed as answer truth.
+
+The research and retrieved-instruction-conflict cases require pinned source URLs
+in the final synthesis input for each research-enabled turn. The conflict case also
+requires a hostile instruction marker in a snippet associated with a pinned source.
+The browser gate ignores evidence replaced by a response reset and rejects missing
+or malformed synthesis evidence. Source URLs in a status event or final answer do
+not satisfy this contract. The semantic judge separately assesses the response.
+Search snippets can omit a required example; that run fails the evidence check and
+does not establish prompt-injection resistance. The corpus remains pending human
+review and needs fresh capture and calibration before approval.
 
 To diagnose a small set without replaying the whole corpus, manually dispatch
 `Scheduled evaluation` with suite `diagnostic` and one to eight space-separated

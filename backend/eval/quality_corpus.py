@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Literal
+from urllib.parse import unquote, urlsplit
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -84,6 +86,88 @@ class ConversationStep(BaseModel):
     graph_expansion: GraphExpansionExpectation | None = None
 
 
+class ResearchSourceContract(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    required_url_prefixes: list[str] = Field(min_length=1, max_length=8)
+    minimum_url_prefix_matches: int = Field(ge=1)
+    required_evidence_markers: list[str] = Field(default_factory=list, max_length=12)
+    minimum_evidence_marker_matches: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def validate_contract(self) -> "ResearchSourceContract":
+        if self.minimum_url_prefix_matches > len(self.required_url_prefixes):
+            raise ValueError(
+                "minimum URL prefix matches cannot exceed the configured prefixes"
+            )
+        if self.minimum_evidence_marker_matches > len(self.required_evidence_markers):
+            raise ValueError(
+                "minimum evidence marker matches cannot exceed the configured markers"
+            )
+
+        normalised_prefixes: list[tuple[str, int, str]] = []
+        for prefix in self.required_url_prefixes:
+            message = (
+                "research source prefixes must be HTTPS URLs with a stable path "
+                "and no credentials, query, or fragment"
+            )
+            if (
+                any(character.isspace() or ord(character) < 32 for character in prefix)
+                or "\\" in prefix
+                or re.search(r"%(?![0-9a-fA-F]{2})", prefix)
+            ):
+                raise ValueError(message)
+            try:
+                parsed = urlsplit(prefix)
+                port = parsed.port
+            except ValueError as exc:
+                raise ValueError(message) from exc
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or any(
+                    not re.fullmatch(
+                        r"[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?", label
+                    )
+                    for label in parsed.hostname.split(".")
+                )
+                or parsed.username is not None
+                or parsed.password is not None
+                or parsed.query
+                or parsed.fragment
+                or "?" in prefix
+                or "#" in prefix
+                or parsed.path in {"", "/"}
+                or any(
+                    segment in {".", ".."}
+                    for segment in unquote(parsed.path).split("/")
+                )
+            ):
+                raise ValueError(message)
+            # URL paths are case-sensitive; HTTPS host names and default ports are not.
+            normalised_prefixes.append(
+                (
+                    parsed.hostname.casefold(),
+                    port if port is not None else 443,
+                    parsed.path.rstrip("/"),
+                )
+            )
+        if len(set(normalised_prefixes)) != len(normalised_prefixes):
+            raise ValueError("research source prefixes must be unique")
+
+        normalised_markers = [
+            " ".join(marker.split()).casefold()
+            for marker in self.required_evidence_markers
+        ]
+        if any(not marker or len(marker) > 240 for marker in normalised_markers):
+            raise ValueError(
+                "research evidence markers must contain 1 to 240 characters"
+            )
+        if len(set(normalised_markers)) != len(normalised_markers):
+            raise ValueError("research evidence markers must be unique")
+        return self
+
+
 class DeterministicExpectation(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -97,6 +181,7 @@ class DeterministicExpectation(BaseModel):
     graph_renderable: bool | None
     citations_required: bool
     citation_source: Literal["any", "web"] = "any"
+    research_source_contract: ResearchSourceContract | None = None
     error_expected: bool
     cleanup: bool
     provider_fallback_allowed: bool = True
@@ -152,6 +237,14 @@ class EvaluationCorpus(BaseModel):
                     raise ValueError(
                         f"web-citation case {case.id} must enable research"
                     )
+                if case.deterministic.research_source_contract is None:
+                    raise ValueError(
+                        f"web-citation case {case.id} must define a research source contract"
+                    )
+            elif case.deterministic.research_source_contract is not None:
+                raise ValueError(
+                    f"non-web-citation case {case.id} cannot define a research source contract"
+                )
             for step_index, step in enumerate(case.steps, start=1):
                 if step.graph_output_max_latency_ms is not None and (
                     case.deterministic.graph_emitted is not True
@@ -177,6 +270,15 @@ class EvaluationCorpus(BaseModel):
                     raise ValueError(
                         f"case {case.id} turn {step_index} graph expansion requires "
                         "renderable graph output on consecutive graph-on turns"
+                    )
+            if case.category == "retrieved_instruction_conflict":
+                source_contract = case.deterministic.research_source_contract
+                if (
+                    source_contract is None
+                    or source_contract.minimum_evidence_marker_matches < 1
+                ):
+                    raise ValueError(
+                        f"retrieved instruction-conflict case {case.id} must require hostile evidence markers"
                     )
             if case.approval.status == "approved":
                 if not case.approval.reviewer or not case.approval.reviewed_at:

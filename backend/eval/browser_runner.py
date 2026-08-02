@@ -1300,6 +1300,141 @@ async def _node_followup_interaction_failure_details(
     return []
 
 
+def _research_url_matches(url: str, prefix: str) -> bool:
+    def parse(value: str) -> tuple[str, int, str] | None:
+        if any(
+            character.isspace() or ord(character) < 32 or character in "\\<>"
+            for character in value
+        ):
+            return None
+        try:
+            parsed = urllib.parse.urlsplit(value)
+            port = parsed.port if parsed.port is not None else 443
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or re.search(r"%(?![0-9a-fA-F]{2})", parsed.path)
+            or any(
+                segment in {".", ".."}
+                for segment in urllib.parse.unquote(parsed.path).split("/")
+            )
+        ):
+            return None
+        return parsed.hostname.lower(), port, parsed.path
+
+    actual, required = parse(url), parse(prefix)
+    if actual is None or required is None or actual[:2] != required[:2]:
+        return False
+    required_path = required[2].rstrip("/")
+    return actual[2].rstrip("/") == required_path or actual[2].startswith(
+        required_path + "/"
+    )
+
+
+def _research_contract_failure_details(
+    case: EvaluationCase, events: list[dict[str, Any]]
+) -> list[FailureDetail]:
+    contract = case.deterministic.research_source_contract
+    if contract is None:
+        return []
+    research_turns = {
+        index
+        for index, step in enumerate(case.steps, start=1)
+        if step.ui.research_enabled
+    }
+    final_evidence: dict[int, dict[str, Any]] = {}
+    for event in events:
+        if event.get("type") not in {"answer_evidence", "response_reset"}:
+            continue
+        turn = event.get("eval_turn", 1 if len(case.steps) == 1 else None)
+        if type(turn) is not int or not 1 <= turn <= len(case.steps):
+            return [
+                _failure_detail(
+                    "quality",
+                    "research_evidence_invalid",
+                    "research source contract requires valid evidence turn attribution",
+                )
+            ]
+        if event["type"] == "response_reset":
+            final_evidence.pop(turn, None)
+        else:
+            final_evidence[turn] = event
+
+    failures: list[FailureDetail] = []
+    for turn in sorted(research_turns):
+        evidence = final_evidence.get(turn)
+        if evidence is None:
+            failures.append(
+                _failure_detail(
+                    "quality",
+                    "research_evidence_missing",
+                    f"turn {turn} research source contract requires final synthesis evidence",
+                )
+            )
+            continue
+        if (
+            type(evidence.get("schema_version")) is not int
+            or evidence["schema_version"] != 1
+            or evidence.get("source") != "synthesis_input"
+            or not isinstance(evidence.get("prompt_version"), str)
+            or not evidence["prompt_version"].strip()
+            or not isinstance(evidence.get("research_context"), str)
+        ):
+            failures.append(
+                _failure_detail(
+                    "quality",
+                    "research_evidence_invalid",
+                    f"turn {turn} research source contract has malformed synthesis evidence",
+                )
+            )
+            continue
+        matched_prefixes: set[str] = set()
+        matched_text: list[str] = []
+        for line in evidence["research_context"].splitlines():
+            bullet = re.fullmatch(r"- (.*?) — <([^<>]+)>: (.*)", line)
+            if bullet is None:
+                continue
+            title, url, body = bullet.groups()
+            matches = {
+                prefix
+                for prefix in contract.required_url_prefixes
+                if _research_url_matches(url, prefix)
+            }
+            if matches:
+                matched_prefixes.update(matches)
+                # Only source text can satisfy hostile evidence requirements.
+                for text in (title, body):
+                    text = re.sub(r"https?://\S+", "", text)
+                    matched_text.append(" ".join(text.split()).casefold())
+        if len(matched_prefixes) < contract.minimum_url_prefix_matches:
+            failures.append(
+                _failure_detail(
+                    "quality",
+                    "research_source_mismatch",
+                    f"turn {turn} research source contract matched {len(matched_prefixes)} "
+                    f"required sources; expected {contract.minimum_url_prefix_matches}",
+                )
+            )
+        marker_matches = sum(
+            any(" ".join(marker.split()).casefold() in text for text in matched_text)
+            for marker in contract.required_evidence_markers
+        )
+        if marker_matches < contract.minimum_evidence_marker_matches:
+            failures.append(
+                _failure_detail(
+                    "quality",
+                    "research_evidence_marker_mismatch",
+                    f"turn {turn} research source contract matched {marker_matches} "
+                    f"evidence markers; expected {contract.minimum_evidence_marker_matches}",
+                )
+            )
+    return failures
+
+
 def _deterministic_failure_details(
     case: EvaluationCase,
     events: list[dict[str, Any]],
@@ -1506,6 +1641,7 @@ def _deterministic_failure_details(
                 error_message,
             )
         )
+    failures.extend(_research_contract_failure_details(case, events))
     answer = extract_response_text(events)
     if expected.citations_required:
         if expected.citation_source == "web":

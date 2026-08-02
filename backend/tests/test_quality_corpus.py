@@ -244,8 +244,8 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     case = corpus.by_id["graph-expansion"]
     first_turn, second_turn = case.steps
 
-    assert corpus.corpus_version == "2026-09-28.v1"
-    assert corpus.release_identity == "browser-rubric-v5"
+    assert corpus.corpus_version == "2026-09-28.v2"
+    assert corpus.release_identity == "browser-rubric-v6"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
