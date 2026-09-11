@@ -11,6 +11,7 @@ import logging
 from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from hashlib import sha256
+from math import isfinite
 from typing import Any
 
 from adapters.llm_adapter import build_telemetry
@@ -610,7 +611,15 @@ async def _review(
     rule_codes: Sequence[str],
     prompt_version: str,
     telemetry_context: Mapping[str, Any] | None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
+    if timeout_seconds is not None and (
+        not isinstance(timeout_seconds, (int, float))
+        or isinstance(timeout_seconds, bool)
+        or not isfinite(timeout_seconds)
+        or timeout_seconds <= 0
+    ):
+        raise ValueError("timeout_seconds must be a finite positive number")
     maturity = _normalise_maturity(resolved_maturity)
     if not isinstance(user_request, str):
         raise ValueError("user_request must be a string")
@@ -653,7 +662,11 @@ async def _review(
                 required_production_guarantees=guarantees,
                 telemetry_context=telemetry_context,
             ),
-            timeout_seconds=settings.staged_gate_timeout_s,
+            timeout_seconds=(
+                settings.staged_gate_timeout_s
+                if timeout_seconds is None
+                else timeout_seconds
+            ),
             max_output_tokens=settings.graph_qa_max_completion_tokens,
             provider_attempt_limit=1,
         )
@@ -690,6 +703,7 @@ async def review_components(
     candidate_records: Sequence[Mapping[str, Any]],
     required_production_guarantees: Sequence[str] = (),
     telemetry_context: Mapping[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Review immutable component records with one structured provider call."""
     return await _review(
@@ -702,6 +716,7 @@ async def review_components(
         rule_codes=COMPONENT_RULE_CODES,
         prompt_version=_COMPONENT_GATE_PROMPT_VERSION,
         telemetry_context=telemetry_context,
+        timeout_seconds=timeout_seconds,
     )
 
 
@@ -713,6 +728,7 @@ async def review_connections(
     candidate_records: Sequence[Mapping[str, Any]],
     required_production_guarantees: Sequence[str] = (),
     telemetry_context: Mapping[str, Any] | None = None,
+    timeout_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Review immutable connection records with one structured provider call."""
     maturity = _normalise_maturity(resolved_maturity)
@@ -726,4 +742,5 @@ async def review_connections(
         rule_codes=_rules_for_connections(maturity, required_production_guarantees),
         prompt_version=_CONNECTION_GATE_PROMPT_VERSION,
         telemetry_context=telemetry_context,
+        timeout_seconds=timeout_seconds,
     )

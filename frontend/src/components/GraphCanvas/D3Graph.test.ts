@@ -7,6 +7,7 @@ import {
   filterRenderableEdges,
   initialFitScale,
   isPublishedLayoutScale,
+  labelAxisCandidates,
   MAX_PUBLISHED_GRAPH_NODES,
   MIN_PUBLISHED_TITLE_PX,
   NODE_TITLE_PX,
@@ -24,6 +25,20 @@ import {
 
 
 describe('graph layout policy', () => {
+  it('samples a half-pixel free corridor without touching either obstacle', () => {
+    const candidates = labelAxisCandidates(50, 300, 50, [
+      { start: 0, end: 100 }, { start: 150.5, end: 250 },
+    ]);
+    const fitting = candidates.filter(center => center - 25 > 100 && center + 25 < 150.5);
+    expect(fitting).toContain(125.25);
+    expect(candidates.every(center => center >= 29 && center <= 271)).toBe(true);
+  });
+
+  it('includes narrow viewport gaps and rejects labels wider than the viewport', () => {
+    expect(labelAxisCandidates(200, 300, 50, [{ start: 54.5, end: 300 }])).toContain(29.25);
+    expect(labelAxisCandidates(200, 300, 400, [])).toEqual([]);
+  });
+
   it('selects the first layout that meets the title-size contract', () => {
     expect(selectGraphLayout(0.75, 0.8)).toBe('horizontal');
     expect(selectGraphLayout(0.7, 0.75)).toBe('vertical');

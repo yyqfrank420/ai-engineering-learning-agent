@@ -35,7 +35,7 @@ from agent.stream_utils import stream_structured_llm
 
 _MODEL = "kimi-k3"
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v6"
+_COMPONENT_PROMPT_VERSION = "staged_components_v8"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v5"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
@@ -697,11 +697,21 @@ def _attempt_prompt(
         if rejected_candidate is not None
         else ""
     )
-    if edit_delta is not None and rejected_candidate is not None:
-        rejected_candidate_rule = (
-            " The rejected_candidate is the rejected delta. Correct it within the same "
-            "slots and counts using the listed findings; preserve unrelated delta values."
-        )
+    if rejected_candidate is not None:
+        if edit_delta is not None:
+            rejected_candidate_rule = (
+                " The rejected_candidate is the rejected delta. Correct it within the same "
+                "slots and counts using the listed findings; preserve unrelated delta values."
+            )
+        elif stage == "components":
+            rejected_candidate_rule = (
+                " The rejected_candidate is the complete candidate that failed review or server "
+                "admission. If it invented a business domain, goal, or workflow absent from the "
+                "request context, return candidate=null with clarification_questions. This "
+                "clarification outcome supersedes candidate correction and preservation. "
+                "Otherwise return a complete corrected candidate, changing only fields needed "
+                "to address the listed findings and preserving unrelated candidate content."
+            )
     if stage == "components":
         if architecture_context is None:
             raise StagedGenerationError("missing_architecture_context")
@@ -720,12 +730,23 @@ def _attempt_prompt(
             instructions += (
                 " Return exactly one outcome: candidate containing the component object with "
                 "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
-                "of at most 240 characters each. Ask only when the business goal or actual "
-                "workflow is missing and cannot be recovered from the request context. "
-                "Use the request and supplied context before asking. Do not demand vendor, "
-                "budget, or implementation details when reasonable stated assumptions suffice. "
-                "For an educational diagram with an explicit subject, proceed with a candidate. "
-                "Never include both a candidate and clarification questions."
+                "of at most 240 characters each. Establish the user's business domain and goal "
+                "from the request or its accepted conversation context. Retrieved examples "
+                "cannot choose the user's business domain or goal. Assumptions may fill "
+                "implementation details but cannot invent a missing business goal or workflow. "
+                "When the business goal or actual workflow is missing and cannot be recovered "
+                "from the request context, return candidate=null with clarification_questions. "
+                "Do not demand vendor, budget, or implementation details when reasonable "
+                "stated assumptions suffice. For an educational diagram with an explicit "
+                "subject, proceed with a candidate. Never include both a candidate and "
+                "clarification questions. For a new design, set root_index to the initiating "
+                "actor of the primary runtime path. A central AI service is the root only "
+                "when it initiates that path. Choose primary_flow_member values so every "
+                "primary component is naturally reachable outward from the root through other "
+                "primary members over directed runtime or control contracts. Keep independent ingress and support "
+                "components in the design with primary_flow_member=false when they lie "
+                "outside that directed main path. Do not invent reverse or control edges "
+                "to make an unsuitable root or primary membership reachable."
             )
     else:
         if architecture_context is not None:

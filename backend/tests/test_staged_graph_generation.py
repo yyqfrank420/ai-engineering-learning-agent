@@ -504,7 +504,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v6"
+    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v8"
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
 
@@ -1322,3 +1322,204 @@ def test_connection_plan_preserves_exact_label_authority_and_contract_owner_limi
         generation.StagedGenerationError, match="edit_connection_plan_invalid"
     ):
         generation._connection_addition_plan(permissions, {"n1": 0, "n2": 1})
+
+
+def _cold_chain_root_candidate(root_index=5, independent_primary=False):
+    # The six primary roles and central root reproduce run 34656915601's upstream chain.
+    roles = [
+        ("Shipment Sensor Fleet", 106, "Emits identified temperature readings."),
+        (
+            "Telemetry Ingestion Gateway",
+            104,
+            "Authenticates and buffers sensor readings.",
+        ),
+        (
+            "Telemetry Normalization Service",
+            101,
+            "Validates and normalizes sensor readings.",
+        ),
+        (
+            "Excursion Detection Service",
+            101,
+            "Detects excursions and opens candidate incidents.",
+        ),
+        ("Incident Event Queue", 103, "Delivers ordered excursion events to triage."),
+        (
+            "AI Triage & Root-Cause Service",
+            101,
+            "Classifies excursions and drafts response actions.",
+        ),
+    ]
+    return {
+        **_component_wire(),
+        "title": "Cold-chain incident processing",
+        "root_index": root_index,
+        "components": [
+            {
+                "label": label,
+                "type": node_type,
+                "responsibility": responsibility,
+                "group_label": "Incident runtime",
+                "group_kind": 600,
+                "primary_flow_member": True,
+            }
+            for label, node_type, responsibility in roles
+        ]
+        + [
+            {
+                "label": "Independent Incident Reporter",
+                "type": 100,
+                "responsibility": "Submits separate incident reports to triage.",
+                "group_label": "Incident runtime",
+                "group_kind": 600,
+                "primary_flow_member": independent_primary,
+            }
+        ],
+    }
+
+
+@pytest.mark.parametrize(("root_index", "independent_primary"), [(5, False), (0, True)])
+def test_captured_upstream_chain_requires_initiating_root_and_natural_primary_path(
+    root_index, independent_primary
+):
+    candidate = _cold_chain_root_candidate(root_index, independent_primary)
+    connections = {
+        "edges": [
+            {
+                "source_index": index,
+                "target_index": index + 1,
+                "label": f"Advances incident processing {index}",
+                "flow": 400,
+                "sync": 501,
+            }
+            for index in range(5)
+        ]
+        + [
+            {
+                "source_index": 6,
+                "target_index": 5,
+                "label": "Submits an independent incident",
+                "flow": 400,
+                "sync": 501,
+            }
+        ]
+    }
+
+    def accepted_components(wire):
+        return [
+            {
+                "index": index,
+                "is_root": index == wire["root_index"],
+                "primary_flow_member": component["primary_flow_member"],
+            }
+            for index, component in enumerate(wire["components"])
+        ]
+
+    def build(wire):
+        return contract.assign_server_ids(
+            {
+                **wire,
+                "request_id": "cold-chain-root-replay",
+                "maturity": "prototype",
+                "source": "test",
+                "stage": "connections",
+                "components": [
+                    {
+                        **component,
+                        "model_index": index,
+                        "type": generation.NODE_TYPE_CODES[component["type"]],
+                        "group_kind": generation.GROUP_KIND_CODES[
+                            component["group_kind"]
+                        ],
+                    }
+                    for index, component in enumerate(wire["components"])
+                ],
+                "connections": [
+                    {
+                        "source_id": str(edge["source_index"]),
+                        "target_id": str(edge["target_index"]),
+                        "label": edge["label"],
+                        "flow": generation.FLOW_CODES[edge["flow"]],
+                        "sync": generation.SYNC_CODES[edge["sync"]],
+                    }
+                    for edge in connections["edges"]
+                ],
+            }
+        )
+
+    with pytest.raises(
+        generation.StagedGenerationError, match="connection_wire_unreachable"
+    ):
+        generation._parse_connection_wire(
+            json.dumps(connections),
+            accepted_components=accepted_components(candidate),
+            edge_limit=6,
+        )
+    with pytest.raises(
+        contract.GraphContractError, match="every primary flow member must be reachable"
+    ):
+        contract.project_graph_data(build(candidate))
+
+    corrected = _cold_chain_root_candidate(root_index=0, independent_primary=False)
+    assert (
+        generation._parse_connection_wire(
+            json.dumps(connections),
+            accepted_components=accepted_components(corrected),
+            edge_limit=6,
+        )
+        == connections
+    )
+    graph = contract.project_graph_data(build(corrected))
+    assert len(graph["nodes"]) == 7
+    assert len(graph["edges"]) == 6
+    assert graph["sequence"][0]["nodes"] == ["n1"]
+    assert {edge["source"] + "->" + edge["target"] for edge in graph["edges"]} == {
+        "n1->n2",
+        "n2->n3",
+        "n3->n4",
+        "n4->n5",
+        "n5->n6",
+        "n7->n6",
+    }
+
+
+@pytest.mark.asyncio
+async def test_component_generation_receives_root_selection_before_connections(
+    monkeypatch,
+):
+    calls = []
+    candidate = _cold_chain_root_candidate(root_index=0)
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps({"candidate": candidate, "clarification_questions": []})
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    result = await generation.generate_component_candidate(
+        request="Design cold-chain excursion detection and AI-assisted incident triage.",
+        resolved_maturity="prototype",
+        architecture_context="Sensor readings initiate excursion detection before AI incident triage.",
+        write_set=generation.create_write_set(component_limit=7, edge_limit=6),
+        upstream_fingerprint="a" * 64,
+    )
+
+    assert result["wire"]["root_index"] == 0
+    assert len(calls) == 1
+    prompt = calls[0]["prompt"]
+    assert (
+        "set root_index to the initiating actor of the primary runtime path" in prompt
+    )
+    assert "A central AI service is the root only when it initiates that path" in prompt
+    assert "Keep independent ingress and support components in the design" in prompt
+    assert "Do not invent reverse or control edges" in prompt
+    criteria = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    root_rule = criteria["objective_fidelity"]
+    assert (
+        "For new designs, select the initiating primary runtime actor as the root"
+        in root_rule
+    )
+    assert "Every primary member must be naturally reachable outward" in root_rule
+    assert (
+        "Scoped edits preserve the accepted root and primary membership outside the authorized write set"
+        in root_rule
+    )

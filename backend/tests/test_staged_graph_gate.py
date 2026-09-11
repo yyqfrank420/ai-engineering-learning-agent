@@ -120,6 +120,58 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     assert "Resolved maturity overrides maturity wording" in prompt
 
 
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("timeout_seconds", [None, 12.5, 180.0])
+def test_review_uses_explicit_timeout_independently_of_telemetry(
+    monkeypatch, stage, timeout_seconds
+):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    review = (
+        gate.review_components if stage == "components" else gate.review_connections
+    )
+    result = asyncio.run(
+        review(
+            user_request="Design a service.",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[],
+            telemetry_context={"terminal_deadline_s": 0, "staged_attempt": -1},
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    assert result["approved"] is True
+    assert calls[0]["timeout_seconds"] == (
+        gate.settings.staged_gate_timeout_s
+        if timeout_seconds is None
+        else timeout_seconds
+    )
+    assert calls[0]["provider_attempt_limit"] == 1
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize(
+    "timeout_seconds", [0, -1, True, "55", float("inf"), float("nan")]
+)
+def test_invalid_review_timeout_is_rejected_before_provider(
+    monkeypatch, stage, timeout_seconds
+):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    review = (
+        gate.review_components if stage == "components" else gate.review_connections
+    )
+    with pytest.raises(ValueError, match="timeout_seconds"):
+        asyncio.run(
+            review(
+                user_request="Design a service.",
+                evidence_bundle={},
+                resolved_maturity="prototype",
+                candidate_records=[],
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    assert calls == []
+
+
 def test_staged_component_gate_excludes_rules_without_upstream_review():
     assert "independent_risk_coverage" in RUBRIC_CRITERIA
     assert "independent_risk_coverage" not in gate.COMPONENT_RULE_CODES

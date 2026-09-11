@@ -113,6 +113,30 @@ export function initialFitScale(
   );
 }
 
+export function labelAxisCandidates(
+  anchor: number,
+  extent: number,
+  labelExtent: number,
+  obstacles: Array<{ start: number; end: number }>,
+): number[] {
+  const halfLabel = labelExtent / 2;
+  const minimum = halfLabel + 4;
+  const maximum = extent - halfLabel - 4;
+  const edges = obstacles.flatMap(box => [box.start - halfLabel, box.end + halfLabel]);
+  const boundaries = [...new Set([minimum, maximum, ...edges])]
+    .filter(value => value >= minimum && value <= maximum)
+    .sort((left, right) => left - right);
+  // Touching boxes collide. Narrow gaps need an interior sample because
+  // one-pixel offsets from their boundaries can skip the whole free interval.
+  const narrowMidpoints = boundaries.slice(1).flatMap((right, index) => (
+    right - boundaries[index] < 2 ? [(boundaries[index] + right) / 2] : []
+  ));
+  return [...new Set([
+    anchor, minimum, maximum, ...narrowMidpoints,
+    ...obstacles.flatMap(box => [box.start - halfLabel - 1, box.end + halfLabel + 1]),
+  ])].filter(value => value >= minimum && value <= maximum);
+}
+
 export function boundLabelCenter(
   position: { x: number; y: number },
   size: { width: number; height: number },

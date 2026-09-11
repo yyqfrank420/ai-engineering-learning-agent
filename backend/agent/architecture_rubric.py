@@ -13,7 +13,7 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
+        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Every primary member must be naturally reachable outward from that root along a path of primary members using directed runtime or control contracts. Keep independent ingress and supporting components in the design, marking them non-primary when they are outside that directed main path. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
