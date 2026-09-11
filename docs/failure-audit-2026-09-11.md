@@ -33,7 +33,7 @@ The retained captures have four recurring evaluator symptoms:
 These symptoms describe the final product check. They do not identify every root
 cause. For example, run `31705887318` records a failed `graph_critic` provider attempt
 with zero output usage, while run `31900871827` records a failed graph-patch attempt.
-Both ultimately fail a required-graph check. The older ledger attributes those
+Both fail a required-graph check. The older ledger attributes those
 attempts to provider overload and a correction timeout, respectively; those more
 specific explanations require evidence beyond the retained telemetry.
 
@@ -238,6 +238,29 @@ accepts reviewed candidate-branch captures after strict source, browser, dashboa
 and human-review validation. A semantic failure does not invalidate otherwise
 complete browser evidence used for calibration. This does not approve an image.
 
+The next independent pass reproduced three additional defects offline. A named
+addition such as `Add Cache to Payment service` authorized the ID `cache`, but
+the assembled candidate received `n3` and failed final admission. Named additions
+now receive their exact server-authorized ID; generic expansion keeps generated
+IDs. Prototype and production regressions cover both paths.
+
+A failed pre-start WebSocket connection could schedule a retry, then restart the
+cancelled request after the user stopped or submitted a newer request. Cancellation
+now clears the retry timer and settles its promise. The callback also verifies
+socket and request ownership before reconnecting. Both cancellation regressions
+failed before the fix and pass afterward.
+
+The SSE transport released its stream lease before persistence. A second replica
+could read the older graph and later overwrite the first turn's committed graph
+when preserving its own request-start snapshot. The lease now covers setup,
+persistence, and terminal publication. Storage-backed tests deny a competing lease
+at the commit boundary and verify cleanup on completion and failure.
+
+Browser review HTML also truncated answers and retrieval evidence and omitted
+earlier turn graphs. It now includes complete per-turn evidence and a digest/link
+for the exact raw capture. Untrusted text remains escaped. This produces reviewable
+evidence; it does not supply human grades.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.
@@ -249,6 +272,13 @@ stopped on an obsolete assertion requiring the removed scheduled-evaluation succ
 bypass. That assertion was corrected; evaluation, whole-backend coverage, and all
 remaining groups then passed. Earlier passing groups had no intervening source changes.
 The retained graph replay and gate tests also passed after their final additions.
+
+Commit `2803582ed2cb7747f02e88359b774e6ed6301e04` passed all 11 groups in one
+canonical run: 1,833 backend tests at 91% coverage, 241 frontend tests, and 221
+policy tests. Cloud CI passed the same groups. Its full 20-case protected staging
+evaluation is [run 34653111423](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34653111423).
+Later named-addition, transport, and review-renderer fixes require their own final
+validation and are not represented by that run's source identity.
 
 Existing optional ingestion tests remain skipped without the source PDF or model
 opt-in. Dependency deprecation warnings, the local Node storage warning, and two

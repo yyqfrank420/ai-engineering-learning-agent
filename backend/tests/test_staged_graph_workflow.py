@@ -2707,3 +2707,145 @@ async def test_staged_worker_reporting_preserves_optional_transport_behavior(
         state["send"] = closed_transport if sender == "closed transport" else sender
     result = await workflow.run_staged_graph_pipeline(state)
     assert result["graph_publication"] == "approved"
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    ("user_request", "expected_id"),
+    [("Add Cache to Payment service.", "cache"), ("Expand Payment service.", "n3")],
+)
+@pytest.mark.asyncio
+async def test_scoped_additions_use_server_authorized_node_identity(
+    monkeypatch,
+    maturity,
+    user_request,
+    expected_id,
+):
+    previous_graph = _accepted_staged_graph(maturity=maturity)
+    original = copy.deepcopy(previous_graph)
+    provider_stages = []
+
+    async def generate_delta(**kwargs):
+        provider_stages.append(kwargs["stage"])
+        if kwargs["stage"] == "components":
+            fields = kwargs["schema"]["properties"]["additions"]["items"]["properties"]
+            assert "id" not in fields and "server_id" not in fields
+            return json.dumps(
+                {
+                    "additions": [
+                        {
+                            "label": "Cache",
+                            "type": 102,
+                            "responsibility": "Stores reusable payment status lookups.",
+                            "group_label": "Runtime",
+                            "group_kind": 600,
+                            "primary_flow_member": False,
+                        }
+                    ],
+                    "updates": {},
+                    "capabilities": {
+                        "external_effects": False,
+                        "retrieval_or_reuse": True,
+                        "learning_or_release": False,
+                    },
+                }
+            )
+        return json.dumps(
+            {
+                "additions": [
+                    {
+                        "source_index": 1,
+                        "target_index": 2,
+                        "label": "looks up payment status",
+                        "flow": 400,
+                        "sync": 500,
+                    }
+                ],
+                "updates": {},
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="auto",
+            user_message=user_request,
+            design_query=user_request,
+            approved_graph_data=previous_graph,
+            graph_data=previous_graph,
+        )
+    )
+
+    assert result["graph_publication"] == "approved", result.get(
+        "graph_review_diagnostics"
+    )
+    assert provider_stages == ["components", "connections"]
+    assert result["graph_data"]["nodes"][:2] == original["nodes"]
+    assert result["graph_data"]["edges"][:1] == original["edges"]
+    assert result["graph_data"]["nodes"][-1]["id"] == expected_id
+    assert result["graph_data"]["edges"][-1]["source"] == "n2"
+    assert result["graph_data"]["edges"][-1]["target"] == expected_id
+    assert result["graph_data"]["groups"][0]["nodeIds"] == ["n1", "n2", expected_id]
+    assert result["graph_data"]["sequence"] == original["sequence"]
+    assert previous_graph == original
+
+
+@pytest.mark.parametrize(
+    ("named_ids", "count", "actual_count", "removed", "error"),
+    [
+        ([], 1, 1, [], "count does not match"),
+        (["cache"], 1, 0, [], "count does not match"),
+        (["cache"], 2, 2, [], "count does not match"),
+        (["cache"], True, 1, [], "count does not match"),
+        (["cache", "cache"], 2, 2, [], "must be unique and new"),
+        (["n1"], 1, 1, [], "must be unique and new"),
+        (["n2"], 1, 1, ["n2"], "must be unique and new"),
+        (["cache", "queue"], 2, 2, [], "no identity mapping"),
+        ([" cache "], 1, 1, [], "exact bounded IDs"),
+        ("cache", 1, 1, [], "exact bounded IDs"),
+    ],
+)
+def test_scoped_named_additions_reject_invalid_identity_authority(
+    named_ids,
+    count,
+    actual_count,
+    removed,
+    error,
+):
+    base_components = [
+        {**component, "server_id": f"n{index + 1}"}
+        for index, component in enumerate(
+            workflow._decode_components(_components_wire())
+        )
+    ]
+    original = copy.deepcopy(base_components)
+    retained = [
+        component
+        for component in base_components
+        if component["server_id"] not in removed
+    ]
+    candidate = [
+        {key: value for key, value in component.items() if key != "server_id"}
+        for component in retained
+    ] + [
+        {**base_components[-1], "label": f"Addition {index}"}
+        for index in range(actual_count)
+    ]
+
+    with pytest.raises(workflow.GraphContractError, match=error):
+        workflow._retain_component_ids(
+            candidate,
+            {"components": base_components},
+            {
+                "removable_node_ids": removed,
+                "allowed_new_node_ids": named_ids,
+                "allowed_new_node_count": count,
+            },
+        )
+
+    assert base_components == original

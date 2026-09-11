@@ -220,6 +220,44 @@ describe('AgentTransport WebSocket protocol', () => {
     vi.useRealTimers();
   });
 
+  it('cancels and settles a pending connection retry when stopped', async () => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'design', undefined, 'client-stopped');
+    MockWebSocket.instances[0].onerror?.();
+
+    expect(transport.stopGeneration('client-stopped')).toBe(true);
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await expect(completed).resolves.toBe(false);
+    expect(transport.isChatActive()).toBe(false);
+  });
+
+  it('cannot replace a newer socket with a cancelled connection retry', async () => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const firstCompleted = transport.sendMessage(session, 'thread-1', 'old request', undefined, 'client-old');
+    MockWebSocket.instances[0].onerror?.();
+    const secondCompleted = transport.sendMessage(session, 'thread-1', 'new request', undefined, 'client-new');
+    const second = MockWebSocket.instances[1];
+
+    await vi.advanceTimersByTimeAsync(250);
+
+    expect(MockWebSocket.instances).toHaveLength(2);
+    await expect(firstCompleted).resolves.toBe(false);
+    second.open();
+    second.receive({ type: 'ready' });
+    expect(JSON.parse(second.sent[1])).toMatchObject({
+      type: 'start',
+      client_request_id: 'client-new',
+      content: 'new request',
+    });
+    expect(transport.stopGeneration('client-old')).toBe(false);
+    second.receive({ type: 'done' });
+    await expect(secondCompleted).resolves.toBe(true);
+  });
+
   it('does not replay a request after its start frame was sent', async () => {
     vi.useFakeTimers();
     const transport = new AgentTransport();
