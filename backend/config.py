@@ -46,9 +46,8 @@ class Settings(BaseSettings):
     architecture_model: str = "claude-opus-5"
     graph_builder_model: str = "kimi-k3"
     graph_qa_model: str = "claude-sonnet-5"
-    # Keep the established graph execution path active until an explicitly
-    # configured staging diagnostic opts into the staged pipeline.
-    graph_pipeline_mode: Literal["legacy", "staged"] = "legacy"
+    # Applied graphs use staged review; legacy remains an explicit rollback.
+    graph_pipeline_mode: Literal["legacy", "staged"] = "staged"
     # Each staged layer has one generation retry and one gate retry. The
     # 90-second prototype first-preview target is an SLO, not a runtime cutoff.
     staged_component_timeout_s: float = 130.0

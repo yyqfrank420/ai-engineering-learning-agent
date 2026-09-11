@@ -102,6 +102,57 @@ describe('graph node activation', () => {
     expect(screen.queryByText('EXIT')).toBeNull();
   });
 
+  it('fits feedback-only node titles without assigning runtime entry badges', () => {
+    const measure = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox').mockImplementation(function(this: SVGElement) {
+      return { x: 0, y: 0, width: (this.textContent?.length ?? 0) * 9, height: 12 } as DOMRect;
+    });
+    const feedbackGraph: GraphData = {
+      ...graph,
+      nodes: [
+        graph.nodes[0],
+        { ...graph.nodes[0], id: 'service', label: 'Serving API', type: 'service' },
+        { ...graph.nodes[0], id: 'monitor', label: 'Prototype Monitor', type: 'service' },
+        { ...graph.nodes[0], id: 'queue', label: 'Flagged Run Review Queue', type: 'queue' },
+      ],
+      edges: [
+        { ...edge('sensor_gateway', 'service', 'sends request'), flow: 'runtime' },
+        { ...edge('service', 'monitor', 'emits telemetry'), flow: 'feedback' },
+        { ...edge('monitor', 'queue', 'flags run'), flow: 'feedback' },
+        { ...edge('monitor', 'sensor_gateway', 'reports status'), flow: 'feedback' },
+      ],
+    };
+
+    try {
+      const { container } = render(
+        <D3Graph
+          graphData={feedbackGraph}
+          currentStep={-1}
+          activeNodeIds={new Set<string>()}
+          onNodeClick={() => undefined}
+        />,
+      );
+      const queue = screen.getByRole('button', { name: 'Explore Flagged Run Review Queue' });
+      expect(Array.from(queue.querySelectorAll('.node-title tspan'), line => line.textContent))
+        .toEqual(['Flagged Run', 'Review Queue']);
+      expect(queue.querySelector('.node-title')?.childNodes).toHaveLength(2);
+      expect(queue.querySelector('title')?.textContent).toContain('Flagged Run Review Queue');
+      for (const nodeId of ['monitor', 'queue']) {
+        const labels = Array.from(
+          container.querySelectorAll(`[data-node-id="${nodeId}"] text`),
+          text => text.textContent,
+        );
+        expect(labels).not.toContain('ENTRY');
+        expect(labels).not.toContain('OUTCOME');
+      }
+      expect(screen.getByText('ENTRY').closest('[data-node-id]')?.getAttribute('data-node-id'))
+        .toBe('sensor_gateway');
+      expect(screen.getByText('OUTCOME').closest('[data-node-id]')?.getAttribute('data-node-id'))
+        .toBe('service');
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
   it('preserves control-flow styling after the sequence effect runs', async () => {
     const controlGraph: GraphData = {
       ...graph,

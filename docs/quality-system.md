@@ -232,14 +232,24 @@ corpus approval records, and rerun `Live eval required` for the updated candidat
 A successful bootstrap capture alone does not approve the corpus or publish an
 exact-tree approval. Diagnostic runs cannot replace the full review.
 
-Compute calibration from saved evidence rather than entering it by inspection:
+For the first calibration, keep aggregate corpus approval pending while recording
+all 20 human-reviewed cases and the pinned judge and browser evidence identity.
+Every case's `review_run_id` must match the pinned `evidence_run_id`. Compute the
+baseline from a full semantic replay of that capture with `--capture-replay`;
+the original application-run report is not a semantic replay. The frozen
+judge-selection JSON contains `format_version: 1`, `provider`, and `model`.
 
 ```bash
 PYTHONPATH=backend python -m eval.calibration \
   --input artifacts/live-eval/live-results.json \
   --evidence artifacts/live-eval/browser-results.json \
-  --context artifacts/live-eval/replay-context.json
+  --context artifacts/live-eval/replay-context.json \
+  --judge-selection artifacts/live-eval/judge-selection.json
 ```
+
+After calibration passes, record its computed results and complete aggregate
+corpus approval and the approved manifest hash. Calibration does not approve the
+corpus or change its review records.
 
 With an approved corpus, deterministic failures block immediately. A clear
 semantic failure gets one independent second judgment; two clear failures block. A
@@ -255,10 +265,12 @@ critical dimension may fail, and at least 85% of non-critical dimensions must pa
 
 Judge calibration replays the exact browser evidence that humans reviewed; it never
 generates fresh application answers. The manual `Promote calibration evidence`
-workflow reads the pinned identity from the approved corpus rather than accepting a
-different run at dispatch. It authenticates that exact successful `main`
-`Scheduled evaluation`, source commit and run context, source corpus behavior,
-ordered passing 20-case browser capture, and browser digest. It then stores both the
+workflow reads the pinned identity from the approved corpus. It authenticates the
+exact completed same-repository `Scheduled evaluation`, source commit and run
+context, source corpus behavior, ordered passing 20-case browser capture, dashboard
+success, and browser digest. The source may be a candidate branch and may conclude
+`failure` after a semantic rejection; its browser evidence must pass every check.
+Every human-reviewed case must identify that same evidence run. It then stores both the
 content-addressed browser JSON and its promotion manifest under
 `reviewed/<corpus-sha>/` in the private GCS evaluation-evidence bucket. Uniform
 bucket access, public-access prevention, versioning, a one-year retention policy,

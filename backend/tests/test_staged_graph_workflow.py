@@ -446,7 +446,11 @@ async def test_identical_component_correction_is_not_reviewed_twice(monkeypatch)
     )
     diagnostic = result["graph_review"]["staged_failure"]
     assert result["graph_review_diagnostics"] == [
-        events[0]["diagnostic"],
+        next(
+            event["diagnostic"]
+            for event in events
+            if event["type"] == "workflow_progress"
+        ),
         diagnostic,
     ]
     assert events[-1]["diagnostic"] == diagnostic
@@ -537,11 +541,13 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
     assert len(diagnostics) == 2
     assert [item["attempt"] for item in diagnostics] == [1, 2]
     assert diagnostics[-1] == diagnostic
-    assert [event.get("diagnostic") for event in events] == diagnostics
-    assert [event["status"] for event in events] == ["retry", "rejected"]
+    progress_events = [
+        event for event in events if event["type"] == "workflow_progress"
+    ]
+    assert [event.get("diagnostic") for event in progress_events] == diagnostics
+    assert [event["status"] for event in progress_events] == ["retry", "rejected"]
+    assert all(event["phase"] == "review" for event in progress_events)
     for event in events:
-        assert event["type"] == "workflow_progress"
-        assert event["phase"] == "review"
         assert "Missing domain ownership." not in repr(event)
         assert "secret-" not in repr(event)
         assert "record_indexes" not in repr(event)
@@ -1126,8 +1132,11 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
     assert "reason" not in diagnostic["findings"][0]
     assert [item["attempt"] for item in result["graph_review_diagnostics"]] == [1, 2]
     assert result["graph_review_diagnostics"][-1] == diagnostic
-    assert len(events) == 1
-    assert "diagnostic" not in events[0]
+    progress_events = [
+        event for event in events if event["type"] == "workflow_progress"
+    ]
+    assert len(progress_events) == 1
+    assert "diagnostic" not in progress_events[0]
 
 
 @pytest.mark.asyncio
@@ -1183,7 +1192,7 @@ async def test_gate_diagnostic_caps_findings_and_redacts_from_non_internal_users
     assert len(diagnostic["findings"]) == 24
     assert "record_indexes" not in diagnostic["findings"][0]
     assert "reason" not in diagnostic["findings"][0]
-    assert "diagnostic" not in events[0]
+    assert all("diagnostic" not in event for event in events)
 
 
 @pytest.mark.asyncio
@@ -2638,3 +2647,63 @@ async def test_scoped_primary_node_edit_preserves_authored_sequence(
             {**original["groups"][0], "nodeIds": ["n1"]}
         ]
     assert previous_graph == original
+
+
+@pytest.mark.parametrize("outcome", ["approved", "base_rejected", "gate_rejected"])
+@pytest.mark.asyncio
+async def test_staged_pipeline_reports_graph_worker_once_for_actual_execution(
+    monkeypatch, outcome
+):
+    from eval.staging_runner import extract_workers
+
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    _install_success_boundaries(monkeypatch)
+    state = _state(send=send)
+    if outcome == "base_rejected":
+        state.update(graph_intent="edit", approved_graph_data={"nodes": []})
+    elif outcome == "gate_rejected":
+
+        async def reject(**kwargs):
+            return _rejected_gate()
+
+        monkeypatch.setattr(workflow, "review_components", reject)
+
+    result = await workflow.run_staged_graph_pipeline(state)
+
+    worker_events = [event for event in events if event["type"] == "worker_status"]
+    assert worker_events == [
+        {"type": "worker_status", "worker": "graph", "status": "Preparing the graph."}
+    ]
+    assert events[0] == worker_events[0]
+    assert extract_workers(events) == {"graph"}
+    if outcome == "approved":
+        assert result["graph_publication"] == "approved"
+    else:
+        assert result["graph_operation"]["status"] == "failed"
+        assert result["graph_operation"]["failure_code"] == (
+            "staged_base_graph_invalid"
+            if outcome == "base_rejected"
+            else "staged_component_attempts_exhausted"
+        )
+
+
+@pytest.mark.parametrize(
+    "sender", ["missing", None, "not callable", "closed transport"]
+)
+@pytest.mark.asyncio
+async def test_staged_worker_reporting_preserves_optional_transport_behavior(
+    monkeypatch, sender
+):
+    async def closed_transport(event):
+        raise RuntimeError("closed")
+
+    _install_success_boundaries(monkeypatch)
+    state = _state()
+    if sender != "missing":
+        state["send"] = closed_transport if sender == "closed transport" else sender
+    result = await workflow.run_staged_graph_pipeline(state)
+    assert result["graph_publication"] == "approved"

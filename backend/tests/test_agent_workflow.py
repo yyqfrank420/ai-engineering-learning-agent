@@ -4,6 +4,13 @@ import time
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def legacy_pipeline_for_algorithm_tests(monkeypatch):
+    from config import settings
+
+    monkeypatch.setattr(settings, "graph_pipeline_mode", "legacy")
+
+
 def _state(send):
     async def accept_diagram(graph):
         return {
@@ -2779,3 +2786,188 @@ async def test_exact_existing_edge_repairs_stop_after_two_failed_reviews(monkeyp
     assert result["graph_data"] is None
     assert result["graph_operation"]["failure_code"] == "graph_review_rejected"
     assert not any(event.get("type") == "graph_data" for event in events)
+
+
+@pytest.mark.parametrize(
+    "mode,intent,graph_mode,staged,failed",
+    [
+        ("staged", "create", "on", True, False),
+        ("staged", "edit", "on", True, False),
+        ("legacy", "create", "on", False, False),
+        ("legacy", "edit", "on", False, True),
+        ("staged", "none", "on", False, False),
+        ("staged", "create", "off", False, False),
+        ("staged", "edit", "on", True, True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_top_level_dispatch_preserves_contract_ownership(
+    monkeypatch, mode, intent, graph_mode, staged, failed
+):
+    import copy
+
+    import agent.graph as agent_graph
+    import agent.pipeline_steps as pipeline
+    from config import settings
+
+    calls = []
+    prior_graph = {
+        "design_origin": "applied",
+        "version": "approved-v1",
+        "title": "Prior serving architecture",
+        "nodes": [{"id": "prior", "label": "Prior component"}],
+        "edges": [],
+    }
+    prior_contract = {"source": "staged", "graph_version": "approved-v1"}
+    replacement = {
+        "design_origin": "applied" if intent != "none" else "book",
+        "graph_type": "architecture" if intent != "none" else "concept",
+        "version": "candidate-v2",
+        "title": "Replacement graph",
+        "nodes": [{"id": "replacement", "label": "Replacement component"}],
+        "edges": [],
+    }
+    replacement_contract = {"source": "staged", "graph_version": "candidate-v2"}
+
+    async def send(_event):
+        pass
+
+    async def route(state):
+        return {**state, "route": "search"}
+
+    async def search(state, _tools):
+        return state, None
+
+    async def expand(state, _tools, _task):
+        return state
+
+    async def legacy_worker(state, _tools):
+        calls.append("legacy_generation")
+        assert not staged
+        assert state["graph_contract"] == prior_contract
+        return {
+            **state,
+            "graph_data": copy.deepcopy(replacement),
+            "graph_operation": {"kind": intent, "status": "candidate"},
+        }
+
+    async def staged_worker(state):
+        calls.append("staged_generation")
+        assert staged
+        if failed:
+            return {
+                **state,
+                "graph_data": copy.deepcopy(prior_graph),
+                "graph_contract": copy.deepcopy(prior_contract),
+                "graph_changed": False,
+                "graph_publication": "preserved",
+                "graph_operation": {"kind": intent, "status": "failed"},
+            }
+        return {
+            **state,
+            "graph_data": copy.deepcopy(replacement),
+            "graph_contract": copy.deepcopy(replacement_contract),
+            "graph_changed": True,
+            "graph_publication": "approved",
+            "graph_operation": {"kind": intent, "status": "applied"},
+        }
+
+    async def render(state):
+        assert not staged
+        return {**state, "graph_render_admitted": True}
+
+    async def architect(state):
+        calls.append("legacy_architect")
+        assert not staged
+        return {**state, "architecture_ready": True}
+
+    async def critic(state, **_kwargs):
+        calls.append("legacy_critic")
+        assert not staged
+        return {**state, "graph_review": {"approved": not failed, "terminal": True}}
+
+    async def frame(state):
+        assert not staged
+        return state
+
+    async def synthesise(state):
+        calls.append("synthesis")
+        expected = (
+            prior_contract
+            if failed or graph_mode == "off"
+            else replacement_contract
+            if staged
+            else None
+        )
+        assert state["graph_contract"] == expected
+        assert state["approved_graph_contract"] == prior_contract
+        return {**state, "response_text": "Result"}
+
+    monkeypatch.setattr(settings, "graph_pipeline_mode", mode)
+    monkeypatch.setattr(agent_graph, "resolve_graph_operation", lambda *_args: intent)
+    monkeypatch.setattr(agent_graph, "orchestrator_route", route)
+    monkeypatch.setattr(agent_graph, "run_search_phase", search)
+    monkeypatch.setattr(agent_graph, "maybe_expand_with_search_tool", expand)
+    monkeypatch.setattr(pipeline, "graph_worker_node", legacy_worker)
+    monkeypatch.setattr(agent_graph, "run_staged_graph_pipeline", staged_worker)
+    monkeypatch.setattr(agent_graph, "graph_render_gate_node", render)
+    monkeypatch.setattr(agent_graph, "architect_node", architect)
+    monkeypatch.setattr(agent_graph, "graph_critic_node", critic)
+    monkeypatch.setattr(agent_graph, "early_design_frame_node", frame)
+    monkeypatch.setattr(agent_graph, "orchestrator_synthesise", synthesise)
+    state = {
+        **_state(send),
+        "graph_mode": graph_mode,
+        "graph_data": copy.deepcopy(prior_graph),
+        "graph_contract": copy.deepcopy(prior_contract),
+    }
+    result = await agent_graph.run_agent(state, [], [], [])
+
+    if graph_mode == "off":
+        assert "legacy_generation" not in calls
+    elif staged:
+        assert calls == ["staged_generation", "synthesis"]
+    else:
+        assert calls[0] == "legacy_generation"
+        assert "staged_generation" not in calls
+    assert result["graph_data"] == (
+        prior_graph if failed or graph_mode == "off" else replacement
+    )
+    assert result["graph_contract"] == (
+        prior_contract
+        if failed or graph_mode == "off"
+        else replacement_contract
+        if staged
+        else None
+    )
+    assert prior_contract == {"source": "staged", "graph_version": "approved-v1"}
+
+
+@pytest.mark.parametrize(
+    "contract",
+    [
+        {"graph_version": "wrong-version"},
+        {"source": "staged"},
+        "invalid-contract",
+    ],
+)
+@pytest.mark.asyncio
+async def test_run_agent_rejects_invalid_output_contract_binding(monkeypatch, contract):
+    import agent.graph as agent_graph
+
+    class FakeWorkflow:
+        async def ainvoke(self, state, config):
+            return {
+                **state,
+                "graph_data": {"version": "output-v1"},
+                "graph_contract": contract,
+            }
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(
+        agent_graph, "build_agent_workflow", lambda *_args, **_kwargs: FakeWorkflow()
+    )
+    with pytest.raises(ValueError, match="graph_contract.graph_version must match"):
+        await agent_graph.run_agent(_state(send), [], [], [])

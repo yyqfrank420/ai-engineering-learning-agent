@@ -40,11 +40,14 @@ def test_db_schema_configuration_is_allowlisted():
         Settings(db_schema="customer_supplied")
 
 
-def test_graph_pipeline_mode_defaults_to_legacy_and_is_allowlisted():
-    assert Settings(_env_file=None).graph_pipeline_mode == "legacy"
+def test_graph_pipeline_mode_defaults_to_staged_with_explicit_legacy_rollback(
+    monkeypatch,
+):
+    monkeypatch.delenv("GRAPH_PIPELINE_MODE", raising=False)
+    assert Settings(_env_file=None).graph_pipeline_mode == "staged"
     assert (
-        Settings(_env_file=None, graph_pipeline_mode="staged").graph_pipeline_mode
-        == "staged"
+        Settings(_env_file=None, graph_pipeline_mode="legacy").graph_pipeline_mode
+        == "legacy"
     )
     with pytest.raises(ValidationError):
         Settings(_env_file=None, graph_pipeline_mode="unsupported")

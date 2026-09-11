@@ -980,8 +980,13 @@ export function D3Graph({
     );
     const hasIncoming = new Set(runtimeEdges.map(e => e.target));
     const hasOutgoing = new Set(runtimeEdges.map(e => e.source));
-    const sourceNodeIds = new Set(renderGraphData.nodes.filter(n => !hasIncoming.has(n.id)).map(n => n.id));
-    const sinkNodeIds   = new Set(renderGraphData.nodes.filter(n => !hasOutgoing.has(n.id)).map(n => n.id));
+    const isolatedSingleton = renderGraphData.nodes.length === 1 && renderGraphData.edges.length === 0;
+    const sourceNodeIds = new Set(renderGraphData.nodes.filter(
+      n => !hasIncoming.has(n.id) && (hasOutgoing.has(n.id) || isolatedSingleton),
+    ).map(n => n.id));
+    const sinkNodeIds = new Set(renderGraphData.nodes.filter(
+      n => !hasOutgoing.has(n.id) && hasIncoming.has(n.id),
+    ).map(n => n.id));
 
     // ── Groups layer (rendered behind edges and nodes) ─────────────────────────
     const groupsLayer = g.append('g').attr('class', 'groups-layer');
@@ -1306,7 +1311,14 @@ export function D3Graph({
       .style('pointer-events', 'none');
 
     nodeTitles.each(function(d: RenderNode) {
-      const lines = wrapNodeLabel(d.label);
+      const lines = wrapNodeLabel(d.label, text => {
+        this.textContent = text;
+        try {
+          return this.getBBox().width;
+        } finally {
+          this.textContent = '';
+        }
+      });
       const startY = lines.length === 1 ? 2 : -5;
       d3.select(this).selectAll('tspan')
         .data(lines)

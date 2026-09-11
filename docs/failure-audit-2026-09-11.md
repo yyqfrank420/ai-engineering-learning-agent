@@ -1,7 +1,8 @@
 # Historical evaluation failure audit
 
 Audited on 2026-09-11 using GitHub logs, retained result artifacts, source history,
-and local reproductions. No paid models, deployments, or remote writes were performed.
+and local reproductions. Historical collection required no paid models or deployments.
+Fresh staging experiments are recorded separately below.
 
 ## Findings and scope
 
@@ -198,7 +199,44 @@ Long, reverse, parallel, and wrapped routes keep their existing handling.
 The follow-up candidate passes 1,808 backend tests at 91% coverage, 238 frontend
 tests, frontend lint/build/audit, Python lint/security/dependency audits, and 131
 CI policy tests. These checks include the exact captured reviewer response and
-connection-plan regressions. A new protected staging run is still required.
+connection-plan regressions.
+
+[Run 34651679217](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34651679217)
+tested commit `aef874c8ebcbaea539a9f34f6106a37996a0776c`. The graph journey succeeded:
+creation passed after one component correction, expansion preserved all five prior
+nodes and added one responsibility, and both edit reviewers approved the first
+attempt. The final six-node, ten-edge graph rendered and persisted. The first graph
+appeared after 76.106 seconds on turn one and 23.626 seconds on turn two. Twelve
+application calls cost an estimated $0.374289.
+
+The workflow failed on `missing_worker:graph`. Staged generation emitted graph
+progress and publication events but omitted the `worker_status` event that the
+browser uses to identify executed workers. The pipeline now reports its graph
+worker at entry. The evaluator's worker requirement remains unchanged.
+
+Rollout inspection exposed two further consistency defects. A concept diagram
+generated through the legacy path under staged mode could retain a prior staged
+approval contract and fail persistence. Failed legacy edits also assigned a new
+version to the restored graph while retaining its old contract. Legacy generation
+now clears stale contracts, no-op output retains the prior version, and restoration
+preserves a versioned approved graph. Top-level routing tests cover both pipelines
+and transitions between applied and concept diagrams.
+
+Scheduled diagnostics also left `GRAPH_PIPELINE_MODE` in the staging service's
+configuration. Later protected PR evaluations inherited it. Deployments now resolve
+and explicitly set the versioned backend default; manual scheduled evaluations can
+select either mode. Deployment manifests record the effective value. The candidate
+now defaults to staged applied graphs, with explicit legacy rollback. Full-corpus
+validation and human review remain release requirements.
+
+Calibration setup had a circular prerequisite: its CLI required aggregate corpus
+approval, while aggregate approval required a passing calibration result. The CLI
+now permits calculation after all case reviews and evidence pins are complete.
+It still requires a full semantic replay and the existing agreement thresholds;
+each human review must refer to the pinned capture run. Evidence promotion now
+accepts reviewed candidate-branch captures after strict source, browser, dashboard,
+and human-review validation. A semantic failure does not invalidate otherwise
+complete browser evidence used for calibration. This does not approve an image.
 
 ## Validation and remaining release work
 
@@ -218,11 +256,10 @@ existing unmatched Bandit suppression warnings remain. The frontend lockfile's
 `fflate` dependency was updated from 0.4.8 to 0.4.9 to clear the configured
 production dependency audit.
 
-The changes retain the existing `GRAPH_PIPELINE_MODE=legacy` default and explicit
-`staged` diagnostic selection. No production behavior is claimed from these local
-checks. A fresh protected graph-expansion run must validate provider output,
-semantic acceptance, browser rendering, persistence, latency, and cost before the
-staged path is enabled by default. The corpus still requires human review.
+The initial stabilization retained `GRAPH_PIPELINE_MODE=legacy`. After the successful
+graph behavior in the fresh staging experiment, the candidate's applied-graph
+default changed to `staged`; production has not been promoted. Full-corpus evaluation
+must validate the final candidate, and the corpus still requires human review.
 
 Pure group/sequence edits and mixed deletion-plus-edge-field updates remain outside
 the current scoped delta contract. Future support must add explicit operation

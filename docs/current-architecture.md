@@ -31,9 +31,9 @@ This is the current runtime contract for the production-quality demo.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results are combined with the stable review frame covering platform boundaries, model lifecycle,
    data/memory, evaluation, safety, idempotent writes, latency/cost, reliability, and deployment.
-5. `GRAPH_PIPELINE_MODE=legacy` is the default and rollback path. The `staged` mode selects the
-   staged state machine only for applied create and edit requests in the scheduled diagnostic. It
-   never mixes stages with a legacy request. Steering or cancellation ends the request-scoped state
+5. `GRAPH_PIPELINE_MODE=staged` is the default for applied create and edit requests.
+   `legacy` remains an explicit rollback. Concept diagrams retain their existing path.
+   Each request uses one graph pipeline. Steering or cancellation ends the request-scoped state
    machine before a replacement request begins.
 6. Kimi K3 at high effort produces a component wire, then a connection wire. The component wire
    contains the root index, title, assumptions, capabilities, and each component's label, type,
@@ -128,9 +128,10 @@ The distinction is orchestration versus concurrency, not framework versus no fra
 - Durable LangGraph checkpointing is intentionally not enabled yet: live callbacks, tasks, and
   tool bindings are request context rather than persistent graph data. Moving those handles into
   runtime context is the prerequisite for a database checkpointer.
-- `GRAPH_PIPELINE_MODE=legacy` is the default. The scheduled diagnostic may select `staged` for an
-  applied create or edit request. The legacy whole-graph repair loop remains the rollback path and
-  cannot mix writes with a staged request.
+- `GRAPH_PIPELINE_MODE=staged` is the default for applied create and edit requests.
+  Protected and production deployments explicitly use the versioned backend default.
+  Manual scheduled evaluations may select either mode for diagnostics or full-corpus review.
+  The legacy whole-graph repair loop remains an explicit rollback and cannot mix writes with a staged request.
 - The live staging harness also uses the WebSocket protocol. It submits a bounded contract render
   so deployment model evaluations cannot bypass the diagram gate; the product browser remains the
   authoritative evaluator of the actual D3 canvas at the fixed server-contract viewport.
