@@ -342,7 +342,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v4"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v5"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -429,8 +429,10 @@ def test_architecture_context_rejects_empty_or_unbounded_values(value):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("reason_length", [900, 2_500])
 async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
     monkeypatch,
+    reason_length,
 ):
     calls = []
 
@@ -456,7 +458,7 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
                 "code": "domain_specificity",
                 "path": "components",
                 "rule": "semantic_gate",
-                "reason": "x" * 900,
+                "reason": "x" * reason_length,
                 "record_indexes": [0, 2],
             }
         ],
@@ -469,7 +471,7 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
             "code": "domain_specificity",
             "path": "components",
             "rule": "semantic_gate",
-            "reason": "x" * generation._MAX_FINDING_REASON_CHARS,
+            "reason": "x" * min(reason_length, generation.MAX_REVIEW_REASON_CHARS),
             "record_indexes": [0, 2],
         }
     ]
@@ -500,7 +502,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v4"
+    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v5"
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
 
@@ -755,6 +757,8 @@ def _permissions(**changes) -> dict:
         "editable_edge_fields": {},
         "removable_edge_ids": [],
         "allowed_new_edge_count": 0,
+        "added_edge_anchor_node_ids": [],
+        "connection_addition_obligations": [],
         "editable_composition_fields": [],
         **changes,
     }
@@ -954,6 +958,10 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
         removable_edge_ids=["edge_1"],
         editable_edge_fields={"edge_1": [], "edge_2": ["label", "sync"]},
         allowed_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1", "n2"],
+        connection_addition_obligations=[
+            {"source": "n2", "target": "n1", "required_contract": "response"}
+        ],
     )
     addition = {**base[0], "source_index": 1, "target_index": 0, "label": "response"}
     calls = []
@@ -1077,3 +1085,238 @@ def test_scalar_parser_rejects_invalid_code_types(invalid_code):
         generation.StagedGenerationError, match="component_wire_invalid"
     ):
         generation._parse_component_wire(json.dumps(wire), component_limit=4)
+
+
+@pytest.mark.asyncio
+async def test_recorded_expansion_preserves_exact_connection_plan_through_both_stages_and_correction(
+    monkeypatch,
+):
+    from pathlib import Path
+    from agent.nodes.graph_worker import _user_edit_scope
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "staged_expansion_34649724600.json"
+        ).read_text()
+    )
+    base = contract.reconstruct_staged_graph_build(fixture["base_graph"])
+    _, permissions = _user_edit_scope(
+        fixture["request"], fixture["base_graph"], resolved_complexity="prototype"
+    )
+    assert permissions["added_edge_anchor_node_ids"] == ["n6"]
+    calls = []
+    recorded = fixture["rejected_addition"]
+    addition = {
+        "label": recorded["label"],
+        "type": 101,
+        "responsibility": recorded["description"],
+        "group_label": "Monitoring",
+        "group_kind": 602,
+        "primary_flow_member": False,
+    }
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [addition],
+                    "updates": {},
+                    "capabilities": base["capabilities"],
+                }
+            )
+        return json.dumps(
+            {
+                "additions": [
+                    {
+                        "source_index": 5,
+                        "target_index": 8,
+                        "label": "monitoring event",
+                        "flow": 400,
+                        "sync": 501,
+                    }
+                ],
+                "updates": {},
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    write_set = generation.exact_edit_write_set(
+        component_ids=[f"component_{i}" for i in range(9)],
+        edge_ids=[f"edge_{i}" for i in range(15)],
+    )
+    kwargs = dict(
+        request=fixture["request"],
+        resolved_maturity="prototype",
+        architecture_context=_architecture_context(),
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        base_components=base,
+        edit_permissions=permissions,
+    )
+    first = await generation.generate_component_candidate(**kwargs)
+    await generation.generate_component_candidate(
+        **kwargs,
+        attempt=1,
+        prior_prompt_fingerprint=first["prompt_fingerprint"],
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        rejected_candidate=first["wire"],
+        gate_findings=[
+            {
+                "code": "mece_scope",
+                "path": "components",
+                "rule": "mece_scope",
+                "reason": "Responsibility requires an unauthorized data-source connection.",
+                "record_indexes": [8],
+            }
+        ],
+    )
+    prompts = [json.loads(call["prompt"].split("\nINPUT\n")[1]) for call in calls]
+    expected = {
+        "addition_count": 1,
+        "anchor_component_indexes": [5],
+        "component_addition_count": 1,
+        "enforce_added_edge_contract_label": False,
+        "obligations": [
+            {
+                "source": {"component_index": 5},
+                "target": {"addition_index": 0},
+                "required_contract": permissions["connection_addition_obligations"][0][
+                    "required_contract"
+                ],
+            }
+        ],
+    }
+    assert (
+        prompts[0]["connection_addition_plan"]
+        == prompts[1]["connection_addition_plan"]
+        == expected
+    )
+    assert prompts[0]["base"]["components"][5]["label"] == "Metrics Monitor"
+    assert prompts[1]["rejected_candidate"]["additions"] == [addition]
+    assert (
+        "without requiring another data source, dependency, or extra edge"
+        in calls[0]["prompt"]
+    )
+    assert "n6" not in json.dumps(expected)
+    assert "When false, required_contract describes intent" in calls[0]["prompt"]
+    assert (
+        "Never copy edit instructions into a runtime connection label"
+        in calls[0]["prompt"]
+    )
+
+    accepted = [
+        {"id": f"n{index + 1}", "index": index, **row}
+        for index, row in enumerate(first["wire"]["components"])
+    ]
+    await generation.generate_connection_candidate(
+        request=fixture["request"],
+        resolved_maturity="prototype",
+        write_set=write_set,
+        upstream_fingerprint="b" * 64,
+        accepted_components=accepted,
+        accepted_context={key: base[key] for key in ("assumptions", "capabilities")},
+        base_connections=[],
+        edit_permissions=permissions,
+    )
+    connection_prompt = json.loads(calls[-1]["prompt"].split("\nINPUT\n")[1])
+    assert connection_prompt["connection_addition_plan"] == {
+        **expected,
+        "accepted_addition_indexes": [8],
+    }
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"added_edge_anchor_node_ids": ["unknown"]},
+        {"added_edge_anchor_node_ids": ["n1", "n1"]},
+        {"allowed_new_edge_count": 2},
+        {"enforce_added_edge_contract_label": "false"},
+        {"allowed_new_node_count": 0},
+        {"removable_node_ids": ["n1"]},
+        {
+            "connection_addition_obligations": [
+                {"source": "n1", "target": "$new_node_2", "required_contract": "event"}
+            ]
+        },
+        {
+            "connection_addition_obligations": [
+                {"source": "n2", "target": "$new_node_1", "required_contract": "event"}
+            ]
+        },
+        {
+            "connection_addition_obligations": [
+                {
+                    "source": "n1",
+                    "target": "$new_node_1",
+                    "required_contract": "event",
+                    "extra": True,
+                }
+            ]
+        },
+        {
+            "connection_addition_obligations": [
+                {
+                    "source": "n1",
+                    "target": "$new_node_1",
+                    "required_contract": "x"
+                    * (contract.CONNECTION_LABEL_MAX_CHARS + 1),
+                }
+            ]
+        },
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_connection_planning_authority_is_rejected_before_component_provider(
+    monkeypatch, change
+):
+    permissions = _permissions(
+        allowed_new_node_count=1,
+        allowed_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1"],
+        connection_addition_obligations=[
+            {"source": "n1", "target": "$new_node_1", "required_contract": "event"}
+        ],
+    )
+    permissions.update(change)
+
+    async def unexpected(**kwargs):
+        pytest.fail("Invalid connection authority reached the component provider")
+
+    monkeypatch.setattr(generation, "_run_generation", unexpected)
+    with pytest.raises(generation.StagedGenerationError):
+        await generation.generate_component_candidate(
+            request="Expand monitoring",
+            resolved_maturity="prototype",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+            base_components=_edit_base(),
+            edit_permissions=permissions,
+        )
+
+
+@pytest.mark.parametrize("enforce_label", [False, True])
+def test_connection_plan_preserves_exact_label_authority_and_contract_owner_limit(
+    enforce_label,
+):
+    from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
+
+    required_contract = "x" * GRAPH_EDGE_LABEL_CHARS
+    permissions = _permissions(
+        allowed_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1", "n2"],
+        enforce_added_edge_contract_label=enforce_label,
+        connection_addition_obligations=[
+            {"source": "n1", "target": "n2", "required_contract": required_contract}
+        ],
+    )
+    plan = generation._connection_addition_plan(permissions, {"n1": 0, "n2": 1})
+    assert plan["enforce_added_edge_contract_label"] is enforce_label
+    assert plan["obligations"][0]["required_contract"] == required_contract
+    permissions["connection_addition_obligations"][0]["required_contract"] += "x"
+    with pytest.raises(
+        generation.StagedGenerationError, match="edit_connection_plan_invalid"
+    ):
+        generation._connection_addition_plan(permissions, {"n1": 0, "n2": 1})

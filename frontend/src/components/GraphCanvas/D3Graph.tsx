@@ -904,6 +904,25 @@ export function D3Graph({
       const sourceLaneY = sourceBorderY + sourceDirection * 6;
       const targetLaneY = targetBorderY - targetDirection * 6;
       if (d.source.track === d.target.track) {
+        // Adjacent unwrapped rows share a clear gutter. Routing to the outer
+        // track edge here draws a horizontal spur that retraces itself.
+        if (
+          d.target.topologyRank === d.source.topologyRank + 1
+          && sourceDirection === targetDirection
+          && sourceLaneY === targetLaneY
+          && d.parallelCount === 1
+        ) {
+          return {
+            path: [
+              `M${d.source.x},${sourceBorderY}`,
+              `L${d.source.x},${sourceLaneY}`,
+              `L${d.target.x},${targetLaneY}`,
+              `L${d.target.x},${targetBorderY}`,
+            ].join(' '),
+            anchorX: (d.source.x + d.target.x) / 2,
+            anchorY: sourceLaneY,
+          };
+        }
         const gutterX = Math.min(
           layoutW - VERTICAL_PAD / 2,
           d.source.trackX + d.source.trackWidth + VERTICAL_TRACK_GAP / 2 + laneOffset,

@@ -2248,6 +2248,11 @@ async def test_initial_unreviewed_candidate_is_withheld_when_review_is_unavailab
     assert result["graph_publication"] == "withheld"
     assert result["graph_notice_sent"] is True
     assert result["graph_operation"]["status"] == "failed"
+    notices = [event["message"] for event in events if event["type"] == "graph_notice"]
+    assert any(
+        "Ask me to redraw it as a simpler diagram" in notice for notice in notices
+    )
+    assert all("available below" not in notice for notice in notices)
 
 
 async def _run_invalid_patch_contract_correction_workflow(

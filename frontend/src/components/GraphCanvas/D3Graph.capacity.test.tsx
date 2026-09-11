@@ -461,6 +461,82 @@ describe('dense production graph rendering', () => {
     }
   });
 
+  it('routes adjacent vertical edges without retracing a gutter while retaining skip routes', () => {
+    viewport = DEEP_VIEWPORT;
+    const adjacentPairs = [
+      ['root', 'api'],
+      ['api', 'runtime'],
+      ['runtime', 'artifact'],
+      ['runtime', 'logs'],
+      ['logs', 'monitor'],
+      ['monitor', 'alert'],
+      ['alert', 'dashboard'],
+    ];
+    const graph: GraphData = {
+      graph_type: 'architecture',
+      design_origin: 'applied',
+      title: 'Serving path with telemetry',
+      nodes: ['root', 'api', 'runtime', 'artifact', 'logs', 'monitor', 'alert', 'dashboard']
+        .map(id => node(id, id)),
+      edges: [
+        ...adjacentPairs.map(([source, target]) => edge(source, target, `${source} to ${target}`)),
+        edge('api', 'logs', 'records telemetry'),
+        edge('monitor', 'dashboard', 'returns metrics'),
+        edge('api', 'root', 'returns prediction'),
+      ],
+      groups: [],
+      sequence: [],
+    };
+    const { container } = render(
+      <D3Graph
+        graphData={graph}
+        currentStep={-1}
+        activeNodeIds={new Set<string>()}
+        onNodeClick={() => undefined}
+      />,
+    );
+    const positions = new Map(
+      Array.from(container.querySelectorAll<SVGGElement>('g.node')).map(renderedNode => [
+        renderedNode.getAttribute('data-node-id') ?? '',
+        parsePosition(renderedNode.getAttribute('transform')),
+      ]),
+    );
+
+    for (const [source, target] of adjacentPairs) {
+      const sourcePosition = positions.get(source)!;
+      const targetPosition = positions.get(target)!;
+      expect(targetPosition.y - sourcePosition.y).toBe(NODE_H + 12);
+      const path = container.querySelector<SVGPathElement>(
+        `path.edge-vis[data-source-id="${source}"][data-target-id="${target}"]`,
+      );
+      const points = pathControlPoints(path?.getAttribute('d') ?? null);
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      for (const point of points) {
+        expect(point.x).toBeGreaterThanOrEqual(Math.min(sourcePosition.x, targetPosition.x));
+        expect(point.x).toBeLessThanOrEqual(Math.max(sourcePosition.x, targetPosition.x));
+      }
+      for (const [nodeId, position] of positions) {
+        if (nodeId === source || nodeId === target) continue;
+        for (let index = 1; index < points.length; index += 1) {
+          expect(segmentIntersectsNode(points[index - 1], points[index], position)).toBe(false);
+        }
+      }
+    }
+
+    for (const [source, target] of [['api', 'logs'], ['monitor', 'dashboard'], ['api', 'root']]) {
+      const sourcePosition = positions.get(source)!;
+      const targetPosition = positions.get(target)!;
+      const path = container.querySelector<SVGPathElement>(
+        `path.edge-vis[data-source-id="${source}"][data-target-id="${target}"]`,
+      );
+      const points = pathControlPoints(path?.getAttribute('d') ?? null);
+      expect(points.some(point => (
+        point.x < Math.min(sourcePosition.x, targetPosition.x) - NODE_W / 2
+        || point.x > Math.max(sourcePosition.x, targetPosition.x) + NODE_W / 2
+      ))).toBe(true);
+    }
+  });
+
   it('routes vertical edges around wrapped cards in an adjacent rank', () => {
     viewport = PUBLICATION_VIEWPORT;
     const rankOne = Array.from({ length: 10 }, (_, index) => (

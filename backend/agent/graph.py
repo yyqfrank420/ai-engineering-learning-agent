@@ -284,9 +284,8 @@ def build_agent_workflow(
                     {
                         "type": "graph_notice",
                         "message": (
-                            "The draft architecture did not meet the structural quality checks, so I "
-                            "kept the visual out rather than publishing a misleading graph. The written "
-                            "design is still available below."
+                            "The draft diagram did not finish in time, so no new diagram was "
+                            "published. Ask me to redraw it as a simpler diagram."
                         ),
                     }
                 )
@@ -567,8 +566,7 @@ def build_agent_workflow(
                         if approved_graph
                         else "the visual out."
                     )
-                    + " The written architecture is still available below; ask me to redraw it as "
-                    "a simpler diagram if you want another pass."
+                    + " Ask me to redraw it as a simpler diagram if you want another pass."
                 )
             await state["send"](
                 {

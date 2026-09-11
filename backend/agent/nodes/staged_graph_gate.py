@@ -15,6 +15,7 @@ from typing import Any
 
 from adapters.llm_adapter import build_telemetry
 from agent.architecture_rubric import (
+    MAX_REVIEW_REASON_CHARS,
     staged_review_requirements,
     TOPOLOGY_PROOF_REQUIREMENTS,
 )
@@ -29,7 +30,9 @@ _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
     "candidate records. Do not infer hidden implementation details."
 )
-_MAX_REASON_CHARS = 280
+# Anthropic drops maxLength from its compiled schema. Preserve actionable
+# critique for correction and bound storage without discarding the blocker.
+_MAX_REASON_CHARS = MAX_REVIEW_REASON_CHARS
 _MAX_FINDINGS = 24
 _MAX_WITNESSES = 32
 COMPONENT_RULE_CODES = tuple(staged_review_requirements("components", "prototype"))
@@ -372,6 +375,7 @@ async def _capture_review(
     candidate_records: list[dict[str, Any]],
     result: dict[str, Any],
     telemetry_context: Mapping[str, Any] | None,
+    finish_reason: str | None = None,
 ) -> None:
     context = telemetry_context if isinstance(telemetry_context, Mapping) else {}
     run_id = settings.evaluation_run_id.strip()
@@ -403,6 +407,7 @@ async def _capture_review(
                     "evidence_bundle": deepcopy(dict(evidence_bundle)),
                     "candidate_records": deepcopy(candidate_records),
                     "result": deepcopy(result),
+                    **({"finish_reason": finish_reason} if finish_reason else {}),
                 },
             }
         )
@@ -438,11 +443,7 @@ def _findings(
         if not isinstance(rule_code, str) or rule_code not in allowed_rules:
             return [], f"unknown finding rule at row {row_index}"
         reason = row.get("reason")
-        if (
-            not isinstance(reason, str)
-            or not reason.strip()
-            or len(reason) > _MAX_REASON_CHARS
-        ):
+        if not isinstance(reason, str) or not reason.strip():
             return [], f"invalid finding reason at row {row_index}"
         raw_indexes = row.get("record_indexes", [])
         if (
@@ -453,7 +454,7 @@ def _findings(
             return [], f"invalid record indexes at finding row {row_index}"
         finding: dict[str, Any] = {
             "rule_code": rule_code,
-            "reason": reason.strip(),
+            "reason": reason.strip()[:_MAX_REASON_CHARS],
         }
         if raw_indexes:
             finding["record_indexes"] = list(raw_indexes)
@@ -528,6 +529,76 @@ def _proofs(
     return proofs, None
 
 
+def _review_result(
+    response: StructuredLLMResponse,
+    *,
+    schema: Mapping[str, Any],
+    rule_codes: Sequence[str],
+    guarantees: Sequence[str],
+    records: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Validate provider output without losing actionable semantic rejections."""
+    if response.finish_reason != "end_turn":
+        return _terminal_result("provider response did not complete")
+    try:
+        payload = json.loads(response.text)
+    except (TypeError, json.JSONDecodeError):
+        return _terminal_result("provider response is not valid JSON")
+    if not isinstance(payload, Mapping) or set(payload) != set(schema["required"]):
+        return _terminal_result("provider response has an invalid top-level shape")
+    checked_rules = payload.get("checked_rules")
+    if (
+        not isinstance(payload.get("approved"), bool)
+        or not isinstance(payload.get("findings"), list)
+        or not isinstance(checked_rules, list)
+        or len(checked_rules) != len(rule_codes)
+        or not all(isinstance(rule, str) for rule in checked_rules)
+        or set(checked_rules) != set(rule_codes)
+    ):
+        return _terminal_result("provider response has invalid top-level fields")
+
+    findings, finding_error = _findings(
+        payload["findings"], rule_codes=rule_codes, record_count=len(records)
+    )
+    if finding_error:
+        return _terminal_result(finding_error)
+    diagnostics = [
+        f"finding reason at row {index} truncated to {_MAX_REASON_CHARS} characters"
+        for index, finding in enumerate(payload["findings"])
+        if len(finding["reason"].strip()) > _MAX_REASON_CHARS
+    ]
+    proofs: list[dict[str, Any]] = []
+    if guarantees:
+        proofs, proof_error = _proofs(
+            payload.get("production_proofs"),
+            required_guarantees=guarantees,
+            records=records,
+        )
+        if proof_error:
+            return _terminal_result(proof_error)
+        findings.extend(
+            {
+                "rule_code": proof["guarantee"],
+                "reason": "The required production guarantee has no accepted proof.",
+            }
+            for proof in proofs
+            if not proof["approved"]
+        )
+    if not payload["approved"] and not findings:
+        return _terminal_result("provider rejected without blocking findings")
+    approved = payload["approved"] and not findings
+    if payload["approved"] and findings:
+        diagnostics.append("provider approval was overridden by blocking findings")
+    return {
+        "approved": approved,
+        "terminal": False,
+        "findings": findings,
+        "proofs": proofs,
+        "diagnostics": diagnostics,
+        "checked_rules": list(checked_rules),
+    }
+
+
 async def _review(
     *,
     gate: str,
@@ -587,63 +658,18 @@ async def _review(
             provider_attempt_limit=1,
         )
     except Exception as exc:
-        return _terminal_result(f"provider call failed: {type(exc).__name__}")
-    if response.finish_reason != "end_turn":
-        return _terminal_result("provider response did not complete")
-    try:
-        payload = json.loads(response.text)
-    except (TypeError, json.JSONDecodeError):
-        return _terminal_result("provider response is not valid JSON")
-    if not isinstance(payload, Mapping) or set(payload) != set(schema["required"]):
-        return _terminal_result("provider response has an invalid top-level shape")
-    checked_rules = payload.get("checked_rules")
-    if (
-        not isinstance(payload.get("approved"), bool)
-        or not isinstance(payload.get("findings"), list)
-        or not isinstance(checked_rules, list)
-        or len(checked_rules) != len(rule_codes)
-        or not all(isinstance(rule, str) for rule in checked_rules)
-        or set(checked_rules) != set(rule_codes)
-    ):
-        return _terminal_result("provider response has invalid top-level fields")
-
-    findings, finding_error = _findings(
-        payload["findings"], rule_codes=rule_codes, record_count=len(records)
-    )
-    if finding_error:
-        return _terminal_result(finding_error)
-    diagnostics: list[str] = []
-    proofs: list[dict[str, Any]] = []
-    if guarantees:
-        proofs, proof_error = _proofs(
-            payload.get("production_proofs"),
-            required_guarantees=guarantees,
+        result = _terminal_result(f"provider call failed: {type(exc).__name__}")
+        finish_reason = None
+    else:
+        result = _review_result(
+            response,
+            schema=schema,
+            rule_codes=rule_codes,
+            guarantees=guarantees,
             records=records,
         )
-        if proof_error:
-            return _terminal_result(proof_error)
-        findings.extend(
-            {
-                "rule_code": proof["guarantee"],
-                "reason": "The required production guarantee has no accepted proof.",
-            }
-            for proof in proofs
-            if not proof["approved"]
-        )
-    if not payload["approved"] and not findings:
-        return _terminal_result("provider rejected without blocking findings")
-    approved = payload["approved"] and not findings
-    if payload["approved"] and findings:
-        diagnostics.append("provider approval was overridden by blocking findings")
-    result = {
-        "approved": approved,
-        "terminal": False,
-        "findings": findings,
-        "proofs": proofs,
-        "diagnostics": diagnostics,
-        "review_identity": identity,
-        "checked_rules": list(checked_rules),
-    }
+        finish_reason = response.finish_reason
+    result = {**result, "review_identity": identity}
     await _capture_review(
         gate=gate,
         user_request=user_request,
@@ -651,6 +677,7 @@ async def _review(
         candidate_records=records,
         result=result,
         telemetry_context=telemetry_context,
+        finish_reason=finish_reason,
     )
     return result
 
