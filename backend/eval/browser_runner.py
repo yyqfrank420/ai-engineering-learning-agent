@@ -5,6 +5,7 @@ import asyncio
 from collections import Counter
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+import hashlib
 import html
 import json
 import os
@@ -2157,7 +2158,7 @@ async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
     }
     _write_json_atomic(output_path, report)
     _write_junit(artifact_dir / "browser-junit.xml", results)
-    _write_html(artifact_dir / "review.html", report)
+    _write_html(artifact_dir / "review.html", report, capture_path=output_path)
     return report
 
 
@@ -2349,7 +2350,7 @@ async def _finalize_timed_out_browser(args: argparse.Namespace) -> dict[str, Any
     report["finalization_failures"] = finalization_failures
     _write_json_atomic(output_path, report)
     _write_junit(artifact_dir / "browser-junit.xml", results)
-    _write_html(artifact_dir / "review.html", report)
+    _write_html(artifact_dir / "review.html", report, capture_path=output_path)
     return report
 
 
@@ -2543,16 +2544,97 @@ def _write_junit(path: Path, results: list[dict[str, Any]]) -> None:
     )
 
 
-def _write_html(path: Path, report: dict[str, Any]) -> None:
+def _review_artifact_href(value: Any) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return None
+    if (
+        parsed.scheme
+        or parsed.netloc
+        or value.startswith("/")
+        or ".." in Path(value).parts
+        or "\\" in value
+    ):
+        return None
+    return "./" + urllib.parse.quote(value, safe="/")
+
+
+def _write_html(
+    path: Path,
+    report: dict[str, Any],
+    *,
+    capture_path: Path | None = None,
+) -> None:
+    identity = {
+        field: report[field]
+        for field in (
+            "kind",
+            "suite",
+            "status",
+            "corpus_version",
+            "corpus_sha256",
+            "release_identity",
+            "started_at",
+            "target",
+            "backend_target",
+        )
+        if field in report
+    }
+    capture_link = ""
+    if capture_path is not None:
+        capture_bytes = capture_path.read_bytes()
+        if json.loads(capture_bytes) != report:
+            raise ValueError("review report does not match the raw browser capture")
+        identity["browser_capture_sha256"] = hashlib.sha256(capture_bytes).hexdigest()
+        capture_href = "./" + urllib.parse.quote(
+            os.path.relpath(capture_path, path.parent), safe="/"
+        )
+        capture_link = f"<p><a href='{capture_href}'>Raw browser capture JSON</a></p>"
+    metadata = html.escape(json.dumps(identity, indent=2, ensure_ascii=False))
     rows = []
     for result in report["results"]:
-        answer = html.escape(str(result.get("answer") or "")[:4000])
+        answer = html.escape(str(result.get("answer") or ""))
         failures = html.escape("; ".join(result["deterministic_failures"]) or "none")
-        screenshot = result.get("screenshot")
+        screenshot_href = _review_artifact_href(result.get("screenshot"))
         screenshot_markup = (
-            f"<img src='{html.escape(screenshot)}' loading='lazy'>"
-            if isinstance(screenshot, str) and screenshot
+            f"<p><a href='{screenshot_href}'>Screenshot</a></p>"
+            f"<img src='{screenshot_href}' loading='lazy' alt='Captured browser screenshot'>"
+            if screenshot_href
             else "<p><i>No screenshot was captured for this attempt.</i></p>"
+        )
+        trace_href = _review_artifact_href(result.get("trace"))
+        trace_link = (
+            f"<p><a href='{trace_href}'>Browser trace</a></p>" if trace_href else ""
+        )
+        turns = []
+        for index, turn in enumerate(result.get("turns") or [], start=1):
+            turn_number = html.escape(str(turn.get("turn", index)))
+            prompt = (
+                "<h4>Prompt</h4><pre>" + html.escape(str(turn["prompt"])) + "</pre>"
+                if turn.get("prompt") is not None
+                else ""
+            )
+            turn_answer = html.escape(str(turn.get("answer") or ""))
+            turn_graph = (
+                "<details><summary>Turn graph</summary><pre>"
+                + html.escape(json.dumps(turn["graph"], indent=2, ensure_ascii=False))
+                + "</pre></details>"
+                if turn.get("graph") is not None
+                else ""
+            )
+            turns.append(
+                f"<section><h3>Turn {turn_number}</h3>{prompt}"
+                f"<h4>Answer</h4><pre>{turn_answer}</pre>{turn_graph}</section>"
+            )
+        final_graph = (
+            "<details><summary>Final graph</summary><pre>"
+            + html.escape(json.dumps(result["graph"], indent=2, ensure_ascii=False))
+            + "</pre></details>"
+            if result.get("graph") is not None
+            else ""
         )
         evidence = html.escape(
             json.dumps(
@@ -2563,19 +2645,22 @@ def _write_html(path: Path, report: dict[str, Any]) -> None:
                 ],
                 indent=2,
                 ensure_ascii=False,
-            )[:20_000]
+            )
         )
         rows.append(
-            f"<article><h2>{html.escape(result['id'])} — {'PASS' if result['passed'] else 'FAIL'}</h2>"
-            f"<p><b>Deterministic:</b> {failures}</p>{screenshot_markup}"
-            f"<details><summary>Answer</summary><pre>{answer}</pre></details>"
-            f"<details><summary>Retrieved evidence</summary><pre>{evidence}</pre></details></article>"
+            f"<article><h2>{html.escape(result['id'])}: {'PASS' if result['passed'] else 'FAIL'}</h2>"
+            f"<p><b>Deterministic:</b> {failures}</p>{screenshot_markup}{trace_link}"
+            + "".join(turns)
+            + f"<details><summary>Complete captured answer</summary><pre>{answer}</pre></details>"
+            + final_graph
+            + f"<details><summary>Retrieved evidence</summary><pre>{evidence}</pre></details></article>"
         )
     body = "".join(rows)
     path.write_text(
         "<!doctype html><meta charset='utf-8'><title>Evaluation review</title>"
-        "<style>body{font:15px system-ui;max-width:1100px;margin:auto;background:#111;color:#eee}article{border-bottom:1px solid #444;padding:24px}img{max-width:100%}pre{white-space:pre-wrap}</style>"
-        f"<h1>Corpus review — {html.escape(report['corpus_version'])}</h1>{body}",
+        "<style>body{font:15px system-ui;max-width:1100px;margin:auto;background:#111;color:#eee}article{border-bottom:1px solid #444;padding:24px}img{max-width:100%}pre{white-space:pre-wrap;overflow-wrap:anywhere}</style>"
+        f"<h1>Corpus review: {html.escape(report['corpus_version'])}</h1>"
+        f"<h2>Capture identity</h2><pre>{metadata}</pre>{capture_link}{body}",
         encoding="utf-8",
     )
 

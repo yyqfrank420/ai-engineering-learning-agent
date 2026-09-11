@@ -1,4 +1,5 @@
 import time
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1243,6 +1244,175 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
     assert persisted_contracts == [final_contract]
     assert get_graph_artifact("user-1", thread["id"]) == (final_graph, final_contract)
     assert all("graph_contract" not in event for event in events)
+
+
+@pytest.mark.asyncio
+async def test_chat_holds_stream_lease_through_persistence_and_terminal_publication(
+    temp_data_dir, monkeypatch
+):
+    from starlette.requests import Request
+
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    request = Request({"type": "http", "app": _authed_app(), "state": {}})
+    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 1)
+    monkeypatch.setattr(sse_handler, "_make_agent_tools", lambda _: ([], [], []))
+    monkeypatch.setattr(request, "is_disconnected", AsyncMock(return_value=False))
+    persist_calls = []
+    original_persist_turn = sse_handler.thread_store.persist_turn
+
+    async def fake_run_agent(state, *_tools):
+        return {**state, "response_text": "Saved answer", "graph_data": None}
+
+    def persist_while_exclusive(*args, **kwargs):
+        competing_stream = runtime_state_store.try_acquire_active_stream(
+            "user-1", "chat", limit=1, ttl_s=60
+        )
+        assert competing_stream is None
+        persist_calls.append(kwargs["assistant_content"])
+        return original_persist_turn(*args, **kwargs)
+
+    monkeypatch.setattr(sse_handler, "run_agent", fake_run_agent)
+    monkeypatch.setattr(
+        sse_handler.thread_store, "persist_turn", persist_while_exclusive
+    )
+    response = await chat_endpoint(
+        ChatRequest(thread_id=thread["id"], content="Teach me RAG"),
+        request,
+        {"id": "user-1", "email": "friend@example.com"},
+    )
+    events = []
+    async for chunk in response.body_iterator:
+        events.extend(_parse_sse_events(chunk))
+        assert (
+            runtime_state_store.try_acquire_active_stream(
+                "user-1", "chat", limit=1, ttl_s=60
+            )
+            is None
+        )
+    assert events[-2]["type"] == "graph_data"
+    assert events[-1]["type"] == "done"
+    assert persist_calls == ["Saved answer"]
+    assert (
+        message_store.get_messages("user-1", thread["id"])[-1]["content"]
+        == "Saved answer"
+    )
+    acquired = runtime_state_store.try_acquire_active_stream(
+        "user-1", "chat", limit=1, ttl_s=60
+    )
+    assert acquired
+    runtime_state_store.release_active_stream(acquired)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_stage", ["tools", "history", "persistence"])
+async def test_chat_releases_stream_lease_after_setup_or_persistence_failure(
+    temp_data_dir, monkeypatch, failure_stage
+):
+    from starlette.requests import Request
+
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    request = Request({"type": "http", "app": _authed_app(), "state": {}})
+    monkeypatch.setattr(request, "is_disconnected", AsyncMock(return_value=False))
+    monkeypatch.setattr(sse_handler, "_make_agent_tools", lambda _: ([], [], []))
+
+    async def fake_run_agent(state, *_tools):
+        return {**state, "response_text": "Unsaved answer", "graph_data": None}
+
+    def fail(*_args, **_kwargs):
+        raise RuntimeError("Injected failure")
+
+    monkeypatch.setattr(sse_handler, "run_agent", fake_run_agent)
+    if failure_stage == "tools":
+        monkeypatch.setattr(sse_handler, "_make_agent_tools", fail)
+    elif failure_stage == "history":
+        monkeypatch.setattr(sse_handler.message_store, "get_history", fail)
+    else:
+        monkeypatch.setattr(sse_handler.thread_store, "persist_turn", fail)
+    response = await chat_endpoint(
+        ChatRequest(thread_id=thread["id"], content="Teach me RAG"),
+        request,
+        {"id": "user-1", "email": "friend@example.com"},
+    )
+    if failure_stage == "persistence":
+        events = []
+        async for chunk in response.body_iterator:
+            events.extend(_parse_sse_events(chunk))
+        assert events[-1]["type"] == "error"
+        assert "could not be saved" in events[-1]["content"]
+    else:
+        with pytest.raises(RuntimeError, match="Injected failure"):
+            await anext(response.body_iterator)
+    assert message_store.get_messages("user-1", thread["id"]) == []
+    acquired = runtime_state_store.try_acquire_active_stream(
+        "user-1", "chat", limit=1, ttl_s=60
+    )
+    assert acquired
+    runtime_state_store.release_active_stream(acquired)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["cancel", "disconnect", "close"])
+async def test_chat_releases_stream_lease_and_cancels_agent_when_stream_ends(
+    temp_data_dir, monkeypatch, termination
+):
+    import asyncio
+    from starlette.requests import Request
+
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    request = Request({"type": "http", "app": _authed_app(), "state": {}})
+    monkeypatch.setattr(sse_handler, "_make_agent_tools", lambda _: ([], [], []))
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def slow_run_agent(state, *_tools):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async def is_disconnected():
+        return termination == "disconnect"
+
+    monkeypatch.setattr(request, "is_disconnected", is_disconnected)
+    monkeypatch.setattr(sse_handler, "run_agent", slow_run_agent)
+    response = await chat_endpoint(
+        ChatRequest(thread_id=thread["id"], content="Teach me RAG"),
+        request,
+        {"id": "user-1", "email": "friend@example.com"},
+    )
+    await anext(response.body_iterator)
+    await asyncio.wait_for(started.wait(), timeout=1)
+    if termination == "close":
+        await response.body_iterator.aclose()
+    elif termination == "cancel":
+        next_chunk = asyncio.create_task(anext(response.body_iterator))
+        await asyncio.sleep(0)
+        next_chunk.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await next_chunk
+    else:
+        with pytest.raises(StopAsyncIteration):
+            await anext(response.body_iterator)
+    assert cancelled.is_set()
+    assert message_store.get_messages("user-1", thread["id"]) == []
+    acquired = runtime_state_store.try_acquire_active_stream(
+        "user-1", "chat", limit=1, ttl_s=60
+    )
+    assert acquired
+    runtime_state_store.release_active_stream(acquired)
 
 
 def test_chat_agent_error_emits_error_and_skips_persistence(temp_data_dir, monkeypatch):

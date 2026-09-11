@@ -236,201 +236,147 @@ async def chat_endpoint(
             "Another response is already running. Stop it or wait for it to finish."
         )
 
-    # ── Build tools bound to the loaded FAISS index ────────────────────────────
-    rag_tools, graph_tools, node_detail_tools = _make_agent_tools(request)
-
     async def stream():
-        from observability import (
-            change_active_chat_streams,
-            record_agent_duration,
-            record_cancel,
-            record_timeout,
-        )
+        try:
+            rag_tools, graph_tools, node_detail_tools = _make_agent_tools(request)
+            from observability import (
+                change_active_chat_streams,
+                record_agent_duration,
+                record_cancel,
+                record_timeout,
+            )
 
-        # Queue bridges the agent (which calls send()) and the SSE generator (which yields).
-        # run_agent is launched as a task; we drain the queue while it runs.
-        queue: asyncio.Queue[dict] = asyncio.Queue(
-            maxsize=max(1, settings.max_sse_queue_events),
-        )
-        request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
-        started_at = time.perf_counter()
-        first_token_latency_ms: int | None = None
-        response_delta_count = 0
-        graph_event_count = 0
-        history = message_store.get_history(
-            user_id, thread_id, limit=settings.max_messages_per_thread
-        )
-        existing_graph, existing_graph_contract = thread_store.get_graph_artifact(
-            user_id, thread_id
-        )
+            # Queue bridges the agent (which calls send()) and the SSE generator (which yields).
+            # run_agent is launched as a task; we drain the queue while it runs.
+            queue: asyncio.Queue[dict] = asyncio.Queue(
+                maxsize=max(1, settings.max_sse_queue_events),
+            )
+            request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
+            started_at = time.perf_counter()
+            first_token_latency_ms: int | None = None
+            response_delta_count = 0
+            graph_event_count = 0
+            history = message_store.get_history(
+                user_id, thread_id, limit=settings.max_messages_per_thread
+            )
+            existing_graph, existing_graph_contract = thread_store.get_graph_artifact(
+                user_id, thread_id
+            )
 
-        enqueue_analytics_event(
-            event_name="stream_started",
-            event_category="stream",
-            user_id=user_id,
-            session_id=thread_id,
-            thread_id=thread_id,
-            request_id=request_id,
-            client_request_id=body.client_request_id,
-            properties={
-                "stream_type": "chat",
+            enqueue_analytics_event(
+                event_name="stream_started",
+                event_category="stream",
+                user_id=user_id,
+                session_id=thread_id,
+                thread_id=thread_id,
+                request_id=request_id,
+                client_request_id=body.client_request_id,
+                properties={
+                    "stream_type": "chat",
+                    "complexity": body.complexity,
+                    "graph_mode": body.graph_mode,
+                    "research_enabled": body.research_enabled,
+                    "history_messages": len(history),
+                },
+            )
+
+            async def send(event: dict) -> None:
+                # Only the transport may publish the terminal event, after the
+                # completed turn has been durably persisted.
+                if event.get("type") == "done":
+                    return
+                if event.get("type") in {"graph_preview", "graph_data"}:
+                    event = {"type": "graph_preview", "data": event.get("data")}
+                await queue.put(event)
+
+            async def await_search_tool_request(
+                request_id: str, timeout_s: float
+            ) -> bool:
+                expires_at_epoch = time.time() + timeout_s
+                runtime_state_store.prune_search_tool_requests(
+                    older_than_epoch=time.time()
+                )
+                runtime_state_store.create_search_tool_request(
+                    request_id,
+                    user_id,
+                    thread_id,
+                    expires_at_epoch=expires_at_epoch,
+                )
+                try:
+                    deadline = asyncio.get_event_loop().time() + timeout_s
+                    while asyncio.get_event_loop().time() < deadline:
+                        if runtime_state_store.is_search_tool_requested(
+                            request_id, user_id, thread_id
+                        ):
+                            return True
+                        await asyncio.sleep(0.1)
+                    return False
+                finally:
+                    runtime_state_store.delete_search_tool_request(request_id)
+
+            await send(
+                {
+                    "type": "worker_status",
+                    "worker": "orchestrator",
+                    "status": "Question received — preparing context…",
+                }
+            )
+
+            workflow_started_at = asyncio.get_running_loop().time()
+            terminal_deadline = (
+                workflow_started_at
+                + settings.agent_timeout_s
+                - settings.agent_terminal_headroom_s
+            )
+
+            state: AgentState = {
+                "session_id": thread_id,
+                "user_id": user_id,
+                "user_email": user["email"] or f"{user_id}@unknown.local",
+                "is_production": is_production_traffic(user),
+                "request_id": request_id,
+                "client_request_id": body.client_request_id,
+                "user_message": content,
+                "history": history,
                 "complexity": body.complexity,
                 "graph_mode": body.graph_mode,
                 "research_enabled": body.research_enabled,
-                "history_messages": len(history),
-            },
-        )
-
-        async def send(event: dict) -> None:
-            # Only the transport may publish the terminal event, after the
-            # completed turn has been durably persisted.
-            if event.get("type") == "done":
-                return
-            if event.get("type") in {"graph_preview", "graph_data"}:
-                event = {"type": "graph_preview", "data": event.get("data")}
-            await queue.put(event)
-
-        async def await_search_tool_request(request_id: str, timeout_s: float) -> bool:
-            expires_at_epoch = time.time() + timeout_s
-            runtime_state_store.prune_search_tool_requests(older_than_epoch=time.time())
-            runtime_state_store.create_search_tool_request(
-                request_id,
-                user_id,
-                thread_id,
-                expires_at_epoch=expires_at_epoch,
-            )
-            try:
-                deadline = asyncio.get_event_loop().time() + timeout_s
-                while asyncio.get_event_loop().time() < deadline:
-                    if runtime_state_store.is_search_tool_requested(
-                        request_id, user_id, thread_id
-                    ):
-                        return True
-                    await asyncio.sleep(0.1)
-                return False
-            finally:
-                runtime_state_store.delete_search_tool_request(request_id)
-
-        await send(
-            {
-                "type": "worker_status",
-                "worker": "orchestrator",
-                "status": "Question received — preparing context…",
+                "route": "",
+                "rag_chunks": [],
+                "retrieval_relevance": "strong",
+                "retrieval_notice": "",
+                "graph_data": existing_graph,
+                "graph_contract": copy.deepcopy(existing_graph_contract),
+                "approved_graph_data": copy.deepcopy(existing_graph),
+                "approved_graph_contract": copy.deepcopy(existing_graph_contract),
+                "graph_changed": False,
+                "graph_notice_sent": False,
+                "research_context": "",
+                "response_text": "",
+                "send": send,
+                "await_search_tool_request": await_search_tool_request,
+                "workflow_started_at_s": workflow_started_at,
+                "terminal_deadline_s": terminal_deadline,
+                "graph_preview_deadline_s": (
+                    workflow_started_at + settings.graph_preview_timeout_s
+                ),
             }
-        )
 
-        workflow_started_at = asyncio.get_running_loop().time()
-        terminal_deadline = (
-            workflow_started_at
-            + settings.agent_timeout_s
-            - settings.agent_terminal_headroom_s
-        )
+            agent_task = asyncio.create_task(
+                run_agent(state, rag_tools, graph_tools, node_detail_tools)
+            )
+            change_active_chat_streams(1)
 
-        state: AgentState = {
-            "session_id": thread_id,
-            "user_id": user_id,
-            "user_email": user["email"] or f"{user_id}@unknown.local",
-            "is_production": is_production_traffic(user),
-            "request_id": request_id,
-            "client_request_id": body.client_request_id,
-            "user_message": content,
-            "history": history,
-            "complexity": body.complexity,
-            "graph_mode": body.graph_mode,
-            "research_enabled": body.research_enabled,
-            "route": "",
-            "rag_chunks": [],
-            "retrieval_relevance": "strong",
-            "retrieval_notice": "",
-            "graph_data": existing_graph,
-            "graph_contract": copy.deepcopy(existing_graph_contract),
-            "approved_graph_data": copy.deepcopy(existing_graph),
-            "approved_graph_contract": copy.deepcopy(existing_graph_contract),
-            "graph_changed": False,
-            "graph_notice_sent": False,
-            "research_context": "",
-            "response_text": "",
-            "send": send,
-            "await_search_tool_request": await_search_tool_request,
-            "workflow_started_at_s": workflow_started_at,
-            "terminal_deadline_s": terminal_deadline,
-            "graph_preview_deadline_s": (
-                workflow_started_at + settings.graph_preview_timeout_s
-            ),
-        }
-
-        agent_task = asyncio.create_task(
-            run_agent(state, rag_tools, graph_tools, node_detail_tools)
-        )
-        change_active_chat_streams(1)
-
-        try:
-            # Drain queue until agent finishes AND queue is empty.
-            # Short timeout on each get() so we re-check agent_task.done() frequently.
-            # Hard wall-clock timeout aborts the task if it runs too long.
-            while True:
-                if asyncio.get_running_loop().time() >= terminal_deadline:
-                    agent_task.cancel()
-                    record_timeout()
-                    enqueue_analytics_event(
-                        event_name="stream_timeout",
-                        event_category="stream",
-                        user_id=user_id,
-                        session_id=thread_id,
-                        thread_id=thread_id,
-                        request_id=request_id,
-                        client_request_id=body.client_request_id,
-                        numeric_value=max(
-                            1, int((time.perf_counter() - started_at) * 1000)
-                        ),
-                        unit="ms",
-                        properties={
-                            "stream_type": "chat",
-                            "first_token_latency_ms": first_token_latency_ms,
-                            "response_delta_count": response_delta_count,
-                            "graph_event_count": graph_event_count,
-                        },
-                    )
-                    yield sse(
-                        {
-                            "type": "error",
-                            "content": "Response timed out — please try again",
-                        }
-                    )
-                    yield sse({"type": "done"})
-                    return
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.05)
-                    if event.get("type") == "response_delta":
-                        response_delta_count += 1
-                        if first_token_latency_ms is None:
-                            first_token_latency_ms = max(
-                                1, int((time.perf_counter() - started_at) * 1000)
-                            )
-                            enqueue_analytics_event(
-                                event_name="stream_first_token",
-                                event_category="stream",
-                                user_id=user_id,
-                                session_id=thread_id,
-                                thread_id=thread_id,
-                                request_id=request_id,
-                                client_request_id=body.client_request_id,
-                                numeric_value=first_token_latency_ms,
-                                unit="ms",
-                                properties={
-                                    "stream_type": "chat",
-                                    "latency_ms": first_token_latency_ms,
-                                },
-                            )
-                    elif event.get("type") in {"graph_preview", "graph_data"}:
-                        graph_event_count += 1
-                    yield sse(event)
-                except asyncio.TimeoutError:
-                    if await request.is_disconnected():
+            try:
+                # Drain queue until agent finishes AND queue is empty.
+                # Short timeout on each get() so we re-check agent_task.done() frequently.
+                # Hard wall-clock timeout aborts the task if it runs too long.
+                while True:
+                    if asyncio.get_running_loop().time() >= terminal_deadline:
                         agent_task.cancel()
-                        record_cancel()
+                        record_timeout()
                         enqueue_analytics_event(
-                            event_name="stream_cancelled",
+                            event_name="stream_timeout",
                             event_category="stream",
                             user_id=user_id,
                             session_id=thread_id,
@@ -448,166 +394,228 @@ async def chat_endpoint(
                                 "graph_event_count": graph_event_count,
                             },
                         )
+                        yield sse(
+                            {
+                                "type": "error",
+                                "content": "Response timed out — please try again",
+                            }
+                        )
+                        yield sse({"type": "done"})
                         return
-                    if agent_task.done() and queue.empty():
-                        break
-        except asyncio.CancelledError:
-            agent_task.cancel()
-            record_cancel()
-            raise
-        finally:
-            change_active_chat_streams(-1)
-            runtime_state_store.release_active_stream(stream_id)
-            if not agent_task.done():
+                    try:
+                        event = await asyncio.wait_for(queue.get(), timeout=0.05)
+                        if event.get("type") == "response_delta":
+                            response_delta_count += 1
+                            if first_token_latency_ms is None:
+                                first_token_latency_ms = max(
+                                    1, int((time.perf_counter() - started_at) * 1000)
+                                )
+                                enqueue_analytics_event(
+                                    event_name="stream_first_token",
+                                    event_category="stream",
+                                    user_id=user_id,
+                                    session_id=thread_id,
+                                    thread_id=thread_id,
+                                    request_id=request_id,
+                                    client_request_id=body.client_request_id,
+                                    numeric_value=first_token_latency_ms,
+                                    unit="ms",
+                                    properties={
+                                        "stream_type": "chat",
+                                        "latency_ms": first_token_latency_ms,
+                                    },
+                                )
+                        elif event.get("type") in {"graph_preview", "graph_data"}:
+                            graph_event_count += 1
+                        yield sse(event)
+                    except asyncio.TimeoutError:
+                        if await request.is_disconnected():
+                            agent_task.cancel()
+                            record_cancel()
+                            enqueue_analytics_event(
+                                event_name="stream_cancelled",
+                                event_category="stream",
+                                user_id=user_id,
+                                session_id=thread_id,
+                                thread_id=thread_id,
+                                request_id=request_id,
+                                client_request_id=body.client_request_id,
+                                numeric_value=max(
+                                    1, int((time.perf_counter() - started_at) * 1000)
+                                ),
+                                unit="ms",
+                                properties={
+                                    "stream_type": "chat",
+                                    "first_token_latency_ms": first_token_latency_ms,
+                                    "response_delta_count": response_delta_count,
+                                    "graph_event_count": graph_event_count,
+                                },
+                            )
+                            return
+                        if agent_task.done() and queue.empty():
+                            break
+            except asyncio.CancelledError:
                 agent_task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await agent_task
-            record_agent_duration(
-                max(1, int((time.perf_counter() - started_at) * 1000)),
-                route="/api/chat",
-            )
-
-        # Surface any unhandled agent exception as an SSE error event
-        if not agent_task.cancelled():
-            exc = agent_task.exception()
-            if exc:
-                enqueue_analytics_event(
-                    event_name="stream_failed",
-                    event_category="stream",
-                    user_id=user_id,
-                    session_id=thread_id,
-                    thread_id=thread_id,
-                    request_id=request_id,
-                    client_request_id=body.client_request_id,
-                    numeric_value=max(
-                        1, int((time.perf_counter() - started_at) * 1000)
-                    ),
-                    unit="ms",
-                    properties={
-                        "stream_type": "chat",
-                        "error_type": type(exc).__name__,
-                        "first_token_latency_ms": first_token_latency_ms,
-                        "response_delta_count": response_delta_count,
-                        "graph_event_count": graph_event_count,
-                    },
+                record_cancel()
+                raise
+            finally:
+                change_active_chat_streams(-1)
+                if not agent_task.done():
+                    agent_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await agent_task
+                record_agent_duration(
+                    max(1, int((time.perf_counter() - started_at) * 1000)),
+                    route="/api/chat",
                 )
-                logger.error("Agent stream failed: %s", type(exc).__name__)
-                yield sse(
-                    {"type": "error", "content": "Response failed — please try again"}
-                )
-                return
 
-            final_state = agent_task.result()
-            output_shape = output_shape_from_final_state(final_state)
-            try:
-                title = thread["title"]
-                if title == "New chat":
-                    title = truncate_utf8(
-                        content, min(60, settings.max_thread_title_bytes)
+            # Surface any unhandled agent exception as an SSE error event
+            if not agent_task.cancelled():
+                exc = agent_task.exception()
+                if exc:
+                    enqueue_analytics_event(
+                        event_name="stream_failed",
+                        event_category="stream",
+                        user_id=user_id,
+                        session_id=thread_id,
+                        thread_id=thread_id,
+                        request_id=request_id,
+                        client_request_id=body.client_request_id,
+                        numeric_value=max(
+                            1, int((time.perf_counter() - started_at) * 1000)
+                        ),
+                        unit="ms",
+                        properties={
+                            "stream_type": "chat",
+                            "error_type": type(exc).__name__,
+                            "first_token_latency_ms": first_token_latency_ms,
+                            "response_delta_count": response_delta_count,
+                            "graph_event_count": graph_event_count,
+                        },
                     )
-                graph_saved = thread_store.persist_turn(
-                    user_id,
-                    thread_id,
-                    title=title,
-                    user_content=content,
-                    assistant_content=final_state["response_text"],
-                    graph_data=final_state.get("graph_data"),
-                    graph_contract=final_state.get("graph_contract"),
-                    client_request_id=body.client_request_id,
-                )
-                if not graph_saved:
+                    logger.error("Agent stream failed: %s", type(exc).__name__)
                     yield sse(
                         {
                             "type": "error",
-                            "content": (
-                                "Graph is large — it's displayed above but won't be saved. "
-                                "Start a new chat to reset."
-                            ),
+                            "content": "Response failed — please try again",
                         }
                     )
-            except ThreadMessageLimitExceeded:
-                yield sse(
-                    {
-                        "type": "error",
-                        "content": "Thread message limit reached. Start a new chat to continue.",
-                    }
-                )
-                return
-            except Exception:
-                logger.exception("Chat result persistence failed")
+                    return
+
+                final_state = agent_task.result()
+                output_shape = output_shape_from_final_state(final_state)
+                try:
+                    title = thread["title"]
+                    if title == "New chat":
+                        title = truncate_utf8(
+                            content, min(60, settings.max_thread_title_bytes)
+                        )
+                    graph_saved = thread_store.persist_turn(
+                        user_id,
+                        thread_id,
+                        title=title,
+                        user_content=content,
+                        assistant_content=final_state["response_text"],
+                        graph_data=final_state.get("graph_data"),
+                        graph_contract=final_state.get("graph_contract"),
+                        client_request_id=body.client_request_id,
+                    )
+                    if not graph_saved:
+                        yield sse(
+                            {
+                                "type": "error",
+                                "content": (
+                                    "Graph is large — it's displayed above but won't be saved. "
+                                    "Start a new chat to reset."
+                                ),
+                            }
+                        )
+                except ThreadMessageLimitExceeded:
+                    yield sse(
+                        {
+                            "type": "error",
+                            "content": "Thread message limit reached. Start a new chat to continue.",
+                        }
+                    )
+                    return
+                except Exception:
+                    logger.exception("Chat result persistence failed")
+                    enqueue_analytics_event(
+                        event_name="stream_failed",
+                        event_category="stream",
+                        user_id=user_id,
+                        session_id=thread_id,
+                        thread_id=thread_id,
+                        request_id=request_id,
+                        client_request_id=body.client_request_id,
+                        properties={
+                            "stream_type": "chat",
+                            "error_type": "PersistenceError",
+                            "first_token_latency_ms": first_token_latency_ms,
+                            "response_delta_count": response_delta_count,
+                            "graph_event_count": graph_event_count,
+                            **output_shape,
+                        },
+                    )
+                    yield sse(
+                        {
+                            "type": "error",
+                            "content": "Response could not be saved — please try again",
+                        }
+                    )
+                    return
+
+                duration_ms = max(1, int((time.perf_counter() - started_at) * 1000))
                 enqueue_analytics_event(
-                    event_name="stream_failed",
+                    event_name="stream_completed",
                     event_category="stream",
                     user_id=user_id,
                     session_id=thread_id,
                     thread_id=thread_id,
                     request_id=request_id,
                     client_request_id=body.client_request_id,
+                    numeric_value=duration_ms,
+                    unit="ms",
                     properties={
                         "stream_type": "chat",
-                        "error_type": "PersistenceError",
+                        "duration_ms": duration_ms,
                         "first_token_latency_ms": first_token_latency_ms,
                         "response_delta_count": response_delta_count,
                         "graph_event_count": graph_event_count,
                         **output_shape,
                     },
                 )
+                enqueue_analytics_event(
+                    event_name="retrieval_quality",
+                    event_category="quality_score",
+                    user_id=user_id,
+                    session_id=thread_id,
+                    thread_id=thread_id,
+                    request_id=request_id,
+                    client_request_id=body.client_request_id,
+                    numeric_value=1.0
+                    if final_state.get("retrieval_relevance") == "strong"
+                    else 0.3,
+                    unit="score",
+                    properties={
+                        "score_name": "retrieval_relevance",
+                        "score_max": 1.0,
+                        "retrieval_relevance": final_state.get("retrieval_relevance"),
+                        "retrieval_chunk_count": output_shape["retrieval_chunk_count"],
+                        "route": final_state.get("route"),
+                    },
+                )
+
                 yield sse(
                     {
-                        "type": "error",
-                        "content": "Response could not be saved — please try again",
+                        "type": "graph_data",
+                        "data": thread_store.get_graph(user_id, thread_id),
                     }
                 )
-                return
-
-            duration_ms = max(1, int((time.perf_counter() - started_at) * 1000))
-            enqueue_analytics_event(
-                event_name="stream_completed",
-                event_category="stream",
-                user_id=user_id,
-                session_id=thread_id,
-                thread_id=thread_id,
-                request_id=request_id,
-                client_request_id=body.client_request_id,
-                numeric_value=duration_ms,
-                unit="ms",
-                properties={
-                    "stream_type": "chat",
-                    "duration_ms": duration_ms,
-                    "first_token_latency_ms": first_token_latency_ms,
-                    "response_delta_count": response_delta_count,
-                    "graph_event_count": graph_event_count,
-                    **output_shape,
-                },
-            )
-            enqueue_analytics_event(
-                event_name="retrieval_quality",
-                event_category="quality_score",
-                user_id=user_id,
-                session_id=thread_id,
-                thread_id=thread_id,
-                request_id=request_id,
-                client_request_id=body.client_request_id,
-                numeric_value=1.0
-                if final_state.get("retrieval_relevance") == "strong"
-                else 0.3,
-                unit="score",
-                properties={
-                    "score_name": "retrieval_relevance",
-                    "score_max": 1.0,
-                    "retrieval_relevance": final_state.get("retrieval_relevance"),
-                    "retrieval_chunk_count": output_shape["retrieval_chunk_count"],
-                    "route": final_state.get("route"),
-                },
-            )
-
-            yield sse(
-                {
-                    "type": "graph_data",
-                    "data": thread_store.get_graph(user_id, thread_id),
-                }
-            )
-            yield sse({"type": "done"})
+                yield sse({"type": "done"})
+        finally:
+            # A new turn must not read its base graph before this turn commits.
+            runtime_state_store.release_active_stream(stream_id)
 
     return streaming_response(stream())
 

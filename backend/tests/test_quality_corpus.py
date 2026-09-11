@@ -2078,6 +2078,145 @@ def test_browser_review_includes_retrieved_evidence_for_human_review(tmp_path):
     assert "source passage" in review
 
 
+def test_browser_review_keeps_complete_escaped_multiturn_evidence_and_capture_identity(
+    tmp_path,
+):
+    import hashlib
+    import html
+
+    from eval.browser_runner import _write_html
+
+    first_answer = "First answer " + "a" * 5000 + " <script>first-turn-tail</script>"
+    second_answer = "Second answer " + "b" * 5000 + " <img onerror='second-turn-tail'>"
+    source_text = "c" * 21000 + " <script>retrieval-tail</script>"
+    research_text = "d" * 21000 + " <script>research-tail</script>"
+    report = {
+        "kind": "browser_capture",
+        "suite": "full",
+        "status": "complete",
+        "corpus_version": "historical-v1",
+        "corpus_sha256": "a" * 64,
+        "release_identity": "historical-browser-release",
+        "started_at": "2026-09-11T12:00:00Z",
+        "backend_target": "https://candidate.example.test",
+        "results": [
+            {
+                "id": "multi-turn",
+                "passed": True,
+                "answer": first_answer + second_answer,
+                "deterministic_failures": [],
+                "screenshot": "screenshots/two turns.png",
+                "trace": "traces/two turns.zip",
+                "turns": [
+                    {
+                        "turn": 1,
+                        "prompt": "<script>first-prompt</script>",
+                        "answer": first_answer,
+                        "graph": {
+                            "nodes": [
+                                {"id": "first", "label": "<script>first-graph</script>"}
+                            ]
+                        },
+                    },
+                    {
+                        "turn": 2,
+                        "prompt": "Second prompt",
+                        "answer": second_answer,
+                        "graph": {
+                            "nodes": [
+                                {
+                                    "id": "second",
+                                    "label": "<script>second-graph</script>",
+                                }
+                            ]
+                        },
+                    },
+                ],
+                "graph": {
+                    "nodes": [{"id": "final", "label": "<script>final-graph</script>"}]
+                },
+                "events": [
+                    {"type": "retrieval_evidence", "text": source_text},
+                    {"type": "research_evidence", "text": research_text},
+                ],
+            }
+        ],
+    }
+    capture = tmp_path / "custom capture.json"
+    capture.write_text(json.dumps(report) + "\n", encoding="utf-8")
+    original = capture.read_bytes()
+    output = tmp_path / "review.html"
+
+    _write_html(output, report, capture_path=capture)
+
+    review = output.read_text(encoding="utf-8")
+    for text in (first_answer, second_answer, source_text, research_text):
+        assert html.escape(text) in review
+    for text in ("first-prompt", "first-graph", "second-graph", "final-graph"):
+        assert html.escape(f"<script>{text}</script>") in review
+    assert "<script>" not in review
+    assert "<img onerror" not in review
+    assert "Turn 1" in review and "Turn 2" in review
+    assert "historical-v1" in review and "historical-browser-release" in review
+    assert "a" * 64 in review
+    assert hashlib.sha256(original).hexdigest() in review
+    assert "href='./custom%20capture.json'" in review
+    assert "href='./screenshots/two%20turns.png'" in review
+    assert "href='./traces/two%20turns.zip'" in review
+    assert capture.read_bytes() == original
+
+
+def test_browser_review_rejects_digest_for_a_different_raw_capture(tmp_path):
+    from eval.browser_runner import _write_html
+
+    output = tmp_path / "review.html"
+    capture = tmp_path / "browser-results.json"
+    capture.write_text("{}", encoding="utf-8")
+    report = {"corpus_version": "v1", "results": []}
+
+    with pytest.raises(ValueError, match="does not match the raw browser capture"):
+        _write_html(output, report, capture_path=capture)
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    "artifact",
+    [
+        "javascript:alert(1)",
+        "https://external.example/test",
+        "//external.example/test",
+        "../outside.png",
+        "http://[malformed",
+        "..\\outside.png",
+    ],
+)
+def test_browser_review_does_not_link_untrusted_external_or_parent_artifacts(
+    tmp_path, artifact
+):
+    from eval.browser_runner import _write_html
+
+    output = tmp_path / "review.html"
+    report = {
+        "corpus_version": "v1",
+        "results": [
+            {
+                "id": "case",
+                "passed": True,
+                "deterministic_failures": [],
+                "screenshot": artifact,
+                "trace": artifact,
+            }
+        ],
+    }
+
+    _write_html(output, report)
+
+    review = output.read_text(encoding="utf-8")
+    assert "href=" not in review
+    assert "<img " not in review
+
+
 def test_browser_review_handles_an_attempt_without_a_screenshot(tmp_path):
     from eval.browser_runner import _write_html
 
