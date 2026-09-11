@@ -27,9 +27,10 @@ The stable branch checks are `CI required` and `Live eval required`. Both workfl
 listen to `pull_request`, trusted pushes, and `merge_group`. Corpus version
 `2026-08-12.v1` is pending human review after the graph-expansion contract added a
 180-second per-turn visible graph-output deadline.
-The live gate takes the fail-safe bootstrap path before installing browsers,
-authenticating to GCP, building images, mutating staging, or calling a model, and
-production promotion remains disabled until this exact corpus is approved. Run
+For AI-impacting changes, the required live check fails while the corpus is pending
+review. It skips browser installation, GCP authentication, image builds, staging
+mutation, and model calls. Production promotion remains disabled until this exact
+corpus is approved. Run
 `scripts/configure_main_branch_protection.sh owner/repo` to inspect the current and
 proposed branch protection without writing. Add `--apply` only after reviewing the
 payload.
@@ -158,6 +159,15 @@ minute limits no longer apply.
 
 Scheduled nightly and full suites use the same pre-request quota with a 150-attempt
 cap. Diagnostic dispatches use the 64-attempt PR cap.
+Every scheduled browser or semantic non-success fails the workflow, including pending
+corpus proposals. Scheduled artifacts retain evidence for 90 days. `deployment.json`
+binds the run to its commit, Git tree, immutable image digest, tagged Cloud Run revision,
+pipeline mode, and suite. The browser results record the cases that ran.
+
+Protected internal staged evaluations capture each valid semantic gate result together
+with its candidate records and review inputs. These captures require an evaluation run
+ID and an allowlisted non-production caller. They are absent from ordinary responses
+and analytics. This retains the first rejection when a correction later fails.
 
 Each turn records total, first-event, and first-token latency plus client and server
 request IDs. Those IDs join browser evidence to per-operation model telemetry,
@@ -211,8 +221,16 @@ manifest, so either behavior or provenance tampering fails closed. Reapproving
 `2026-08-12.v1` requires a full protected 20-case capture, human review of all 20
 cases, a reviewer, review time, artifact run, and reviewed grades for every case,
 judge recalibration against that reviewed capture, the new calibration evidence and
-result fields, and a newly computed approved manifest hash. The corpus cannot block
-or promote until those records are complete.
+result fields, and a newly computed approved manifest hash. Until those records are
+complete, the pending corpus blocks the required live check and production promotion.
+
+To collect review evidence before merging, manually dispatch `Scheduled evaluation`
+with suite `full` from the same-repository candidate branch. Its pending-corpus
+bootstrap path builds an ephemeral image for that checked-out tree and captures all
+20 cases behind the `staging-eval` environment. Review the artifacts, complete the
+corpus approval records, and rerun `Live eval required` for the updated candidate.
+A successful bootstrap capture alone does not approve the corpus or publish an
+exact-tree approval. Diagnostic runs cannot replace the full review.
 
 Compute calibration from saved evidence rather than entering it by inspection:
 

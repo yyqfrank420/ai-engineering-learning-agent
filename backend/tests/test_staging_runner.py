@@ -312,17 +312,13 @@ def test_scheduled_eval_blocks_manual_review_for_an_approved_corpus():
         'if [ "$BROWSER_OUTCOME" != success ] || '
         '[ "$SEMANTIC_OUTCOME" != success ]; then'
     ) in workflow
-    pending_guard = (
-        'if [ "$CORPUS_STATUS" != approved ] \\\n'
-        '            && { [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || '
-        '[ "$EVAL_SUITE" != diagnostic ]; }; then'
-    )
-    assert pending_guard in workflow
-    assert workflow.index(pending_guard) < workflow.index(
+    outcome_step = workflow.split("name: Enforce scheduled evaluation outcome", 1)[1]
+    assert outcome_step.index(
         'if [ "$BROWSER_OUTCOME" != success ] || '
         '[ "$SEMANTIC_OUTCOME" != success ]; then'
-    )
-    assert "Diagnostic or approved scheduled evaluation did not pass." in workflow
+    ) < outcome_step.index('if [ "$CORPUS_STATUS" != approved ]; then')
+    assert "Scheduled evaluation did not pass." in outcome_step
+    assert "successful proposals do not approve a release" in outcome_step
 
 
 def test_scheduled_diagnostic_can_select_staged_pipeline_without_changing_defaults():

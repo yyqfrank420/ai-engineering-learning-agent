@@ -2,6 +2,10 @@
 
 Last updated: 2026-08-19
 
+This is the historical stabilization record. The [2026-09-11 independent audit](failure-audit-2026-09-11.md)
+reconciles 55 failed single-case diagnostics and records the subsequent scoped-edit refactor,
+evaluation corrections, and evidence gaps.
+
 Evidence in this record is current through paid diagnostic `32300653373` on
 `feature/staged-graph-pipeline` on 2026-08-19. PRs #37 through #40 merged on 2026-08-07, and PR #44
 merged as `77df25e7`. The evidence-provenance, graph-review, and latency corrections passed local

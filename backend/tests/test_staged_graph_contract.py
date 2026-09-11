@@ -11,7 +11,6 @@ from agent.staged_graph_contract import (
     production_proofs_for_capabilities,
     project_graph_data,
     reconstruct_staged_graph_build,
-    validate_create_connection_correction_authority,
     validate_component_write_set,
     validate_connection_write_set,
     validate_staged_graph_build,
@@ -106,6 +105,62 @@ def test_assign_project_and_reconstruct_are_stable():
     assert project_graph_data(reconstructed) == graph
 
 
+@pytest.mark.parametrize(
+    ("node_type", "technology"),
+    [
+        ("client", "Client"),
+        ("service", "Application service"),
+        ("datastore", "Data store"),
+        ("queue", "Message queue"),
+        ("gateway", "Gateway"),
+        ("network", "Network"),
+        ("external", "External system"),
+        ("control", "Control component"),
+        ("decision", "Decision component"),
+    ],
+)
+def test_node_projection_describes_type_without_inventing_guarantees(
+    node_type, technology
+):
+    plan = _plan()
+    plan["components"][0].update(
+        type=node_type,
+        responsibility="Submits a request.",
+    )
+
+    node = project_graph_data(plan)["nodes"][0]
+
+    assert node["technology"] == technology
+    assert node["description"] == "Submits a request."
+
+
+@pytest.mark.parametrize(
+    ("flow", "technology"),
+    [
+        ("runtime", "Runtime flow"),
+        ("control", "Control flow"),
+        ("feedback", "Feedback flow"),
+        ("deployment", "Deployment flow"),
+    ],
+)
+def test_edge_projection_describes_flow_without_inventing_guarantees(flow, technology):
+    plan = _plan()
+    plan["connections"].append(
+        {
+            "source_id": "0",
+            "target_id": "2",
+            "label": "sends a request",
+            "flow": flow,
+            "sync": "async",
+        }
+    )
+
+    edge = project_graph_data(plan)["edges"][-1]
+
+    assert edge["technology"] == technology
+    assert edge["description"] == "sends a request"
+
+
 def test_existing_group_id_is_retained():
     plan = assign_server_ids(_plan())
     groups = derive_groups(
@@ -152,6 +207,41 @@ def test_production_proof_mapping_and_fingerprints_are_deterministic():
     assert connection_fingerprint(first) == connection_fingerprint(second)
 
 
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("title", "Revised payment authorization"),
+        ("assumptions", ["Payment requests arrive from a trusted caller."]),
+        ("root_index", 1),
+        (
+            "capabilities",
+            {
+                "external_effects": False,
+                "retrieval_or_reuse": True,
+                "learning_or_release": False,
+            },
+        ),
+        ("maturity", "prototype"),
+    ],
+)
+def test_component_fingerprint_includes_reviewed_candidate_context(field, value):
+    base = assign_server_ids(_plan())
+    candidate = copy.deepcopy(base)
+    candidate[field] = value
+
+    assert component_fingerprint(candidate) != component_fingerprint(base)
+
+
+def test_component_fingerprint_ignores_later_connections_and_request_metadata():
+    base = assign_server_ids(_plan())
+    candidate = copy.deepcopy(base)
+    candidate["connections"] = []
+    candidate["request_id"] = "another-request"
+    candidate["stage"] = "components"
+
+    assert component_fingerprint(candidate) == component_fingerprint(base)
+
+
 def test_write_sets_reject_uncited_component_and_connection_changes():
     base = assign_server_ids(_plan())
     component_candidate = copy.deepcopy(base)
@@ -182,70 +272,99 @@ def test_write_sets_reject_uncited_component_and_connection_changes():
         )
 
 
-def test_create_connection_correction_allows_control_endpoint():
-    rejected = assign_server_ids(_plan())
-    corrected = copy.deepcopy(rejected)
-    corrected["connections"].append(
+def test_component_deletion_accepts_reindexing_with_exact_incident_authority():
+    base = assign_server_ids(_plan())
+    candidate = copy.deepcopy(base)
+    candidate["components"].pop(1)
+    candidate["components"][1]["model_index"] = 1
+    candidate["connections"] = []
+    before = copy.deepcopy(base)
+
+    accepted = validate_component_write_set(
+        base,
+        candidate,
         {
-            "source_id": "n1",
-            "target_id": "n2",
-            "label": "requests authorization status",
-            "flow": "control",
-            "sync": "sync",
-        }
+            "allowed_ids": ["n2"],
+            "removal_count": 1,
+            "incident_edge_ids": [
+                "n1|n2|submits payment",
+                "n2|n3|records authorization",
+            ],
+        },
     )
 
-    accepted = validate_create_connection_correction_authority(rejected, corrected)
+    assert [component["server_id"] for component in accepted["components"]] == [
+        "n1",
+        "n3",
+    ]
+    assert accepted["components"][1] == {**base["components"][2], "model_index": 1}
+    assert base == before
 
-    assert accepted["connections"][-1]["flow"] == "control"
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("label", "Different ledger"),
+        ("type", "service"),
+        ("responsibility", "Owns different records."),
+        ("group_label", "Different group"),
+        ("group_kind", "runtime"),
+        ("primary_flow_member", False),
+    ],
+)
+def test_component_deletion_rejects_mutating_a_reindexed_survivor(field, value):
+    base = assign_server_ids(_plan())
+    candidate = copy.deepcopy(base)
+    candidate["components"].pop(1)
+    candidate["components"][1].update(model_index=1, **{field: value})
+    candidate["connections"] = []
+
+    with pytest.raises(GraphContractError, match="changes an uncited component"):
+        validate_component_write_set(
+            base,
+            candidate,
+            {
+                "allowed_ids": ["n2"],
+                "removal_count": 1,
+                "incident_edge_ids": [
+                    "n1|n2|submits payment",
+                    "n2|n3|records authorization",
+                ],
+            },
+        )
 
 
-def test_create_connection_correction_rejects_control_edge_without_authority():
-    rejected = assign_server_ids(_plan())
-    corrected = copy.deepcopy(rejected)
-    corrected["connections"].append(
-        {
-            "source_id": "n1",
-            "target_id": "n3",
-            "label": "controls ledger state",
-            "flow": "control",
-            "sync": "sync",
-        }
+def test_component_deletion_cannot_remove_incident_edges_without_edge_authority():
+    base = assign_server_ids(_plan())
+    candidate = copy.deepcopy(base)
+    candidate["components"].pop(1)
+    candidate["components"][1]["model_index"] = 1
+    candidate["connections"] = []
+
+    with pytest.raises(GraphContractError, match="incident edge without authority"):
+        validate_component_write_set(
+            base, candidate, {"allowed_ids": ["n2"], "removal_count": 1}
+        )
+
+
+def test_control_flow_does_not_require_control_or_decision_component_types():
+    plan = _plan()
+    plan["components"][1]["type"] = "service"
+    before = copy.deepcopy(plan)
+
+    accepted = validate_staged_graph_build(assign_server_ids(plan))
+
+    assert (
+        accepted["components"][1]["responsibility"]
+        == "Authorizes the requested payment."
     )
-
-    with pytest.raises(GraphContractError, match="control or decision") as error:
-        validate_create_connection_correction_authority(rejected, corrected)
-
-    assert error.value.path == "connections"
-
-
-def test_create_connection_correction_rejects_runtime_to_control_without_authority():
-    rejected = _plan()
-    rejected["connections"].append(
-        {
-            "source_id": "0",
-            "target_id": "2",
-            "label": "records payment request",
-            "flow": "runtime",
-            "sync": "sync",
-        }
-    )
-    rejected = assign_server_ids(rejected)
-    corrected = copy.deepcopy(rejected)
-    corrected["connections"][-1]["flow"] = "control"
-
-    with pytest.raises(GraphContractError, match="control or decision") as error:
-        validate_create_connection_correction_authority(rejected, corrected)
-
-    assert error.value.path == "connections"
-
-
-def test_create_connection_correction_cannot_change_components():
-    rejected = assign_server_ids(_plan())
-    corrected = copy.deepcopy(rejected)
-    corrected["components"][0]["type"] = "control"
-
-    with pytest.raises(GraphContractError, match="cannot change components") as error:
-        validate_create_connection_correction_authority(rejected, corrected)
-
-    assert error.value.path == "components"
+    assert accepted["components"][1]["type"] == "service"
+    assert accepted["components"][2]["type"] == "datastore"
+    assert accepted["connections"][1] == {
+        "source_id": "n2",
+        "target_id": "n3",
+        "label": "records authorization",
+        "flow": "control",
+        "sync": "sync",
+    }
+    assert plan == before

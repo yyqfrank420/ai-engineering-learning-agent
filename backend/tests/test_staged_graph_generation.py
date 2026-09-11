@@ -341,7 +341,9 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
 
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v2"
+    assert (
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v4"
+    )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
         {
@@ -498,7 +500,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v2"
+    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v4"
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
 
@@ -717,3 +719,361 @@ async def test_correction_rejects_changed_write_set_or_identical_prompt(monkeypa
             prior_write_set_fingerprint="f" * 64,
             structural_findings=[{"code": "failed", "path": "wire", "rule": "shape"}],
         )
+
+
+def _edit_base() -> dict:
+    wire = _component_wire()
+    return {
+        **wire,
+        "components": [
+            {
+                **wire["components"][0],
+                "server_id": "n1",
+                "model_index": 0,
+                "type": "service",
+                "group_kind": "runtime",
+            },
+            {
+                **wire["components"][0],
+                "label": "Trace sink",
+                "server_id": "n2",
+                "model_index": 1,
+                "type": "datastore",
+                "group_kind": "runtime",
+                "primary_flow_member": False,
+            },
+        ],
+    }
+
+
+def _permissions(**changes) -> dict:
+    return {
+        "editable_node_fields": {},
+        "removable_node_ids": [],
+        "allowed_new_node_count": 0,
+        "editable_edges": [],
+        "editable_edge_fields": {},
+        "removable_edge_ids": [],
+        "allowed_new_edge_count": 0,
+        "editable_composition_fields": [],
+        **changes,
+    }
+
+
+async def _generate_edit(monkeypatch, delta, permissions, **changes):
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(delta)
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    result = await generation.generate_component_candidate(
+        request="Apply the scoped change.",
+        resolved_maturity="prototype",
+        architecture_context=_architecture_context(),
+        write_set=_write_set(),
+        upstream_fingerprint=_fingerprint("edit base"),
+        base_components=_edit_base(),
+        edit_permissions=permissions,
+        **changes,
+    )
+    return result, calls
+
+
+@pytest.mark.asyncio
+async def test_component_edit_adds_only_delta_and_preserves_locked_base(monkeypatch):
+    addition = {**_component_wire()["components"][0], "label": "Audit service"}
+    result, calls = await _generate_edit(
+        monkeypatch,
+        {
+            "additions": [addition],
+            "updates": {},
+            "capabilities": _accepted_context()["capabilities"],
+        },
+        _permissions(allowed_new_node_count=1),
+    )
+    assert [row["label"] for row in result["wire"]["components"]] == [
+        "Request gateway",
+        "Trace sink",
+        "Audit service",
+    ]
+    assert result["wire"]["title"] == _edit_base()["title"]
+    properties = calls[0]["schema"]["properties"]
+    assert set(properties) == {"additions", "updates", "capabilities"}
+    assert (
+        properties["additions"]["minItems"] == properties["additions"]["maxItems"] == 1
+    )
+    assert "acceptance_criteria" in calls[0]["prompt"]
+    assert "server_id" not in calls[0]["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_component_edit_updates_exact_fields_and_proposes_capabilities(
+    monkeypatch,
+):
+    capabilities = {**_accepted_context()["capabilities"], "external_effects": True}
+    result, calls = await _generate_edit(
+        monkeypatch,
+        {
+            "additions": [],
+            "updates": {
+                "slot_0": {
+                    "label": "Ingress",
+                    "responsibility": "Accept approved requests.",
+                }
+            },
+            "capabilities": capabilities,
+            "title": "New title",
+        },
+        _permissions(
+            editable_node_fields={"n1": ["label", "description"]},
+            editable_composition_fields=["title"],
+        ),
+    )
+    assert result["wire"]["components"][0]["label"] == "Ingress"
+    assert result["wire"]["components"][1]["label"] == "Trace sink"
+    assert result["wire"]["capabilities"] == capabilities
+    assert result["wire"]["title"] == "New title"
+    assert set(
+        calls[0]["schema"]["properties"]["updates"]["properties"]["slot_0"][
+            "properties"
+        ]
+    ) == {"label", "responsibility"}
+
+
+@pytest.mark.asyncio
+async def test_component_edit_removes_server_selected_records(monkeypatch):
+    result, _ = await _generate_edit(
+        monkeypatch,
+        {
+            "additions": [],
+            "updates": {},
+            "capabilities": _accepted_context()["capabilities"],
+        },
+        _permissions(removable_node_ids=["n2"]),
+    )
+    assert len(result["wire"]["components"]) == 1
+    assert result["wire"]["root_index"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"updates": {"slot_1": {"label": "Other"}}},
+        {"updates": {"slot_0": {"label": "Ingress", "type": 102}}},
+        {"updates": {"slot_0": {}}},
+        {"additions": [_component_wire()["components"][0]]},
+        {"title": "Unauthorized title"},
+        {"components": []},
+    ],
+)
+async def test_component_delta_rejects_unknown_slots_fields_missing_updates_and_counts(
+    monkeypatch, change
+):
+    delta = {
+        "additions": [],
+        "updates": {"slot_0": {"label": "Ingress"}},
+        "capabilities": _accepted_context()["capabilities"],
+        **change,
+    }
+    with pytest.raises(generation.StagedGenerationError):
+        await _generate_edit(
+            monkeypatch, delta, _permissions(editable_node_fields={"n1": ["label"]})
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "permissions",
+    [
+        _permissions(editable_node_fields={"n1": ["technology"]}),
+        _permissions(editable_node_fields={"missing": ["label"]}),
+        _permissions(editable_composition_fields=["sequence"]),
+        _permissions(removable_node_ids=["n1"]),
+    ],
+)
+async def test_component_delta_rejects_unrepresentable_authority_before_provider(
+    monkeypatch, permissions
+):
+    async def unexpected(**kwargs):
+        pytest.fail("Invalid edit authority reached the provider")
+
+    monkeypatch.setattr(generation, "_run_generation", unexpected)
+    with pytest.raises(generation.StagedGenerationError):
+        await generation.generate_component_candidate(
+            request="edit",
+            resolved_maturity="prototype",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint=_fingerprint("base"),
+            base_components=_edit_base(),
+            edit_permissions=permissions,
+        )
+
+
+@pytest.mark.asyncio
+async def test_component_correction_projects_rejected_wire_back_to_delta(monkeypatch):
+    permissions = _permissions(editable_node_fields={"n1": ["label"]})
+    initial = {
+        "additions": [],
+        "updates": {"slot_0": {"label": "Ingress"}},
+        "capabilities": _accepted_context()["capabilities"],
+    }
+    first, _ = await _generate_edit(monkeypatch, initial, permissions)
+    corrected = {**initial, "updates": {"slot_0": {"label": "Request ingress"}}}
+    result, calls = await _generate_edit(
+        monkeypatch,
+        corrected,
+        permissions,
+        attempt=1,
+        prior_prompt_fingerprint=first["prompt_fingerprint"],
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[
+            {"code": "label_unclear", "path": "components.0", "rule": "label_unclear"}
+        ],
+        rejected_candidate=first["wire"],
+    )
+    prompt_input = json.loads(calls[0]["prompt"].split("\nINPUT\n")[1])
+    assert prompt_input["rejected_candidate"] == initial
+    assert result["wire"]["components"][0]["label"] == "Request ingress"
+    assert "Trace sink" not in json.dumps(prompt_input["rejected_candidate"])
+
+
+@pytest.mark.asyncio
+async def test_connection_delta_matches_original_selector_after_incident_edge_removal(
+    monkeypatch,
+):
+    base = _connection_wire()["edges"]
+    permissions = _permissions(
+        editable_edges=[
+            {"edge_id": "edge_1", "source": "removed", "target": "n1", "label": "old"},
+            {"edge_id": "edge_2", "source": "n1", "target": "n2", "label": "requests"},
+        ],
+        removable_edge_ids=["edge_1"],
+        editable_edge_fields={"edge_1": [], "edge_2": ["label", "sync"]},
+        allowed_new_edge_count=1,
+    )
+    addition = {**base[0], "source_index": 1, "target_index": 0, "label": "response"}
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {
+                "updates": {"slot_0": {"label": "dispatch", "sync": 501}},
+                "additions": [addition],
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    result = await generation.generate_connection_candidate(
+        request="Update the retained request and add a response.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint=_fingerprint("base"),
+        accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(),
+        base_connections=base,
+        edit_permissions=permissions,
+    )
+    assert result["wire"]["edges"] == [
+        {**base[0], "label": "dispatch", "sync": 501},
+        addition,
+    ]
+    assert "edge_2" not in calls[0]["prompt"]
+    assert base == _connection_wire()["edges"]
+
+
+def test_connection_delta_removal_is_server_owned_and_unknown_selectors_fail():
+    base = _connection_wire()["edges"]
+    permissions = _permissions(
+        editable_edges=[
+            {"edge_id": "edge_2", "source": "n1", "target": "n2", "label": "requests"}
+        ],
+        removable_edge_ids=["edge_2"],
+    )
+    delta = generation._connection_edit_delta(
+        base,
+        permissions,
+        generation.connection_generation_schema(_write_set()),
+        _accepted_components(),
+    )
+    assert delta.assemble('{"updates":{},"additions":[]}') == {"edges": []}
+    with pytest.raises(generation.StagedGenerationError, match="selector"):
+        generation._connection_edit_delta(
+            base,
+            {**permissions, "removable_edge_ids": ["missing"]},
+            generation.connection_generation_schema(_write_set()),
+            _accepted_components(),
+        )
+
+
+def test_delta_rejects_duplicate_json_slots():
+    with pytest.raises(generation.StagedGenerationError):
+        generation._parse_json('{"updates":{"slot_0":{},"slot_0":{}},"additions":[]}')
+
+
+def test_component_delta_removal_reindexes_root_without_reordering_retained_records():
+    base = _edit_base()
+    base["root_index"] = 1
+    base["components"][1]["primary_flow_member"] = True
+    delta = generation._component_edit_delta(
+        base,
+        _permissions(removable_node_ids=["n1"]),
+        generation.component_generation_schema(_write_set()),
+    )
+    wire = delta.assemble(
+        json.dumps(
+            {"additions": [], "updates": {}, "capabilities": base["capabilities"]}
+        )
+    )
+    assert wire["root_index"] == 0
+    assert wire["components"][0]["label"] == "Trace sink"
+    assert base["root_index"] == 1
+    assert len(base["components"]) == 2
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"updates": {"slot_1": {"label": "unauthorized"}}},
+        {"updates": {"slot_0": {"label": "dispatch", "flow": 401}}},
+        {"updates": {}},
+        {"additions": _connection_wire()["edges"]},
+    ],
+)
+def test_connection_delta_rejects_fields_selectors_missing_updates_and_counts(change):
+    permissions = _permissions(
+        editable_edges=[
+            {"edge_id": "edge_1", "source": "n1", "target": "n2", "label": "requests"}
+        ],
+        editable_edge_fields={"edge_1": ["label"]},
+    )
+    delta = generation._connection_edit_delta(
+        _connection_wire()["edges"],
+        permissions,
+        generation.connection_generation_schema(_write_set()),
+        _accepted_components(),
+    )
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(
+            json.dumps(
+                {
+                    "updates": {"slot_0": {"label": "dispatch"}},
+                    "additions": [],
+                    **change,
+                }
+            )
+        )
+
+
+@pytest.mark.parametrize("invalid_code", [101.0, [], {}, True])
+def test_scalar_parser_rejects_invalid_code_types(invalid_code):
+    wire = _component_wire()
+    wire["components"][0]["type"] = invalid_code
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ):
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)

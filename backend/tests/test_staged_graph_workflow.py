@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
 from agent import staged_graph_workflow as workflow
+from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import (
     assign_server_ids,
     component_fingerprint,
@@ -279,6 +282,32 @@ def test_selector_only_enables_staged_applied_graph_turns(monkeypatch):
     assert workflow.should_use_staged_graph_pipeline(_state(graph_mode="off")) is False
     monkeypatch.setattr(workflow.settings, "graph_pipeline_mode", "legacy")
     assert workflow.should_use_staged_graph_pipeline(_state()) is False
+
+
+@pytest.mark.parametrize("first_type", [101, 104])
+def test_scoped_renames_keep_server_identity_when_labels_match_prior_nodes(first_type):
+    wire = _components_wire()
+    wire["components"][0]["type"] = first_type
+    base_components = [
+        {**component, "server_id": f"n{index + 1}"}
+        for index, component in enumerate(workflow._decode_components(wire))
+    ]
+    wire["components"][0]["label"], wire["components"][1]["label"] = (
+        wire["components"][1]["label"],
+        wire["components"][0]["label"],
+    )
+    renamed = workflow._decode_components(wire)
+
+    workflow._retain_component_ids(
+        renamed,
+        {"components": base_components},
+        {"editable_node_ids": ["n1", "n2"], "removable_node_ids": []},
+    )
+
+    assert [(component["server_id"], component["label"]) for component in renamed] == [
+        ("n1", "Payment service"),
+        ("n2", "Request gateway"),
+    ]
 
 
 @pytest.mark.asyncio
@@ -784,7 +813,7 @@ async def test_connection_retry_keeps_the_accepted_component_candidate_locked(
 
 @pytest.mark.parametrize("full_restage", [False, True])
 @pytest.mark.asyncio
-async def test_create_connection_correction_cannot_invent_unowned_control_flow(
+async def test_semantic_gate_rejects_unowned_control_flow_on_correction(
     monkeypatch,
     full_restage,
 ):
@@ -862,23 +891,22 @@ async def test_create_connection_correction_cannot_invent_unowned_control_flow(
     result = await workflow.run_staged_graph_pipeline(state)
 
     assert connection_calls == 2
-    assert connection_gate_calls == 1
-    assert render_calls == 2
+    assert connection_gate_calls == 2
+    assert render_calls == 3
     assert (
         result["graph_operation"]["failure_code"]
         == "staged_connection_attempts_exhausted"
     )
     assert [item["attempt"] for item in result["graph_review_diagnostics"]] == [1, 2]
     final = result["graph_review"]["staged_failure"]
-    assert final["kind"] == "staged_generation"
-    assert final["code"] == "contract_rejected"
-    assert final["path"] == "connections"
+    assert final["kind"] == "staged_gate"
+    assert final["code"] == "gate_rejected"
     assert "monitoring" not in repr(final)
 
 
 @pytest.mark.parametrize("full_restage", [False, True])
 @pytest.mark.asyncio
-async def test_connection_correction_after_generation_error_cannot_invent_control_flow(
+async def test_connection_correction_after_generation_error_requires_semantic_approval(
     monkeypatch,
     full_restage,
 ):
@@ -910,7 +938,14 @@ async def test_connection_correction_after_generation_error_cannot_invent_contro
     async def connection_gate(**_kwargs):
         nonlocal connection_gate_calls
         connection_gate_calls += 1
-        return _approved_gate()
+        return _rejected_gate_with_findings(
+            [
+                {
+                    "rule_code": "edge_semantics",
+                    "reason": "The accepted components do not own this control action.",
+                }
+            ]
+        )
 
     async def render(state, graph, *, preview_count):
         nonlocal render_calls
@@ -954,15 +989,14 @@ async def test_connection_correction_after_generation_error_cannot_invent_contro
     result = await workflow.run_staged_graph_pipeline(state)
 
     assert connection_calls == 2
-    assert connection_gate_calls == 0
-    assert render_calls == 1
+    assert connection_gate_calls == 1
+    assert render_calls == 2
     assert (
         result["graph_operation"]["failure_code"]
         == "staged_connection_attempts_exhausted"
     )
     assert [item["attempt"] for item in result["graph_review_diagnostics"]] == [1, 2]
-    assert result["graph_review"]["staged_failure"]["code"] == "contract_rejected"
-    assert result["graph_review"]["staged_failure"]["path"] == "connections"
+    assert result["graph_review"]["staged_failure"]["code"] == "gate_rejected"
 
 
 @pytest.mark.asyncio
@@ -1178,6 +1212,79 @@ async def test_final_connection_contract_failure_skips_second_render(monkeypatch
     assert diagnostic["path"] == "connections.0"
 
 
+@pytest.mark.parametrize("correct_capability", [False, True])
+@pytest.mark.asyncio
+async def test_component_correction_tracks_capability_context(
+    monkeypatch, correct_capability
+):
+    _install_success_boundaries(monkeypatch)
+    component_inputs = []
+    component_reviews = []
+    connection_inputs = []
+
+    async def components(**kwargs):
+        component_inputs.append(copy.deepcopy(kwargs))
+        wire = _components_wire()
+        if correct_capability and len(component_inputs) == 2:
+            wire["capabilities"]["retrieval_or_reuse"] = True
+        return {
+            "wire": wire,
+            "prompt_fingerprint": f"component-{len(component_inputs)}",
+        }
+
+    async def component_gate(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _rejected_gate() if len(component_reviews) == 1 else _approved_gate()
+
+    async def connections(**kwargs):
+        connection_inputs.append(copy.deepcopy(kwargs))
+        return {"wire": _connections_wire(), "prompt_fingerprint": "connection-prompt"}
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+
+    result = await workflow.run_staged_graph_pipeline(_state(complexity="production"))
+
+    assert len(component_inputs) == 2
+    if not correct_capability:
+        assert len(component_reviews) == 1
+        assert connection_inputs == []
+        assert (
+            result["graph_operation"]["failure_code"]
+            == "staged_component_attempts_exhausted"
+        )
+        assert result["graph_review"]["staged_failure"]["code"] == "candidate_repeated"
+        return
+
+    assert result["graph_publication"] == "approved"
+    assert len(component_reviews) == 2
+    assert (
+        component_reviews[0]["candidate_records"]
+        == component_reviews[1]["candidate_records"]
+    )
+    assert (
+        component_reviews[0]["evidence_bundle"]["candidate_context"]["capabilities"][
+            "retrieval_or_reuse"
+        ]
+        is False
+    )
+    assert (
+        component_reviews[1]["evidence_bundle"]["candidate_context"]["capabilities"][
+            "retrieval_or_reuse"
+        ]
+        is True
+    )
+    assert (
+        connection_inputs[0]["accepted_context"]["capabilities"]["retrieval_or_reuse"]
+        is True
+    )
+    assert connection_inputs[0]["upstream_fingerprint"] == component_fingerprint(
+        result["staged_graph_build"]
+    )
+    assert result["graph_contract"]["capabilities"]["retrieval_or_reuse"] is True
+
+
 @pytest.mark.asyncio
 async def test_every_candidate_is_rendered_before_its_gate(monkeypatch):
     events: list[object] = []
@@ -1224,7 +1331,7 @@ async def test_explicit_prototype_wins_over_production_wording(monkeypatch):
     assert result["graph_contract"]["maturity"] == "prototype"
 
 
-def test_auto_edit_inherits_stored_maturity_and_explicit_change_restages():
+def test_auto_edit_inherits_stored_maturity_and_explicit_change_is_detected():
     graph = _approved_graph(maturity="prototype")
     contract = {"maturity": "production"}
     inherited, inherited_restage = workflow._maturity(
@@ -1248,18 +1355,21 @@ def test_auto_edit_inherits_stored_maturity_and_explicit_change_restages():
     assert (changed, changed_restage) == ("production", True)
 
 
+@pytest.mark.parametrize(
+    ("stored", "requested"), [("prototype", "production"), ("production", "prototype")]
+)
+@pytest.mark.parametrize("with_approved_snapshot", [False, True])
 @pytest.mark.asyncio
-async def test_explicit_depth_change_compiles_narrow_edit_scope(monkeypatch):
+async def test_scoped_maturity_change_is_rejected_before_generation(
+    monkeypatch,
+    stored,
+    requested,
+    with_approved_snapshot,
+):
     calls: list[tuple[dict, dict]] = []
-    component_inputs: list[dict] = []
+    events: list[object] = []
     scope_queries: list[str] = []
-    _install_success_boundaries(monkeypatch)
-    component_wire = _components_wire()
-    component_wire["components"][0]["label"] = "Public gateway"
-
-    async def components(**kwargs):
-        component_inputs.append(copy.deepcopy(kwargs))
-        return {"wire": component_wire, "prompt_fingerprint": "component-prompt"}
+    _install_success_boundaries(monkeypatch, events=events)
 
     original_scope = workflow.staged_edit_scope
 
@@ -1270,18 +1380,28 @@ async def test_explicit_depth_change_compiles_narrow_edit_scope(monkeypatch):
         return contract, permissions
 
     monkeypatch.setattr(workflow, "staged_edit_scope", capture_scope)
-    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    previous_graph = _accepted_staged_graph(maturity=stored)
+    previous_contract = {"maturity": stored, "capabilities": {}}
+    snapshot = (
+        {
+            "approved_graph_data": previous_graph,
+            "approved_graph_contract": previous_contract,
+        }
+        if with_approved_snapshot
+        else {}
+    )
     result = await workflow.run_staged_graph_pipeline(
         _state(
             graph_intent="edit",
-            complexity="production",
+            complexity=requested,
             user_message="Rename Request gateway to Public gateway.",
             design_query=(
                 "Existing graph context: Payment processing.\n"
                 "Latest user request: Rename Request gateway to Public gateway."
             ),
-            approved_graph_data=_accepted_staged_graph(maturity="prototype"),
-            approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+            graph_data=previous_graph,
+            graph_contract=previous_contract,
+            **snapshot,
         )
     )
 
@@ -1289,8 +1409,77 @@ async def test_explicit_depth_change_compiles_narrow_edit_scope(monkeypatch):
     assert scope_queries == ["Rename Request gateway to Public gateway."]
     assert calls[0][0]["repair_scope"] == "local"
     assert calls[0][1]["editable_node_ids"] == ["n1"]
-    assert component_inputs[0]["request"].startswith("Existing graph context:")
+    assert events == []
+    assert result["graph_operation"]["failure_code"] == "staged_edit_maturity_conflict"
+    assert "auto" in result["graph_review"]["revision_instruction"]
+    assert "rebuild" in result["graph_review"]["revision_instruction"]
+    assert requested in result["graph_review"]["revision_instruction"]
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_data"] == previous_graph
+    assert result["graph_contract"] == previous_contract
+
+
+@pytest.mark.parametrize(
+    "user_request",
+    [
+        "Make it production ready.",
+        "Replace Request gateway.",
+        "Review the entire graph.",
+    ],
+)
+@pytest.mark.asyncio
+async def test_selected_maturity_does_not_authorize_graph_replacement(
+    monkeypatch, user_request
+):
+    events = []
+    _install_success_boundaries(monkeypatch, events=events)
+    previous_graph = _accepted_staged_graph()
+    previous_contract = {"maturity": "prototype", "capabilities": {}}
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="production",
+            user_message=user_request,
+            design_query=user_request,
+            approved_graph_data=previous_graph,
+            approved_graph_contract=previous_contract,
+        )
+    )
+
+    assert events == []
+    assert result["graph_operation"]["failure_code"] == "staged_edit_scope_ambiguous"
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_data"] == previous_graph
+    assert result["graph_contract"] == previous_contract
+
+
+@pytest.mark.parametrize(
+    "user_request", ["Redesign the entire graph.", "Rebuild the graph.", "Start over."]
+)
+@pytest.mark.asyncio
+async def test_explicit_graph_rebuild_can_change_maturity(monkeypatch, user_request):
+    events = []
+    _install_success_boundaries(monkeypatch, events=events)
+    previous_graph = _accepted_staged_graph()
+    previous_contract = {"maturity": "prototype", "capabilities": {}}
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="production",
+            user_message=user_request,
+            design_query=user_request,
+            approved_graph_data=previous_graph,
+            approved_graph_contract=previous_contract,
+        )
+    )
+
+    assert events.count("components") == events.count("connections") == 1
+    assert result["graph_publication"] == "approved"
     assert result["graph_contract"]["maturity"] == "production"
+    assert previous_contract["maturity"] == "prototype"
+    assert previous_graph["resolved_complexity"] == "prototype"
 
 
 @pytest.mark.asyncio
@@ -1302,6 +1491,181 @@ async def test_accepted_result_has_a_version_matched_server_contract(monkeypatch
     assert result["graph_contract"]["graph_version"] == result["graph_data"]["version"]
     assert result["graph_contract"]["component_fingerprint"]
     assert result["graph_contract"]["connection_fingerprint"]
+    assert result["graph_contract"]["reviewed_graph_fingerprint"]
+    assert result["graph_contract"]["objective"] == _state()["design_query"]
+
+
+def _current_review_contract(graph: dict) -> tuple[dict, dict]:
+    build = workflow.reconstruct_staged_graph_build(graph)
+    gates = {
+        stage: {
+            **_approved_gate(),
+            "review_identity": workflow.review_identity(stage, build["maturity"]),
+        }
+        for stage in ("components", "connections")
+    }
+    contract = workflow._contract(
+        build,
+        graph,
+        component_gate=gates["components"],
+        connection_gate=gates["connections"],
+        objective="Draw a payment system.",
+    )
+    return build, contract
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        None,
+        "version",
+        "graph",
+        "capabilities",
+        "old_release",
+        "rejected",
+        "missing_fingerprint",
+    ],
+)
+def test_review_scope_reuses_only_matching_current_server_approval(corruption):
+    graph = _accepted_staged_graph()
+    base, contract = _current_review_contract(graph)
+    if corruption == "version":
+        contract["graph_version"] = "another-version"
+    elif corruption == "graph":
+        graph["nodes"][0]["description"] = "Owns an unreviewed external action."
+    elif corruption == "capabilities":
+        contract["capabilities"]["external_effects"] = True
+    elif corruption == "old_release":
+        contract["connection_gate"]["review_identity"] = "obsolete-reviewer"
+    elif corruption == "rejected":
+        contract["component_gate"]["approved"] = False
+    elif corruption == "missing_fingerprint":
+        contract.pop("reviewed_graph_fingerprint")
+    graph["view_state"] = {"positions": {"n1": {"x": 100, "y": 40}}}
+    candidate = copy.deepcopy(base)
+    candidate["components"][0]["label"] = "Public gateway"
+
+    scope = workflow._edit_review_scope(base, candidate, graph, contract, {})
+
+    assert scope["trusted_baseline"] is (corruption is None)
+    assert scope["changed_component_ids"] == ["n1"]
+    assert scope["affected_component_ids"] == ["n1", "n2"]
+    assert scope["changed_connection_indexes"] == []
+    assert scope["baseline_objective"] == "Draw a payment system."
+
+
+@pytest.mark.parametrize(
+    "changed_context",
+    ["title", "assumptions", "capabilities", "maturity", "root_index"],
+)
+def test_changed_global_obligations_require_full_review(changed_context):
+    graph = _accepted_staged_graph()
+    base, contract = _current_review_contract(graph)
+    candidate = copy.deepcopy(base)
+    changed = {
+        "title": "Payment release system",
+        "assumptions": ["Payment processing can release funds."],
+        "capabilities": {**base["capabilities"], "external_effects": True},
+        "maturity": "production",
+        "root_index": 1,
+    }
+    candidate[changed_context] = changed[changed_context]
+
+    scope = workflow._edit_review_scope(base, candidate, graph, contract, {})
+
+    assert scope["trusted_baseline"] is False
+
+
+@pytest.mark.asyncio
+async def test_scoped_edit_passes_verified_baseline_and_dependency_changes_to_both_gates(
+    monkeypatch,
+):
+    _install_success_boundaries(monkeypatch)
+    graph = _accepted_staged_graph()
+    _, contract = _current_review_contract(graph)
+    reviews = []
+
+    async def components(**_kwargs):
+        wire = _components_wire()
+        wire["components"][0]["label"] = "Public gateway"
+        return {"wire": wire, "prompt_fingerprint": "component-prompt"}
+
+    async def review(**kwargs):
+        reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "review_components", review)
+    monkeypatch.setattr(workflow, "review_connections", review)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="auto",
+            user_message="Rename Request gateway to Public gateway.",
+            design_query="Rename Request gateway to Public gateway.",
+            approved_graph_data=graph,
+            approved_graph_contract=contract,
+        )
+    )
+
+    assert result["graph_publication"] == "approved", result["graph_operation"]
+    assert len(reviews) == 2
+    for review in reviews:
+        scope = review["evidence_bundle"]["review_scope"]
+        assert scope["trusted_baseline"] is True
+        assert scope["changed_component_ids"] == ["n1"]
+        assert scope["affected_component_ids"] == ["n1", "n2"]
+        assert scope["edit_permissions"]["editable_node_ids"] == ["n1"]
+        assert scope["baseline_components"][0]["label"] == "Request gateway"
+    assert result["graph_contract"]["objective"] == contract["objective"]
+
+
+@pytest.mark.parametrize("first_generation_fails", [False, True])
+@pytest.mark.asyncio
+async def test_same_control_candidate_receives_same_review_after_generation_failure(
+    monkeypatch, first_generation_fails
+):
+    _install_success_boundaries(monkeypatch)
+    calls = 0
+    reviews = []
+    wire = _connections_wire()
+    wire["edges"].append(
+        {
+            "source_index": 1,
+            "target_index": 0,
+            "label": "return authorization decision",
+            "flow": 401,
+            "sync": 500,
+        }
+    )
+
+    async def connections(**_kwargs):
+        nonlocal calls
+        calls += 1
+        if first_generation_fails and calls == 1:
+            raise workflow.StagedGenerationError(
+                "connection_wire_invalid", prompt_fingerprint="first"
+            )
+        return {"wire": wire, "prompt_fingerprint": "corrected"}
+
+    async def review(**kwargs):
+        reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_connections", review)
+    result = await workflow.run_staged_graph_pipeline(_state())
+
+    assert result["graph_publication"] == "approved", result["graph_operation"]
+    assert calls == 1 + first_generation_fails
+    assert len(reviews) == 1
+    assert reviews[0]["candidate_records"][-1] == {
+        "source": "n2",
+        "target": "n1",
+        "label": "return authorization decision",
+        "flow": "control",
+        "sync": "sync",
+    }
 
 
 @pytest.mark.asyncio
@@ -1461,11 +1825,14 @@ async def test_scoped_component_rename_retains_the_existing_server_id(monkeypatc
     assert result["graph_data"]["edges"] == previous_graph["edges"]
 
 
+@pytest.mark.parametrize("retrieval_enabled", [False, True])
 @pytest.mark.asyncio
 async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_authority(
     monkeypatch,
+    retrieval_enabled,
 ):
     component_wire = _components_wire()
+    component_wire["capabilities"]["retrieval_or_reuse"] = retrieval_enabled
     component_wire["components"].append(
         {
             "label": "Fraud check",
@@ -1476,6 +1843,12 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
             "primary_flow_member": False,
         }
     )
+    if retrieval_enabled:
+        component_wire["components"][-1].update(
+            label="Risk reference retrieval",
+            type=101,
+            responsibility="Retrieves versioned payment risk references.",
+        )
     connection_wire = _connections_wire()
     connection_wire["edges"].append(
         {
@@ -1487,16 +1860,40 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
         }
     )
     component_inputs: list[dict] = []
+    connection_inputs: list[dict] = []
+    component_reviews: list[dict] = []
+    connection_reviews: list[dict] = []
     scope_calls: list[tuple[dict, dict]] = []
     scope_queries: list[str] = []
     original_scope = workflow.staged_edit_scope
 
     async def components(**kwargs):
         component_inputs.append(copy.deepcopy(kwargs))
-        return {"wire": component_wire, "prompt_fingerprint": "component-prompt"}
+        return await generation.generate_component_candidate(**kwargs)
 
-    async def connections(**_kwargs):
-        return {"wire": connection_wire, "prompt_fingerprint": "connection-prompt"}
+    async def connections(**kwargs):
+        connection_inputs.append(copy.deepcopy(kwargs))
+        return await generation.generate_connection_candidate(**kwargs)
+
+    async def generate_delta(**kwargs):
+        assert kwargs["schema"]["properties"]["updates"]["properties"] == {}
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": component_wire["components"][-1:],
+                    "updates": {},
+                    "capabilities": component_wire["capabilities"],
+                }
+            )
+        return json.dumps({"additions": connection_wire["edges"][-1:], "updates": {}})
+
+    async def review_components(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    async def review_connections(**kwargs):
+        connection_reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
 
     def capture_scope(*args, **kwargs):
         scope_queries.append(args[0])
@@ -1506,18 +1903,27 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
 
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
     monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
     monkeypatch.setattr(workflow, "staged_edit_scope", capture_scope)
     monkeypatch.setattr(workflow, "_render", _render_ok)
-    monkeypatch.setattr(workflow, "review_components", _approve_gate)
-    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+    monkeypatch.setattr(workflow, "review_components", review_components)
+    monkeypatch.setattr(workflow, "review_connections", review_connections)
 
-    previous_graph = _accepted_staged_graph(maturity="prototype")
+    previous_graph = _accepted_staged_graph(maturity="production")
     previous_nodes = copy.deepcopy(previous_graph["nodes"])
     previous_edges = copy.deepcopy(previous_graph["edges"])
     previous_groups = copy.deepcopy(previous_graph["groups"])
     previous_sequence = copy.deepcopy(previous_graph["sequence"])
     previous_title = previous_graph["title"]
     previous_assumptions = copy.deepcopy(previous_graph["assumptions"])
+    previous_contract = {
+        "maturity": "production",
+        "capabilities": {
+            "external_effects": False,
+            "retrieval_or_reuse": False,
+            "learning_or_release": False,
+        },
+    }
     result = await workflow.run_staged_graph_pipeline(
         _state(
             graph_intent="edit",
@@ -1528,14 +1934,7 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
                 "Latest user request: Expand Request gateway."
             ),
             approved_graph_data=previous_graph,
-            approved_graph_contract={
-                "maturity": "prototype",
-                "capabilities": {
-                    "external_effects": False,
-                    "retrieval_or_reuse": False,
-                    "learning_or_release": False,
-                },
-            },
+            approved_graph_contract=previous_contract,
             graph_data=previous_graph,
         )
     )
@@ -1547,6 +1946,35 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
     assert len(scope_calls) == 1
     assert scope_queries == ["Expand Request gateway."]
     assert scope_calls[0][0]["repair_scope"] == "local"
+    assert component_inputs[0]["edit_permissions"] == scope_calls[0][1]
+    assert connection_inputs[0]["edit_permissions"] == scope_calls[0][1]
+    assert (
+        component_inputs[0]["base_components"]["capabilities"]["retrieval_or_reuse"]
+        is False
+    )
+    expected_capabilities = component_wire["capabilities"]
+    assert len(component_reviews) == len(connection_reviews) == 1
+    assert len(component_reviews[0]["candidate_records"]) == 3
+    assert len(connection_reviews[0]["candidate_records"]) == 2
+    assert (
+        component_reviews[0]["evidence_bundle"]["candidate_context"]["capabilities"]
+        == expected_capabilities
+    )
+    assert (
+        connection_inputs[0]["accepted_context"]["capabilities"]
+        == expected_capabilities
+    )
+    assert (
+        connection_reviews[0]["evidence_bundle"]["candidate_context"]["capabilities"]
+        == expected_capabilities
+    )
+    assert connection_reviews[0]["required_production_guarantees"] == (
+        ["audit_and_provenance", "retrieval_and_reuse_trust"]
+        if retrieval_enabled
+        else ["audit_and_provenance"]
+    )
+    assert result["graph_contract"]["capabilities"] == expected_capabilities
+    assert previous_contract["capabilities"]["retrieval_or_reuse"] is False
     assert [
         node for node in result["graph_data"]["nodes"] if node["id"] in {"n1", "n2"}
     ] == previous_nodes
@@ -1566,6 +1994,136 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
     assert len(added_edges) == 1
     assert added_edges[0]["source"] == "n1"
     assert added_edges[0]["target"] == added_nodes[0]["id"]
+
+
+@pytest.mark.asyncio
+async def test_retained_model_serving_graph_expands_monitoring_without_prior_record_drift(
+    monkeypatch,
+):
+    from eval.browser_runner import _graph_expansion_failure
+
+    # Paid run 32300653373, scheduled-eval-32300653373/browser-results.json:
+    # results[0], first graph_data event, eval_turn=1. Only its graph is retained.
+    fixture = (
+        Path(__file__).with_name("fixtures") / "staged_model_serving_32300653373.json"
+    )
+    previous_graph = json.loads(fixture.read_text())
+    original = copy.deepcopy(previous_graph)
+    provider_stages = []
+    component_reviews = []
+    connection_reviews = []
+
+    async def generate_delta(**kwargs):
+        provider_stages.append(kwargs["stage"])
+        properties = kwargs["schema"]["properties"]
+        assert properties["updates"]["properties"] == {}
+        assert (
+            properties["additions"]["minItems"]
+            == properties["additions"]["maxItems"]
+            == 1
+        )
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [
+                        {
+                            "label": "Alert Triage Service",
+                            "type": 101,
+                            "responsibility": "Evaluates monitoring alerts and prioritizes issues for operator review.",
+                            "group_label": "Observability",
+                            "group_kind": 602,
+                            "primary_flow_member": False,
+                        }
+                    ],
+                    "updates": {},
+                    "capabilities": {
+                        "external_effects": False,
+                        "retrieval_or_reuse": False,
+                        "learning_or_release": False,
+                    },
+                }
+            )
+        return json.dumps(
+            {
+                "additions": [
+                    {
+                        "source_index": 4,
+                        "target_index": 5,
+                        "label": "dispatch monitoring alerts for triage",
+                        "flow": 402,
+                        "sync": 501,
+                    }
+                ],
+                "updates": {},
+            }
+        )
+
+    async def review_components(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    async def review_connections(**kwargs):
+        connection_reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", review_components)
+    monkeypatch.setattr(workflow, "review_connections", review_connections)
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            graph_operation={
+                "kind": "edit",
+                "status": "candidate",
+                "failure_code": None,
+            },
+            complexity="auto",
+            user_message="Expand Monitoring Service.",
+            design_query="Expand Monitoring Service.",
+            approved_graph_data=previous_graph,
+            graph_data=previous_graph,
+        )
+    )
+
+    assert result["graph_publication"] == "approved", result.get(
+        "graph_review_diagnostics"
+    )
+    assert provider_stages == ["components", "connections"]
+    assert len(component_reviews) == len(connection_reviews) == 1
+    assert len(component_reviews[0]["candidate_records"]) == 6
+    assert len(connection_reviews[0]["candidate_records"]) == 7
+    assert component_reviews[0]["resolved_maturity"] == "prototype"
+    assert connection_reviews[0]["resolved_maturity"] == "prototype"
+    current_graph = result["graph_data"]
+    assert (
+        _graph_expansion_failure(
+            original, current_graph, anchor_label_contains="Monitoring Service"
+        )
+        is None
+    )
+    assert current_graph["nodes"][:5] == original["nodes"]
+    assert current_graph["edges"][:6] == original["edges"]
+    assert current_graph["nodes"][-1]["label"] == "Alert Triage Service"
+    assert current_graph["edges"][-1]["source"] == "n5"
+    assert current_graph["edges"][-1]["target"] == current_graph["nodes"][-1]["id"]
+    assert current_graph["edges"][-1]["sync"] == "async"
+    for field in ("title", "assumptions", "sequence", "resolved_complexity"):
+        assert current_graph[field] == original[field]
+    assert current_graph["groups"] == [
+        {
+            **group,
+            "nodeIds": group["nodeIds"]
+            + (
+                [current_graph["nodes"][-1]["id"]]
+                if group["id"] == "group_observability"
+                else []
+            ),
+        }
+        for group in original["groups"]
+    ]
+    assert previous_graph == original
 
 
 @pytest.mark.asyncio
@@ -1664,3 +2222,403 @@ async def test_connection_generation_receives_indexed_coded_base_connections(
             "sync": 500,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_root_deletion_requires_replacement_authority(monkeypatch):
+    _install_success_boundaries(monkeypatch)
+    wire = _components_wire()
+    wire["components"].pop(0)
+
+    async def components(**_kwargs):
+        return {"wire": wire, "prompt_fingerprint": "component-prompt"}
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    previous_graph = _accepted_staged_graph()
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message="Delete Request gateway.",
+            design_query="Delete Request gateway.",
+            approved_graph_data=previous_graph,
+            approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+            graph_data=previous_graph,
+        )
+    )
+
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_data"] == previous_graph
+    assert result["graph_review_diagnostics"][0]["path"] == "root_index"
+
+
+@pytest.mark.parametrize("removed_index", [0, 1])
+@pytest.mark.parametrize("mutation", [None, "component", "edge", "group"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.asyncio
+async def test_scoped_deletion_preserves_surviving_ids_root_and_directed_edges(
+    monkeypatch,
+    removed_index,
+    mutation,
+    maturity,
+):
+    wire = _components_wire()
+    wire["components"][1]["group_label"] = "Settlement"
+    wire["components"][:0] = [
+        {
+            "label": label,
+            "type": 101,
+            "responsibility": responsibility,
+            "group_label": "Runtime",
+            "group_kind": 600,
+            "primary_flow_member": False,
+        }
+        for label, responsibility in [
+            ("Metrics sink", "Collects request metrics."),
+            ("Audit mirror", "Receives audit copies."),
+        ]
+    ]
+    prior_build = assign_server_ids(
+        {
+            **wire,
+            "request_id": "prior-request",
+            "root_index": 2,
+            "components": workflow._decode_components(wire),
+            "connections": [
+                {
+                    "source_id": str(source),
+                    "target_id": str(target),
+                    "label": label,
+                    "flow": flow,
+                    "sync": "sync",
+                }
+                for source, target, label, flow in [
+                    (2, 0, "reports metrics", "feedback"),
+                    (2, 1, "copies audit", "feedback"),
+                    (2, 3, "submits payment", "runtime"),
+                    (3, 2, "returns payment status", "feedback"),
+                ]
+            ],
+            "maturity": maturity,
+        }
+    )
+    previous_graph = project_graph_data(prior_build)
+    for index, edge in enumerate(previous_graph["edges"]):
+        edge["technology"] = f"Transport {index}"
+        edge["description"] = f"Stored edge description {index}"
+    previous_graph["version"] = "prior-version"
+    untouched_graph = copy.deepcopy(previous_graph)
+    removed = wire["components"].pop(removed_index)
+    removed_id = prior_build["components"][removed_index]["server_id"]
+    remaining_build = {
+        **prior_build,
+        "components": [
+            {**component, "model_index": index}
+            for index, component in enumerate(
+                component
+                for component in prior_build["components"]
+                if component["server_id"] != removed_id
+            )
+        ],
+        "connections": [
+            edge
+            for edge in prior_build["connections"]
+            if removed_id not in (edge["source_id"], edge["target_id"])
+        ],
+    }
+    expected_connections = workflow._connection_prompt_base(remaining_build)
+    returned_connections = copy.deepcopy(expected_connections)
+    if mutation == "component":
+        wire["components"][-1]["responsibility"] = "Owns unrelated payment records."
+    elif mutation == "group":
+        wire["components"][-1]["group_label"] = "Unrelated group"
+    elif mutation == "edge":
+        edge = returned_connections[-1]
+        edge["source_index"], edge["target_index"] = (
+            edge["target_index"],
+            edge["source_index"],
+        )
+    connection_inputs = []
+
+    async def components(**kwargs):
+        if mutation is None:
+            return await generation.generate_component_candidate(**kwargs)
+        return {"wire": wire, "prompt_fingerprint": "component-prompt"}
+
+    async def connections(**kwargs):
+        connection_inputs.append(copy.deepcopy(kwargs))
+        if mutation is None:
+            return await generation.generate_connection_candidate(**kwargs)
+        return {
+            "wire": {"edges": returned_connections},
+            "prompt_fingerprint": "connection-prompt",
+        }
+
+    async def generate_delta(**kwargs):
+        assert kwargs["schema"]["properties"]["updates"]["properties"] == {}
+        assert kwargs["schema"]["properties"]["additions"]["maxItems"] == 0
+        return json.dumps(
+            {
+                "additions": [],
+                "updates": {},
+                **(
+                    {"capabilities": wire["capabilities"]}
+                    if kwargs["stage"] == "components"
+                    else {}
+                ),
+            }
+        )
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+    request = f"Delete {removed['label']}."
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity=maturity,
+            user_message=request,
+            design_query=request,
+            approved_graph_data=previous_graph,
+            approved_graph_contract={"maturity": maturity, "capabilities": {}},
+            graph_data=previous_graph,
+        )
+    )
+
+    if mutation is not None:
+        assert result["graph_publication"] == "preserved"
+        assert result["graph_data"] == untouched_graph
+        assert previous_graph == untouched_graph
+        return
+
+    assert result["graph_publication"] == "approved", result.get(
+        "graph_review_diagnostics"
+    )
+    assert len(connection_inputs) == 1
+    assert connection_inputs[0]["base_connections"] == expected_connections
+    assert [
+        component["id"]
+        for component in connection_inputs[0]["accepted_components"]
+        if component["is_root"]
+    ] == ["n3"]
+    assert result["staged_graph_build"]["root_index"] == 1
+    assert result["graph_data"]["nodes"] == [
+        node for node in previous_graph["nodes"] if node["id"] != removed_id
+    ]
+    assert result["graph_data"]["edges"] == [
+        edge
+        for edge in previous_graph["edges"]
+        if removed_id not in (edge["source"], edge["target"])
+    ]
+    assert result["graph_data"]["sequence"] == previous_graph["sequence"]
+    assert result["graph_data"]["groups"] == [
+        {
+            **group,
+            "nodeIds": [
+                node_id for node_id in group["nodeIds"] if node_id != removed_id
+            ],
+        }
+        for group in previous_graph["groups"]
+    ]
+    assert previous_graph == untouched_graph
+
+
+@pytest.mark.parametrize(
+    ("user_request", "field", "wire_value", "stored_value"),
+    [
+        (
+            "Rename edge_1 label to payment submission.",
+            "label",
+            "payment submission",
+            "payment submission",
+        ),
+        ("Make edge_1 asynchronous.", "sync", 501, "async"),
+        ("Set edge_1 flow to control.", "flow", 401, "control"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_scoped_edge_scalar_edit_preserves_locked_presentation(
+    monkeypatch,
+    user_request,
+    field,
+    wire_value,
+    stored_value,
+):
+    previous_graph = _accepted_staged_graph()
+    previous_graph["edges"][0].update(
+        technology="Signed HTTP contract",
+        description="Authoritative payment request payload.",
+    )
+    original = copy.deepcopy(previous_graph)
+    provider_stages = []
+
+    async def generate_delta(**kwargs):
+        provider_stages.append(kwargs["stage"])
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [],
+                    "updates": {},
+                    "capabilities": _components_wire()["capabilities"],
+                }
+            )
+        assert set(
+            kwargs["schema"]["properties"]["updates"]["properties"]["slot_0"][
+                "properties"
+            ]
+        ) == {field}
+        return json.dumps({"additions": [], "updates": {"slot_0": {field: wire_value}}})
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message=user_request,
+            design_query=user_request,
+            approved_graph_data=previous_graph,
+            graph_data=previous_graph,
+        )
+    )
+
+    assert result["graph_publication"] == "approved", result.get(
+        "graph_review_diagnostics"
+    )
+    assert provider_stages == ["components", "connections"]
+    expected_edge = {**original["edges"][0], field: stored_value}
+    if field == "label":
+        expected_edge.update(
+            edge_id="applied:n1__payment_submission__n2", relation="payment_submission"
+        )
+    assert result["graph_data"]["edges"] == [expected_edge]
+    for key in ("nodes", "groups", "sequence", "title", "assumptions"):
+        assert result["graph_data"][key] == original[key]
+    assert previous_graph == original
+
+
+@pytest.mark.parametrize(
+    ("unauthorized_field", "value"), [("source", "n2"), ("label", "unrequested label")]
+)
+def test_scoped_presentation_slot_rejects_unauthorized_semantic_changes(
+    unauthorized_field,
+    value,
+):
+    previous_graph = _accepted_staged_graph()
+    candidate = copy.deepcopy(previous_graph)
+    candidate["edges"][0].update(
+        technology="Unrelated transport",
+        description="Unrelated edge description.",
+        **{unauthorized_field: value},
+    )
+    repair_contract, permissions = workflow.staged_edit_scope(
+        "Make edge_1 asynchronous.", previous_graph, resolved_complexity="prototype"
+    )
+
+    preserved = workflow._preserve_existing_presentation(
+        candidate,
+        previous_graph,
+        edit_permissions=permissions,
+    )
+
+    assert preserved["edges"][0] == candidate["edges"][0]
+    with pytest.raises(ValueError, match="locked edge fields"):
+        workflow.admit_staged_graph_edit(
+            previous_graph,
+            preserved,
+            resolved_complexity="prototype",
+            repair_contract=repair_contract,
+            mutation_permissions=permissions,
+        )
+
+
+def test_presentation_preservation_honors_explicit_presentation_field_authority():
+    previous_graph = _accepted_staged_graph()
+    candidate = copy.deepcopy(previous_graph)
+    candidate["nodes"][0]["technology"] = "Authorized gateway transport"
+    candidate["edges"][0]["description"] = "Authorized edge description."
+
+    preserved = workflow._preserve_existing_presentation(
+        candidate,
+        previous_graph,
+        edit_permissions={
+            "editable_node_fields": {"n1": ["technology"]},
+            "editable_edge_fields": {"edge_1": ["description"]},
+        },
+    )
+
+    assert preserved["nodes"][0]["technology"] == "Authorized gateway transport"
+    assert preserved["edges"][0]["description"] == "Authorized edge description."
+
+
+@pytest.mark.parametrize("operation", ["rename", "remove"])
+@pytest.mark.asyncio
+async def test_scoped_primary_node_edit_preserves_authored_sequence(
+    monkeypatch, operation
+):
+    previous_graph = _accepted_staged_graph()
+    previous_graph["sequence"][0]["description"] = "Receive the authenticated payment."
+    previous_graph["sequence"][1]["description"] = "Process the payment instruction."
+    original = copy.deepcopy(previous_graph)
+    provider_stages = []
+
+    async def generate_delta(**kwargs):
+        provider_stages.append(kwargs["stage"])
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [],
+                    "updates": {"slot_1": {"label": "Settlement service"}}
+                    if operation == "rename"
+                    else {},
+                    "capabilities": _components_wire()["capabilities"],
+                }
+            )
+        return json.dumps({"additions": [], "updates": {}})
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+    user_request = (
+        "Rename Payment service to Settlement service."
+        if operation == "rename"
+        else "Delete Payment service."
+    )
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="auto",
+            user_message=user_request,
+            design_query=user_request,
+            approved_graph_data=previous_graph,
+            graph_data=previous_graph,
+        )
+    )
+
+    assert result["graph_publication"] == "approved", result.get(
+        "graph_review_diagnostics"
+    )
+    assert provider_stages == ["components", "connections"]
+    if operation == "rename":
+        assert result["graph_data"]["sequence"] == original["sequence"]
+        assert result["graph_data"]["nodes"] == [
+            original["nodes"][0],
+            {**original["nodes"][1], "label": "Settlement service"},
+        ]
+        assert result["graph_data"]["edges"] == original["edges"]
+        assert result["graph_data"]["groups"] == original["groups"]
+    else:
+        assert result["graph_data"]["sequence"] == original["sequence"][:1]
+        assert result["graph_data"]["nodes"] == original["nodes"][:1]
+        assert result["graph_data"]["edges"] == []
+        assert result["graph_data"]["groups"] == [
+            {**original["groups"][0], "nodeIds": ["n1"]}
+        ]
+    assert previous_graph == original

@@ -132,6 +132,16 @@ These controls do not imply that paid validation or a pending production
 deployment has completed. See [docs/quality-system.md](docs/quality-system.md) for the
 full evidence, replay, and deployment procedures.
 
+The [2026-09-11 failure audit](docs/failure-audit-2026-09-11.md) reconciles all 55 failed
+single-case graph-expansion diagnostics with their available evidence. Scoped staged edits now
+generate additions and authorized field updates while the server preserves locked records.
+Generation and review share their acceptance criteria. The required live status fails when corpus
+approval is missing; offline success does not replace protected live evaluation.
+Scoped review verifies prior approvals against graph and reviewer fingerprints and checks each
+edit's effects on dependencies. Edge edits preserve authored presentation; node deletion cleans
+only affected sequence memberships. Scheduled failures stay failed and retain review evidence
+with deployment identity for 90 days.
+
 ## Maintainer
 
 Maintained by [Frank Yang](https://github.com/yyqfrank420).

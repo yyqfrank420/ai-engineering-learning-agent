@@ -8,6 +8,36 @@ from agent.graph_repair_contract import validate_local_repair_admission
 from agent.nodes import graph_worker
 
 
+@pytest.mark.parametrize("removed_index", [0, 2])
+def test_staged_candidate_patch_addresses_removed_edge_before_survivors_shift(
+    removed_index,
+):
+    graph = _domain_graph(5)
+    candidate = copy.deepcopy(graph)
+    candidate["edges"].pop(removed_index)
+    candidate["edges"].reverse()
+
+    patch = graph_worker._staged_candidate_patch(graph, candidate)
+
+    assert patch == {"remove_edges": [f"edge_{removed_index + 1}"]}
+
+
+def test_staged_candidate_patch_keeps_base_selectors_for_shifted_edge_updates():
+    graph = _domain_graph(5)
+    candidate = copy.deepcopy(graph)
+    candidate["edges"].pop(0)
+    candidate["edges"][-1]["description"] = "Updated bounded contract."
+
+    patch = graph_worker._staged_candidate_patch(graph, candidate)
+
+    assert patch == {
+        "remove_edges": ["edge_1"],
+        "update_edges": [
+            {"edge_id": "edge_5", "set": {"description": "Updated bounded contract."}}
+        ],
+    }
+
+
 def test_patch_accepts_multiple_operations_while_preserving_existing_records():
     graph = _domain_graph(5)
     patch = {
@@ -5845,3 +5875,180 @@ def test_self_loop_removal_fails_closed_when_publication_topology_is_invalid(
             resolved_complexity="standard",
             context="self-loop rejection test",
         )
+
+
+@pytest.mark.parametrize("removed_index", [1, 3])
+def test_node_removal_cleans_authored_sequence_without_changing_other_steps(
+    removed_index,
+):
+    graph = _domain_graph(4)
+    graph["nodes"][removed_index]["label"] = "Payment service"
+    graph["edges"] = [
+        {
+            **graph["edges"][index - 1],
+            "source": "fulfilment_stage_0",
+            "target": f"fulfilment_stage_{index}",
+        }
+        for index in range(1, 4)
+    ]
+    graph["sequence"] = [
+        {
+            "step": index + 1,
+            "nodes": [node["id"]],
+            "description": f"Authored responsibility {index}.",
+        }
+        for index, node in enumerate(graph["nodes"])
+    ]
+    before = copy.deepcopy(graph)
+    contract, permissions = graph_worker._user_edit_scope(
+        "Delete Payment service", graph, resolved_complexity="prototype"
+    )
+    removed_id = graph["nodes"][removed_index]["id"]
+    sequence = graph_worker.sequence_after_node_removal(graph["sequence"], {removed_id})
+
+    result = graph_worker._apply_applied_graph_patch(
+        graph,
+        {
+            "remove_nodes": [removed_id],
+            "remove_edges": permissions["removable_edge_ids"],
+            "sequence": sequence,
+        },
+        safety_max_nodes=4,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+
+    assert contract["layers"]["composition"]["composition_fields"] == ["sequence"]
+    assert permissions["editable_sequence_indexes"] == [removed_index]
+    retained_steps = (
+        before["sequence"][:removed_index] + before["sequence"][removed_index + 1 :]
+    )
+    assert result["sequence"] == [
+        {**step, "step": index + 1} for index, step in enumerate(retained_steps)
+    ]
+    assert graph == before
+
+
+def test_sequence_node_removal_preserves_other_members_and_authored_description():
+    sequence = [
+        {"step": 1, "nodes": ["root"], "description": "Receive request."},
+        {
+            "step": 2,
+            "nodes": ["removed", "retained"],
+            "description": "Record both outcomes.",
+        },
+        {"step": 3, "nodes": ["removed"], "description": "Obsolete branch."},
+        {"step": 4, "nodes": ["sink"], "description": "Persist result."},
+    ]
+    before = copy.deepcopy(sequence)
+
+    result = graph_worker.sequence_after_node_removal(sequence, {"removed"})
+
+    assert result == [
+        sequence[0],
+        {**sequence[1], "nodes": ["retained"]},
+        {**sequence[3], "step": 3},
+    ]
+    assert sequence == before
+
+
+@pytest.mark.parametrize(
+    "mutation", ["description", "reorder", "unrelated_member", "step"]
+)
+def test_node_removal_rejects_unrelated_authored_sequence_mutations(mutation):
+    graph = _domain_graph(4)
+    graph["nodes"][3]["label"] = "Payment service"
+    graph["sequence"] = [
+        {
+            "step": index + 1,
+            "nodes": [node["id"]],
+            "description": f"Authored step {index}.",
+        }
+        for index, node in enumerate(graph["nodes"])
+    ]
+    contract, permissions = graph_worker._user_edit_scope(
+        "Delete Payment service", graph, resolved_complexity="prototype"
+    )
+    sequence = graph_worker.sequence_after_node_removal(
+        graph["sequence"], {"fulfilment_stage_3"}
+    )
+    if mutation == "description":
+        sequence[0]["description"] = "Unrelated replacement."
+    elif mutation == "reorder":
+        sequence.reverse()
+    elif mutation == "unrelated_member":
+        sequence.pop(0)
+    else:
+        sequence[0]["step"] = 9
+
+    with pytest.raises(ValueError, match="unrelated sequence content"):
+        graph_worker._apply_applied_graph_patch(
+            graph,
+            {
+                "remove_nodes": ["fulfilment_stage_3"],
+                "remove_edges": permissions["removable_edge_ids"],
+                "sequence": sequence,
+            },
+            safety_max_nodes=4,
+            resolved_complexity="prototype",
+            repair_contract=contract,
+            mutation_permissions=permissions,
+        )
+
+    candidate = copy.deepcopy(graph)
+    candidate["nodes"].pop()
+    candidate["sequence"] = sequence
+    with pytest.raises(ValueError, match="unrelated sequence content"):
+        graph_worker._validate_locked_composition_after_normalization(
+            graph, candidate, permissions
+        )
+
+
+def test_node_removal_without_sequence_membership_keeps_sequence_locked():
+    graph = _domain_graph(4)
+    graph["nodes"][3]["label"] = "Payment service"
+    graph["sequence"] = [
+        {"step": 1, "nodes": ["fulfilment_stage_0"], "description": "Receive request."}
+    ]
+
+    contract, permissions = graph_worker._user_edit_scope(
+        "Delete Payment service", graph, resolved_complexity="prototype"
+    )
+
+    assert contract["layers"]["composition"]["status"] == "pass"
+    assert permissions["editable_sequence_indexes"] == []
+    assert permissions["editable_composition_fields"] == []
+
+
+def test_leaf_node_removal_can_leave_one_connected_root():
+    graph = _domain_graph(2)
+    graph["nodes"][1]["label"] = "Payment service"
+    graph["sequence"] = [
+        {
+            "step": index + 1,
+            "nodes": [node["id"]],
+            "description": f"Authored step {index}.",
+        }
+        for index, node in enumerate(graph["nodes"])
+    ]
+    contract, permissions = graph_worker._user_edit_scope(
+        "Delete Payment service", graph, resolved_complexity="prototype"
+    )
+
+    result = graph_worker._apply_applied_graph_patch(
+        graph,
+        {
+            "remove_nodes": ["fulfilment_stage_1"],
+            "remove_edges": permissions["removable_edge_ids"],
+            "sequence": graph["sequence"][:1],
+        },
+        safety_max_nodes=2,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+
+    assert [node["id"] for node in result["nodes"]] == ["fulfilment_stage_0"]
+    assert result["edges"] == []
+    assert result["sequence"] == graph["sequence"][:1]

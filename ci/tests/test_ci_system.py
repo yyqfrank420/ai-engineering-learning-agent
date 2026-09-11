@@ -3,7 +3,9 @@ from __future__ import annotations
 import inspect
 import json
 import subprocess
+import sys
 from pathlib import Path
+from textwrap import dedent
 
 import pytest
 
@@ -648,12 +650,7 @@ def test_scheduled_eval_preserves_approval_and_diagnostic_build_boundaries():
         'if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || '
         '[ "$EVAL_SUITE" != diagnostic ]; then' in workflow
     )
-    assert (
-        'if [ "$CORPUS_STATUS" != approved ] \\\n'
-        '            && { [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || '
-        '[ "$EVAL_SUITE" != diagnostic ]; }; then' in workflow
-    )
-    assert "Diagnostic or approved scheduled evaluation did not pass." in workflow
+    assert "Scheduled evaluation did not pass." in workflow
     assert (
         "A pending corpus can be bootstrapped only by a manually dispatched full or diagnostic run."
         in workflow
@@ -705,6 +702,137 @@ def test_scheduled_eval_preserves_approval_and_diagnostic_build_boundaries():
     assert workflow.index('echo "REVISION_TAG=$tag"') < workflow.index(
         "gcloud run deploy"
     )
+
+
+@pytest.mark.parametrize("suite", ["nightly", "full", "diagnostic"])
+@pytest.mark.parametrize("corpus_status", ["approved", "pending_human_review"])
+@pytest.mark.parametrize(
+    ("browser_outcome", "semantic_outcome"),
+    [
+        ("success", "success"),
+        ("failure", "success"),
+        ("success", "failure"),
+        ("cancelled", "success"),
+        ("success", "cancelled"),
+        ("skipped", "success"),
+        ("success", "skipped"),
+        ("", ""),
+        ("failure", "failure"),
+    ],
+)
+def test_scheduled_eval_status_preserves_failed_outcomes(
+    suite, corpus_status, browser_outcome, semantic_outcome
+):
+    workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text(
+        encoding="utf-8"
+    )
+    step = workflow.split("- name: Enforce scheduled evaluation outcome\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1])
+
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+        env={
+            "EVAL_SUITE": suite,
+            "GITHUB_EVENT_NAME": (
+                "schedule" if suite == "nightly" else "workflow_dispatch"
+            ),
+            "CORPUS_STATUS": corpus_status,
+            "BROWSER_OUTCOME": browser_outcome,
+            "SEMANTIC_OUTCOME": semantic_outcome,
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    succeeded = browser_outcome == semantic_outcome == "success"
+    assert result.returncode == (0 if succeeded else 1)
+    if not succeeded:
+        assert "Scheduled evaluation did not pass" in result.stderr
+    elif corpus_status == "pending_human_review":
+        assert "successful proposals do not approve a release" in result.stdout
+
+
+@pytest.mark.parametrize(
+    "invalid_identity", [None, "digest", "missing_revision", "duplicate_tag"]
+)
+def test_scheduled_eval_records_exact_deployment_identity(tmp_path, invalid_identity):
+    workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text(
+        encoding="utf-8"
+    )
+    deployment = workflow.split(
+        "- name: Deploy evaluation digest to a tagged staging revision\n", 1
+    )[1].split("- name: Wait for candidate readiness", 1)[0]
+    script = dedent(
+        deployment.split("python - <<'PY'\n", 1)[1].split("          PY", 1)[0]
+    )
+    candidate = {
+        "tag": "scheduled-123",
+        "url": "https://scheduled-123.example.test",
+        "revisionName": "agent-backend-staging-123",
+    }
+    if invalid_identity == "missing_revision":
+        candidate.pop("revisionName")
+    traffic = [{"tag": "other", "revisionName": "wrong-revision"}, candidate]
+    if invalid_identity == "duplicate_tag":
+        traffic.append(candidate)
+    (tmp_path / "candidate-traffic.json").write_text(
+        json.dumps({"status": {"traffic": traffic}}), encoding="utf-8"
+    )
+    artifact_dir = tmp_path / "artifacts/live-eval"
+    artifact_dir.mkdir(parents=True)
+    github_env = tmp_path / "github-env"
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env={
+            "RUNNER_TEMP": str(tmp_path),
+            "GITHUB_ENV": str(github_env),
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "COMMIT_SHA": "a" * 40,
+            "TREE_SHA": "b" * 40,
+            "IMAGE": "registry.example.test/agent",
+            "IMAGE_DIGEST": (
+                "mutable-tag" if invalid_identity == "digest" else "sha256:" + "c" * 64
+            ),
+            "EVAL_PIPELINE_MODE": "staged",
+            "EVAL_SUITE": "diagnostic",
+            "EVAL_CASE_IDS": "graph-expansion",
+            "ANTHROPIC_API_KEY": "must-not-appear-in-evidence",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    evidence_path = artifact_dir / "deployment.json"
+    if invalid_identity:
+        assert result.returncode != 0
+        assert not evidence_path.exists()
+        assert not github_env.exists()
+        return
+    assert result.returncode == 0, result.stderr
+    assert json.loads(evidence_path.read_text()) == {
+        "run_id": "123",
+        "run_attempt": "2",
+        "commit_sha": "a" * 40,
+        "tree_sha": "b" * 40,
+        "image": "registry.example.test/agent",
+        "digest": "sha256:" + "c" * 64,
+        "revision_name": "agent-backend-staging-123",
+        "pipeline_mode": "staged",
+        "suite": "diagnostic",
+        "case_ids": ["graph-expansion"],
+    }
+    assert github_env.read_text() == "CANDIDATE_URL=https://scheduled-123.example.test\n"
+    uploads = workflow.split("- uses: actions/upload-artifact@v4")
+    assert len(uploads) == 3
+    assert "artifacts/live-eval/deployment.json" in uploads[1]
+    assert all("retention-days: 90" in upload for upload in uploads[1:])
 
 
 def test_semantic_review_can_replay_authenticated_browser_evidence_without_app_calls():
@@ -765,7 +893,7 @@ def test_judge_calibration_uses_immutable_reviewed_evidence():
     assert 'role   = "roles/storage.objectViewer"' in iam
 
 
-def test_pending_corpus_pr_skips_expensive_live_work_successfully():
+def test_pending_corpus_pr_skips_expensive_live_work():
     workflow = (ROOT / ".github/workflows/live-eval.yml").read_text(encoding="utf-8")
 
     assert "name: Pending corpus bootstrap guidance" in workflow
@@ -776,6 +904,131 @@ def test_pending_corpus_pr_skips_expensive_live_work_successfully():
     )
     dependency_setup = workflow.index("uses: actions/setup-python@v5")
     assert corpus_state < dependency_setup
+
+
+@pytest.fixture
+def run_live_eval_status():
+    workflow = (ROOT / ".github/workflows/live-eval.yml").read_text(encoding="utf-8")
+    status_step = workflow.split("- name: Resolve stable live-eval status\n", 1)[1]
+    script = dedent(status_step.split("        run: |\n", 1)[1])
+
+    def run(**overrides):
+        environment = {
+            "AI_IMPACT": "true",
+            "TRUSTED": "true",
+            "CORPUS_STATUS": "approved",
+            "CLASSIFY_RESULT": "success",
+            "APPROVAL_RESULT": "success",
+            "TREE_APPROVED": "false",
+            "EVAL_RESULT": "success",
+            **overrides,
+        }
+        return subprocess.run(
+            ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+
+    return run
+
+
+def test_non_ai_live_status_passes_without_approval_or_evaluation(run_live_eval_status):
+    result = run_live_eval_status(
+        AI_IMPACT="false",
+        TRUSTED="false",
+        CORPUS_STATUS="pending_human_review",
+        APPROVAL_RESULT="skipped",
+        TREE_APPROVED="",
+        EVAL_RESULT="skipped",
+    )
+
+    assert result.returncode == 0
+    assert "No AI-impacting paths changed" in result.stdout
+
+
+@pytest.mark.parametrize("ai_impact", ["", "invalid"])
+def test_invalid_ai_impact_cannot_skip_required_evaluation(run_live_eval_status, ai_impact):
+    result = run_live_eval_status(AI_IMPACT=ai_impact, EVAL_RESULT="skipped")
+
+    assert result.returncode == 1
+    assert "invalid AI-impact state" in result.stderr
+
+
+@pytest.mark.parametrize("corpus_status", ["pending_human_review", "", "invalid"])
+def test_unapproved_corpus_fails_required_live_status(
+    run_live_eval_status, corpus_status
+):
+    result = run_live_eval_status(
+        CORPUS_STATUS=corpus_status,
+        APPROVAL_RESULT="skipped",
+        TREE_APPROVED="",
+        EVAL_RESULT="skipped",
+    )
+
+    assert result.returncode == 1
+    assert "required live evaluation has not passed" in result.stderr
+    assert "Scheduled evaluation with suite=full from the candidate branch" in result.stderr
+
+
+@pytest.mark.parametrize("trusted", ["false", ""])
+def test_untrusted_ai_change_fails_required_live_status(run_live_eval_status, trusted):
+    result = run_live_eval_status(TRUSTED=trusted)
+
+    assert result.returncode == 1
+    assert "requires maintainer review and a trusted branch" in result.stderr
+
+
+@pytest.mark.parametrize("job_result", ["failure", "cancelled", "skipped", ""])
+@pytest.mark.parametrize(
+    ("job", "diagnostic", "overrides"),
+    [
+        ("CLASSIFY_RESULT", "Change classification failed", {"AI_IMPACT": "false"}),
+        ("APPROVAL_RESULT", "Exact-tree approval lookup failed", {"TREE_APPROVED": "true"}),
+        ("EVAL_RESULT", "Protected staging evaluation did not pass", {}),
+    ],
+)
+def test_failed_prerequisite_fails_required_live_status(
+    run_live_eval_status, job_result, job, diagnostic, overrides
+):
+    result = run_live_eval_status(**{**overrides, job: job_result})
+
+    assert result.returncode == 1
+    assert diagnostic in result.stderr
+
+
+@pytest.mark.parametrize("tree_approved", ["", "invalid"])
+def test_invalid_tree_approval_fails_required_live_status(
+    run_live_eval_status, tree_approved
+):
+    result = run_live_eval_status(TREE_APPROVED=tree_approved)
+
+    assert result.returncode == 1
+    assert "Exact-tree approval lookup returned an invalid state" in result.stderr
+
+
+@pytest.mark.parametrize("eval_result", ["success", "failure", "cancelled", ""])
+def test_approved_tree_requires_skipped_evaluation(run_live_eval_status, eval_result):
+    result = run_live_eval_status(TREE_APPROVED="true", EVAL_RESULT=eval_result)
+
+    assert result.returncode == 1
+    assert "protected evaluation was not skipped" in result.stderr
+
+
+def test_approved_tree_passes_required_live_status(run_live_eval_status):
+    result = run_live_eval_status(TREE_APPROVED="true", EVAL_RESULT="skipped")
+
+    assert result.returncode == 0
+    assert "Exact tree already passed protected live evaluation" in result.stdout
+
+
+def test_successful_evaluation_passes_required_live_status(run_live_eval_status):
+    result = run_live_eval_status()
+
+    assert result.returncode == 0
+    assert "Protected staging evaluation passed" in result.stdout
 
 
 def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
