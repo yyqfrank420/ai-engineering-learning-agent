@@ -2842,6 +2842,120 @@ async def test_exact_existing_edge_repairs_stop_after_two_failed_reviews(monkeyp
     assert not any(event.get("type") == "graph_data" for event in events)
 
 
+@pytest.mark.parametrize("status", ["failed", "needs_clarification"])
+@pytest.mark.asyncio
+async def test_staged_terminal_response_survives_exhausted_synthesis_time(
+    monkeypatch, status
+):
+    import agent.graph as agent_graph
+    import agent.nodes.orchestrator_node as orchestrator
+    from config import settings
+
+    monkeypatch.setattr(settings, "graph_pipeline_mode", "staged")
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def search(state, _tools):
+        return state, None
+
+    async def staged(state):
+        return {
+            **state,
+            "terminal_deadline_s": 0,
+            "graph_operation": {"kind": "create", "status": status},
+            "graph_publication": "withheld" if status == "failed" else "none",
+            "clarification_questions": ["Which operations should the agent handle?"],
+        }
+
+    async def unexpected(**_kwargs):
+        pytest.fail("an exhausted synthesis budget cannot make a model call")
+
+    monkeypatch.setattr(agent_graph, "run_search_phase", search)
+    monkeypatch.setattr(agent_graph, "run_staged_graph_pipeline", staged)
+    monkeypatch.setattr(orchestrator, "stream_llm", unexpected)
+    result = await agent_graph.run_agent(_state(send), [], [], [])
+    expected = (
+        "The requested new diagram was not approved. No new diagram was published."
+        if status == "failed"
+        else "Which operations should the agent handle?"
+    )
+    assert result["response_text"] == expected
+    assert result["graph_data"] is None
+    assert any(event.get("content") == expected for event in events)
+
+
+@pytest.mark.parametrize("continue_design", [True, False])
+@pytest.mark.asyncio
+async def test_clarification_reply_routes_user_requirements_back_to_components(
+    monkeypatch, continue_design
+):
+    import agent.graph as agent_graph
+    import agent.nodes.orchestrator_node as orchestrator
+    import agent.staged_graph_workflow as staged
+    from config import settings
+
+    monkeypatch.setattr(settings, "graph_pipeline_mode", "staged")
+    component_requests, router_calls = [], []
+
+    async def send(_event):
+        pass
+
+    async def search(state, _tools):
+        return state, None
+
+    async def components(**kwargs):
+        component_requests.append(kwargs["request"])
+        return {
+            "clarification_questions": [
+                "Which operations and actions should it handle?"
+            ]
+        }
+
+    async def model(**kwargs):
+        if kwargs["system"] == orchestrator._ROUTER_SYSTEM:
+            router_calls.append(kwargs)
+            return "DESIGN" if continue_design else "SIMPLE"
+        return "RLHF uses human feedback."
+
+    monkeypatch.setattr(agent_graph, "run_search_phase", search)
+    monkeypatch.setattr(staged, "generate_component_candidate", components)
+    monkeypatch.setattr(orchestrator, "stream_llm", model)
+    first_request = "Build me an agent for operations."
+    first = await agent_graph.run_agent(
+        {**_state(send), "user_message": first_request}, [], [], []
+    )
+    assert first["graph_operation"]["status"] == "needs_clarification"
+    reply = (
+        "Customer support triage, with read-only ticket access."
+        if continue_design
+        else "What is RLHF?"
+    )
+    second = await agent_graph.run_agent(
+        {
+            **_state(send),
+            "user_message": reply,
+            "history": [
+                {"role": "user", "content": first_request},
+                {"role": "assistant", "content": first["response_text"]},
+            ],
+        },
+        [],
+        [],
+        [],
+    )
+    assert len(router_calls) == 1
+    assert len(component_requests) == (2 if continue_design else 1)
+    if continue_design:
+        assert first_request in component_requests[1]
+        assert reply in component_requests[1]
+        assert second["graph_intent"] == "create"
+    else:
+        assert second["graph_intent"] is None
+        assert second["response_text"] == "RLHF uses human feedback."
+
+
 @pytest.mark.parametrize(
     "mode,intent,graph_mode,staged,failed",
     [

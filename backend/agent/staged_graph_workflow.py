@@ -883,6 +883,7 @@ async def _failed(
 
 async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     """Build, render, and review one applied graph with one retry per layer."""
+    state = {**state, "clarification_questions": []}
     send = state.get("send")
     if callable(send):
         try:
@@ -1023,6 +1024,26 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 state=state,
                 timeout_seconds=settings.staged_component_timeout_s,
             )
+            if "clarification_questions" in generated:
+                if permissions is not None:
+                    raise StagedGenerationError("edit_clarification_not_allowed")
+                return {
+                    **state,
+                    "graph_data": copy.deepcopy(approved_graph),
+                    "approved_graph_data": copy.deepcopy(approved_graph),
+                    "graph_contract": copy.deepcopy(approved_contract),
+                    "approved_graph_contract": copy.deepcopy(approved_contract),
+                    "graph_changed": False,
+                    "graph_publication": "unchanged" if approved_graph else "none",
+                    "graph_operation": {
+                        "kind": "create",
+                        "status": "needs_clarification",
+                        "failure_code": None,
+                    },
+                    "clarification_questions": copy.deepcopy(
+                        generated["clarification_questions"]
+                    ),
+                }
             wire = generated["wire"]
             rejected_component_candidate = copy.deepcopy(wire)
             wire_fingerprint = _fingerprint(wire)

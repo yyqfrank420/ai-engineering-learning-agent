@@ -16,6 +16,8 @@ import json
 import re
 from typing import Any, Literal, NotRequired, TypedDict
 
+from agent.graph_identity import applied_edge_metadata
+
 
 NodeType = Literal[
     "client",
@@ -673,8 +675,9 @@ def project_graph_data(build: Mapping[str, Any]) -> dict[str, Any]:
             "sync": connection["sync"],
             "description": connection["label"],
             "flow": connection["flow"],
-            "edge_id": f"applied:{connection['source_id']}__{_slug(connection['label'])}__{connection['target_id']}",
-            "relation": _slug(connection["label"]),
+            **applied_edge_metadata(
+                connection["source_id"], connection["target_id"], connection["label"]
+            ),
         }
         for connection in assigned["connections"]
     ]

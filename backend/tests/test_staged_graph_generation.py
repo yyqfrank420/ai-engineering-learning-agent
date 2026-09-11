@@ -88,6 +88,8 @@ def _accepted_components() -> list[dict]:
 
 
 def _response(payload: dict) -> StructuredLLMResponse:
+    if "components" in payload:
+        payload = {"candidate": payload, "clarification_questions": []}
     return StructuredLLMResponse(
         text=json.dumps(payload),
         finish_reason="end_turn",
@@ -502,7 +504,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v5"
+    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v6"
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
 

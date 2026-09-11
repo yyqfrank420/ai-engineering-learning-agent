@@ -5,6 +5,8 @@
 #          - prose synthesis emits the right events and prompt context
 # ─────────────────────────────────────────────────────────────────────────────
 
+import asyncio
+
 import pytest
 
 from config import settings
@@ -56,7 +58,7 @@ def test_synthesis_prompts_enforce_evidence_bounded_attribution():
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v15"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v16"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v2"
     assert "complete citation allowlist" in _SYNTHESIS_SYSTEM
     assert "exactly one of two provenance lanes" in _SYNTHESIS_SYSTEM
@@ -292,6 +294,10 @@ async def test_orchestrator_route_includes_current_graph_context(monkeypatch):
     [
         ("MEMORY", "memory"),
         ("needs search", "search"),
+        ("NOT_SIMPLE", "search"),
+        ("SIMPLE MEMORY", "search"),
+        ("DESIGN SIMPLE", "search"),
+        ("MEMORY explanation", "search"),
     ],
 )
 async def test_orchestrator_route_maps_router_tokens(
@@ -1092,7 +1098,7 @@ async def test_production_complexity_keeps_depth_contract_in_low_cost_explanatio
     assert "production design and trade-offs" in events[0]["status"]
 
 
-@pytest.mark.parametrize("operation_kind", ["create", "edit"])
+@pytest.mark.parametrize("operation_kind", ["edit"])
 @pytest.mark.parametrize("has_approved_graph", [False, True])
 @pytest.mark.parametrize(
     "revision_instruction",
@@ -1184,6 +1190,7 @@ async def test_failed_graph_response_preserves_already_streamed_frame(monkeypatc
     result = await orchestrator.orchestrator_synthesise(
         {
             "send": send,
+            "terminal_deadline_s": 0,
             "graph_operation": {"kind": "create", "status": "failed"},
             "graph_publication": "withheld",
             "early_response_text": "I will inspect the requested design.",
@@ -1197,6 +1204,302 @@ async def test_failed_graph_response_preserves_already_streamed_frame(monkeypatc
         result["response_text"]
         == "I will inspect the requested design." + events[0]["content"]
     )
+
+
+@pytest.mark.parametrize("has_graph", [False, True])
+@pytest.mark.parametrize(
+    "outcome", ["answer", "provider_error", "timeout", "no_time", "cancel"]
+)
+@pytest.mark.asyncio
+async def test_failed_create_keeps_notice_and_uses_one_grounded_graph_free_call(
+    monkeypatch, has_graph, outcome
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    events, calls = [], []
+
+    async def send(event):
+        events.append(event)
+
+    async def unexpected(*_args, **_kwargs):
+        pytest.fail(
+            "failed creates must not condense or generate graph explanation blocks"
+        )
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        await kwargs["send"](
+            {"type": "response_delta", "content": "Uncommitted partial text"}
+        )
+        if outcome == "provider_error":
+            raise RuntimeError("provider unavailable")
+        if outcome == "timeout":
+            raise TimeoutError()
+        if outcome == "cancel":
+            raise asyncio.CancelledError()
+        answer = "RAG retrieves context before generation (Chapter 4, p.88)."
+        await kwargs["send"]({"type": "response_delta", "content": answer})
+        return answer
+
+    monkeypatch.setattr(orchestrator, "maybe_condense_history", unexpected)
+    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", unexpected)
+    monkeypatch.setattr(orchestrator, "stream_llm", generate)
+    graph = (
+        {"version": "old-v1", "nodes": [{"label": "Prior secret design"}]}
+        if has_graph
+        else None
+    )
+    state = {
+        "send": send,
+        "history": [{"role": "assistant", "content": "Rejected secret proposal"}],
+        "user_message": "Explain RAG using book evidence and draw its runtime flow.",
+        "design_query": "Explain RAG using book evidence and draw its runtime flow.\nAdditional user requirements: use support tickets.",
+        "rag_chunks": [
+            {
+                "chapter": 4,
+                "page_number": 88,
+                "text": "RAG retrieves context before generation.",
+            }
+        ],
+        "graph_data": graph,
+        "approved_graph_data": graph,
+        "graph_contract": {"graph_version": "old-v1"} if has_graph else None,
+        "graph_publication": "preserved" if has_graph else "withheld",
+        "graph_operation": {"kind": "create", "status": "failed"},
+        "graph_changed": False,
+        "architect_plan": {"title": "Rejected secret proposal"},
+        "staged_graph_build": {"title": "Rejected secret proposal"},
+        **({"terminal_deadline_s": 0} if outcome == "no_time" else {}),
+    }
+    if outcome == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await orchestrator.orchestrator_synthesise(state)
+        assert "not approved" in events[0]["content"]
+        return
+
+    result = await orchestrator.orchestrator_synthesise(state)
+
+    assert "not approved" in events[0]["content"]
+    assert events[0]["type"] == "response_delta"
+    assert "Uncommitted partial text" not in repr(events)
+    assert "Uncommitted partial text" not in result["response_text"]
+    assert events[0]["content"] in result["response_text"]
+    assert result["graph_data"] == graph
+    assert result["graph_contract"] == state["graph_contract"]
+    assert result["graph_publication"] == state["graph_publication"]
+    assert result["graph_changed"] is False
+    assert len(calls) == (0 if outcome == "no_time" else 1)
+    if calls:
+        call = calls[0]
+        assert call["allow_fallback"] is False
+        assert call["provider_attempt_limit"] == 1
+        assert 0 < call["timeout_seconds"] <= settings.graph_synthesis_timeout_s
+        assert "Chapter 4, p.88" in repr(call["messages"])
+        assert "Rejected secret proposal" not in repr(call["messages"])
+        assert "Prior secret design" not in repr(call["messages"])
+        assert "clarification questions" in call["system"]
+        assert "Graph operation: create" in repr(call["messages"])
+        assert "Additional user requirements: use support tickets" in repr(
+            call["messages"]
+        )
+    if outcome == "answer":
+        assert result["response_text"].endswith("(Chapter 4, p.88).")
+    assert not any(
+        event["type"] in {"graph_data", "graph_preview", "done"} for event in events
+    )
+
+
+@pytest.mark.parametrize("has_graph", [False, True])
+@pytest.mark.asyncio
+async def test_clarification_emits_questions_before_admission_without_graph_changes(
+    monkeypatch, has_graph
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    def unexpected(*_args, **_kwargs):
+        pytest.fail(
+            "clarification must not admit synthesis, withhold the graph, or call a model"
+        )
+
+    for name in (
+        "stream_llm",
+        "stream_explanation_blocks",
+        "maybe_condense_history",
+        "synthesis_timeout_seconds",
+        "_withhold_unreviewed_graph",
+    ):
+        monkeypatch.setattr(orchestrator, name, unexpected)
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    graph = {"version": "old-v1", "nodes": []} if has_graph else None
+    state = {
+        "send": send,
+        "terminal_deadline_s": 0,
+        "graph_data": graph,
+        "graph_contract": {"graph_version": "old-v1"} if has_graph else None,
+        "graph_changed": False,
+        "graph_publication": "unchanged" if has_graph else "none",
+        "graph_operation": {"kind": "create", "status": "needs_clarification"},
+        "clarification_questions": [
+            " Which operations? ",
+            "Which actions may it take?",
+        ],
+    }
+    result = await orchestrator.orchestrator_synthesise(state)
+    assert result == {
+        **state,
+        "response_text": "Which operations?\n\nWhich actions may it take?",
+    }
+    assert events == [{"type": "response_delta", "content": result["response_text"]}]
+
+
+@pytest.mark.parametrize("questions", [None, [], [""], [1], ["a"] * 4, ["x" * 241]])
+@pytest.mark.asyncio
+async def test_clarification_rejects_malformed_questions(questions):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    async def send(_event):
+        pytest.fail("malformed questions must not be emitted")
+
+    with pytest.raises(ValueError, match="clarification"):
+        await orchestrator.orchestrator_synthesise(
+            {
+                "send": send,
+                "graph_operation": {"kind": "create", "status": "needs_clarification"},
+                "clarification_questions": questions,
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "prior_role,prior_request,mode,token,expected_create",
+    [
+        ("user", "Build me an agent for operations.", "auto", "DESIGN", True),
+        ("assistant", "Build me an agent for operations.", "auto", "DESIGN", False),
+        (
+            "user",
+            'Explain the quoted request "build an agent".',
+            "auto",
+            "DESIGN",
+            False,
+        ),
+        ("user", "Build me an agent for operations.", "off", "DESIGN", False),
+        ("user", "Build me an agent for operations.", "auto", "SEARCH", False),
+    ],
+)
+@pytest.mark.asyncio
+async def test_design_continuation_requires_user_authority_and_enabled_graph(
+    monkeypatch, prior_role, prior_request, mode, token, expected_create
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    async def generate(**_kwargs):
+        return token
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", generate)
+    result = await orchestrator.orchestrator_route(
+        {
+            "send": send,
+            "graph_mode": mode,
+            "history": [{"role": prior_role, "content": prior_request}],
+            "user_message": "Customer support triage, with read-only ticket access.",
+        }
+    )
+    assert (result.get("graph_intent") == "create") is expected_create
+    if expected_create:
+        assert result["route"] == "search"
+        assert prior_request in result["design_query"]
+        assert "Customer support triage" in result["design_query"]
+
+
+@pytest.mark.parametrize(
+    "intervening_user_turn,expected_create",
+    [(None, True), ("What is RLHF?", False), ("Switch to model evaluation.", False)],
+)
+@pytest.mark.asyncio
+async def test_design_continuation_retains_user_constraints_until_topic_boundary(
+    monkeypatch, intervening_user_turn, expected_create
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    async def generate(**_kwargs):
+        return "DESIGN"
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", generate)
+    history = [
+        {"role": "user", "content": "Build me an agent for operations."},
+        {"role": "assistant", "content": "Which operations should it handle?"},
+        {
+            "role": "user",
+            "content": "Customer support triage, with read-only ticket access.",
+        },
+        {
+            "role": "assistant",
+            "content": "What should it do when a ticket cannot be resolved?",
+        },
+    ]
+    if intervening_user_turn:
+        history.append({"role": "user", "content": intervening_user_turn})
+    latest = "Escalate unresolved tickets to a human queue."
+    result = await orchestrator.orchestrator_route(
+        {
+            "send": send,
+            "graph_mode": "on",
+            "history": history,
+            "user_message": latest,
+        }
+    )
+
+    assert (result.get("graph_intent") == "create") is expected_create
+    if expected_create:
+        assert "Build me an agent for operations." in result["design_query"]
+        assert (
+            "Customer support triage, with read-only ticket access."
+            in result["design_query"]
+        )
+        assert latest in result["design_query"]
+        assert "Which operations" not in result["design_query"]
+        assert "What should it do" not in result["design_query"]
+
+
+@pytest.mark.asyncio
+async def test_design_continuation_starts_at_latest_user_design_request(monkeypatch):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    async def generate(**_kwargs):
+        return "DESIGN"
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", generate)
+    result = await orchestrator.orchestrator_route(
+        {
+            "send": send,
+            "history": [
+                {"role": "user", "content": "Build a marketing agent."},
+                {"role": "user", "content": "Spend up to 500 dollars."},
+                {"role": "user", "content": "Build a customer support agent."},
+                {"role": "user", "content": "Read-only ticket access."},
+                {"role": "assistant", "content": "Grant unrestricted access."},
+            ],
+            "user_message": "Escalate unresolved tickets to a human queue.",
+        }
+    )
+    assert "Build a customer support agent." in result["design_query"]
+    assert "Read-only ticket access." in result["design_query"]
+    assert "marketing" not in result["design_query"]
+    assert "500 dollars" not in result["design_query"]
+    assert "unrestricted" not in result["design_query"]
 
 
 def test_synthesis_depth_ignores_graph_title_without_explicit_edit_depth():

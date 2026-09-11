@@ -1,5 +1,5 @@
 import { render, waitFor } from '@testing-library/react';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GraphData, GraphEdge, GraphNode } from '../../types';
 import { D3Graph } from './D3Graph';
@@ -281,6 +281,81 @@ function segmentIntersectsNode(
 }
 
 describe('dense production graph rendering', () => {
+  it('keeps the captured RAG overview labels and entry badges clear of cards', () => {
+    viewport = { width: 724, height: 814 };
+    const measuredText = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox')
+      .mockImplementation(function(this: SVGElement) {
+        // Chromium measures the external ENTRY badge at 25.1 layout pixels.
+        const width = this.textContent === 'ENTRY' ? 25.1 : (this.textContent?.length ?? 0) * 4.2;
+        return { x: -width / 2, y: -6.5, width, height: 11 } as DOMRect;
+      });
+    const nodeIds = ['rag', 'evaluation', 'retrieval', 'agent', 'generation', 'foundation', 'embeddings'];
+    const graph: GraphData = {
+      graph_type: 'concept',
+      title: 'RAG Map',
+      nodes: nodeIds.map(id => node(id, id)),
+      edges: [
+        edge('rag', 'retrieval', 'depends on'),
+        edge('retrieval', 'embeddings', 'depends on'),
+        edge('retrieval', 'generation', 'feeds into'),
+        edge('evaluation', 'foundation', 'evaluates'),
+        edge('evaluation', 'retrieval', 'evaluates'),
+        edge('evaluation', 'generation', 'evaluates'),
+        edge('evaluation', 'agent', 'evaluates'),
+        edge('rag', 'retrieval', 'compares with'),
+        edge('rag', 'embeddings', 'compares with'),
+        edge('rag', 'generation', 'compares with'),
+        edge('generation', 'embeddings', 'compares with'),
+        edge('agent', 'foundation', 'compares with'),
+      ],
+      sequence: nodeIds.slice(0, 6).map((id, index) => ({
+        step: index + 1, nodes: [id], description: id,
+      })),
+    };
+    try {
+      const { container } = render(
+        <D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined} />,
+      );
+      const cards = Array.from(container.querySelectorAll<SVGGElement>('g.node')).map(element => {
+        const position = parsePosition(element.getAttribute('transform'));
+        return { x: position.x - NODE_W / 2, y: position.y - NODE_H / 2, width: NODE_W, height: NODE_H };
+      });
+      const labels = Array.from(container.querySelectorAll<SVGGElement>('g.edge-label[data-overview-required="true"]'));
+      expect(labels.some(label => label.textContent === 'feeds into')).toBe(true);
+      const labelBoxes = labels.map(label => {
+        expect(label.getAttribute('display'), label.textContent ?? '').not.toBe('none');
+        const position = parsePosition(label.getAttribute('transform'));
+        const rect = label.querySelector('rect')!;
+        return {
+          x: position.x + Number(rect.getAttribute('x')),
+          y: position.y + Number(rect.getAttribute('y')),
+          width: Number(rect.getAttribute('width')),
+          height: Number(rect.getAttribute('height')),
+        };
+      });
+      const overlaps = (left: typeof cards[number], right: typeof cards[number]) => (
+        left.x < right.x + right.width && left.x + left.width > right.x
+        && left.y < right.y + right.height && left.y + left.height > right.y
+      );
+      for (const [index, label] of labelBoxes.entries()) {
+        expect(cards.some(card => overlaps(label, card))).toBe(false);
+        expect(labelBoxes.slice(index + 1).some(other => overlaps(label, other))).toBe(false);
+      }
+      const entryBadges = Array.from(container.querySelectorAll<SVGTextElement>('g.node > text'))
+        .filter(text => text.textContent === 'ENTRY');
+      expect(entryBadges.length).toBeGreaterThan(0);
+      for (const badge of entryBadges) {
+        const bounds = badge.getBBox();
+        const left = Number(badge.getAttribute('x')) + bounds.x;
+        // The narrow layout leaves 24 pixels between adjacent cards.
+        expect(left).toBeGreaterThanOrEqual(-NODE_W / 2 - 24);
+        expect(left + bounds.width).toBeLessThanOrEqual(-NODE_W / 2 + 12);
+      }
+    } finally {
+      measuredText.mockRestore();
+    }
+  });
+
   it('renders a realistic 13-node/29-edge control topology at publication readability', () => {
     expect(capacityGraph.nodes).toHaveLength(13);
     expect(capacityGraph.edges).toHaveLength(29);
@@ -399,6 +474,55 @@ describe('dense production graph rendering', () => {
         expect(transform.x + transform.scale * point.x).toBeLessThanOrEqual(viewport.width);
         expect(transform.y + transform.scale * point.y).toBeGreaterThanOrEqual(0);
         expect(transform.y + transform.scale * point.y).toBeLessThanOrEqual(viewport.height);
+      }
+    }
+  });
+
+  it('keeps horizontal feedback routes outside source and target card interiors', () => {
+    viewport = PUBLICATION_VIEWPORT;
+    const graph: GraphData = {
+      graph_type: 'architecture',
+      design_origin: 'applied',
+      title: 'Serving feedback routes',
+      nodes: ['client', 'api', 'runtime', 'artifacts', 'telemetry', 'monitor', 'console']
+        .map(id => node(id, id)),
+      edges: [
+        edge('client', 'api', 'request'),
+        edge('api', 'client', 'response'),
+        edge('api', 'runtime', 'invoke'),
+        edge('runtime', 'api', 'result'),
+        edge('api', 'artifacts', 'configuration'),
+        edge('artifacts', 'api', 'configuration result'),
+        edge('runtime', 'artifacts', 'model'),
+        edge('artifacts', 'runtime', 'model result'),
+        ...[
+          ['api', 'telemetry'], ['runtime', 'telemetry'],
+          ['monitor', 'telemetry'], ['telemetry', 'monitor'],
+          ['monitor', 'console'], ['monitor', 'client'],
+        ].map(([source, target]) => ({ ...edge(source, target, 'feedback'), flow: 'feedback' as const })),
+      ],
+      sequence: [],
+    };
+    const { container } = render(
+      <D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined} />,
+    );
+    const positions = new Map(
+      Array.from(container.querySelectorAll<SVGGElement>('g.node')).map(element => [
+        element.getAttribute('data-node-id') ?? '',
+        parsePosition(element.getAttribute('transform')),
+      ]),
+    );
+    expect(positions.get('monitor')!.x).toBe(positions.get('console')!.x);
+    expect(positions.get('api')!.x).toBeGreaterThan(positions.get('client')!.x);
+    for (const path of container.querySelectorAll<SVGPathElement>('path.edge-vis')) {
+      const points = pathControlPoints(path.getAttribute('d'));
+      for (const [nodeId, position] of positions) {
+        for (let index = 1; index < points.length; index += 1) {
+          expect(
+            segmentIntersectsNode(points[index - 1], points[index], position),
+            `${path.dataset.sourceId}->${path.dataset.targetId} crosses ${nodeId}`,
+          ).toBe(false);
+        }
       }
     }
   });
@@ -954,9 +1078,10 @@ describe('dense production graph rendering', () => {
 
     expect(returnLabel?.getAttribute('data-overview-required')).toBe('true');
     expect(Number(returnLabel?.getAttribute('opacity'))).toBeGreaterThan(0);
-    expect(
-      transform.x + transform.scale * (returnLabelPosition.x - 51),
-    ).toBeGreaterThanOrEqual(0);
+    const returnLabelBackground = returnLabel?.querySelector('rect');
+    expect(transform.x + transform.scale * (
+      returnLabelPosition.x + Number(returnLabelBackground?.getAttribute('x'))
+    )).toBeGreaterThanOrEqual(0);
   });
 
   it('rebinds DOM identities when content changes under the same version', async () => {

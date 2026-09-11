@@ -120,7 +120,7 @@
       "provenance": "Seeded from the multi-turn context journey.",
       "steps": [
         {
-          "prompt": "Explain prompt injection in one paragraph.",
+          "prompt": "Explain prompt injection in one paragraph and identify the two most important mitigations.",
           "ui": {
             "complexity": "low",
             "graph_mode": "off",

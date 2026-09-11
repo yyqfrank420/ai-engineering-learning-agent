@@ -201,7 +201,7 @@ def build_agent_workflow(
         # Restore terse follow-ups to the canonical product intent before any
         # retrieval. Otherwise both the book and web workers search fragments
         # such as "expand this" instead of the system being designed.
-        design_query = resolve_design_query(
+        design_query = state.get("design_query") or resolve_design_query(
             state.get("user_message", ""),
             state.get("history"),
             state.get("graph_data"),
@@ -604,6 +604,13 @@ def build_agent_workflow(
         }
 
     async def synthesise(state: AgentState) -> AgentState:
+        operation = state.get("graph_operation") or {}
+        if operation.get("status") in {"failed", "needs_clarification"} or state.get(
+            "graph_publication"
+        ) in {"preserved", "withheld", "unreviewed"}:
+            # Deterministic outcomes survive exhausted model time. Failed-create
+            # synthesis owns its bounded optional explanation after that notice.
+            return await orchestrator_synthesise(state)
         try:
             timeout_s = synthesis_timeout_seconds(state)
             async with asyncio.timeout(timeout_s):
