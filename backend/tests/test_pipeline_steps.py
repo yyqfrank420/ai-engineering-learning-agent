@@ -175,6 +175,9 @@ async def test_applied_graph_failure_notice_does_not_misreport_weak_grounding(
 
     assert result["graph_notice_sent"] is True
     assert "structural quality checks" in events[0]["message"]
+    assert "no new diagram was published" in events[0]["message"]
+    assert "Ask me to redraw it as a simpler diagram" in events[0]["message"]
+    assert "available below" not in events[0]["message"]
     assert "grounded detail from the book" not in events[0]["message"]
 
 

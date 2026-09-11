@@ -11,6 +11,7 @@ from typing import Any, Mapping
 
 from analytics.events import enqueue_analytics_event
 from agent.architecture_playbook import format_evidence_bundle
+from agent.architecture_rubric import MAX_REVIEW_REASON_CHARS
 from agent.complexity import resolve_complexity
 from agent.nodes.graph_critic import graph_render_gate_node
 from agent.nodes.graph_worker import (
@@ -169,7 +170,7 @@ def _gate_findings(
             "path": stage,
             "rule": "semantic_gate",
             **(
-                {"reason": str(finding["reason"])[:280]}
+                {"reason": finding["reason"][:MAX_REVIEW_REASON_CHARS]}
                 if isinstance(finding.get("reason"), str)
                 else {}
             ),

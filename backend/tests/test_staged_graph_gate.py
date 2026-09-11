@@ -1,6 +1,7 @@
 import asyncio
 from itertools import product
 import json
+from pathlib import Path
 
 import pytest
 
@@ -741,7 +742,7 @@ def test_scoped_review_preserves_blockers_and_proofs_outside_changed_records(
         {"rule_code": "domain_specificity"},
         {"rule_code": [], "reason": "Malformed rule."},
         {"rule_code": "domain_specificity", "reason": " "},
-        {"rule_code": "domain_specificity", "reason": "x" * 281},
+        {"rule_code": "domain_specificity", "reason": None},
         {"rule_code": "domain_specificity", "reason": "Invalid.", "score": 1},
         *[
             {
@@ -768,7 +769,7 @@ def test_malformed_findings_fail_terminally(monkeypatch, approved, finding):
     assert result["approved"] is False
     assert result["terminal"] is True
     assert result["diagnostics"]
-    assert "review_identity" not in result
+    assert result["review_identity"] == gate.review_identity("components", "prototype")
 
 
 def test_findings_beyond_limit_cannot_be_dropped(monkeypatch):
@@ -903,6 +904,7 @@ def test_protected_evaluation_captures_exact_review_inputs_and_result(
         "evidence_bundle": evidence,
         "candidate_records": records,
         "result": result,
+        "finish_reason": "end_turn",
     }
     capture_text = json.dumps(events)
     assert "credential-must-never-be-captured" not in capture_text
@@ -919,6 +921,7 @@ def test_protected_evaluation_captures_exact_review_inputs_and_result(
     assert evidence["candidate_context"]["title"] == "Service"
 
 
+@pytest.mark.parametrize("terminal", [False, True])
 @pytest.mark.parametrize(
     ("run_id", "email", "production", "allowlist"),
     [
@@ -931,11 +934,11 @@ def test_protected_evaluation_captures_exact_review_inputs_and_result(
     ],
 )
 def test_review_capture_requires_every_protected_evaluation_condition(
-    monkeypatch, run_id, email, production, allowlist
+    monkeypatch, run_id, email, production, allowlist, terminal
 ):
     monkeypatch.setattr(gate.settings, "evaluation_run_id", run_id)
     monkeypatch.setattr(gate.settings, "internal_test_email_allowlist_raw", allowlist)
-    _stub_response(monkeypatch, {"approved": True, "findings": []})
+    _stub_response(monkeypatch, {"approved": not terminal, "findings": []})
     events = []
 
     async def send(event):
@@ -955,33 +958,172 @@ def test_review_capture_requires_every_protected_evaluation_condition(
         )
     )
 
-    assert result["approved"] is True
+    assert result["approved"] is not terminal
+    assert result["terminal"] is terminal
     assert events == []
 
 
-def test_unavailable_review_is_not_captured(monkeypatch):
+@pytest.mark.parametrize(
+    ("failure", "diagnostic"),
+    [
+        ("provider", "provider call failed: RuntimeError"),
+        ("unfinished", "provider response did not complete"),
+        ("json", "provider response is not valid JSON"),
+        ("shape", "provider response has an invalid top-level shape"),
+        ("fields", "provider response has invalid top-level fields"),
+        ("finding", "unknown finding rule at row 0"),
+        ("empty_rejection", "provider rejected without blocking findings"),
+        ("proof", "production proofs do not cover exactly the required guarantees"),
+    ],
+)
+def test_terminal_review_capture_retains_diagnostic_without_raw_response(
+    monkeypatch, failure, diagnostic
+):
     monkeypatch.setattr(gate.settings, "evaluation_run_id", "eval-1")
     monkeypatch.setattr(
         gate.settings, "internal_test_email_allowlist_raw", "internal@example.com"
     )
-    _stub_response(monkeypatch, {"approved": False, "findings": []})
+
+    async def fake_stream(**kwargs):
+        if failure == "provider":
+            raise RuntimeError("private provider error")
+        payload = {
+            "approved": True,
+            "checked_rules": kwargs["response_schema"]["properties"]["checked_rules"][
+                "items"
+            ]["enum"],
+            "findings": [],
+        }
+        if failure == "shape":
+            payload["unexpected"] = "private provider text"
+        elif failure == "fields":
+            payload["checked_rules"] = []
+        elif failure == "finding":
+            payload["findings"] = [{"rule_code": "unknown", "reason": "Invalid."}]
+        elif failure == "empty_rejection":
+            payload["approved"] = False
+        elif failure == "proof":
+            payload["production_proofs"] = []
+        response = _response(
+            payload,
+            finish_reason="max_tokens" if failure == "unfinished" else "end_turn",
+        )
+        if failure == "json":
+            return StructuredLLMResponse(
+                text="private malformed provider text",
+                finish_reason="end_turn",
+                input_tokens=1,
+                output_tokens=1,
+                provider="test",
+                model="test",
+            )
+        return response
+
+    monkeypatch.setattr(gate, "stream_structured_llm", fake_stream)
     events = []
 
     async def send(event):
         events.append(event)
 
+    review = gate.review_connections if failure == "proof" else gate.review_components
     result = asyncio.run(
-        gate.review_components(
+        review(
             user_request="Design the service.",
             evidence_bundle={},
-            resolved_maturity="prototype",
+            resolved_maturity="production" if failure == "proof" else "prototype",
             candidate_records=[],
-            telemetry_context={"user_email": "internal@example.com", "send": send},
+            required_production_guarantees=["audit_and_provenance"]
+            if failure == "proof"
+            else [],
+            telemetry_context={
+                "user_email": "internal@example.com",
+                "send": send,
+                "staged_attempt": 1,
+            },
         )
     )
 
     assert result["terminal"] is True
-    assert events == []
+    assert result["diagnostics"] == [diagnostic]
+    assert len(events) == 1
+    capture = events[0]["review_capture"]
+    assert events[0]["status"] == "rejected"
+    assert capture["result"] == result
+    assert capture["review_identity"] == result["review_identity"]
+    assert capture["attempt"] == 1
+    if failure == "provider":
+        assert "finish_reason" not in capture
+    else:
+        assert capture["finish_reason"] == (
+            "max_tokens" if failure == "unfinished" else "end_turn"
+        )
+    assert "private" not in json.dumps(events)
+
+
+def test_recovered_component_rejection_remains_actionable(monkeypatch):
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "staged_gate_34649724600.json"
+        ).read_text()
+    )
+    calls = _stub_response(monkeypatch, fixture["response"])
+
+    result = asyncio.run(
+        gate.review_components(
+            user_request="Expand monitoring with one directly connected responsibility.",
+            evidence_bundle={},
+            resolved_maturity=fixture["resolved_maturity"],
+            candidate_records=[
+                {"id": f"n{index + 1}"}
+                for index in range(fixture["candidate_record_count"])
+            ],
+        )
+    )
+
+    assert len(calls) == 1
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert result["findings"] == fixture["response"]["findings"]
+    reason = result["findings"][0]["reason"]
+    assert len(reason) == 538
+    assert "anchored at n6" in reason
+    assert "actual data source" in reason
+    assert "telemetry query path to n5" in reason
+    assert result["diagnostics"] == []
+
+
+@pytest.mark.parametrize("approved", [True, False])
+def test_reason_storage_bound_preserves_rejection_with_explicit_diagnostic(
+    monkeypatch, approved
+):
+    _stub_response(
+        monkeypatch,
+        {
+            "approved": approved,
+            "findings": [
+                {
+                    "rule_code": "mece_scope",
+                    "reason": "x" * (gate._MAX_REASON_CHARS + 1),
+                }
+            ],
+        },
+    )
+
+    result = asyncio.run(
+        gate.review_components(
+            user_request="Design a service.",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[],
+        )
+    )
+
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert len(result["findings"][0]["reason"]) == gate._MAX_REASON_CHARS
+    assert result["diagnostics"][0] == (
+        f"finding reason at row 0 truncated to {gate._MAX_REASON_CHARS} characters"
+    )
 
 
 @pytest.mark.parametrize("approved", [True, False])

@@ -464,6 +464,48 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
     """
     state = _withhold_unreviewed_graph(state)
     send = state["send"]
+    operation = state.get("graph_operation") or {}
+    if state.get("graph_publication") in {"preserved", "withheld"} or (
+        operation.get("status") == "failed"
+    ):
+        # A rejected candidate is unavailable here; another model call can invent a different proposal.
+        graph = state.get("graph_data") or {}
+        kind = operation.get("kind") or state.get("graph_intent")
+        requested = "diagram edit" if kind == "edit" else "new diagram"
+        content = (
+            f"The requested {requested} was not approved, so the prior approved diagram remains unchanged."
+            if graph and state.get("graph_publication") == "preserved"
+            else f"The requested {requested} was not approved. No new diagram was published."
+        )
+        revision_instruction = (state.get("graph_review") or {}).get(
+            "revision_instruction"
+        )
+        if isinstance(revision_instruction, str) and revision_instruction.strip():
+            content += f"\n\n{revision_instruction.strip()}"
+        if graph:
+            await send(
+                {
+                    "type": "explanation_block",
+                    "block_id": "graph_operation_result",
+                    "title": "Diagram unchanged",
+                    "content": content,
+                    "related_node_ids": [],
+                    "evidence_refs": [],
+                    "graph_version": graph.get("version"),
+                }
+            )
+            response_text = f"## Diagram unchanged\n\n{content}"
+        else:
+            separator = "\n\n" if state.get("early_response_text") else ""
+            await send({"type": "response_delta", "content": separator + content})
+            response_text = content
+        early_response = state.get("early_response_text")
+        return {
+            **state,
+            "response_text": f"{early_response}\n\n{response_text}"
+            if early_response
+            else response_text,
+        }
     history = state.get("history") or []
     graph_contract = state.get("graph_contract")
     staged_explanation = bool(

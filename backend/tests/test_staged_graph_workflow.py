@@ -17,6 +17,22 @@ from agent.staged_graph_contract import (
 )
 
 
+def test_captured_gate_reason_reaches_correction_without_losing_route_context():
+    capture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "staged_gate_34649724600.json"
+        ).read_text()
+    )
+    original = capture["response"]["findings"][0]
+    correction = generation._sanitize_findings(
+        workflow._gate_findings([original], stage="components")
+    )
+
+    assert len(original["reason"]) == 538
+    assert correction[0]["reason"] == original["reason"]
+    assert correction[0]["record_indexes"] == [8]
+
+
 def _components_wire() -> dict:
     return {
         "title": "Payment processing",

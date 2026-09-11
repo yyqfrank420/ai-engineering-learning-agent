@@ -15,7 +15,9 @@ import re
 from typing import Any, TypedDict
 
 from adapters.llm_adapter import build_telemetry
+from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
+    MAX_REVIEW_REASON_CHARS,
     staged_review_requirements,
 )
 from agent.staged_graph_contract import (
@@ -33,8 +35,8 @@ from agent.stream_utils import stream_structured_llm
 
 _MODEL = "kimi-k3"
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v4"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v4"
+_COMPONENT_PROMPT_VERSION = "staged_components_v5"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v5"
 _COMPONENT_SCHEMA_VERSION = "staged_components_wire_v1"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -42,7 +44,6 @@ _FINDING_TOKEN = re.compile(r"[a-zA-Z0-9_.:/-]{1,96}")
 _MAX_REQUEST_CHARS = 12_000
 _MAX_BASE_CHARS = 48_000
 _MAX_ASSUMPTIONS = 16
-_MAX_FINDING_REASON_CHARS = 280
 _MAX_ARCHITECTURE_CONTEXT_CHARS = 16_000
 _NODE_TYPES = (
     "client",
@@ -299,6 +300,15 @@ async def generate_component_candidate(
         else rejected_candidate,
         edit_delta=delta,
         architecture_context=validated_context,
+        connection_addition_plan=_connection_addition_plan(
+            edit_permissions,
+            {
+                row["server_id"]: index
+                for index, row in enumerate(base_components["components"])
+            },
+        )
+        if delta
+        else None,
     )
     try:
         response = await _run_generation(
@@ -373,6 +383,13 @@ async def generate_connection_candidate(
         edit_delta=delta,
         accepted_components=accepted,
         accepted_context=context,
+        connection_addition_plan=_connection_addition_plan(
+            edit_permissions,
+            {row["id"]: row["index"] for row in accepted_components},
+            components_accepted=True,
+        )
+        if delta
+        else None,
     )
     try:
         response = await _run_generation(
@@ -490,6 +507,7 @@ def _attempt_prompt(
     accepted_context: AcceptedContext | None = None,
     architecture_context: str | None = None,
     edit_delta: _EditDelta | None = None,
+    connection_addition_plan: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     _validate_fingerprint(upstream_fingerprint, "invalid_upstream_fingerprint")
     maturity = _validated_maturity(resolved_maturity)
@@ -556,6 +574,9 @@ def _attempt_prompt(
     }
     if edit_delta is not None:
         prompt_input["edit_slots"] = edit_delta.schema["properties"]
+        prompt_input["connection_addition_plan"] = _bounded_json(
+            connection_addition_plan
+        )
     codebook = " ".join(
         f"{name}: " + ",".join(f"{code}={value}" for code, value in values.items())
         for name, values in (
@@ -580,7 +601,18 @@ def _attempt_prompt(
             "composition fields. Never copy locked records or supply removals. The server "
             "already selected removals and assembles the complete graph. Each slot_N refers "
             "to base record index N. Capabilities describe the complete resulting graph. "
-            "Maturity and review findings cannot expand these edit slots."
+            "Maturity and review findings cannot expand these edit slots. "
+            "The connection_addition_plan is the exact server-owned connection authority. "
+            "Its existing component indexes refer to base components in this component stage "
+            "or accepted_components in the connection stage. Addition indexes refer to the "
+            "zero-based component addition slots; accepted_addition_indexes resolves those "
+            "slots after component acceptance. Choose each new responsibility so it can "
+            "operate through the permitted directed connections and exact connection count, "
+            "without requiring another data source, dependency, or extra edge. "
+            "When enforce_added_edge_contract_label is true, use the exact whitespace-normalized "
+            "required_contract as the edge label. When false, required_contract describes intent: "
+            "choose a domain-specific label for the actual interaction that satisfies that intent. "
+            "Never copy edit instructions into a runtime connection label when this flag is false."
         )
     maturity_rule = (
         f" Selected maturity is {maturity}. This value overrides maturity words in the request. "
@@ -787,6 +819,96 @@ def _edit_delta(
         **{field: schema["properties"][field] for field in composition_fields},
     }
     return _EditDelta(base, record_key, retained, _delta_object(properties))
+
+
+def _connection_addition_plan(
+    permissions: Mapping[str, Any],
+    component_indexes: Mapping[str, int],
+    *,
+    components_accepted: bool = False,
+) -> dict[str, Any]:
+    node_count = permissions.get("allowed_new_node_count", 0)
+    edge_count = permissions.get("allowed_new_edge_count", 0)
+    anchors = _exact_ids(permissions.get("added_edge_anchor_node_ids", []))
+    obligations = permissions.get("connection_addition_obligations", [])
+    enforce_label = permissions.get("enforce_added_edge_contract_label", True)
+    if (
+        not _nonnegative_limit(node_count)
+        or node_count > 64
+        or not _nonnegative_limit(edge_count)
+        or anchors is None
+        or not isinstance(enforce_label, bool)
+        or not isinstance(obligations, list)
+        or len(obligations) != edge_count
+        or (components_accepted and node_count > len(component_indexes))
+    ):
+        raise StagedGenerationError("edit_connection_plan_invalid")
+    ordered_ids = sorted(component_indexes, key=component_indexes.__getitem__)
+    added_ids = (
+        ordered_ids[len(ordered_ids) - node_count :] if components_accepted else []
+    )
+    unavailable = set(permissions.get("removable_node_ids", [])) | set(added_ids)
+    existing_indexes = {
+        node_id: index
+        for node_id, index in component_indexes.items()
+        if node_id not in unavailable
+    }
+    if edge_count == 0:
+        anchors = [node_id for node_id in anchors if node_id not in unavailable]
+    if set(anchors) - set(existing_indexes):
+        raise StagedGenerationError("edit_connection_plan_invalid")
+    endpoints = {
+        **{
+            node_id: {"component_index": existing_indexes[node_id]}
+            for node_id in anchors
+        },
+        **{
+            f"$new_node_{index + 1}": {"addition_index": index}
+            for index in range(node_count)
+        },
+    }
+    projected = []
+    seen: set[tuple[str, str, str]] = set()
+    for obligation in obligations:
+        _require_exact_keys(obligation, {"source", "target", "required_contract"})
+        if any(not isinstance(value, str) for value in obligation.values()):
+            raise StagedGenerationError("edit_connection_plan_invalid")
+        source, target = obligation["source"], obligation["target"]
+        required_contract = obligation["required_contract"]
+        identity = (source, target, required_contract)
+        if (
+            source not in endpoints
+            or target not in endpoints
+            or source == target
+            or identity in seen
+            or not 0 < len(required_contract) <= GRAPH_EDGE_LABEL_CHARS
+            or required_contract != " ".join(required_contract.split())
+        ):
+            raise StagedGenerationError("edit_connection_plan_invalid")
+        seen.add(identity)
+        projected.append(
+            {
+                "source": endpoints[source],
+                "target": endpoints[target],
+                "required_contract": required_contract,
+            }
+        )
+    return {
+        "addition_count": edge_count,
+        "anchor_component_indexes": [existing_indexes[node_id] for node_id in anchors],
+        "component_addition_count": node_count,
+        "enforce_added_edge_contract_label": enforce_label,
+        "obligations": projected,
+        **(
+            {
+                "accepted_addition_indexes": [
+                    component_indexes[node_id] for node_id in added_ids
+                ]
+            }
+            if components_accepted
+            else {}
+        ),
+    }
 
 
 def _component_edit_delta(
@@ -1213,7 +1335,7 @@ def _sanitize_findings(findings: Sequence[Mapping[str, Any]]) -> list[dict[str, 
         ):
             reason = finding.get("reason")
             safe_reason = (
-                " ".join(reason.split())[:_MAX_FINDING_REASON_CHARS]
+                " ".join(reason.split())[:MAX_REVIEW_REASON_CHARS]
                 if isinstance(reason, str)
                 else ""
             )

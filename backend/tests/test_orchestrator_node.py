@@ -1088,79 +1088,110 @@ async def test_production_complexity_keeps_depth_contract_in_low_cost_explanatio
     assert "production design and trade-offs" in events[0]["status"]
 
 
+@pytest.mark.parametrize("operation_kind", ["create", "edit"])
+@pytest.mark.parametrize("has_approved_graph", [False, True])
+@pytest.mark.parametrize(
+    "revision_instruction",
+    [None, "Keep this edit at the current maturity by selecting auto."],
+)
 @pytest.mark.asyncio
-async def test_preserved_edit_prompt_and_completion_report_unchanged_graph(monkeypatch):
+async def test_failed_graph_operation_reports_exact_result_without_model_calls(
+    monkeypatch, operation_kind, has_approved_graph, revision_instruction
+):
     import agent.nodes.orchestrator_node as orchestrator
 
-    captured = {}
-
-    async def fake_stream_blocks(**kwargs):
-        captured.update(kwargs)
-        await kwargs["send"](
-            {
-                "type": "explanation_block",
-                "block_id": "result",
-                "title": "Result",
-                "content": "The prior design remains available.",
-                "related_node_ids": ["monitor"],
-                "evidence_refs": [],
-            }
+    async def unexpected_model_call(*_args, **_kwargs):
+        raise AssertionError(
+            "failed graph operations must not generate another proposal"
         )
-        return "The prior design remains available."
 
-    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", fake_stream_blocks)
+    monkeypatch.setattr(
+        orchestrator, "stream_explanation_blocks", unexpected_model_call
+    )
+    monkeypatch.setattr(orchestrator, "stream_llm", unexpected_model_call)
+    monkeypatch.setattr(orchestrator, "maybe_condense_history", unexpected_model_call)
     events = []
 
     async def send(event):
         events.append(event)
 
-    graph = {
-        "design_origin": "applied",
-        "title": "Production monitoring platform",
-        "resolved_complexity": "prototype",
-        "version": "approved-v1",
-        "nodes": [{"id": "monitor", "label": "Monitor"}],
-        "edges": [],
+    graph = (
+        {
+            "title": "Approved monitoring platform",
+            "version": "approved-v1",
+            "nodes": [{"id": "monitor", "label": "Monitor"}],
+            "edges": [],
+        }
+        if has_approved_graph
+        else None
+    )
+    state = {
+        "send": send,
+        "history": [
+            {"role": "assistant", "content": "Consider an Eval Feedback Collector."}
+        ],
+        "user_message": "Expand monitoring with exactly one responsibility.",
+        "graph_data": graph,
+        "approved_graph_data": graph,
+        "graph_changed": False,
+        "graph_operation": {
+            "kind": operation_kind,
+            "status": "failed",
+            "failure_code": "staged_component_gate_unavailable",
+        },
+        "graph_publication": "preserved" if graph else "withheld",
+        "graph_review": {"revision_instruction": revision_instruction},
     }
-    await orchestrator.orchestrator_synthesise(
+    result = await orchestrator.orchestrator_synthesise(state)
+
+    requested = "diagram edit" if operation_kind == "edit" else "new diagram"
+    expected = (
+        f"The requested {requested} was not approved, so the prior approved diagram remains unchanged."
+        if graph
+        else f"The requested {requested} was not approved. No new diagram was published."
+    )
+    if revision_instruction:
+        expected += "\n\n" + revision_instruction
+    assert len(events) == 1
+    assert events[0]["content"] == expected
+    assert events[0]["type"] == ("explanation_block" if graph else "response_delta")
+    if graph:
+        assert events[0]["graph_version"] == "approved-v1"
+        assert events[0]["related_node_ids"] == []
+    assert result["response_text"] == (
+        "## Diagram unchanged\n\n" + expected if graph else expected
+    )
+    assert result["graph_data"] == graph
+    assert "Eval Feedback Collector" not in result["response_text"]
+    assert not any(
+        event["type"] in {"done", "graph_data", "graph_preview"} for event in events
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_graph_response_preserves_already_streamed_frame(monkeypatch):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    result = await orchestrator.orchestrator_synthesise(
         {
             "send": send,
-            "history": [],
-            "user_message": "Expand the monitoring component",
-            "complexity": "auto",
-            "rag_chunks": [],
-            "graph_data": graph,
-            "graph_changed": False,
-            "graph_intent": "edit",
-            "graph_operation": {
-                "kind": "edit",
-                "status": "failed",
-                "failure_code": "graph_review_rejected",
-            },
-            "graph_publication": "preserved",
+            "graph_operation": {"kind": "create", "status": "failed"},
+            "graph_publication": "withheld",
+            "early_response_text": "I will inspect the requested design.",
         }
     )
 
-    prompt = captured["messages"][-1]["content"]
-    assert "Publication state: preserved." in prompt
-    assert "The requested graph edit was not approved or applied." in prompt
+    assert events[0]["content"].startswith(
+        "\n\nThe requested new diagram was not approved."
+    )
     assert (
-        "Required completion sentence: The requested diagram edit was not approved, so the "
-        "prior approved diagram remains unchanged."
-    ) in prompt
-    assert "Prototype depth" in prompt
-    assert "prototype design and trade-offs" in events[0]["status"]
-    assert not any(event.get("type") == "graph_data" for event in events)
-    assert events[1] == {
-        "type": "workflow_progress",
-        "phase": "explain",
-        "status": "active",
-        "title": "Finishing the walkthrough for the preserved diagram",
-        "detail": "The requested graph operation was not approved; the prior approved diagram remains unchanged.",
-    }
-    assert events[-1]["title"] == "Walkthrough ready; prior diagram preserved"
-    assert events[-1]["detail"] == (
-        "The requested graph operation was not approved, so the prior approved diagram remains unchanged."
+        result["response_text"]
+        == "I will inspect the requested design." + events[0]["content"]
     )
 
 
@@ -1249,11 +1280,10 @@ def test_trusted_turn_result_describes_publication_state(
 async def test_synthesis_withholds_an_unreviewed_candidate(monkeypatch):
     import agent.nodes.orchestrator_node as orchestrator
 
-    captured = {}
-
-    async def fake_stream_llm(**kwargs):
-        captured.update(kwargs)
-        return "The draft is withheld."
+    async def fake_stream_llm(**_kwargs):
+        raise AssertionError(
+            "unreviewed candidates must not produce a new model proposal"
+        )
 
     monkeypatch.setattr(orchestrator, "stream_llm", fake_stream_llm)
     events = []
@@ -1280,10 +1310,9 @@ async def test_synthesis_withholds_an_unreviewed_candidate(monkeypatch):
         }
     )
 
-    prompt = captured["messages"][-1]["content"]
-    assert "Publication state: withheld." in prompt
-    assert "Unreviewed candidate" not in prompt
-    assert "Rejected candidate-only architecture terms" not in prompt
+    assert result["response_text"] == (
+        "The requested new diagram was not approved. No new diagram was published."
+    )
     assert not any(event["type"] == "graph_data" for event in events)
     assert result["graph_data"] is None
     assert result["graph_publication"] == "withheld"

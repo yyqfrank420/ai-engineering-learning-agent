@@ -3,6 +3,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
+# Reviewer explanations must retain the repair context through generation.
+MAX_REVIEW_REASON_CHARS = 2_000
+
 RUBRIC_CRITERIA = {
     "domain_specificity": (
         "components",

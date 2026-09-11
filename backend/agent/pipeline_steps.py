@@ -48,9 +48,8 @@ async def apply_graph_worker(state: AgentState, graph_tools: list) -> AgentState
                 )
             elif state.get("is_applied_design"):
                 message = (
-                    "The draft architecture did not meet the structural quality checks, so I kept "
-                    "the visual out rather than publishing a misleading graph. The written design "
-                    "is still available below."
+                    "The draft architecture did not meet the structural quality checks, so no new "
+                    "diagram was published. Ask me to redraw it as a simpler diagram."
                 )
             else:
                 message = (

@@ -144,7 +144,7 @@ when a pending corpus caused all protected work to be skipped. That required
 status now fails with bootstrap instructions.
 Scheduled runs now fail for any browser or semantic non-success, including pending
 full-corpus proposals. They retain a deployment manifest and artifacts for 90 days.
-Protected internal evaluations capture each valid gate result with its candidate
+Protected internal evaluations capture each gate result with its candidate
 and review inputs, so a later rejection no longer erases the first gate's reasons.
 
 Local reproductions found two further harness defects: an empty nightly capture
@@ -153,6 +153,52 @@ deterministic failures and graph diagnostics. Nightly captures now require four
 unique known cases. Missing telemetry remains an infrastructure failure, while
 existing product failures keep their diagnostics and take precedence. Judge setup
 is deferred until a case needs semantic evaluation.
+
+## Fresh staging findings
+
+The first protected diagnostic of the stabilization candidate,
+[run 34649724600](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34649724600),
+tested commit `d329888ec1903b3cfdbc8d50a98fe6e8566e480e`. Creation passed both
+semantic gates and published eight nodes with fourteen edges. Expansion failed
+at the component gate and retained the original graph. The workflow correctly
+reported failure. Eight application calls cost an estimated $0.316342; no judge
+call was needed after the deterministic failure.
+
+The retained provider trace contains a valid rejection with a 538-character
+reason. The local parser rejected that reason against a 280-character limit and
+classified the gate as unavailable. The Anthropic schema adapter removes
+`maxLength`, so the provider did not enforce this limit. The critique remains a
+blocker after correction: the proposed Serving Log Explorer required the log
+store, while its one permitted connection had to originate at Metrics Monitor.
+The committed `staged_gate_34649724600.json` fixture preserves the exact response.
+
+Reviewer reasons now use one 2,000-character bound through parsing, workflow,
+and correction generation. Longer reasons remain blocking findings with an
+explicit truncation diagnostic. Malformed fields, unknown rules, and invalid
+witnesses still fail closed. Terminal results now reach protected capture with
+their review identity, diagnostic, and available finish reason.
+
+Component generation also lacked the exact connection addition plan. The model
+received component slots but could not see the server-selected anchor and
+direction. Both generation stages now receive that plan, including the exact
+addition count and mapped component/addition indexes. The captured expansion
+fixture verifies that Metrics Monitor maps to index 5 and must connect to new
+component slot 0 on both the initial and corrected attempts.
+
+After the failed expansion, explanation generation invented a different proposed
+component and connection. Failed graph operations now emit their publication
+status and existing revision guidance without another model call. Failure notices
+no longer promise a written design that will not be generated.
+
+The browser trace also exposed an independent routing defect. Adjacent vertical
+edges travelled to a side gutter and retraced the same horizontal segment before
+reaching the next node. The renderer now uses the free gap between adjacent rows.
+Long, reverse, parallel, and wrapped routes keep their existing handling.
+
+The follow-up candidate passes 1,808 backend tests at 91% coverage, 238 frontend
+tests, frontend lint/build/audit, Python lint/security/dependency audits, and 131
+CI policy tests. These checks include the exact captured reviewer response and
+connection-plan regressions. A new protected staging run is still required.
 
 ## Validation and remaining release work
 
