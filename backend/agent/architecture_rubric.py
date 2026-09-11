@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 RUBRIC_CRITERIA = {
@@ -174,6 +175,42 @@ TOPOLOGY_PROOF_REQUIREMENTS = {
         "Show curated versioned evidence, offline evaluation, reviewed release, canary, promotion, rollback, and recorded outcomes."
     ),
 }
+
+
+def staged_review_requirements(
+    stage: str,
+    maturity: str,
+    required_production_guarantees: Sequence[str] = (),
+) -> dict[str, str]:
+    """Give staged generation and review the same applicable acceptance criteria."""
+    if stage not in {"components", "connections"}:
+        raise ValueError("stage must be components or connections")
+    if maturity not in {"prototype", "production"}:
+        raise ValueError("maturity must be prototype or production")
+    # Wire rule order is versioned; the production extension begins at index 16.
+    excluded = set(advisory_rubric_codes(maturity))
+    if maturity == "prototype":
+        excluded.update(RUBRIC_CODES[16:])
+    # Staged construction has no independently reviewed upstream risk artifact.
+    excluded.add("independent_risk_coverage")
+    requirements = {
+        code: requirement
+        for code, (owner, requirement) in RUBRIC_CRITERIA.items()
+        if owner == stage and code not in excluded
+    }
+    if stage == "components":
+        requirements["capability_classification"] = (
+            "Classify capabilities from the candidate responsibilities and assumptions: "
+            "external_effects means it can mutate an external system; retrieval_or_reuse "
+            "means it retrieves or reuses stored artifacts; learning_or_release means "
+            "feedback can change a model, prompt, ranking, or live configuration."
+        )
+    elif maturity == "production":
+        for guarantee in required_production_guarantees:
+            if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
+                raise ValueError(f"unknown production guarantee: {guarantee!r}")
+            requirements[guarantee] = TOPOLOGY_PROOF_REQUIREMENTS[guarantee]
+    return requirements
 
 
 def repair_requirements(

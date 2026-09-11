@@ -225,6 +225,8 @@ jobs:
         env:
           EVALUATION_PR_PROVIDER_ATTEMPT_LIMIT: 64
           EVALUATION_FULL_PROVIDER_ATTEMPT_LIMIT: 150
+          COMMIT_SHA: ${{ steps.approved_image.outputs.commit_sha }}
+          TREE_SHA: ${{ steps.approved_image.outputs.tree_sha }}
         run: |
           tag="scheduled-${GITHUB_RUN_ID}"
           attempt_limit="$EVALUATION_FULL_PROVIDER_ATTEMPT_LIMIT"
@@ -233,9 +235,36 @@ jobs:
           fi
           echo "REVISION_TAG=$tag" >> "$GITHUB_ENV"
           gcloud run deploy "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$tag" --timeout 1000s --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$attempt_limit,GRAPH_PIPELINE_MODE=$EVAL_PIPELINE_MODE --quiet
-          url="$(gcloud run services describe "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | python -c 'import json,os,sys; d=json.load(sys.stdin); t="scheduled-"+os.environ["GITHUB_RUN_ID"]; print(next((x.get("url", "") for x in d.get("status",{}).get("traffic",[]) if x.get("tag")==t), ""))')"
-          [ -n "$url" ] || { echo "Cloud Run did not expose the tagged evaluation URL." >&2; exit 1; }
-          echo "CANDIDATE_URL=$url" >> "$GITHUB_ENV"
+          gcloud run services describe "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='json(status.traffic)' > "$RUNNER_TEMP/candidate-traffic.json"
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+
+          traffic = json.loads((Path(os.environ["RUNNER_TEMP"]) / "candidate-traffic.json").read_text())
+          candidates = [item for item in traffic.get("status", {}).get("traffic", [])
+                        if item.get("tag") == "scheduled-" + os.environ["GITHUB_RUN_ID"]]
+          if len(candidates) != 1 or not candidates[0].get("url") or not candidates[0].get("revisionName"):
+              raise SystemExit("Cloud Run did not expose one tagged evaluation URL and revision.")
+          candidate = candidates[0]
+          for key, pattern in (("COMMIT_SHA", r"[0-9a-f]{40}"), ("TREE_SHA", r"[0-9a-f]{40}"),
+                               ("IMAGE_DIGEST", r"sha256:[0-9a-f]{64}")):
+              if not re.fullmatch(pattern, os.environ[key]):
+                  raise SystemExit("Invalid deployment identity: " + key)
+          Path("artifacts/live-eval/deployment.json").write_text(json.dumps({
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "tree_sha": os.environ["TREE_SHA"],
+              "image": os.environ["IMAGE"],
+              "digest": os.environ["IMAGE_DIGEST"],
+              "revision_name": candidate["revisionName"],
+              "pipeline_mode": os.environ["EVAL_PIPELINE_MODE"],
+              "suite": os.environ["EVAL_SUITE"],
+              "case_ids": os.environ["EVAL_CASE_IDS"].split(),
+          }, indent=2) + "\n")
+          with Path(os.environ["GITHUB_ENV"]).open("a") as environment:
+              environment.write("CANDIDATE_URL=" + candidate["url"] + "\n")
+          PY
       - name: Wait for candidate readiness
         run: |
           for attempt in $(seq 1 24); do
@@ -300,27 +329,26 @@ jobs:
           name: scheduled-eval-replay-${{ github.run_id }}
           path: |
             artifacts/live-eval/run-context.json
+            artifacts/live-eval/deployment.json
             artifacts/live-eval/browser-results.json
-          retention-days: 30
+          retention-days: 90
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: scheduled-eval-${{ github.run_id }}
           path: artifacts/live-eval
-          retention-days: 30
-      - name: Enforce approved scheduled corpus
+          retention-days: 90
+      - name: Enforce scheduled evaluation outcome
         if: always()
         env:
           CORPUS_STATUS: ${{ steps.corpus.outputs.status }}
           BROWSER_OUTCOME: ${{ steps.browser.outcome }}
           SEMANTIC_OUTCOME: ${{ steps.semantic.outcome }}
         run: |
-          if [ "$CORPUS_STATUS" != approved ] \
-            && { [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || [ "$EVAL_SUITE" != diagnostic ]; }; then
-            echo "Corpus is pending human review; this run produced non-blocking proposals."
-            exit 0
-          fi
           if [ "$BROWSER_OUTCOME" != success ] || [ "$SEMANTIC_OUTCOME" != success ]; then
-            echo "Diagnostic or approved scheduled evaluation did not pass." >&2
+            echo "Scheduled evaluation did not pass." >&2
             exit 1
+          fi
+          if [ "$CORPUS_STATUS" != approved ]; then
+            echo "Corpus is pending human review; successful proposals do not approve a release."
           fi

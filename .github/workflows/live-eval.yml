@@ -71,7 +71,7 @@ jobs:
       - name: Explain the one-time bootstrap gate
         run: |
           echo "The reviewed semantic corpus is still pending. Protected PR model calls, browser installation, image builds, and staging mutation are intentionally skipped."
-          echo "After this bootstrap change reaches main, manually dispatch the full Scheduled evaluation once to create the 20-case review artifacts."
+          echo "Manually dispatch Scheduled evaluation with suite=full from the candidate branch to create the 20-case review artifacts. Complete corpus review and approval, then rerun this required check."
 
   resolve-approved-tree:
     name: Resolve exact-tree approval
@@ -361,17 +361,22 @@ jobs:
             echo "Change classification failed." >&2
             exit 1
           fi
-          if [ "$AI_IMPACT" != true ]; then
+          if [ "$AI_IMPACT" = false ]; then
             echo "No AI-impacting paths changed; live model calls intentionally skipped."
             exit 0
+          fi
+          if [ "$AI_IMPACT" != true ]; then
+            echo "Change classification returned an invalid AI-impact state." >&2
+            exit 1
           fi
           if [ "$TRUSTED" != true ]; then
             echo "AI-impacting fork PR requires maintainer review and a trusted branch." >&2
             exit 1
           fi
           if [ "$CORPUS_STATUS" != approved ]; then
-            echo "Semantic corpus is pending review; protected live work is intentionally deferred to the one-time main bootstrap."
-            exit 0
+            echo "Semantic corpus is not approved; required live evaluation has not passed. Protected live work was skipped." >&2
+            echo "Manually dispatch Scheduled evaluation with suite=full from the candidate branch, complete the 20-case corpus review and approval, then rerun this required check." >&2
+            exit 1
           fi
           if [ "$APPROVAL_RESULT" != success ]; then
             echo "Exact-tree approval lookup failed; protected evaluation cannot be bypassed." >&2

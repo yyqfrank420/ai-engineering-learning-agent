@@ -734,6 +734,15 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     elif expected_ids is None and args.suite != "nightly":
         raise RuntimeError(f"unknown live suite: {args.suite}")
     actual_ids = [result["id"] for result in capture["results"]]
+    if args.suite == "nightly" and (
+        len(actual_ids) != 4
+        or len(set(actual_ids)) != 4
+        or not set(actual_ids).issubset(manifest["live"]["suites"]["full"])
+        or not set(actual_ids).issubset(corpus.by_id)
+    ):
+        raise RuntimeError(
+            "nightly browser capture must contain exactly four unique full-suite cases"
+        )
     if expected_ids is not None and actual_ids != expected_ids:
         raise RuntimeError(
             f"browser capture cases do not match suite: expected {expected_ids}, got {actual_ids}"
@@ -751,10 +760,11 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         judge_calls=limits["judge_calls"] if is_pr_budget else 40,
     )
     app_telemetry = capture.get("application_telemetry") or []
-    if capture.get("results") and not app_telemetry:
-        raise RuntimeError(
-            "browser capture contains no application model-call telemetry"
-        )
+    telemetry_failure = (
+        "browser capture contains no application model-call telemetry"
+        if capture.get("results") and not app_telemetry
+        else None
+    )
     budget.record_application_calls(
         sum(max(1, int(call.get("provider_attempts") or 1)) for call in app_telemetry)
     )
@@ -771,15 +781,13 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             baseline_min_runs=int(cost_policy_config.get("baseline_min_runs", 5)),
         ),
     )
-    judge = SemanticJudge()
-    if args.require_approved_corpus:
-        _assert_approved_judge_identity(corpus, judge)
-    resume_evaluations = _load_resume_evaluations(
-        args,
-        corpus,
-        judge,
-        actual_ids,
-    )
+    judge = None
+    resume_evaluations = {}
+    if args.resume_input:
+        judge = SemanticJudge()
+        if args.require_approved_corpus:
+            _assert_approved_judge_identity(corpus, judge)
+        resume_evaluations = _load_resume_evaluations(args, corpus, judge, actual_ids)
     evaluations: list[dict[str, Any]] = []
 
     for browser_result in capture["results"]:
@@ -787,14 +795,6 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         graph_review_diagnostics = _graph_review_diagnostics_from_events(
             browser_result.get("events")
         )
-        resumed = resume_evaluations.get(case.id)
-        if resumed is not None:
-            for _judgment in resumed["judgments"]:
-                budget.record_judge_call()
-            evaluations.append(
-                {**resumed, "graph_review_diagnostics": graph_review_diagnostics}
-            )
-            continue
         deterministic_failures = tuple(
             browser_result.get("deterministic_failures") or []
         )
@@ -819,9 +819,36 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
             continue
 
+        if telemetry_failure:
+            evaluations.append(
+                {
+                    "id": case.id,
+                    "decision": "infrastructure",
+                    "reason": telemetry_failure,
+                    "deterministic_failures": [],
+                    "judgments": [],
+                    "graph_review_diagnostics": graph_review_diagnostics,
+                }
+            )
+            continue
+
+        resumed = resume_evaluations.get(case.id)
+        if resumed is not None:
+            for _judgment in resumed["judgments"]:
+                budget.record_judge_call()
+            evaluations.append(
+                {**resumed, "graph_review_diagnostics": graph_review_diagnostics}
+            )
+            continue
+
         payload = _judge_payload(browser_result)
         judgments = []
         try:
+            if judge is None:
+                candidate_judge = SemanticJudge()
+                if args.require_approved_corpus:
+                    _assert_approved_judge_identity(corpus, candidate_judge)
+                judge = candidate_judge
             first = await judge_with_transport_retry(
                 judge,
                 corpus,
@@ -861,7 +888,7 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
 
     statuses = {item["decision"] for item in evaluations}
-    if cost_policy["status"] == "infrastructure":
+    if telemetry_failure or cost_policy["status"] == "infrastructure":
         statuses.add("infrastructure")
     elif cost_policy["blocking_status"] == "fail":
         statuses.add("fail")
@@ -893,7 +920,7 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         ),
         "manual_review_policy": manual_review_policy,
         "blocking_status": "pass" if exit_code == 0 else "fail",
-        "reason": cost_policy["reason"],
+        "reason": telemetry_failure or cost_policy["reason"],
         "budget": {
             "application_calls": budget.application_calls,
             "application_limit": budget.application_limit,

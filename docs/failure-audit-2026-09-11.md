@@ -1,0 +1,339 @@
+# Historical evaluation failure audit
+
+Audited on 2026-09-11 using GitHub logs, retained result artifacts, source history,
+and local reproductions. No paid models, deployments, or remote writes were performed.
+
+## Findings and scope
+
+GitHub records identify **55 failed single-case `graph-expansion` diagnostic
+executions**, plus seven cancelled single-case captures and one capture whose
+browser and semantic outcomes both passed. The failed executions span August 8 to
+August 19. Twenty-seven of the 55 workflows concluded `success` while their logged
+`BROWSER_OUTCOME` and `SEMANTIC_OUTCOME` were both `failure`.
+
+The [previous stabilization ledger](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger)
+documents 32 of these 55 failures. It omits 23 older or intermediate executions.
+Its root-cause descriptions are secondary evidence in this audit. A description in
+that ledger does not replace an expired capture.
+
+Seventeen failures retain browser captures, live results, and provider telemetry.
+All 17 contain nonzero provider token usage and failed deterministic product
+checks. The other 38 retain execution logs but their result artifacts have expired.
+For those 38, the failed commands are verified; exact paid usage and the division
+between product, infrastructure, and evaluation defects are unknown.
+
+The retained captures have four recurring evaluator symptoms:
+
+- 12 report `required_graph_missing`.
+- Two report `graph_expansion_added_node_count_mismatch`.
+- Two report `required_graph_version_reused`.
+- One reports `graph_expansion_prior_assumption_missing`.
+
+These symptoms describe the final product check. They do not identify every root
+cause. For example, run `31705887318` records a failed `graph_critic` provider attempt
+with zero output usage, while run `31900871827` records a failed graph-patch attempt.
+Both ultimately fail a required-graph check. The older ledger attributes those
+attempts to provider overload and a correction timeout, respectively; those more
+specific explanations require evidence beyond the retained telemetry.
+
+Across the 17 retained failures, median case latency is **250.153 seconds**. Sixteen
+have complete estimated application costs: their sum is **$6.680770** and median is
+**$0.304456**. Run `31900871827` has a null application-cost total because usage is
+incomplete. These are historical estimates, not billing statements. They cannot
+establish total spend across the 55 failures.
+
+## Independent diagnosis and correction
+
+The retained evidence supports a focused refactor of scoped edits and shared
+review criteria. It does not establish a need to replace the provider stack,
+renderer, storage, or orchestration framework.
+
+### Generation and review had different obligations
+
+Run `32291218614` rejected component coverage and objective fidelity. Run
+`32295031180` first rejected capability classification, then introduced
+`independent_risk_coverage`. The staged path had no independently reviewed risk
+artifact. A gate could demand evidence that its pipeline never produced.
+
+At the audited source head `e7227b4`, staged gates received rule names without the
+canonical requirement text. Generation received detailed rubric requirements only
+after rejection. The correction shares `staged_review_requirements` between both
+stages and their reviewers. The first candidate and every correction receive the
+same applicable criteria, including capability-dependent production proofs.
+The stage still excludes rules whose upstream evidence does not exist.
+
+### Scoped edits required models to copy locked records
+
+Run `32300653373` first rejected its expansion at `component_write_set`. Source
+inspection shows that generation received only component and edge capacities,
+while later validators enforced specific record and field permissions. The model
+had to regenerate the entire graph and infer its permitted changes.
+
+Scoped generation now emits additions and field updates in server-selected slots.
+The server copies retained records and applies authorized removals. Both stages
+receive the actual edit permissions. Create generation keeps its existing wire
+format. Existing final admission checks remain authoritative.
+
+A committed fixture retains the exact five-node turn-one graph from this run.
+The regression uses actual scope compilation, delta assembly, ID assignment,
+projection, and final admission. It expands Monitoring Service to six nodes and
+seven edges and passes the existing graph-expansion evaluator. Original nodes,
+edges, title, assumptions, sequence, and prior group metadata remain exact.
+Provider output, rendering, and semantic review are stubbed in this regression;
+it proves the deterministic path and does not certify live model quality.
+
+### Maturity and edit scope contradicted each other
+
+Run `32298885657` published both turns but replaced prior assumptions during a
+prototype-to-production transition. Run `32300653373` preserved assumptions, then
+failed a production review of a locally scoped prototype edit. Keeping every
+prototype record fixed cannot guarantee a graph-wide production upgrade.
+
+The existing corpus correction selects `auto` for additive expansion. The product
+now also rejects a scoped maturity change before model calls and asks the caller
+to retain the stored maturity or explicitly rebuild the graph. Selecting a depth
+or saying `replace Cache` cannot authorize whole-graph replacement.
+
+### Deterministic bookkeeping created further failures
+
+Local reproductions exposed deletion failures that paid-run symptoms did not
+isolate. Removing an earlier component shifted model indexes, left incident edges
+pointing at removed IDs, and made unchanged edge records appear updated by position.
+Grouped prototype deletion also lacked membership-cleanup authority.
+
+The correction retains server IDs and the root by identity, removes only authorized
+incident edges, maps retained edges by identity, and permits cleanup in affected
+groups. Tests reject unrelated node, group, and directed-edge mutations. Root
+removal requires a separately authorized replacement and remains rejected.
+
+Capability flags were also copied unconditionally from the base, so an addition
+could introduce retrieval while its classification remained locked to false.
+Capabilities are now proposed for the assembled candidate and reviewed before
+connection proofs are chosen. Component fingerprints include the reviewed context,
+so a flag-only correction can proceed and identical candidates still stop.
+
+### A renderable graph could still fail semantically
+
+Run `32009504451` omitted response routes, including a model-artifact return, while
+all private renders passed. In `32054742321`, correction retained eight completed
+connections and added an observational Monitoring Service to API Gateway control
+edge. The final gate rejected that new edge for `edge_semantics` and
+`safe_action_boundary`. The first gate's reasons were not retained, so the audit
+cannot establish that the reviewer requested the harmful addition.
+
+These cases support preserving accepted records and giving both models the same
+criteria. Semantic gates and bounded corrections remain. The correction-only
+control-edge restriction was removed: it accepted the identical graph on the
+first attempt and rejected it after a generation failure. Both attempts now use
+the same structural validator. Semantic review checks control behavior against
+accepted responsibilities and capabilities.
+
+Projection labels now describe node and flow types without inventing authentication,
+durability, versioning, policy enforcement, or audit guarantees. Scoped edits retain
+authored presentation fields. Review receives the prior objective and exact edit
+context. Current-policy baseline reuse requires matching server-owned graph and
+reviewer fingerprints; changed global obligations trigger full review. Every edit
+still receives semantic review, including its effects outside the editable records.
+Malformed reviewer findings fail explicitly instead of disappearing into approval.
+
+### Evaluation could hide failure or report success without evidence
+
+Twenty-seven historical diagnostic wrappers returned success despite failed
+evaluation commands. Separately, the current required PR check returned success
+when a pending corpus caused all protected work to be skipped. That required
+status now fails with bootstrap instructions.
+Scheduled runs now fail for any browser or semantic non-success, including pending
+full-corpus proposals. They retain a deployment manifest and artifacts for 90 days.
+Protected internal evaluations capture each valid gate result with its candidate
+and review inputs, so a later rejection no longer erases the first gate's reasons.
+
+Local reproductions found two further harness defects: an empty nightly capture
+passed with zero evaluated cases, and missing application telemetry erased
+deterministic failures and graph diagnostics. Nightly captures now require four
+unique known cases. Missing telemetry remains an infrastructure failure, while
+existing product failures keep their diagnostics and take precedence. Judge setup
+is deferred until a case needs semantic evaluation.
+
+## Validation and remaining release work
+
+Focused regression suites and an independent replay of the retained graph passed.
+All 11 offline groups pass after the stabilization changes: 1,769 backend tests at
+91% coverage, 237 frontend tests, frontend lint/build/production dependency audit,
+canonical artifacts, Python lint/security/dependency checks, migration compilation,
+Terraform validation, container build, and 131 CI policy tests. The full command first
+stopped on an obsolete assertion requiring the removed scheduled-evaluation success
+bypass. That assertion was corrected; evaluation, whole-backend coverage, and all
+remaining groups then passed. Earlier passing groups had no intervening source changes.
+The retained graph replay and gate tests also passed after their final additions.
+
+Existing optional ingestion tests remain skipped without the source PDF or model
+opt-in. Dependency deprecation warnings, the local Node storage warning, and two
+existing unmatched Bandit suppression warnings remain. The frontend lockfile's
+`fflate` dependency was updated from 0.4.8 to 0.4.9 to clear the configured
+production dependency audit.
+
+The changes retain the existing `GRAPH_PIPELINE_MODE=legacy` default and explicit
+`staged` diagnostic selection. No production behavior is claimed from these local
+checks. A fresh protected graph-expansion run must validate provider output,
+semantic acceptance, browser rendering, persistence, latency, and cost before the
+staged path is enabled by default. The corpus still requires human review.
+
+Pure group/sequence edits and mixed deletion-plus-edge-field updates remain outside
+the current scoped delta contract. Future support must add explicit operation
+authority rather than restoring whole-graph generation. Semantic review still
+checks the assembled candidate and can reject it; the historical audit cannot
+prove that every future disagreement will be correct.
+
+## Worktree reconciliation
+
+The three folders are worktrees of one repository. The implementation changes are
+in `Agent` on `feature/staged-graph-pipeline`; the two older worktrees remain clean.
+The merge-identity fix `9c26cde` in `Agent-live-eval-parallel` is patch-equivalent to
+integrated commit `c4c583f`. Completed evaluation and graph fail-path work from
+`Agent-eval-research-security` is represented by squash commits `648ee56` and
+`77df25e` and subsequent changes.
+
+That research branch also contains unfinished source-contract work in `aa44108`.
+Its schema declares pinned sources and hostile evidence markers, but its browser
+runner never enforces them. It was not cherry-picked. The current research-based
+`instruction-conflict` case does not prove that hostile retrieved instructions were
+encountered; corpus review should address that limitation separately.
+
+## Collection and classification
+
+The audit requested up to 400 runs for each workflow and exhausted the returned
+history: 161 `Scheduled evaluation` runs from July 19 through September 11, and
+230 `Live eval required` runs from July 18 through August 20. Twelve live-workflow
+reruns bring the total to 403 attempts across 391 distinct runs. All run/job/step
+metadata was downloaded. Logs were downloaded for all 179 runs that started the
+browser-capture step, plus the 12 earlier attempts of rerun workflows.
+
+The repository artifact API returned 319 artifacts with scheduled/live evaluation
+names. Thirty-six were retained and downloaded, including replay copies; 283 were
+marked expired. The retained files cover 17 completed failure captures and one
+cancelled setup. Replay copies are not counted as additional executions.
+
+The primary inventory is local and ignored by Git:
+
+- `artifacts/failure-audit-2026-09-11/run-inventory.json`: all 403 attempts.
+- `artifacts/failure-audit-2026-09-11/graph-expansion-55-failures.json`: all 55 rows,
+  exact heads, GitHub links, primary evidence paths, failure details, costs, and
+  explicitly labeled secondary documentation.
+- `artifacts/failure-audit-2026-09-11/runs/<run-id>/`: jobs, downloaded logs, and
+  retained result files.
+- `artifacts/failure-audit-2026-09-11/{artifact-downloads,log-downloads,summary}.json`:
+  collection coverage and counts.
+
+In the table, `Product observation` means the retained evaluator reports a blocking
+`quality` failure. It is not a claim that provider or infrastructure faults were
+excluded as causes. `Unknown` means the commands failed but primary evidence cannot
+classify the underlying defect. `B/S failed` means both logged outcomes are
+`failure`. `Secondary` links the previous ledger and is not independent validation.
+All rows have downloadable logs saved locally; a green GitHub conclusion does not
+change the recorded failure.
+
+## All 55 single-case failures
+
+| UTC start | Run / exact source head | Observed class | Primary observation | Result artifacts | Secondary ledger |
+| --- | --- | --- | --- | --- | --- |
+| 2026-08-08 01:39:11 | [31233156283](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31233156283)<br>`d034a1de982e854c0d0f6fe3543fa43336b522a2` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 03:11:06 | [31236639491](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31236639491)<br>`15cb03a5c7f5d9c6ea4aeb0baad316b75dde55bb` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 07:33:32 | [31246433859](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31246433859)<br>`bf8180d401fc2f3793c719c3b93fbeb70016d797` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 09:09:37 | [31249964798](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31249964798)<br>`d474b4062e7a50cc500b1b5c8086e65b5750c7ae` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 10:33:04 | [31253023919](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31253023919)<br>`81a090e04c380eedee80da1fea7ea29f826b36d3` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 11:34:41 | [31255291000](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31255291000)<br>`41f488108b7b88312e97947d9091e15ccdadc3bc` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 11:44:24 | [31255655951](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31255655951)<br>`41f488108b7b88312e97947d9091e15ccdadc3bc` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 12:18:15 | [31256929226](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31256929226)<br>`e645bf242704d7b16a9eb3f5335dfd55c1dc614f` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 12:41:24 | [31257810429](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31257810429)<br>`122b1fd399eb23297b022c32191fc69229cdbf3e` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 13:25:00 | [31259489721](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31259489721)<br>`93bc29bc8d0da7ccf9d408c38e36945826cb0554` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 14:13:11 | [31261404727](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31261404727)<br>`bf3bde1324bd717fa00fc487411106ccc2b1d3a0` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 14:34:36 | [31262285743](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31262285743)<br>`3c2ceaa025bffd8ed02d2b6cc3d9f909e8f284c4` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 14:52:54 | [31263053030](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31263053030)<br>`84f628f000f83482eaf077b95b7098babf2962a4` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 15:23:48 | [31264351143](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31264351143)<br>`1ac7ac7f6be6a2815b83e31fbb2291a8b52c4d91` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 16:20:32 | [31266712755](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31266712755)<br>`4ae22cb9429c6b3d57ec60b35664c40f3fe4a06b` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 17:19:47 | [31269147909](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31269147909)<br>`0fdabf0e19c3f9a2e3cd03df884ef446ac73513e` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-08 17:46:00 | [31270244823](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31270244823)<br>`a3dd810c759ca1c276638ae771d97498b5140f0a` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-09 14:56:28 | [31319775700](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31319775700)<br>`d332cb08dc2cf8a42669838e6b23f70d96e9ece5` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-09 16:13:14 | [31323209766](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31323209766)<br>`aa57465991baa9d795bac1dadba1b3edb3b07039` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-09 17:22:26 | [31326225204](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31326225204)<br>`81a3cc13d11cb723c2b2e7e59800e563369456a0` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-09 19:59:17 | [31333075986](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31333075986)<br>`2f88a5a244265d7e9e94e497d096e3397ed10d87` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-09 20:53:59 | [31335429802](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31335429802)<br>`b2bd76abd7af2fd52d93b3e6c53c6006bfddb9fc` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-09 22:40:57 | [31340006983](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31340006983)<br>`7ce69b617e93665c0b6536c7903363e67b9ad27a` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-10 08:16:39 | [31369358742](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31369358742)<br>`77df25e7dc6402714e86562e3d9658f653a7a4dd` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-10 09:17:16 | [31373878762](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31373878762)<br>`017f7d07d269f1e06a3af21a0fc4fec7faf63f46` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-11 18:38:41 | [31523789373](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31523789373)<br>`9a3dcd2d91ab33fbb246a4761f8b7d6c70cb9808` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-11 23:46:57 | [31547774792](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31547774792)<br>`67887c3ebd89ebaec2db268e91927f8f3697a2d5` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 00:08:09 | [31549117335](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31549117335)<br>`1a279b67e997426003aeb913ef28e6fa4e4c0cae` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 00:16:55 | [31549644038](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31549644038)<br>`b64f66f3ac6b157840277133a1a6ae516cd8d07a` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 10:46:49 | [31588931923](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31588931923)<br>`ca8e3b2ad6038a838870e5fad6959c595c40fe16` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 12:48:17 | [31598216294](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31598216294)<br>`ccd5c7712323be5d3fc47f304b03d92fd28e7498` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-12 15:09:59 | [31610799035](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31610799035)<br>`fd61175d7ddb627ea9bed203588b756c0cfa5c6f` | Unknown | B/S failed; specific cause unavailable | Expired | Absent |
+| 2026-08-12 15:24:57 | [31612168038](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31612168038)<br>`ad82144fa48f5b6fd498b55b69384a279cb6650a` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 15:51:46 | [31614596529](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31614596529)<br>`5a3b5f1a21458964f95eee6405e8b74b50c6692e` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 16:18:41 | [31616927365](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31616927365)<br>`5c9b27589a29aef90d77571f993a37ab089fa6ce` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 16:54:05 | [31619916923](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31619916923)<br>`ae916b32818ea752e2cd6e46d4bcb31d69b1f025` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 17:44:42 | [31624156649](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31624156649)<br>`7767994733dd222b07c6278a87032b086dcf2326` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-12 20:28:26 | [31637814841](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31637814841)<br>`f15537a3270b4d0e2d011f14fe4cfddf033e389b` | Unknown | B/S failed; specific cause unavailable | Expired | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-13 13:37:58 | [31705887318](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31705887318)<br>`30c8a5418ce5479c9e5cea170a574355a99608a8` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-14 08:42:48 | [31785036626](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31785036626)<br>`4b2b7f261e689322f76611d8654c6a6e7aec4539` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-14 11:36:55 | [31796931744](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31796931744)<br>`b098cc59af0c329ec28cb4654faa08b5711d7a8d` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-14 17:45:07 | [31825436257](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31825436257)<br>`a2e7766e295590c558145ef2f69a2abfb5bb644b` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-15 11:19:39 | [31881756822](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31881756822)<br>`4c2bae8ff12c3204fb3b492cbf27210cfec9542b` | Product observation | `required_graph_version_reused` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-15 17:19:45 | [31897989519](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31897989519)<br>`f181e855987d286ddf66f04e35c0ea30a86005f0` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-15 18:20:48 | [31900871827](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31900871827)<br>`4faf04de329e3d9934a3363ea475c6a8d19dcf94` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-15 19:08:43 | [31903086208](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31903086208)<br>`f045abf31f6164f3d2e6f3567d026645c2dfb52e` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-16 09:36:38 | [31939496092](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31939496092)<br>`06dac4e2946d6e26b949c396317765a46e798a8d` | Product observation | `graph_expansion_added_node_count_mismatch` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-16 14:38:39 | [31953303244](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31953303244)<br>`54bb8acc6ae40ba4411a5c3f9f35a684c6f04c1f` | Product observation | `graph_expansion_added_node_count_mismatch` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-16 21:18:03 | [31973080544](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31973080544)<br>`8f061d00cf12b7edc04da3533cb7dad49d3c3f59` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-17 08:15:31 | [32009504451](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32009504451)<br>`e35c521071d1945c3d7ee44428706774ace6d222` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-17 18:24:21 | [32054742321](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32054742321)<br>`3b1ad90547ef76ee13e9d81caefe43de0b6b5374` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-19 19:07:01 | [32291218614](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32291218614)<br>`be98b79d1683b44025e29e3bda2a37359321d8fa` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-19 19:48:10 | [32295031180](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32295031180)<br>`5e73e121fd4aafd6023762897259a52a79a9a310` | Product observation | `required_graph_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-19 20:30:21 | [32298885657](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32298885657)<br>`c84915c1c2f44e7079780074ddbed6aac64a4ada` | Product observation | `graph_expansion_prior_assumption_missing` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+| 2026-08-19 20:49:44 | [32300653373](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/32300653373)<br>`8efaaf957ff01676377db9bf10a96ba68de626d9` | Product observation | `required_graph_version_reused` | Retained | [Secondary](eval-stabilization-intermediate.md#recent-diagnostic-failure-ledger) |
+
+## Other workflow executions
+
+Counts below include reruns and are mutually exclusive. A started browser step
+alone does not establish that a paid provider call occurred.
+
+| Execution evidence | Scheduled | Live required | Total |
+| --- | ---: | ---: | ---: |
+| Paid failure verified by retained artifact | 17 | 0 | 17 |
+| Failed evaluation outcome; paid usage unverified | 65 | 62 | 127 |
+| Cancelled after browser step started | 8 | 7 | 15 |
+| Recorded successful evaluation outcome | 9 | 2 | 11 |
+| Browser started; final outcome unknown | 9 | 0 | 9 |
+| Cancelled before browser step | 38 | 101 | 139 |
+| Pending-corpus work skipped | 0 | 67 | 67 |
+| Failed before browser step | 13 | 2 | 15 |
+| Unfinished without browser step | 2 | 1 | 3 |
+
+Four failed mixed-case diagnostic executions also selected `graph-expansion`:
+`30760765158`, `30996877768`, `30999068051`, and `31001260035`. Their aggregate failed
+outcomes do not establish which selected case failed, so they are excluded from the
+55 single-case failures.
+
+Single-case `graph-expansion` run
+[`31241232161`](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/31241232161)
+on August 8 records successful browser and semantic outcomes. Its expired capture
+prevents independent review of its graph quality, corpus version, and paid usage.
+Seven other single-case captures were cancelled and are not counted as completed
+failures.
+
+Fifteen attempts failed before browser execution. Their failing setup, approval, or
+classification steps are recorded in the machine-readable inventory; they are not
+counted as paid product failures. The 67 pending-corpus skips likewise provide no
+live product evidence.
+
+## Evidence limits
+
+The 55-row count is a count of independently verified failed diagnostic executions,
+not 55 independently reconstructed model failures. Only 17 retain enough primary
+result evidence to prove paid calls and inspect the failed product assertion.
+Current source, old commit messages, and the previous ledger cannot recover missing
+candidate outputs, provider usage, or review decisions for the remaining 38.
+
+The audit records observed outcomes and evidence gaps. It does not certify the
+current fixes, establish that every historical root cause remains reachable, or
+supply the corpus approval required for protected evaluation.

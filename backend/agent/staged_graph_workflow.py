@@ -15,7 +15,9 @@ from agent.complexity import resolve_complexity
 from agent.nodes.graph_critic import graph_render_gate_node
 from agent.nodes.graph_worker import (
     _attach_graph_version,
+    _patch_edge_id,
     admit_staged_graph_edit,
+    sequence_after_node_removal,
     staged_edit_scope,
 )
 from agent.nodes.staged_graph_gate import (
@@ -23,6 +25,7 @@ from agent.nodes.staged_graph_gate import (
     CONNECTION_RULE_CODES,
     review_components,
     review_connections,
+    review_identity,
 )
 from agent.nodes.staged_graph_generation import (
     FLOW_CODES,
@@ -43,7 +46,6 @@ from agent.staged_graph_contract import (
     production_proofs_for_capabilities,
     project_graph_data,
     reconstruct_staged_graph_build,
-    validate_create_connection_correction_authority,
     validate_component_write_set,
     validate_staged_graph_build,
 )
@@ -52,6 +54,12 @@ from config import settings
 
 
 _MAX_STAGE_ATTEMPTS = 2
+_EXPLICIT_GRAPH_REBUILD = re.compile(
+    r"\b(?:rebuild|redesign|replace|redraw)\s+(?:the\s+)?"
+    r"(?:(?:entire|whole)\s+)?(?:architecture|diagram|graph|system)\b|"
+    r"\b(?:start\s+over|from\s+scratch)\b",
+    re.IGNORECASE,
+)
 _SAFE_FAILURE_TOKEN = re.compile(r"[a-zA-Z0-9_.:-]{1,96}")
 logger = logging.getLogger(__name__)
 
@@ -301,12 +309,21 @@ def _retain_component_ids(
         return
     base_components = list(base_build.get("components") or [])
     removable = set((permissions or {}).get("removable_node_ids") or [])
+    if permissions is not None:
+        # Scoped generation assembles retained base rows before authorized additions.
+        retained = [
+            component
+            for component in base_components
+            if component["server_id"] not in removable
+        ]
+        for component, prior in zip(components, retained):
+            component["server_id"] = prior["server_id"]
+        return
     available = {
         str(component.get("server_id")): component
         for component in base_components
         if component.get("server_id") and component.get("server_id") not in removable
     }
-    editable = set((permissions or {}).get("editable_node_ids") or []) - removable
     for component in components:
         exact = next(
             (
@@ -320,24 +337,6 @@ def _retain_component_ids(
         if exact:
             component["server_id"] = exact
             available.pop(exact)
-    base_by_index = {
-        int(component["model_index"]): str(component["server_id"])
-        for component in base_components
-        if isinstance(component.get("model_index"), int)
-        and component.get("server_id") in available
-    }
-    for component in components:
-        if "server_id" in component:
-            continue
-        prior_id = base_by_index.get(component["model_index"])
-        if prior_id in editable and prior_id in available:
-            component["server_id"] = prior_id
-            available.pop(prior_id)
-    unmatched = [component for component in components if "server_id" not in component]
-    editable_available = sorted(editable & available.keys())
-    if len(unmatched) == len(editable_available):
-        for component, node_id in zip(unmatched, editable_available):
-            component["server_id"] = node_id
 
 
 def _apply_scoped_addition_defaults(
@@ -451,13 +450,14 @@ def _contract(
     *,
     component_gate: Mapping[str, Any],
     connection_gate: Mapping[str, Any],
+    objective: str,
 ) -> dict[str, Any]:
     root = next(
         component["server_id"]
         for component in build["components"]
         if component["model_index"] == build["root_index"]
     )
-    return {
+    contract = {
         "schema_version": 1,
         "graph_version": graph["version"],
         "maturity": build["maturity"],
@@ -471,12 +471,152 @@ def _contract(
         "groups": copy.deepcopy(graph.get("groups") or []),
         "component_gate": copy.deepcopy(dict(component_gate)),
         "connection_gate": copy.deepcopy(dict(connection_gate)),
+        "objective": objective,
+    }
+    contract["reviewed_graph_fingerprint"] = _reviewed_graph_fingerprint(
+        graph, contract
+    )
+    return contract
+
+
+def _reviewed_graph_fingerprint(
+    graph: Mapping[str, Any], contract: Mapping[str, Any]
+) -> str:
+    # View state is client-writable presentation. Every other stored graph field
+    # and the semantic contract context must match the graph that was approved.
+    return _fingerprint(
+        {
+            "graph": {
+                key: value
+                for key, value in graph.items()
+                if key not in {"version", "view_state"}
+            },
+            "context": {
+                key: contract.get(key)
+                for key in ("maturity", "capabilities", "root_node_id", "objective")
+            },
+        }
+    )
+
+
+def _review_context(build: Mapping[str, Any]) -> dict[str, Any]:
+    root_id = next(
+        row["server_id"]
+        for row in build["components"]
+        if row["model_index"] == build["root_index"]
+    )
+    return {
+        "title": build["title"],
+        "assumptions": build["assumptions"],
+        "capabilities": build["capabilities"],
+        "maturity": build["maturity"],
+        "root_node_id": root_id,
+    }
+
+
+def _has_current_approval(
+    graph: Mapping[str, Any], contract: Mapping[str, Any], base: Mapping[str, Any]
+) -> bool:
+    if (
+        contract.get("schema_version") != 1
+        or contract.get("source") != "staged"
+        or contract.get("stage") != "accepted"
+        or not graph.get("version")
+        or contract.get("graph_version") != graph["version"]
+        or contract.get("reviewed_graph_fingerprint")
+        != _reviewed_graph_fingerprint(graph, contract)
+    ):
+        return False
+    guarantees = production_proofs_for_capabilities(
+        base["capabilities"], maturity=base["maturity"]
+    )
+    for stage, key, required in (
+        ("components", "component_gate", ()),
+        ("connections", "connection_gate", guarantees),
+    ):
+        gate = contract.get(key)
+        if (
+            not isinstance(gate, Mapping)
+            or gate.get("approved") is not True
+            or gate.get("terminal") is not False
+            or gate.get("findings") != []
+            or gate.get("review_identity")
+            != review_identity(stage, base["maturity"], required)
+        ):
+            return False
+    return True
+
+
+def _edit_review_scope(
+    base: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+    graph: Mapping[str, Any],
+    contract: Mapping[str, Any],
+    permissions: Mapping[str, Any],
+) -> dict[str, Any]:
+    before = {
+        row["server_id"]: {
+            key: value for key, value in row.items() if key != "model_index"
+        }
+        for row in base["components"]
+    }
+    after = {
+        row["server_id"]: {
+            key: value for key, value in row.items() if key != "model_index"
+        }
+        for row in candidate["components"]
+    }
+    changed_ids = {key for key, row in after.items() if before.get(key) != row}
+    removed_ids = before.keys() - after.keys()
+    prior_edges = {_fingerprint(row) for row in base["connections"]}
+    current_edges = {_fingerprint(row) for row in candidate["connections"]}
+    changed_indexes = [
+        index
+        for index, row in enumerate(candidate["connections"])
+        if _fingerprint(row) not in prior_edges
+    ]
+    removed_edges = [
+        row for row in base["connections"] if _fingerprint(row) not in current_edges
+    ]
+    changed_edges = [
+        candidate["connections"][index] for index in changed_indexes
+    ] + removed_edges
+    affected_ids = (
+        changed_ids
+        | removed_ids
+        | {row[key] for row in changed_edges for key in ("source_id", "target_id")}
+    )
+    neighbors = {
+        row[key]
+        for row in [*base["connections"], *candidate["connections"]]
+        if affected_ids.intersection((row["source_id"], row["target_id"]))
+        for key in ("source_id", "target_id")
+    }
+    baseline_context = _review_context(base)
+    return {
+        "kind": "scoped_edit",
+        "trusted_baseline": (
+            baseline_context == _review_context(candidate)
+            and _has_current_approval(graph, contract, base)
+        ),
+        "baseline_objective": contract.get("objective") or base["title"],
+        "baseline_context": baseline_context,
+        "baseline_components": list(before.values()),
+        "baseline_connections": base["connections"],
+        "changed_component_ids": sorted(changed_ids),
+        "removed_component_ids": sorted(removed_ids),
+        "changed_connection_indexes": changed_indexes,
+        "removed_connections": removed_edges,
+        "affected_component_ids": sorted(affected_ids | neighbors),
+        "edit_permissions": dict(permissions),
     }
 
 
 def _preserve_existing_presentation(
     candidate: GraphData,
     existing: Mapping[str, Any] | None,
+    *,
+    edit_permissions: Mapping[str, Any] | None = None,
 ) -> GraphData:
     if not existing:
         return candidate
@@ -490,20 +630,60 @@ def _preserve_existing_presentation(
         prior = existing_nodes.get(str(node.get("id")))
         if prior is None:
             continue
+        editable_fields = set(
+            ((edit_permissions or {}).get("editable_node_fields") or {}).get(
+                str(node.get("id")), []
+            )
+        )
         for field in ("technology", "tier", "detail", "layer"):
-            if field in prior:
+            if field in prior and field not in editable_fields:
                 node[field] = copy.deepcopy(prior[field])
-    prior_edges = list(existing.get("edges") or [])
+    semantic_fields = ("source", "target", "label", "sync", "flow")
+    indexed_edges = [
+        (_patch_edge_id(index), edge)
+        for index, edge in enumerate(existing.get("edges") or [])
+    ]
+    prior_edges = {
+        tuple(edge.get(field) for field in semantic_fields): (edge_id, edge)
+        for edge_id, edge in indexed_edges
+        if isinstance(edge, Mapping)
+    }
+    removable = set((edit_permissions or {}).get("removable_edge_ids") or [])
+    retained_edges = [item for item in indexed_edges if item[0] not in removable]
+    editable_edge_fields = (edit_permissions or {}).get("editable_edge_fields") or {}
     for index, edge in enumerate(preserved.get("edges") or []):
-        if index >= len(prior_edges) or not isinstance(prior_edges[index], Mapping):
+        matched = prior_edges.get(tuple(edge.get(field) for field in semantic_fields))
+        if (
+            matched is None
+            and edit_permissions is not None
+            and index < len(retained_edges)
+        ):
+            edge_id, prior = retained_edges[index]
+            allowed = set(editable_edge_fields.get(edge_id, []))
+            # Scoped delta assembly keeps retained base rows in order. Verify
+            # that only authorized semantic fields changed before using the slot.
+            if isinstance(prior, Mapping) and all(
+                field in allowed or edge.get(field) == prior.get(field)
+                for field in semantic_fields
+            ):
+                matched = (edge_id, prior)
+        if matched is None:
             continue
-        prior = prior_edges[index]
-        semantic_fields = ("source", "target", "label", "sync", "flow")
-        if any(edge.get(field) != prior.get(field) for field in semantic_fields):
-            continue
+        edge_id, prior = matched
+        editable_fields = set(editable_edge_fields.get(edge_id, []))
         for field in ("technology", "description", "type", "edge_id", "relation"):
-            if field in prior:
+            if field in prior and field not in editable_fields:
                 edge[field] = copy.deepcopy(prior[field])
+    if edit_permissions is not None:
+        removed_node_ids = set(edit_permissions.get("removable_node_ids") or [])
+        if removed_node_ids:
+            preserved["sequence"] = sequence_after_node_removal(
+                existing.get("sequence") or [], removed_node_ids
+            )
+        elif "sequence" not in (
+            edit_permissions.get("editable_composition_fields") or []
+        ):
+            preserved["sequence"] = copy.deepcopy(existing.get("sequence") or [])
     if "view_state" in existing:
         preserved["view_state"] = copy.deepcopy(existing["view_state"])
     return preserved
@@ -584,6 +764,7 @@ async def _failed(
     review: Mapping[str, Any] | None = None,
     *,
     diagnostic: Mapping[str, Any] | None = None,
+    revision_instruction: str | None = None,
 ) -> AgentState:
     if diagnostic:
         state = await _retain_staged_diagnostic(state, diagnostic)
@@ -643,6 +824,11 @@ async def _failed(
             "failure_code": code,
             **({"staged_gate": copy.deepcopy(dict(review))} if review else {}),
             **({"staged_failure": safe_diagnostic} if safe_diagnostic else {}),
+            **(
+                {"revision_instruction": revision_instruction}
+                if revision_instruction
+                else {}
+            ),
         },
     }
     return result
@@ -650,7 +836,7 @@ async def _failed(
 
 async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     """Build, render, and review one applied graph with one retry per layer."""
-    maturity, full_restage = _maturity(state)
+    maturity, maturity_changed = _maturity(state)
     request = str(state.get("design_query") or state.get("user_message") or "")
     raw_request = str(state.get("user_message") or "")
     approved_graph = state.get("approved_graph_data") or state.get("graph_data")
@@ -661,6 +847,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     repair_contract: dict[str, Any] | None = None
     permissions: dict[str, Any] | None = None
     if state.get("graph_intent") == "edit" and isinstance(approved_graph, Mapping):
+        state = {
+            **state,
+            "approved_graph_data": copy.deepcopy(dict(approved_graph)),
+            "approved_graph_contract": copy.deepcopy(approved_contract),
+        }
         try:
             base_build = reconstruct_staged_graph_build(
                 approved_graph,
@@ -675,7 +866,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 "approved_graph_contract": None,
                 "graph_contract": None,
             }
-            maturity, full_restage = _maturity(state)
+            maturity, maturity_changed = _maturity(state)
             try:
                 base_build = reconstruct_staged_graph_build(
                     approved_graph,
@@ -691,14 +882,17 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 resolved_complexity=maturity,
             )
         except ValueError:
-            if not full_restage and re.search(
-                r"\b(?:rebuild|redesign|replace|redraw|start\s+over)\b",
-                raw_request,
-                re.IGNORECASE,
-            ):
-                full_restage = True
-            if not full_restage:
+            if not _EXPLICIT_GRAPH_REBUILD.search(raw_request):
                 return await _failed(state, "staged_edit_scope_ambiguous")
+        if permissions is not None and maturity_changed:
+            return await _failed(
+                state,
+                "staged_edit_maturity_conflict",
+                revision_instruction=(
+                    "Keep this edit at the current maturity by selecting auto, "
+                    f"or explicitly request a rebuild of the graph at {maturity} maturity."
+                ),
+            )
 
     component_capacity = settings.graph_safety_max_nodes
     edge_capacity = settings.graph_safety_max_edges
@@ -762,6 +956,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 structural_findings=correction_findings,
                 base_components=base_build,
+                edit_permissions=permissions,
                 rejected_candidate=rejected_component_candidate,
                 state=state,
                 timeout_seconds=settings.staged_component_timeout_s,
@@ -791,6 +986,28 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 or []
             )
             scoped_edit = base_build is not None and permissions is not None
+            root_index = wire["root_index"]
+            removable_node_ids = set(
+                (permissions or {}).get("removable_node_ids") or []
+            )
+            if scoped_edit:
+                root_id = next(
+                    component["server_id"]
+                    for component in base_build["components"]
+                    if component["model_index"] == base_build["root_index"]
+                )
+                root_index = next(
+                    (
+                        component["model_index"]
+                        for component in components
+                        if component.get("server_id") == root_id
+                    ),
+                    None,
+                )
+                if root_index is None:
+                    raise GraphContractError(
+                        "must retain the scoped root component", path="root_index"
+                    )
             candidate = {
                 "request_id": str(state.get("request_id") or "staged"),
                 "title": (
@@ -803,18 +1020,16 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     if not scoped_edit or "assumptions" in editable_composition
                     else copy.deepcopy(base_build["assumptions"])
                 ),
-                "root_index": (
-                    base_build["root_index"] if scoped_edit else wire["root_index"]
-                ),
-                "capabilities": (
-                    copy.deepcopy(base_build["capabilities"])
-                    if scoped_edit
-                    else wire["capabilities"]
-                ),
+                "root_index": root_index,
+                "capabilities": copy.deepcopy(wire["capabilities"]),
                 "components": components,
-                "connections": copy.deepcopy(
-                    (base_build or {}).get("connections") or []
-                ),
+                "connections": [
+                    copy.deepcopy(edge)
+                    for edge in (base_build or {}).get("connections") or []
+                    if not removable_node_ids.intersection(
+                        (edge["source_id"], edge["target_id"])
+                    )
+                ],
                 "maturity": maturity,
                 "source": "staged",
                 "stage": "components",
@@ -843,7 +1058,15 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                         "removal_count": len(
                             permissions.get("removable_node_ids") or []
                         ),
-                        "incident_edge_ids": [],
+                        "incident_edge_ids": [
+                            f"{edge['source']}|{edge['target']}|{edge['label'].casefold()}"
+                            for edge in permissions.get("editable_edges") or []
+                            if edge["edge_id"]
+                            in permissions.get("removable_edge_ids", [])
+                            and removable_node_ids.intersection(
+                                (edge["source"], edge["target"])
+                            )
+                        ],
                     },
                 )
             preview = _component_preview(assigned)
@@ -862,13 +1085,21 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "capabilities": assigned["capabilities"],
                 },
             }
+            if scoped_edit:
+                component_evidence["review_scope"] = _edit_review_scope(
+                    base_build,
+                    assigned,
+                    approved_graph,
+                    approved_contract or {},
+                    permissions,
+                )
             reviewed_component_records = copy.deepcopy(assigned["components"])
             component_gate = await review_components(
                 user_request=request,
                 evidence_bundle=component_evidence,
                 resolved_maturity=maturity,
                 candidate_records=reviewed_component_records,
-                telemetry_context=state,
+                telemetry_context={**state, "staged_attempt": attempt + 1},
             )
             if component_gate["approved"]:
                 component_build = assigned
@@ -962,7 +1193,6 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     previous_prompt = None
     previous_connection_candidate: str | None = None
     previous_connection_wire: str | None = None
-    previous_connection_build: dict[str, Any] | None = None
     rejected_connection_candidate: dict[str, Any] | None = None
     reviewed_connection_records: list[dict[str, Any]] = []
     correction_findings = []
@@ -1001,7 +1231,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     write_set_fingerprint if attempt else None
                 ),
                 structural_findings=correction_findings,
-                base_connections=_connection_prompt_base(base_build),
+                base_connections=_connection_prompt_base(component_build),
+                edit_permissions=permissions,
                 rejected_candidate=rejected_connection_candidate,
                 state=state,
                 timeout_seconds=settings.staged_connection_timeout_s,
@@ -1027,13 +1258,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "correction repeated the prior candidate",
                     path="connections",
                 )
-            if attempt == 1 and permissions is None:
-                candidate_build = validate_create_connection_correction_authority(
-                    previous_connection_build or {**component_build, "connections": []},
-                    candidate_build,
-                )
-            else:
-                candidate_build = validate_staged_graph_build(candidate_build)
+            candidate_build = validate_staged_graph_build(candidate_build)
             projected = _attach_graph_version(project_graph_data(candidate_build))
             if projected is None:
                 raise GraphContractError(
@@ -1042,6 +1267,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             projected = _preserve_existing_presentation(
                 projected,
                 approved_graph if isinstance(approved_graph, Mapping) else None,
+                edit_permissions=permissions,
             )
             if (
                 base_build is not None
@@ -1084,6 +1310,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 "root_index": candidate_build["root_index"],
                 "capabilities": copy.deepcopy(candidate_build["capabilities"]),
             }
+            if base_build is not None and permissions is not None:
+                evidence["review_scope"] = _edit_review_scope(
+                    base_build,
+                    candidate_build,
+                    approved_graph,
+                    approved_contract or {},
+                    permissions,
+                )
             reviewed_connection_records = [
                 {
                     "source": edge["source_id"],
@@ -1102,7 +1336,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 required_production_guarantees=production_proofs_for_capabilities(
                     candidate_build["capabilities"], maturity=maturity
                 ),
-                telemetry_context=state,
+                telemetry_context={**state, "staged_attempt": attempt + 1},
             )
             if connection_gate["approved"]:
                 graph_contract = _contract(
@@ -1110,6 +1344,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     projected,
                     component_gate=component_gate,
                     connection_gate=connection_gate,
+                    objective=(
+                        str(
+                            (approved_contract or {}).get("objective")
+                            or base_build["title"]
+                        )
+                        if base_build is not None and permissions is not None
+                        else request
+                    ),
                 )
                 operation = state.get("graph_operation") or {
                     "kind": state.get("graph_intent") or "create",
@@ -1157,7 +1399,6 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             previous_prompt = generated["prompt_fingerprint"]
             previous_connection_candidate = candidate_fingerprint
-            previous_connection_build = copy.deepcopy(candidate_build)
             if attempt + 1 < _MAX_STAGE_ATTEMPTS:
                 working_state = await _retain_staged_diagnostic(
                     rendered,

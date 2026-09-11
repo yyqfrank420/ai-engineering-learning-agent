@@ -840,7 +840,7 @@ def _add_required_group_scope(
     node_removal: bool,
     node_addition: bool,
 ) -> None:
-    if resolved_complexity == "production" and node_removal:
+    if node_removal and (groups or resolved_complexity == "production"):
         composition_fields.append("groups")
         group_ids.update(
             str(group.get("id") or "")
@@ -1061,6 +1061,11 @@ def _user_edit_scope(
         node_removal=node_removal,
         node_addition=allow_node_additions,
     )
+    if node_removal and any(
+        node_ids.intersection(step.get("nodes") or [])
+        for step in graph.get("sequence") or []
+    ):
+        composition_fields.append("sequence")
     composition_fields = list(dict.fromkeys(composition_fields))
 
     sequence_indexes, assumption_indexes = _user_edit_composition_indexes(
@@ -2100,6 +2105,22 @@ def _validate_group_replacement_scope(
             raise ValueError(f"graph patch changed locked group: {group_id}")
 
 
+def sequence_after_node_removal(
+    sequence: list[dict[str, Any]], removed_node_ids: set[str]
+) -> list[dict[str, Any]]:
+    """Remove deleted members while preserving authored step order and meaning."""
+    retained = []
+    for step in sequence:
+        members = [
+            node_id for node_id in step["nodes"] if node_id not in removed_node_ids
+        ]
+        if members:
+            retained.append(
+                {**copy.deepcopy(step), "nodes": members, "step": len(retained) + 1}
+            )
+    return retained
+
+
 def _validate_indexed_replacement_scope(
     existing: Any,
     replacement: Any,
@@ -2396,12 +2417,19 @@ def _validate_composition_patch_scope(
             set(composition_layer["group_ids"]),
         )
     if "sequence" in patch:
-        _validate_indexed_replacement_scope(
-            existing_graph.get("sequence") or [],
-            patch["sequence"],
-            set(composition_layer["sequence_indexes"]),
-            field="sequence",
-        )
+        removed_node_ids = set(_patch_list(patch, "remove_nodes"))
+        if removed_node_ids:
+            if patch["sequence"] != sequence_after_node_removal(
+                existing_graph.get("sequence") or [], removed_node_ids
+            ):
+                raise ValueError("node removal changed unrelated sequence content")
+        else:
+            _validate_indexed_replacement_scope(
+                existing_graph.get("sequence") or [],
+                patch["sequence"],
+                set(composition_layer["sequence_indexes"]),
+                field="sequence",
+            )
     if "assumptions" in patch:
         _validate_indexed_replacement_scope(
             existing_graph.get("assumptions") or [],
@@ -2657,6 +2685,9 @@ def _validate_locked_composition_after_normalization(
         "title"
     ):
         raise ValueError("normalization changed locked composition field: title")
+    removed_node_ids = {node["id"] for node in existing_graph.get("nodes") or []} - {
+        node["id"] for node in candidate.get("nodes") or []
+    }
     for field, selector_field in (
         ("sequence", "editable_sequence_indexes"),
         ("assumptions", "editable_assumption_indexes"),
@@ -2666,6 +2697,12 @@ def _validate_locked_composition_after_normalization(
                 raise ValueError(
                     f"normalization changed locked composition field: {field}"
                 )
+            continue
+        if field == "sequence" and removed_node_ids:
+            if candidate.get(field) != sequence_after_node_removal(
+                existing_graph.get(field) or [], removed_node_ids
+            ):
+                raise ValueError("node removal changed unrelated sequence content")
             continue
         _validate_indexed_replacement_scope(
             existing_graph.get(field) or [],
@@ -3010,30 +3047,58 @@ def _staged_candidate_patch(
 
     before_edges = list(existing_graph.get("edges") or [])
     after_edges = list(candidate.get("edges") or [])
-    common_count = min(len(before_edges), len(after_edges))
+    # Match retained identities before pairing edits. Array positions change
+    # when an earlier edge is deleted; patch selectors still address the base.
+    unmatched_before = set(range(len(before_edges)))
+    matched_edges: dict[int, int] = {}
+    for after_index, edge in enumerate(after_edges):
+        before_index = next(
+            (
+                index
+                for index in sorted(unmatched_before)
+                if all(
+                    before_edges[index].get(field) == edge.get(field)
+                    for field in ("source", "target", "label")
+                )
+            ),
+            None,
+        )
+        if before_index is not None:
+            matched_edges[after_index] = before_index
+            unmatched_before.remove(before_index)
+    unmatched_after = [
+        index for index in range(len(after_edges)) if index not in matched_edges
+    ]
+    for after_index, before_index in zip(unmatched_after, sorted(unmatched_before)):
+        matched_edges[after_index] = before_index
+        unmatched_before.remove(before_index)
     edge_updates = []
-    for index in range(common_count):
+    for after_index, before_index in sorted(matched_edges.items()):
         changes = {
-            field: copy.deepcopy(after_edges[index].get(field))
+            field: copy.deepcopy(after_edges[after_index].get(field))
             for field in _PATCH_EDGE_MUTABLE_FIELDS
-            if after_edges[index].get(field) != before_edges[index].get(field)
+            if after_edges[after_index].get(field)
+            != before_edges[before_index].get(field)
         }
         if changes:
-            edge_updates.append({"edge_id": _patch_edge_id(index), "set": changes})
+            edge_updates.append(
+                {"edge_id": _patch_edge_id(before_index), "set": changes}
+            )
     if edge_updates:
         patch["update_edges"] = edge_updates
-    if len(before_edges) > common_count:
+    if unmatched_before:
         patch["remove_edges"] = [
-            _patch_edge_id(index) for index in range(common_count, len(before_edges))
+            _patch_edge_id(index) for index in sorted(unmatched_before)
         ]
-    if len(after_edges) > common_count:
+    if len(after_edges) > len(matched_edges):
         patch["add_edges"] = [
             {
                 field: copy.deepcopy(edge[field])
                 for field in _PATCH_EDGE_MUTABLE_FIELDS
                 if field in edge
             }
-            for edge in after_edges[common_count:]
+            for index, edge in enumerate(after_edges)
+            if index not in matched_edges
         ]
 
     for field in ("title", "assumptions", "sequence", "groups"):
@@ -3521,7 +3586,7 @@ def _validate_connected_graph(
         adjacency[source].add(target)
         adjacency[target].add(source)
     isolated = [node_id for node_id, neighbours in adjacency.items() if not neighbours]
-    if isolated:
+    if isolated and len(nodes) > 1:
         raise ValueError(
             f"applied graph contains isolated nodes: {', '.join(isolated)}"
         )

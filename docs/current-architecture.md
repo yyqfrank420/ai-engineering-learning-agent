@@ -38,7 +38,9 @@ This is the current runtime contract for the production-quality demo.
 6. Kimi K3 at high effort produces a component wire, then a connection wire. The component wire
    contains the root index, title, assumptions, capabilities, and each component's label, type,
    responsibility, group label, group kind, and primary-flow membership. It does not contain a
-   composition layer.
+   composition layer. Scoped edits instead emit additions and permitted field updates in
+   server-selected slots. The server assembles complete candidates from immutable prior records
+   and authorized removals. Both stages receive the same applicable criteria as their reviewers.
 7. The server owns IDs, group records, breadth-first sequence derivation, projection, graph
    versions, selected maturity, exact edit admission, validation, state transitions, and
    persistence. The component-only candidate has no edges. Its render gate emits a reversible
@@ -46,15 +48,26 @@ This is the current runtime contract for the production-quality demo.
    reversible-preview, then connection-gate order. These previews remain nonauthoritative until
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
    two candidates. A connection retry cannot reopen an accepted component layer.
+   Initial and corrected connections use the same structural checks. Control behavior is reviewed
+   against accepted responsibilities.
 8. Prototype gates exclude production criteria. Production proof requirements derive from the
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
    gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
 9. The transport atomically persists graph data and its server-only contract before emitting
    authoritative `graph_data` and `done`. `auto` edits inherit stored maturity. A legacy graph with
-   no stored contract defaults to prototype. An explicit different depth reruns both semantic stages.
-   A bounded edit retains exact record authority during that restage, including locked assumptions
-   and prior composition records.
+   no stored contract defaults to prototype. A bounded edit that selects a different maturity
+   fails before model calls with instructions to retain the current maturity or explicitly rebuild.
+   Scoped review includes the prior objective, exact delta, and affected dependencies. Prior approval
+   is trusted only when the stored graph fingerprint, both reviewer identities, and global context
+   still match. Changed maturity, capabilities, assumptions, title, or root require full review.
+   Both gates still inspect current records and validate current production proof witnesses.
+   Reviewer identities bind prompt content, model settings, rubric definitions, and response schema.
+   Scoped projection preserves authored edge presentation and sequence descriptions. Authorized node
+   deletion removes only that node's sequence memberships and incident edges, then renumbers steps.
+   Only an explicit graph rebuild can authorize restaging at another depth. Scoped edits preserve
+   locked assumptions and prior composition records. Capability changes are reviewed against the
+   complete candidate and determine the subsequent connection proofs.
    The prior durable graph is restored after failure, retry exhaustion, steering, stop, timeout, or
    persistence failure. The 90-second prototype first-preview target is an SLO. Generation calls
    use a 130-second timeout, gates use 55 seconds, and the request ceiling includes orchestration

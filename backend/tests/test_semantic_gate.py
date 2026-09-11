@@ -330,6 +330,188 @@ def test_staged_gate_diagnostic_rejects_malformed_payloads():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("selection", ["empty", "subset", "duplicate", "unknown"])
+async def test_nightly_evaluation_rejects_incomplete_case_selection(
+    monkeypatch, selection
+):
+    case_ids = live_runner._manifest()["live"]["suites"]["full"][:4]
+    selected = {
+        "empty": [],
+        "subset": case_ids[:3],
+        "duplicate": [*case_ids[:3], case_ids[0]],
+        "unknown": [*case_ids[:3], "unknown-case"],
+    }[selection]
+    capture = {"results": [{"id": case_id} for case_id in selected]}
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+
+    def unexpected_judge():
+        pytest.fail("invalid nightly selections must fail before judge initialization")
+
+    monkeypatch.setattr(live_runner, "SemanticJudge", unexpected_judge)
+    with pytest.raises(RuntimeError, match="exactly four unique full-suite cases"):
+        await evaluate(
+            SimpleNamespace(
+                manual_review_policy="blocking",
+                require_approved_corpus=False,
+                capture_replay=False,
+                suite="nightly",
+                case=[],
+                target="https://candidate.example",
+                resume_input=None,
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_nightly_evaluation_accepts_saved_case_selection(monkeypatch):
+    case_ids = live_runner._manifest()["live"]["suites"]["full"][:4]
+    capture = {
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "results": [
+            {
+                "id": case_id,
+                "deterministic_failures": ["provider unavailable"],
+                "failure_details": [{"kind": "infrastructure"}],
+            }
+            for case_id in case_ids
+        ],
+        "application_telemetry": [],
+    }
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    report, exit_code = await evaluate(
+        SimpleNamespace(
+            manual_review_policy="blocking",
+            require_approved_corpus=False,
+            capture_replay=False,
+            suite="nightly",
+            case=[],
+            target="https://candidate.example",
+            resume_input=None,
+        )
+    )
+
+    assert exit_code == 2
+    assert [evaluation["id"] for evaluation in report["evaluations"]] == case_ids
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("telemetry_count", [0, 1, 2])
+@pytest.mark.parametrize(
+    ("failure_kinds", "expected_exit"),
+    [(("quality", "infrastructure"), 1), (("infrastructure", "infrastructure"), 2)],
+)
+async def test_live_evaluation_preserves_failures_when_telemetry_is_missing(
+    monkeypatch, telemetry_count, failure_kinds, expected_exit
+):
+    cases = load_corpus().cases[:2]
+    diagnostic = {
+        "schema_version": 1,
+        "kind": "staged_gate",
+        "stage": "components",
+        "attempt": 1,
+        "code": "gate_rejected",
+        "candidate_fingerprint": "a" * 64,
+        "findings": [],
+    }
+    capture = {
+        "results": [
+            {
+                "id": case.id,
+                "thread_id": f"thread-{index}",
+                "deterministic_failures": [f"failure-{index}"],
+                "failure_details": [{"kind": failure_kinds[index]}],
+                "events": [{"type": "workflow_progress", "diagnostic": diagnostic}],
+            }
+            for index, case in enumerate(cases)
+        ],
+        "application_telemetry": [
+            {
+                "thread_id": f"thread-{index}",
+                "operation": "synthesis",
+                "model": "claude-sonnet-5",
+                "input_tokens": 10,
+                "output_tokens": 2,
+            }
+            for index in range(telemetry_count)
+        ],
+    }
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+
+    def unexpected_judge():
+        pytest.fail("deterministic failures must not initialize a semantic judge")
+
+    monkeypatch.setattr(live_runner, "SemanticJudge", unexpected_judge)
+    report, exit_code = await evaluate(
+        SimpleNamespace(
+            manual_review_policy="blocking",
+            require_approved_corpus=False,
+            capture_replay=False,
+            suite="diagnostic",
+            case=[case.id for case in cases],
+            target="https://candidate.example",
+            resume_input=None,
+        )
+    )
+
+    assert exit_code == expected_exit
+    assert [item["decision"] for item in report["evaluations"]] == [
+        "fail" if kind == "quality" else "infrastructure" for kind in failure_kinds
+    ]
+    for index, evaluation in enumerate(report["evaluations"]):
+        assert evaluation["deterministic_failures"] == [f"failure-{index}"]
+        assert evaluation["graph_review_diagnostics"] == [diagnostic]
+        assert evaluation["judgments"] == []
+    assert report["budget"]["judge_calls"] == 0
+    assert report["cost_accounting"]["application"]["status"] == (
+        "pass" if telemetry_count == 2 else "infrastructure"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("thread_id", [None, "thread-1"])
+async def test_live_evaluation_rejects_success_without_telemetry(
+    monkeypatch, thread_id
+):
+    case = load_corpus().cases[0]
+    capture = {
+        "results": [
+            {
+                "id": case.id,
+                "thread_id": thread_id,
+                "deterministic_failures": [],
+                "events": [],
+                "answer": "successful-looking answer",
+            }
+        ],
+        "application_telemetry": [],
+    }
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+
+    def unexpected_judge():
+        pytest.fail("missing application telemetry must not trigger judge spending")
+
+    monkeypatch.setattr(live_runner, "SemanticJudge", unexpected_judge)
+    report, exit_code = await evaluate(
+        SimpleNamespace(
+            manual_review_policy="blocking",
+            require_approved_corpus=False,
+            capture_replay=False,
+            suite="diagnostic",
+            case=[case.id],
+            target="https://candidate.example",
+            resume_input=None,
+        )
+    )
+
+    assert exit_code == 2
+    assert report["status"] == "infrastructure"
+    assert report["evaluations"][0]["decision"] == "infrastructure"
+    assert "no application model-call telemetry" in report["reason"]
+    assert report["evaluations"][0]["reason"] == report["reason"]
+    assert report["budget"]["judge_calls"] == 0
+
+
+@pytest.mark.asyncio
 async def test_live_evaluation_records_projected_graph_review_diagnostics(monkeypatch):
     case = load_corpus().cases[0]
     fingerprint = "b" * 64
