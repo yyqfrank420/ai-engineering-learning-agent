@@ -172,6 +172,12 @@ jobs:
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
 
+      - name: Resolve versioned graph pipeline mode
+        run: |
+          pipeline_mode="$(PYTHONPATH=backend python -c 'from config import Settings; print(Settings.model_fields["graph_pipeline_mode"].default)')"
+          case "$pipeline_mode" in legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
+          echo "GRAPH_PIPELINE_MODE=$pipeline_mode" >> "$GITHUB_ENV"
+
       - name: Authenticate to Google Cloud
         uses: google-github-actions/auth@v2
         with:
@@ -239,7 +245,7 @@ jobs:
             --no-traffic \
             --tag "$REVISION_TAG" \
             --timeout 1000s \
-            --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$EVALUATION_PROVIDER_ATTEMPT_LIMIT \
+            --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$EVALUATION_PROVIDER_ATTEMPT_LIMIT,GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE \
             --quiet
           candidate_url="$(gcloud run services describe "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | python -c 'import json,os,sys; data=json.load(sys.stdin); tag=os.environ["REVISION_TAG"]; print(next((x.get("url", "") for x in data.get("status", {}).get("traffic", []) if x.get("tag") == tag), ""))')"
           if [ -z "$candidate_url" ]; then
@@ -302,6 +308,7 @@ jobs:
               "tree_sha": os.environ["TREE_SHA"],
               "image": os.environ["IMAGE"],
               "digest": os.environ.get("IMAGE_DIGEST", ""),
+              "pipeline_mode": os.environ.get("GRAPH_PIPELINE_MODE", ""),
           }, indent=2) + "\n")
           PY
 

@@ -341,24 +341,36 @@ export function filterRenderableEdges(
   return edges.filter(edge => nodeIds.has(edge.source) && nodeIds.has(edge.target));
 }
 
-export function wrapNodeLabel(label: string, maxLineChars = 24): string[] {
-  if (label.length <= maxLineChars) return [label];
+export function wrapNodeLabel(
+  label: string,
+  measureTextWidth: (text: string) => number,
+  maxWidthPx = NODE_W - 24,
+): string[] {
+  if (measureTextWidth(label) <= maxWidthPx) return [label];
   const words = label.split(/\s+/).filter(Boolean);
-  if (words.length < 2) return [`${label.slice(0, maxLineChars - 1)}…`];
+  const truncate = (text: string): string => {
+    if (measureTextWidth(text) <= maxWidthPx) return text;
+    const characters = Array.from(text);
+    while (characters.length > 0) {
+      characters.pop();
+      const shortened = `${characters.join('')}…`;
+      if (measureTextWidth(shortened) <= maxWidthPx) return shortened;
+    }
+    return '';
+  };
+  if (words.length < 2) return [truncate(label)];
 
   let best = [words[0], words.slice(1).join(' ')];
-  let bestWidth = Math.max(best[0].length, best[1].length);
+  let bestWidth = Math.max(...best.map(measureTextWidth));
   for (let split = 2; split < words.length; split += 1) {
     const candidate = [words.slice(0, split).join(' '), words.slice(split).join(' ')];
-    const width = Math.max(candidate[0].length, candidate[1].length);
+    const width = Math.max(...candidate.map(measureTextWidth));
     if (width < bestWidth) {
       best = candidate;
       bestWidth = width;
     }
   }
-  return best.map(line => line.length <= maxLineChars
-    ? line
-    : `${line.slice(0, maxLineChars - 1)}…`);
+  return best.map(truncate);
 }
 
 export function wrapNodeTechnology(technology: string, maxLineChars = 30): string[] {

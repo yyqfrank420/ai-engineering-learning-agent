@@ -65,6 +65,7 @@ async def apply_graph_worker(state: AgentState, graph_tools: list) -> AgentState
         return {
             **graph_state,
             "graph_data": existing_graph,
+            "graph_contract": copy.deepcopy(state.get("graph_contract")),
             "graph_changed": False,
             "graph_notice_sent": graph_state.get("graph_notice_sent", False)
             or should_send_graph_notice,
@@ -72,8 +73,6 @@ async def apply_graph_worker(state: AgentState, graph_tools: list) -> AgentState
 
     if existing_graph is not None and _same_graph_artifact(existing_graph, new_graph):
         aligned_graph = copy.deepcopy(existing_graph)
-        if new_graph.get("version") != aligned_graph.get("version"):
-            aligned_graph["version"] = new_graph.get("version")
         operation = graph_state.get("graph_operation")
         if (
             isinstance(operation, dict)
@@ -88,6 +87,7 @@ async def apply_graph_worker(state: AgentState, graph_tools: list) -> AgentState
         return {
             **graph_state,
             "graph_data": aligned_graph,
+            "graph_contract": copy.deepcopy(state.get("graph_contract")),
             "graph_changed": False,
             "graph_notice_sent": graph_state.get("graph_notice_sent", False),
             "graph_operation": operation,
@@ -96,6 +96,8 @@ async def apply_graph_worker(state: AgentState, graph_tools: list) -> AgentState
     return {
         **graph_state,
         "graph_data": new_graph,
+        # Legacy generation cannot carry approval for a prior staged artifact.
+        "graph_contract": None,
         "graph_changed": True,
         "graph_notice_sent": graph_state.get("graph_notice_sent", False),
     }

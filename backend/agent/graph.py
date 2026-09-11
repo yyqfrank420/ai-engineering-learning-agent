@@ -59,7 +59,6 @@ from agent.staged_graph_workflow import (
     run_staged_graph_pipeline,
     should_use_staged_graph_pipeline,
 )
-from config import settings
 from observability import start_span
 
 
@@ -104,8 +103,8 @@ def _restore_approved_graph_state(
     restored_graph = copy.deepcopy(approved_graph)
     restored_approved = (
         _attach_graph_version(restored_graph)
-        if isinstance(restored_graph, dict)
-        else None
+        if isinstance(restored_graph, dict) and not restored_graph.get("version")
+        else restored_graph
     )
     return {
         **state,
@@ -990,10 +989,17 @@ async def run_agent(
         review_budget=review_budget,
     )
     result = await workflow.ainvoke(initial_state, config={"recursion_limit": 24})
-    if (
-        settings.graph_pipeline_mode == "legacy"
-        and result.get("graph_changed")
-        and result.get("graph_data") is not None
-    ):
-        return {**result, "graph_contract": None}
+    contract = result.get("graph_contract")
+    if contract is not None:
+        graph = result.get("graph_data")
+        version = graph.get("version") if isinstance(graph, dict) else None
+        if (
+            not isinstance(contract, dict)
+            or not isinstance(version, str)
+            or not version.strip()
+            or contract.get("graph_version") != version
+        ):
+            raise ValueError(
+                "graph_contract.graph_version must match graph_data.version"
+            )
     return result

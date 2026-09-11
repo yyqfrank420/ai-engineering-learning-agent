@@ -87,6 +87,7 @@
           "argv": [
             "python", "-m", "pytest", "--tb=short", "-q",
             "backend/tests/test_canonical_graph.py",
+            "backend/tests/test_calibration.py",
             "backend/tests/test_eval_cost_gate.py",
             "backend/tests/test_eval_metrics.py",
             "backend/tests/test_graph_artifacts_schema.py",

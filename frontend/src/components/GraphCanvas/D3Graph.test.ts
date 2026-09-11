@@ -151,10 +151,29 @@ describe('graph layout policy', () => {
   });
 
   it('wraps long domain labels without dropping their distinguishing words', () => {
-    expect(wrapNodeLabel('AI Severity & Narrative Assistant')).toEqual([
+    expect(wrapNodeLabel('AI Severity & Narrative Assistant', text => text.length * 8)).toEqual([
       'AI Severity &',
       'Narrative Assistant',
     ]);
+  });
+
+  it('wraps wide labels even when they contain fewer than 24 characters', () => {
+    const measureTextWidth = (text: string) => text.length * 9;
+    const lines = wrapNodeLabel('Flagged Run Review Queue', measureTextWidth);
+
+    expect(lines).toEqual(['Flagged Run', 'Review Queue']);
+    expect(lines.join(' ')).toBe('Flagged Run Review Queue');
+    expect(lines.every(line => measureTextWidth(line) <= 162)).toBe(true);
+    expect(wrapNodeLabel('iiiiiiiiiiiiiiiiiiiiiiiii', text => text.length * 3))
+      .toEqual(['iiiiiiiiiiiiiiiiiiiiiiiii']);
+  });
+
+  it('truncates unbroken wide labels to measured card width', () => {
+    const measureTextWidth = (text: string) => text.length * 15;
+    const lines = wrapNodeLabel('WWWWWWWWWWWWWWWWWWWW', measureTextWidth);
+
+    expect(lines).toEqual(['WWWWWWWWW…']);
+    expect(measureTextWidth(lines[0])).toBeLessThanOrEqual(162);
   });
 
   it('preserves deployable technology detail across two compact lines', () => {

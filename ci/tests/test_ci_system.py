@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import inspect
+import hashlib
 import json
+import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +14,7 @@ import pytest
 
 from config import Settings
 from eval.browser_runner import _execute_browser, _run_browser_attempt
+from eval.quality_corpus import approval_manifest_sha256, corpus_sha256, load_corpus
 from scripts.ci_runner import (
     _command_environment,
     classify_paths,
@@ -828,11 +832,216 @@ def test_scheduled_eval_records_exact_deployment_identity(tmp_path, invalid_iden
         "suite": "diagnostic",
         "case_ids": ["graph-expansion"],
     }
-    assert github_env.read_text() == "CANDIDATE_URL=https://scheduled-123.example.test\n"
+    assert (
+        github_env.read_text() == "CANDIDATE_URL=https://scheduled-123.example.test\n"
+    )
     uploads = workflow.split("- uses: actions/upload-artifact@v4")
     assert len(uploads) == 3
     assert "artifacts/live-eval/deployment.json" in uploads[1]
     assert all("retention-days: 90" in upload for upload in uploads[1:])
+
+
+@pytest.mark.parametrize(
+    "workflow_name", ["live-eval.yml", "scheduled-eval.yml", "deploy-production.yml"]
+)
+@pytest.mark.parametrize("versioned_default", ["legacy", "staged", "unsupported"])
+def test_deployment_mode_resolves_versioned_default_despite_stale_environment(
+    tmp_path, workflow_name, versioned_default
+):
+    workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+    step = workflow.split("name: Resolve versioned graph pipeline mode\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    source, replaced = re.subn(
+        r'(^    graph_pipeline_mode:.* = )"(?:legacy|staged)"',
+        lambda match: match[1] + json.dumps(versioned_default),
+        (ROOT / "backend/config.py").read_text(),
+        flags=re.MULTILINE,
+    )
+    assert replaced == 1
+    (backend / "config.py").write_text(source)
+    github_env = tmp_path / "github-env"
+
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env={
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+            "GITHUB_ENV": str(github_env),
+            "GRAPH_PIPELINE_MODE": "staged"
+            if versioned_default == "legacy"
+            else "legacy",
+            "EVAL_PIPELINE_MODE": "default",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    variable = (
+        "EVAL_PIPELINE_MODE"
+        if workflow_name == "scheduled-eval.yml"
+        else "GRAPH_PIPELINE_MODE"
+    )
+    if versioned_default == "unsupported":
+        assert result.returncode != 0
+        assert "Unsupported pipeline mode" in result.stderr
+        assert not github_env.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert github_env.read_text() == f"{variable}={versioned_default}\n"
+    assert (
+        workflow.index("pip install -r backend/requirements.txt")
+        < workflow.index("name: Resolve versioned graph pipeline mode")
+        < workflow.index("gcloud run deploy")
+    )
+    assert f"GRAPH_PIPELINE_MODE=${variable}" in workflow
+
+
+@pytest.mark.parametrize(
+    ("event", "suite", "requested", "expected"),
+    [
+        ("workflow_dispatch", suite, requested, requested)
+        for suite in ("diagnostic", "full", "nightly")
+        for requested in ("default", "legacy", "staged")
+    ]
+    + [
+        ("schedule", "", "staged", "default"),
+        ("workflow_dispatch", "full", "", "default"),
+        ("workflow_dispatch", "diagnostic", "unsupported", None),
+        ("workflow_dispatch", "full", "unsupported", None),
+    ],
+)
+def test_scheduled_mode_selection_preserves_manual_intent_and_rejects_invalid_modes(
+    tmp_path, event, suite, requested, expected
+):
+    workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text()
+    step = workflow.split("name: Select nightly rotation or weekly full corpus\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
+    github_env = tmp_path / "github-env"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        cwd=ROOT,
+        env={
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+            "GITHUB_ENV": str(github_env),
+            "GITHUB_EVENT_NAME": event,
+            "DISPATCH_SUITE": suite,
+            "DISPATCH_CASE_IDS": "graph-expansion" if suite == "diagnostic" else "",
+            "DISPATCH_PIPELINE_MODE": requested,
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    if expected is None:
+        assert result.returncode != 0
+        assert "Unsupported pipeline mode" in result.stderr
+        assert not github_env.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert f"EVAL_PIPELINE_MODE={expected}\n" in github_env.read_text()
+    assert (
+        workflow.index("name: Select nightly rotation")
+        < workflow.index(
+            "name: Reject non-bootstrap pending runs before expensive setup"
+        )
+        < workflow.index("pip install -r backend/requirements.txt")
+    )
+
+
+@pytest.mark.parametrize("selected", ["legacy", "staged", "unsupported"])
+def test_scheduled_explicit_mode_resolution_never_uses_environment_override(
+    tmp_path, selected
+):
+    workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text()
+    step = workflow.split("name: Resolve versioned graph pipeline mode\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
+    github_env = tmp_path / "github-env"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env={
+            "PATH": os.defpath,
+            "GITHUB_ENV": str(github_env),
+            "EVAL_PIPELINE_MODE": selected,
+            "GRAPH_PIPELINE_MODE": "stale-service-value",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    if selected == "unsupported":
+        assert result.returncode != 0
+        assert "Unsupported pipeline mode" in result.stderr
+        assert not github_env.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert github_env.read_text() == f"EVAL_PIPELINE_MODE={selected}\n"
+
+
+def test_production_deployment_clears_evaluation_quota_pair_and_pins_mode():
+    workflow = (ROOT / ".github/workflows/deploy-production.yml").read_text()
+    deploy = next(line for line in workflow.splitlines() if "gcloud run deploy" in line)
+
+    assert "GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE" in deploy
+    assert (
+        "--remove-env-vars EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT"
+        in deploy
+    )
+    assert "--clear-env-vars" not in deploy
+    assert "--set-env-vars" not in deploy
+    assert '--image "$IMAGE@$IMAGE_DIGEST"' in deploy
+    assert "--no-traffic" in deploy
+
+
+@pytest.mark.parametrize(
+    ("workflow_name", "step_name", "artifact_directory"),
+    [
+        ("live-eval.yml", "Record deployment identity", "live-eval"),
+        (
+            "deploy-production.yml",
+            "Deploy an immutable no-traffic production candidate",
+            "production-smoke",
+        ),
+    ],
+)
+def test_deployment_manifest_records_resolved_mode_without_environment_secrets(
+    tmp_path, workflow_name, step_name, artifact_directory
+):
+    workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+    step = workflow.split(f"name: {step_name}\n", 1)[1]
+    script = dedent(step.split("python - <<'PY'\n", 1)[1].split("          PY", 1)[0])
+    artifact_dir = tmp_path / "artifacts" / artifact_directory
+    artifact_dir.mkdir(parents=True)
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=tmp_path,
+        env={
+            "GITHUB_RUN_ID": "123",
+            "COMMIT_SHA": "a" * 40,
+            "TREE_SHA": "b" * 40,
+            "IMAGE": "registry.example.test/agent",
+            "IMAGE_DIGEST": "sha256:" + "c" * 64,
+            "GRAPH_PIPELINE_MODE": "staged",
+            "ANTHROPIC_API_KEY": "must-not-appear-in-evidence",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifest = (artifact_dir / "deployment.json").read_text()
+    assert json.loads(manifest)["pipeline_mode"] == "staged"
+    assert "must-not-appear-in-evidence" not in manifest
 
 
 def test_semantic_review_can_replay_authenticated_browser_evidence_without_app_calls():
@@ -893,6 +1102,268 @@ def test_judge_calibration_uses_immutable_reviewed_evidence():
     assert 'role   = "roles/storage.objectViewer"' in iam
 
 
+_CALIBRATION_WORKFLOWS = (
+    "promote-eval-calibration-evidence.yml",
+    "judge-calibration.yml",
+)
+
+
+def _calibration_workflow_python(workflow_name, step_name, *, marker="PY", index=0):
+    workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+    step = workflow.split(f"name: {step_name}\n", 1)[1].split("\n      - ", 1)[0]
+    blocks = re.findall(
+        rf"<<'{marker}'\n(.*?)\n          {marker}(?:\n|$)", step, re.DOTALL
+    )
+    return dedent(blocks[index])
+
+
+@pytest.mark.parametrize("workflow_name", _CALIBRATION_WORKFLOWS)
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        {"event": "schedule", "conclusion": "success"},
+        {"id": 456},
+        {"head_sha": "b" * 40},
+        {"repository": {"full_name": "other/repository"}},
+        {"head_repository": {"full_name": "fork/repository"}},
+        {"head_repository": None},
+        {"path": ".github/workflows/untrusted.yml"},
+        {"event": "pull_request"},
+        {"status": "in_progress"},
+        {"status": None},
+        {"conclusion": "cancelled"},
+        {"conclusion": "timed_out"},
+        {"conclusion": None},
+    ],
+)
+def test_calibration_source_accepts_only_pinned_completed_repository_runs(
+    monkeypatch, workflow_name, change
+):
+    source = {
+        "id": 123,
+        "head_sha": "a" * 40,
+        "head_branch": "candidate-bootstrap",
+        "repository": {"full_name": "owner/repository"},
+        "head_repository": {"full_name": "owner/repository"},
+        "path": ".github/workflows/scheduled-eval.yml",
+        "event": "workflow_dispatch",
+        "status": "completed",
+        "conclusion": "failure",
+        **(change or {}),
+    }
+    monkeypatch.setenv("SOURCE_METADATA", json.dumps(source))
+    monkeypatch.setenv("SOURCE_RUN_ID", "123")
+    monkeypatch.setenv("SOURCE_COMMIT_SHA", "a" * 40)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repository")
+    step_name = (
+        "Download the exact human-reviewed full-suite artifact"
+        if workflow_name.startswith("promote-")
+        else "Download and authenticate the fixed evidence bundle"
+    )
+    script = _calibration_workflow_python(workflow_name, step_name, marker="PY_SOURCE")
+    if change is None or change == {"event": "schedule", "conclusion": "success"}:
+        exec(compile(script, workflow_name, "exec"), {})
+    else:
+        with pytest.raises(SystemExit, match="completed same-repository"):
+            exec(compile(script, workflow_name, "exec"), {})
+
+
+@pytest.fixture
+def reviewed_calibration_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    corpus = json.loads((ROOT / "backend/eval/corpus/v1/cases.json").read_text())
+    corpus["approval"].update(
+        status="approved",
+        reviewed_by="Reviewer",
+        reviewed_at="2026-09-11T12:00:00Z",
+        approved_manifest_sha256=None,
+    )
+    corpus["approval"]["calibration"].update(
+        evidence_run_id="123",
+        evidence_commit_sha="a" * 40,
+        evidence_sha256="b" * 64,
+        agreement=0.9,
+        critical_false_passes=0,
+        evaluated_at="2026-09-11T12:00:00Z",
+    )
+    for case in corpus["cases"]:
+        case["approval"].update(
+            status="approved",
+            reviewer="Reviewer",
+            reviewed_at="2026-09-11T12:00:00Z",
+            review_run_id="123",
+            reviewed_grades={
+                dimension: "pass" for dimension in case["rubric_dimensions"]
+            },
+        )
+    corpus_path = tmp_path / "backend/eval/corpus/v1/cases.json"
+    corpus_path.parent.mkdir(parents=True)
+    corpus_path.write_text(json.dumps(corpus))
+    corpus["approval"]["approved_manifest_sha256"] = approval_manifest_sha256(
+        corpus_path
+    )
+    corpus_path.write_text(json.dumps(corpus))
+    behavior_sha = corpus_sha256(corpus_path)
+    source = tmp_path / "artifacts/source"
+    source.mkdir(parents=True)
+    (source / "source-cases.json").write_text(json.dumps(corpus))
+    (source / "run-context.json").write_text(
+        json.dumps({"run_id": "123", "commit_sha": "a" * 40})
+    )
+    (tmp_path / "artifacts/calibration").mkdir()
+    monkeypatch.setenv("SOURCE_RUN_ID", "123")
+    monkeypatch.setenv("SOURCE_COMMIT_SHA", "a" * 40)
+    monkeypatch.setenv("CORPUS_SHA", behavior_sha)
+    monkeypatch.setenv("JUDGE_PROVIDER", "anthropic")
+    monkeypatch.setenv("JUDGE_MODEL", "claude-sonnet-5")
+    monkeypatch.setattr(
+        "eval.quality_corpus.load_corpus",
+        lambda **kwargs: load_corpus(path=corpus_path, **kwargs),
+    )
+    return corpus_path, {
+        "kind": "browser_capture",
+        "suite": "full",
+        "status": "complete",
+        "corpus_version": corpus["corpus_version"],
+        "corpus_sha256": behavior_sha,
+        "results": [
+            {"id": case["id"], "passed": True, "deterministic_failures": []}
+            for case in corpus["cases"]
+        ],
+        "dashboard_smoke": {"passed": True},
+    }
+
+
+@pytest.mark.parametrize("workflow_name", _CALIBRATION_WORKFLOWS)
+@pytest.mark.parametrize("change", [None, "mixed_runs", "pending", "missing_grades"])
+def test_calibration_promotion_requires_complete_human_review(
+    reviewed_calibration_files, workflow_name, change
+):
+    corpus_path, _capture = reviewed_calibration_files
+    corpus = json.loads(corpus_path.read_text())
+    if change == "mixed_runs":
+        corpus["cases"][0]["approval"]["review_run_id"] = "456"
+    elif change == "pending":
+        corpus["approval"]["status"] = "pending_human_review"
+    elif change == "missing_grades":
+        corpus["cases"][0]["approval"]["reviewed_grades"] = {}
+    corpus_path.write_text(json.dumps(corpus))
+    corpus["approval"]["approved_manifest_sha256"] = approval_manifest_sha256(
+        corpus_path
+    )
+    corpus_path.write_text(json.dumps(corpus))
+    script = _calibration_workflow_python(
+        workflow_name, "Validate the complete human approval"
+    )
+    if change is None:
+        exec(compile(script, workflow_name, "exec"), {})
+    else:
+        with pytest.raises((SystemExit, RuntimeError, ValueError)):
+            exec(compile(script, workflow_name, "exec"), {})
+
+
+@pytest.mark.parametrize("workflow_name", _CALIBRATION_WORKFLOWS)
+@pytest.mark.parametrize(
+    "change",
+    [
+        None,
+        "partial",
+        "missing_status",
+        "subset",
+        "reordered",
+        "duplicate",
+        "false",
+        "nonboolean",
+        "deterministic",
+        "dashboard",
+        "digest",
+    ],
+)
+def test_calibration_evidence_requires_complete_passing_browser_capture(
+    reviewed_calibration_files, monkeypatch, workflow_name, change
+):
+    _corpus_path, capture = reviewed_calibration_files
+    if change == "partial":
+        capture["status"] = "partial"
+    elif change == "missing_status":
+        capture.pop("status")
+    elif change == "subset":
+        capture["results"].pop()
+    elif change == "reordered":
+        capture["results"].reverse()
+    elif change == "duplicate":
+        capture["results"][-1] = capture["results"][0]
+    elif change == "false":
+        capture["results"][0]["passed"] = False
+    elif change == "nonboolean":
+        capture["results"][0]["passed"] = "true"
+    elif change == "deterministic":
+        capture["results"][0]["deterministic_failures"] = ["graph missing"]
+    elif change == "dashboard":
+        capture["dashboard_smoke"]["passed"] = False
+    capture_path = Path("artifacts/source/browser-results.json")
+    capture_path.write_text(json.dumps(capture))
+    evidence_sha = hashlib.sha256(capture_path.read_bytes()).hexdigest()
+    for variable in ("EVIDENCE_SHA", "EXPECTED_EVIDENCE_SHA"):
+        monkeypatch.setenv(variable, "0" * 64 if change == "digest" else evidence_sha)
+    step_name = (
+        "Validate and hash the approved evidence"
+        if workflow_name.startswith("promote-")
+        else "Download and authenticate the fixed evidence bundle"
+    )
+    script = _calibration_workflow_python(workflow_name, step_name)
+    if change is None:
+        exec(compile(script, workflow_name, "exec"), {})
+        output_dir = (
+            "promotion" if workflow_name.startswith("promote-") else "calibration"
+        )
+        promotion = json.loads(
+            Path(f"artifacts/{output_dir}/promotion.json").read_text()
+        )
+        assert promotion["evidence_sha256"] == evidence_sha
+    else:
+        with pytest.raises(SystemExit):
+            exec(compile(script, workflow_name, "exec"), {})
+
+
+@pytest.mark.parametrize("change", [None, "dashboard", "nonboolean", "partial"])
+def test_calibration_revalidates_already_promoted_browser_evidence(
+    reviewed_calibration_files, monkeypatch, change
+):
+    _corpus_path, capture = reviewed_calibration_files
+    if change == "dashboard":
+        capture["dashboard_smoke"]["passed"] = False
+    elif change == "nonboolean":
+        capture["results"][0]["passed"] = 1
+    elif change == "partial":
+        capture["status"] = "partial"
+    output = Path("artifacts/calibration")
+    (output / "browser-results.json").write_text(json.dumps(capture))
+    monkeypatch.setenv("EVIDENCE_SHA", "b" * 64)
+    (output / "promotion.json").write_text(
+        json.dumps(
+            {
+                "corpus_sha256": os.environ["CORPUS_SHA"],
+                "evidence_sha256": os.environ["EVIDENCE_SHA"],
+                "source_run_id": os.environ["SOURCE_RUN_ID"],
+                "source_commit_sha": os.environ["SOURCE_COMMIT_SHA"],
+            }
+        )
+    )
+    script = _calibration_workflow_python(
+        "judge-calibration.yml",
+        "Download and authenticate the fixed evidence bundle",
+        index=1,
+    )
+    if change is None:
+        exec(compile(script, "judge-calibration.yml", "exec"), {})
+        assert (output / "browser-results-replay.json").exists()
+    else:
+        with pytest.raises(SystemExit):
+            exec(compile(script, "judge-calibration.yml", "exec"), {})
+
+
 def test_pending_corpus_pr_skips_expensive_live_work():
     workflow = (ROOT / ".github/workflows/live-eval.yml").read_text(encoding="utf-8")
 
@@ -924,7 +1395,16 @@ def run_live_eval_status():
             **overrides,
         }
         return subprocess.run(
-            ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-e",
+                "-o",
+                "pipefail",
+                "-c",
+                script,
+            ],
             env=environment,
             capture_output=True,
             text=True,
@@ -950,7 +1430,9 @@ def test_non_ai_live_status_passes_without_approval_or_evaluation(run_live_eval_
 
 
 @pytest.mark.parametrize("ai_impact", ["", "invalid"])
-def test_invalid_ai_impact_cannot_skip_required_evaluation(run_live_eval_status, ai_impact):
+def test_invalid_ai_impact_cannot_skip_required_evaluation(
+    run_live_eval_status, ai_impact
+):
     result = run_live_eval_status(AI_IMPACT=ai_impact, EVAL_RESULT="skipped")
 
     assert result.returncode == 1
@@ -970,7 +1452,10 @@ def test_unapproved_corpus_fails_required_live_status(
 
     assert result.returncode == 1
     assert "required live evaluation has not passed" in result.stderr
-    assert "Scheduled evaluation with suite=full from the candidate branch" in result.stderr
+    assert (
+        "Scheduled evaluation with suite=full from the candidate branch"
+        in result.stderr
+    )
 
 
 @pytest.mark.parametrize("trusted", ["false", ""])
@@ -986,7 +1471,11 @@ def test_untrusted_ai_change_fails_required_live_status(run_live_eval_status, tr
     ("job", "diagnostic", "overrides"),
     [
         ("CLASSIFY_RESULT", "Change classification failed", {"AI_IMPACT": "false"}),
-        ("APPROVAL_RESULT", "Exact-tree approval lookup failed", {"TREE_APPROVED": "true"}),
+        (
+            "APPROVAL_RESULT",
+            "Exact-tree approval lookup failed",
+            {"TREE_APPROVED": "true"},
+        ),
         ("EVAL_RESULT", "Protected staging evaluation did not pass", {}),
     ],
 )

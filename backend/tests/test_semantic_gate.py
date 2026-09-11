@@ -1449,7 +1449,7 @@ def test_calibration_report_uses_every_reviewed_case_and_dimension():
         case.approval.status = "approved"
         case.approval.reviewer = "reviewer"
         case.approval.reviewed_at = "2026-07-18T12:00:00Z"
-        case.approval.review_run_id = "github-run-123"
+        case.approval.review_run_id = "123"
         case.approval.reviewed_grades = {
             dimension: "pass" for dimension in case.rubric_dimensions
         }

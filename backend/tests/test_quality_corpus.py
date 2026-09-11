@@ -2152,7 +2152,7 @@ def _write_approved_corpus_fixture(tmp_path):
                 "status": "approved",
                 "reviewer": "reviewer",
                 "reviewed_at": "2026-07-18T12:00:00Z",
-                "review_run_id": "github-run-123",
+                "review_run_id": "123456789",
                 "reviewed_grades": {
                     dimension: "pass" for dimension in case["rubric_dimensions"]
                 },

@@ -17,11 +17,11 @@ on:
         default: ''
         type: string
       pipeline_mode:
-        description: Graph pipeline mode (diagnostic suite only)
+        description: Graph pipeline mode (default follows the backend's versioned default)
         required: false
-        default: legacy
+        default: default
         type: choice
-        options: [legacy, staged]
+        options: [default, legacy, staged]
 
 permissions:
   contents: read
@@ -77,11 +77,11 @@ jobs:
             echo "case_ids is accepted only for the diagnostic suite." >&2
             exit 1
           fi
-          pipeline_mode=legacy
-          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && [ "$suite" = diagnostic ]; then
-            pipeline_mode="$DISPATCH_PIPELINE_MODE"
+          pipeline_mode=default
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            pipeline_mode="${DISPATCH_PIPELINE_MODE:-default}"
           fi
-          case "$pipeline_mode" in legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
+          case "$pipeline_mode" in default|legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
           echo "EVAL_SUITE=$suite" >> "$GITHUB_ENV"
           echo "EVAL_CASE_IDS=$case_ids" >> "$GITHUB_ENV"
           echo "EVAL_PIPELINE_MODE=$pipeline_mode" >> "$GITHUB_ENV"
@@ -159,6 +159,14 @@ jobs:
           pip install -r backend/requirements.txt -r backend/requirements-eval.txt
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
+      - name: Resolve versioned graph pipeline mode
+        run: |
+          pipeline_mode="$EVAL_PIPELINE_MODE"
+          if [ "$pipeline_mode" = default ]; then
+            pipeline_mode="$(PYTHONPATH=backend python -c 'from config import Settings; print(Settings.model_fields["graph_pipeline_mode"].default)')"
+          fi
+          case "$pipeline_mode" in legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
+          echo "EVAL_PIPELINE_MODE=$pipeline_mode" >> "$GITHUB_ENV"
       - name: Configure registry authentication
         run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
       - uses: docker/setup-buildx-action@v3

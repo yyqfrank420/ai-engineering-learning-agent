@@ -837,6 +837,21 @@ async def _failed(
 
 async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     """Build, render, and review one applied graph with one retry per layer."""
+    send = state.get("send")
+    if callable(send):
+        try:
+            await send(
+                {
+                    "type": "worker_status",
+                    "worker": "graph",
+                    "status": "Preparing the graph.",
+                }
+            )
+        except Exception as exc:
+            logger.info(
+                "Staged graph worker status was not delivered: %s",
+                type(exc).__name__,
+            )
     maturity, maturity_changed = _maturity(state)
     request = str(state.get("design_query") or state.get("user_message") or "")
     raw_request = str(state.get("user_message") or "")

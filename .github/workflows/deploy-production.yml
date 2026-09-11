@@ -82,6 +82,12 @@ jobs:
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
 
+      - name: Resolve versioned graph pipeline mode
+        run: |
+          pipeline_mode="$(PYTHONPATH=backend python -c 'from config import Settings; print(Settings.model_fields["graph_pipeline_mode"].default)')"
+          case "$pipeline_mode" in legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
+          echo "GRAPH_PIPELINE_MODE=$pipeline_mode" >> "$GITHUB_ENV"
+
       - uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
@@ -123,12 +129,27 @@ jobs:
         name: Deploy an immutable no-traffic production candidate
         env:
           CANDIDATE_TAG: prod-${{ github.run_id }}
+          TREE_SHA: ${{ needs.prepare.outputs.tree-sha }}
+          COMMIT_SHA: ${{ needs.prepare.outputs.commit-sha }}
         run: |
-          gcloud run deploy "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$CANDIDATE_TAG" --timeout 1000s --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,OTEL_ENVIRONMENT=production --quiet
+          gcloud run deploy "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$CANDIDATE_TAG" --timeout 1000s --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,OTEL_ENVIRONMENT=production,GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE --remove-env-vars EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT --quiet
           candidate_url="$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | python -c 'import json,os,sys; data=json.load(sys.stdin); tag=os.environ["CANDIDATE_TAG"]; print(next((x.get("url", "") for x in data.get("status", {}).get("traffic", []) if x.get("tag") == tag), ""))')"
           [ -n "$candidate_url" ] || exit 1
           echo "CANDIDATE_URL=$candidate_url" >> "$GITHUB_ENV"
           echo "candidate-tag=$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
+          mkdir -p artifacts/production-smoke
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          Path("artifacts/production-smoke/deployment.json").write_text(json.dumps({
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "commit_sha": os.environ["COMMIT_SHA"],
+              "tree_sha": os.environ["TREE_SHA"],
+              "image": os.environ["IMAGE"],
+              "digest": os.environ["IMAGE_DIGEST"],
+              "pipeline_mode": os.environ["GRAPH_PIPELINE_MODE"],
+          }, indent=2) + "\n")
+          PY
 
       - name: Start production-candidate frontend
         run: |

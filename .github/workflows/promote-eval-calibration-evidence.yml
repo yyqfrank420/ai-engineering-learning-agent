@@ -57,6 +57,25 @@ jobs:
           for key, value in values.items():
               print(f"{key}={value}")
           PY
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install corpus validation dependencies
+        run: pip install -r backend/requirements.txt
+      - name: Validate the complete human approval
+        env:
+          SOURCE_RUN_ID: ${{ steps.approved.outputs.source_run_id }}
+        run: |
+          PYTHONPATH=backend python - <<'PY'
+          import os
+          from eval.quality_corpus import load_corpus
+
+          corpus = load_corpus(require_approved=True)
+          if any(case.approval.review_run_id != os.environ["SOURCE_RUN_ID"] for case in corpus.cases):
+              raise SystemExit("every case must have human review from the approved evidence run")
+          PY
       - name: Download the exact human-reviewed full-suite artifact
         env:
           GH_TOKEN: ${{ github.token }}
@@ -64,10 +83,24 @@ jobs:
           SOURCE_COMMIT_SHA: ${{ steps.approved.outputs.source_commit_sha }}
         run: |
           source_json="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID")"
-          [ "$(printf '%s' "$source_json" | jq -r .head_sha)" = "$SOURCE_COMMIT_SHA" ] || { echo "Source run SHA mismatch." >&2; exit 1; }
-          [ "$(printf '%s' "$source_json" | jq -r .head_branch)" = main ] || { echo "Reviewed evidence must come from main." >&2; exit 1; }
-          [ "$(printf '%s' "$source_json" | jq -r .conclusion)" = success ] || { echo "Source run was not successful." >&2; exit 1; }
-          [ "$(printf '%s' "$source_json" | jq -r .path)" = .github/workflows/scheduled-eval.yml ] || { echo "Source is not a scheduled evaluation." >&2; exit 1; }
+          SOURCE_METADATA="$source_json" python - <<'PY_SOURCE'
+          import json
+          import os
+
+          source = json.loads(os.environ["SOURCE_METADATA"])
+          repository = os.environ["GITHUB_REPOSITORY"]
+          if (
+              str(source.get("id")) != os.environ["SOURCE_RUN_ID"]
+              or source.get("head_sha") != os.environ["SOURCE_COMMIT_SHA"]
+              or (source.get("repository") or {}).get("full_name") != repository
+              or (source.get("head_repository") or {}).get("full_name") != repository
+              or source.get("path") != ".github/workflows/scheduled-eval.yml"
+              or source.get("event") not in {"workflow_dispatch", "schedule"}
+              or source.get("status") != "completed"
+              or source.get("conclusion") not in {"success", "failure"}
+          ):
+              raise SystemExit("source run is not a completed same-repository scheduled evaluation at the approved identity")
+          PY_SOURCE
           if ! gh run download "$SOURCE_RUN_ID" \
             --name "scheduled-eval-replay-$SOURCE_RUN_ID" \
             --dir artifacts/source; then
@@ -117,14 +150,19 @@ jobs:
               raise SystemExit("source context does not match the human-approved run")
           if capture.get("kind") != "browser_capture" or capture.get("suite") != "full":
               raise SystemExit("source is not a full browser capture")
-          if capture.get("status") not in {None, "complete"}:
+          if capture.get("status") != "complete":
               raise SystemExit("source browser capture did not complete")
           expected_ids = [case["id"] for case in current["cases"]]
           results = capture.get("results") or []
           actual_ids = [item.get("id") for item in results]
-          failures = [item.get("id") for item in results if not item.get("passed")]
+          failures = [
+              item.get("id") for item in results
+              if item.get("passed") is not True or item.get("deterministic_failures") != []
+          ]
           if actual_ids != expected_ids or failures:
               raise SystemExit(f"source browser evidence is incomplete, reordered, duplicated, or failed: {failures}")
+          if (capture.get("dashboard_smoke") or {}).get("passed") is not True:
+              raise SystemExit("source browser dashboard smoke did not pass")
           if capture.get("corpus_version") != current["corpus_version"]:
               raise SystemExit("source browser evidence has the wrong corpus version")
           if capture.get("corpus_sha256") not in {corpus_sha, legacy_digest(source_corpus)}:

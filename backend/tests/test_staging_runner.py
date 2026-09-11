@@ -321,17 +321,14 @@ def test_scheduled_eval_blocks_manual_review_for_an_approved_corpus():
     assert "successful proposals do not approve a release" in outcome_step
 
 
-def test_scheduled_diagnostic_can_select_staged_pipeline_without_changing_defaults():
+def test_scheduled_manual_suites_can_select_pipeline_without_changing_defaults():
     workflow = Path(".github/workflows/scheduled-eval.yml").read_text(encoding="utf-8")
 
     assert "pipeline_mode:" in workflow
-    assert "options: [legacy, staged]" in workflow
-    assert "pipeline_mode=legacy" in workflow
-    assert (
-        'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] && '
-        '[ "$suite" = diagnostic ]; then'
-    ) in workflow
-    assert 'pipeline_mode="$DISPATCH_PIPELINE_MODE"' in workflow
+    assert "options: [default, legacy, staged]" in workflow
+    assert "pipeline_mode=default" in workflow
+    assert 'pipeline_mode="${DISPATCH_PIPELINE_MODE:-default}"' in workflow
+    assert 'Settings.model_fields["graph_pipeline_mode"].default' in workflow
     assert "EVAL_PIPELINE_MODE=$pipeline_mode" in workflow
     assert "GRAPH_PIPELINE_MODE=$EVAL_PIPELINE_MODE" in workflow
 
