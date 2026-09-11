@@ -38,7 +38,7 @@ _REVIEW_PLAN_LIST_LIMITS = {
     "decisions": 20,
     "runtime_flow": 30,
 }
-_ARCHITECT_PROMPT_VERSION = "architecture_roles_v25"
+_ARCHITECT_PROMPT_VERSION = "architecture_roles_v26"
 _SAFE_EVIDENCE_FAILURE_PATH = re.compile(
     r"evidence_basis\[(?:0|[1-9][0-9]*)\]\.(?:basis|evidence_ref)"
 )
@@ -249,7 +249,8 @@ when it materially affects this scenario.
 - A diagram responsibility earns its own component only when ownership, trust, authoritative state,
   a decision, an externally meaningful action, or an outcome changes. Fold implementation detail
   into its owning responsibility. Exclude work whose only purpose is authoring, reviewing,
-  explaining, laying out, or rendering the architecture diagram.
+  explaining, laying out, or rendering this response's architecture diagram, unless explicitly
+  requested as runtime features of the subject system.
 - Identify the small set of material diagram commitments another agent must visibly reconcile.
   Include decided mechanisms (for example caching, fallback, or approval), every runtime mode's
   route back to an observable outcome, and a bypass around any conditional control when it does
@@ -380,8 +381,9 @@ graph is produced. Return one corrected complete plan plus the audit that caused
   authoritative system of record, or gives an AI unsafe direct write access.
 - Check that one primary runtime flow starts at the real trigger and follows directed contracts to
   an observable outcome. Reject competing main paths, unexplained edge direction, branches without
-  a rejoin or outcome, diagram-authoring mechanics, and responsibilities without a distinct owner,
-  trust boundary, authoritative state, decision, action, or outcome.
+  a rejoin or outcome, and responsibilities without a distinct owner, trust boundary, authoritative
+  state, decision, action, or outcome. Exclude mechanics used to author this response unless
+  explicitly requested as runtime features of the subject system.
 - Challenge invented vendors, live data, retrieval, or permissions.
 - Challenge any assumption presented as a user requirement and any evidence claim with the wrong provenance.
 - At selected production depth only, trace material guarantees through the proposed control topology. Flag durable state that is only

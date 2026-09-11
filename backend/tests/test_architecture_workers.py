@@ -126,7 +126,7 @@ def test_architect_context_audits_the_exact_provisional_candidate():
 
 
 def test_architecture_roles_reason_about_enforced_control_paths():
-    assert _ARCHITECT_PROMPT_VERSION == "architecture_roles_v25"
+    assert _ARCHITECT_PROMPT_VERSION == "architecture_roles_v26"
     for production_requirement in (
         "At selected production depth only, keep risky customer writes",
         "At selected production depth only, treat production guarantees",
@@ -166,6 +166,20 @@ def test_architecture_roles_reason_about_enforced_control_paths():
     assert "one primary operational scenario" in _ARCHITECT_SYSTEM
     assert "one primary runtime flow starts at the real trigger" in _CHALLENGER_SYSTEM
     assert "authoring, reviewing" in _ARCHITECT_SYSTEM
+    for prompt in (
+        *(
+            _architect_system_for_depth(depth)
+            for depth in ("low", "prototype", "production")
+        ),
+        _CHALLENGER_SYSTEM,
+    ):
+        flattened = " ".join(prompt.split())
+        assert "this response" in flattened
+        assert (
+            "unless explicitly requested as runtime features of the subject system"
+            in flattened
+        )
+    assert "a rejoin or outcome, diagram-authoring mechanics" not in _CHALLENGER_SYSTEM
     assert "latest user request is the only source" in _ARCHITECT_SYSTEM
     assert "latest user request is the only source" in _CHALLENGER_SYSTEM
     assert "selected depth is authoritative" in _ARCHITECT_SYSTEM
@@ -244,12 +258,15 @@ def test_architecture_worker_schemas_require_every_declared_object_field():
         == 500
     )
     assert (
-        architect_properties["evidence_basis"]["items"]["properties"]["basis"]["maxLength"]
+        architect_properties["evidence_basis"]["items"]["properties"]["basis"][
+            "maxLength"
+        ]
         == 40
     )
-    assert "enum" not in architect_properties["evidence_basis"]["items"]["properties"][
-        "basis"
-    ]
+    assert (
+        "enum"
+        not in architect_properties["evidence_basis"]["items"]["properties"]["basis"]
+    )
     assert (
         architect_properties["decisions"]["items"]["properties"]["why"]["maxLength"]
         == 300

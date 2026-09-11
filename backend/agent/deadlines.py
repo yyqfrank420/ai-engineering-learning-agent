@@ -10,6 +10,7 @@ from typing import Any
 from config import (
     GRAPH_MAX_CONTRACT_CORRECTIONS,
     GRAPH_MAX_REPAIR_ROUNDS,
+    STAGED_CONNECTION_GENERATION_CALLS,
     settings,
 )
 
@@ -103,6 +104,34 @@ def design_timeout_seconds(state: dict[str, Any]) -> float:
         downstream_reserve_s=downstream_reserve_s,
         stage="graph design",
         standalone_s=settings.graph_design_timeout_s,
+    )
+
+
+def staged_connection_timeout_seconds(state: dict[str, Any], *, attempt: int) -> float:
+    if (
+        not isinstance(attempt, int)
+        or isinstance(attempt, bool)
+        or not 0 <= attempt < STAGED_CONNECTION_GENERATION_CALLS
+    ):
+        raise ValueError(
+            "attempt must identify a configured connection generation call"
+        )
+    remaining_attempts = STAGED_CONNECTION_GENERATION_CALLS - attempt - 1
+    review_reserve_s = (
+        settings.diagram_evaluation_timeout_s + settings.staged_gate_timeout_s
+    )
+    downstream_reserve_s = (
+        review_reserve_s
+        + remaining_attempts * (settings.staged_connection_timeout_s + review_reserve_s)
+        + settings.graph_synthesis_timeout_s
+        + settings.graph_finalization_reserve_s
+    )
+    return _stage_timeout(
+        state,
+        max_s=settings.graph_builder_max_timeout_s,
+        downstream_reserve_s=downstream_reserve_s,
+        stage="staged connection generation",
+        standalone_s=settings.staged_connection_timeout_s,
     )
 
 

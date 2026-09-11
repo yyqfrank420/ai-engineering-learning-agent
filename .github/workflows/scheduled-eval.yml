@@ -159,6 +159,10 @@ jobs:
           pip install -r backend/requirements.txt -r backend/requirements-eval.txt
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
+      - name: Resolve staging request concurrency
+        run: |
+          staging_concurrency="$(PYTHONPATH=backend python -c 'from eval.runtime_budget import staging_request_concurrency; print(staging_request_concurrency())')"
+          echo "STAGING_REQUEST_CONCURRENCY=$staging_concurrency" >> "$GITHUB_ENV"
       - name: Resolve versioned graph pipeline mode
         run: |
           pipeline_mode="$EVAL_PIPELINE_MODE"
@@ -242,7 +246,12 @@ jobs:
             attempt_limit="$EVALUATION_PR_PROVIDER_ATTEMPT_LIMIT"
           fi
           echo "REVISION_TAG=$tag" >> "$GITHUB_ENV"
-          gcloud run deploy "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$tag" --timeout 1000s --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$attempt_limit,GRAPH_PIPELINE_MODE=$EVAL_PIPELINE_MODE --quiet
+          configured_concurrency="$(gcloud run deploy "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$tag" --timeout 1000s --concurrency "$STAGING_REQUEST_CONCURRENCY" --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$attempt_limit,GRAPH_PIPELINE_MODE=$EVAL_PIPELINE_MODE --quiet --format='value(spec.template.spec.containerConcurrency)')"
+          if [ "$configured_concurrency" != "$STAGING_REQUEST_CONCURRENCY" ]; then
+            echo "Cloud Run staging request concurrency does not match the versioned budget." >&2
+            exit 1
+          fi
+          export CONFIGURED_STAGING_REQUEST_CONCURRENCY="$configured_concurrency"
           gcloud run services describe "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --format='json(status.traffic)' > "$RUNNER_TEMP/candidate-traffic.json"
           python - <<'PY'
           import json, os, re
@@ -266,6 +275,7 @@ jobs:
               "image": os.environ["IMAGE"],
               "digest": os.environ["IMAGE_DIGEST"],
               "revision_name": candidate["revisionName"],
+              "staging_request_concurrency": int(os.environ["CONFIGURED_STAGING_REQUEST_CONCURRENCY"]),
               "pipeline_mode": os.environ["EVAL_PIPELINE_MODE"],
               "suite": os.environ["EVAL_SUITE"],
               "case_ids": os.environ["EVAL_CASE_IDS"].split(),

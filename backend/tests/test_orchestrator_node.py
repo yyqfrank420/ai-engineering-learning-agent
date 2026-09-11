@@ -954,15 +954,19 @@ async def test_staged_approved_graph_uses_one_low_effort_explanation_call(
 
 
 def test_staged_provider_call_ceiling_is_nine():
-    from agent.staged_graph_workflow import _MAX_STAGE_ATTEMPTS
+    from config import (
+        STAGED_COMPONENT_GENERATION_CALLS,
+        STAGED_CONNECTION_GENERATION_CALLS,
+        STAGED_GATE_CALLS,
+    )
 
-    stage_count = 2
-    calls_per_candidate = 2
     explanation_calls = 1
-
-    assert _MAX_STAGE_ATTEMPTS == 2
     assert (
-        stage_count * _MAX_STAGE_ATTEMPTS * calls_per_candidate + explanation_calls == 9
+        STAGED_COMPONENT_GENERATION_CALLS
+        + STAGED_CONNECTION_GENERATION_CALLS
+        + STAGED_GATE_CALLS
+        + explanation_calls
+        == 9
     )
 
 

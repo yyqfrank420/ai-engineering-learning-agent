@@ -203,6 +203,28 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
     assert set(generated_criteria) == set(rules)
     assert set(guarantees) <= set(rules)
     assert "independent_risk_coverage" not in generated_criteria
+    if stage == "components":
+        assert (
+            "Depict the requested subject system"
+            in generated_criteria["objective_fidelity"]
+        )
+        assert (
+            "explain, cite or ground the response in sources, or draw its flow"
+            in generated_criteria["objective_fidelity"]
+        )
+        assert (
+            "only when explicitly requested as system features"
+            in generated_criteria["objective_fidelity"]
+        )
+        assert (
+            "response instructions do not create runtime responsibilities"
+            in generated_criteria["brief_coverage"]
+        )
+        assert (
+            "exclude mechanics used to author this response unless explicitly requested "
+            "as runtime features of the subject system"
+            in generated_criteria["mece_scope"]
+        )
     for code, requirement in generated_criteria.items():
         if code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
@@ -596,6 +618,34 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
         monkeypatch.setattr(gate, "_MAX_FINDINGS", gate._MAX_FINDINGS + 1)
 
     assert gate.review_identity(stage, "production") != baseline
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    ("rule", "previous_requirement"),
+    [
+        (
+            "objective_fidelity",
+            "Make the requested goal and constraints visible in component responsibilities.",
+        ),
+        (
+            "brief_coverage",
+            "Give every requested responsibility a component owner.",
+        ),
+        (
+            "mece_scope",
+            "Give each material responsibility one clear owner, remove needless duplicates, and exclude diagram-authoring mechanics from the designed runtime.",
+        ),
+    ],
+)
+def test_subject_runtime_policy_invalidates_previous_component_review_identity(
+    monkeypatch, maturity, rule, previous_requirement
+):
+    current_identity = gate.review_identity("components", maturity)
+
+    monkeypatch.setitem(RUBRIC_CRITERIA, rule, ("components", previous_requirement))
+
+    assert gate.review_identity("components", maturity) != current_identity
 
 
 def test_review_identity_tracks_only_applicable_production_obligations():

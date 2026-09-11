@@ -833,6 +833,96 @@ async def test_connection_retry_keeps_the_accepted_component_candidate_locked(
     )
 
 
+@pytest.mark.asyncio
+async def test_only_connection_generation_borrows_spare_workflow_time(monkeypatch):
+    from agent import deadlines
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    _install_success_boundaries(monkeypatch)
+    timeouts = {}
+
+    async def components(**kwargs):
+        timeouts["components"] = kwargs["timeout_seconds"]
+        return {"wire": _components_wire(), "prompt_fingerprint": "component-prompt"}
+
+    async def connections(**kwargs):
+        timeouts["connections"] = kwargs["timeout_seconds"]
+        return {"wire": _connections_wire(), "prompt_fingerprint": "connection-prompt"}
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(terminal_deadline_s=1_000.0)
+    )
+
+    assert result["graph_publication"] == "approved"
+    assert timeouts == {
+        "components": workflow.settings.staged_component_timeout_s,
+        "connections": workflow.settings.graph_builder_max_timeout_s,
+    }
+    assert timeouts["connections"] > workflow.settings.staged_connection_timeout_s
+
+
+@pytest.mark.parametrize("denied_attempt", [0, 1])
+@pytest.mark.parametrize("has_approved_graph", [False, True])
+@pytest.mark.asyncio
+async def test_connection_deadline_denial_skips_generation_and_restores_approved_graph(
+    monkeypatch, denied_attempt, has_approved_graph
+):
+    from agent import deadlines
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    events = []
+    _install_success_boundaries(monkeypatch, events=events)
+    approved_graph = _approved_graph() if has_approved_graph else None
+    approved_contract = (
+        {"maturity": "prototype", "graph_version": "approved-v1"}
+        if has_approved_graph
+        else None
+    )
+
+    async def render(state, graph, *, preview_count):
+        rendered = await _render_ok(state, graph, preview_count=preview_count)
+        if bool(graph["edges"]) == bool(denied_attempt):
+            return {**rendered, "terminal_deadline_s": 100.0}
+        return rendered
+
+    async def reject_connection(**_kwargs):
+        events.append("connection_gate")
+        return _rejected_gate()
+
+    monkeypatch.setattr(workflow, "_render", render)
+    monkeypatch.setattr(workflow, "review_connections", reject_connection)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            terminal_deadline_s=1_000.0,
+            approved_graph_data=approved_graph,
+            approved_graph_contract=approved_contract,
+            graph_data=approved_graph,
+            graph_contract=approved_contract,
+        )
+    )
+
+    assert events.count("components") == 1
+    assert events.count("component_gate") == 1
+    assert events.count("connections") == denied_attempt
+    assert events.count("connection_gate") == denied_attempt
+    assert result["graph_operation"]["failure_code"] == (
+        "staged_connection_deadline_admission_denied"
+    )
+    assert result["graph_review"]["terminal"] is True
+    assert result["graph_changed"] is False
+    assert result["graph_data"] == approved_graph
+    assert result["graph_contract"] == approved_contract
+    assert result["graph_publication"] == (
+        "preserved" if has_approved_graph else "withheld"
+    )
+    if has_approved_graph:
+        assert result["graph_data"] is not approved_graph
+        assert result["graph_contract"] is not approved_contract
+
+
 @pytest.mark.parametrize("full_restage", [False, True])
 @pytest.mark.asyncio
 async def test_semantic_gate_rejects_unowned_control_flow_on_correction(

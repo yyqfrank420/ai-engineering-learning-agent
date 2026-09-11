@@ -876,6 +876,11 @@ def test_prompt_delegates_graph_size_and_preserves_material_boundaries():
     assert "distinct canary, promotion, and rollback paths" in prompt
     assert "Use integer codes for type, group_kind, flow, and sync" in prompt
     assert "The request owns the objective" in prompt
+    assert "Do not add mechanics used to author this response" in prompt
+    assert (
+        "unless explicitly requested as runtime features of the subject system"
+        in prompt
+    )
     assert "independent architecture review follows" in prompt
     assert "evidence_ref" not in prompt
     assert "Do not emit server-owned fields" in prompt

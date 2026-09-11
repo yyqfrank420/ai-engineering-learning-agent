@@ -13,6 +13,7 @@ from analytics.events import enqueue_analytics_event
 from agent.architecture_playbook import format_evidence_bundle
 from agent.architecture_rubric import MAX_REVIEW_REASON_CHARS
 from agent.complexity import resolve_complexity
+from agent.deadlines import StageAdmissionDenied, staged_connection_timeout_seconds
 from agent.nodes.graph_critic import graph_render_gate_node
 from agent.nodes.graph_worker import (
     _attach_graph_version,
@@ -51,10 +52,13 @@ from agent.staged_graph_contract import (
     validate_staged_graph_build,
 )
 from agent.state import AgentState, GraphData
-from config import settings
+from config import (
+    STAGED_COMPONENT_GENERATION_CALLS,
+    STAGED_CONNECTION_GENERATION_CALLS,
+    settings,
+)
 
 
-_MAX_STAGE_ATTEMPTS = 2
 _EXPLICIT_GRAPH_REBUILD = re.compile(
     r"\b(?:rebuild|redesign|replace|redraw)\s+(?:the\s+)?"
     r"(?:(?:entire|whole)\s+)?(?:architecture|diagram|graph|system)\b|"
@@ -999,7 +1003,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     preview_count = int(state.get("graph_stage_preview_count", 0))
     working_state = state
 
-    for attempt in range(_MAX_STAGE_ATTEMPTS):
+    for attempt in range(STAGED_COMPONENT_GENERATION_CALLS):
         try:
             generated = await generate_component_candidate(
                 request=request,
@@ -1183,7 +1187,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             previous_prompt = generated["prompt_fingerprint"]
             previous_component_candidate = candidate_fingerprint
-            if attempt + 1 < _MAX_STAGE_ATTEMPTS:
+            if attempt + 1 < STAGED_COMPONENT_GENERATION_CALLS:
                 working_state = await _retain_staged_diagnostic(
                     rendered,
                     _gate_failure_diagnostic(
@@ -1200,7 +1204,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             else:
                 working_state = rendered
         except (GraphContractError, StagedGenerationError, ValueError) as exc:
-            if attempt + 1 >= _MAX_STAGE_ATTEMPTS:
+            if attempt + 1 >= STAGED_COMPONENT_GENERATION_CALLS:
                 return await _failed(
                     working_state,
                     "staged_component_attempts_exhausted",
@@ -1241,7 +1245,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 if isinstance(component_gate.get("findings"), list)
                 else [],
                 stage="components",
-                attempt=_MAX_STAGE_ATTEMPTS,
+                attempt=STAGED_COMPONENT_GENERATION_CALLS,
                 code="gate_rejected",
                 candidate_records=reviewed_component_records,
             ),
@@ -1255,7 +1259,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     reviewed_connection_records: list[dict[str, Any]] = []
     correction_findings = []
     connection_gate: dict[str, Any] = {}
-    for attempt in range(_MAX_STAGE_ATTEMPTS):
+    for attempt in range(STAGED_CONNECTION_GENERATION_CALLS):
         try:
             generated = await generate_connection_candidate(
                 request=request,
@@ -1293,7 +1297,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 edit_permissions=permissions,
                 rejected_candidate=rejected_connection_candidate,
                 state=state,
-                timeout_seconds=settings.staged_connection_timeout_s,
+                timeout_seconds=staged_connection_timeout_seconds(
+                    working_state, attempt=attempt
+                ),
             )
             rejected_connection_candidate = copy.deepcopy(generated["wire"])
             wire_fingerprint = _fingerprint(generated["wire"])
@@ -1457,7 +1463,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             previous_prompt = generated["prompt_fingerprint"]
             previous_connection_candidate = candidate_fingerprint
-            if attempt + 1 < _MAX_STAGE_ATTEMPTS:
+            if attempt + 1 < STAGED_CONNECTION_GENERATION_CALLS:
                 working_state = await _retain_staged_diagnostic(
                     rendered,
                     _gate_failure_diagnostic(
@@ -1473,8 +1479,12 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 )
             else:
                 working_state = rendered
+        except StageAdmissionDenied:
+            return await _failed(
+                working_state, "staged_connection_deadline_admission_denied"
+            )
         except (GraphContractError, StagedGenerationError, ValueError) as exc:
-            if attempt + 1 >= _MAX_STAGE_ATTEMPTS:
+            if attempt + 1 >= STAGED_CONNECTION_GENERATION_CALLS:
                 return await _failed(
                     working_state,
                     "staged_connection_attempts_exhausted",
@@ -1514,7 +1524,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             if isinstance(connection_gate.get("findings"), list)
             else [],
             stage="connections",
-            attempt=_MAX_STAGE_ATTEMPTS,
+            attempt=STAGED_CONNECTION_GENERATION_CALLS,
             code="gate_rejected",
             candidate_records=reviewed_connection_records,
         ),
