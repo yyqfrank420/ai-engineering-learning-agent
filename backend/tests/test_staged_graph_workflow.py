@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 
 from agent import staged_graph_workflow as workflow
+from agent.graph_identity import applied_edge_metadata
 from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import (
     assign_server_ids,
@@ -2112,18 +2113,30 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("run_id", ["32300653373", "34653111423"])
 async def test_retained_model_serving_graph_expands_monitoring_without_prior_record_drift(
     monkeypatch,
+    run_id,
 ):
     from eval.browser_runner import _graph_expansion_failure
 
-    # Paid run 32300653373, scheduled-eval-32300653373/browser-results.json:
-    # results[0], first graph_data event, eval_turn=1. Only its graph is retained.
+    # Captured scheduled-eval browser-results.json, graph-expansion case, first
+    # graph_data event, eval_turn=1. Fixtures retain only the published graph.
     fixture = (
-        Path(__file__).with_name("fixtures") / "staged_model_serving_32300653373.json"
+        Path(__file__).with_name("fixtures") / f"staged_model_serving_{run_id}.json"
     )
     previous_graph = json.loads(fixture.read_text())
     original = copy.deepcopy(previous_graph)
+    node_count = len(original["nodes"])
+    edge_count = len(original["edges"])
+    anchor = original["nodes"][-1]
+    group = next(
+        group for group in original["groups"] if anchor["id"] in group["nodeIds"]
+    )
+    request = (
+        "Expand the monitoring component while preserving the original graph topic "
+        "and existing components. Add exactly one directly connected responsibility."
+    )
     provider_stages = []
     component_reviews = []
     connection_reviews = []
@@ -2145,7 +2158,7 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
                             "label": "Alert Triage Service",
                             "type": 101,
                             "responsibility": "Evaluates monitoring alerts and prioritizes issues for operator review.",
-                            "group_label": "Observability",
+                            "group_label": group["label"],
                             "group_kind": 602,
                             "primary_flow_member": False,
                         }
@@ -2153,7 +2166,7 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
                     "updates": {},
                     "capabilities": {
                         "external_effects": False,
-                        "retrieval_or_reuse": False,
+                        "retrieval_or_reuse": run_id == "34653111423",
                         "learning_or_release": False,
                     },
                 }
@@ -2162,8 +2175,8 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
             {
                 "additions": [
                     {
-                        "source_index": 4,
-                        "target_index": 5,
+                        "source_index": node_count - 1,
+                        "target_index": node_count,
                         "label": "dispatch monitoring alerts for triage",
                         "flow": 402,
                         "sync": 501,
@@ -2195,8 +2208,8 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
                 "failure_code": None,
             },
             complexity="auto",
-            user_message="Expand Monitoring Service.",
-            design_query="Expand Monitoring Service.",
+            user_message=request,
+            design_query=request,
             approved_graph_data=previous_graph,
             graph_data=previous_graph,
         )
@@ -2207,21 +2220,21 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
     )
     assert provider_stages == ["components", "connections"]
     assert len(component_reviews) == len(connection_reviews) == 1
-    assert len(component_reviews[0]["candidate_records"]) == 6
-    assert len(connection_reviews[0]["candidate_records"]) == 7
+    assert len(component_reviews[0]["candidate_records"]) == node_count + 1
+    assert len(connection_reviews[0]["candidate_records"]) == edge_count + 1
     assert component_reviews[0]["resolved_maturity"] == "prototype"
     assert connection_reviews[0]["resolved_maturity"] == "prototype"
     current_graph = result["graph_data"]
     assert (
         _graph_expansion_failure(
-            original, current_graph, anchor_label_contains="Monitoring Service"
+            original, current_graph, anchor_label_contains="Monitoring"
         )
         is None
     )
-    assert current_graph["nodes"][:5] == original["nodes"]
-    assert current_graph["edges"][:6] == original["edges"]
+    assert current_graph["nodes"][:node_count] == original["nodes"]
+    assert current_graph["edges"][:edge_count] == original["edges"]
     assert current_graph["nodes"][-1]["label"] == "Alert Triage Service"
-    assert current_graph["edges"][-1]["source"] == "n5"
+    assert current_graph["edges"][-1]["source"] == anchor["id"]
     assert current_graph["edges"][-1]["target"] == current_graph["nodes"][-1]["id"]
     assert current_graph["edges"][-1]["sync"] == "async"
     for field in ("title", "assumptions", "sequence", "resolved_complexity"):
@@ -2232,7 +2245,7 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
             "nodeIds": group["nodeIds"]
             + (
                 [current_graph["nodes"][-1]["id"]]
-                if group["id"] == "group_observability"
+                if anchor["id"] in group["nodeIds"]
                 else []
             ),
         }
@@ -2608,9 +2621,7 @@ async def test_scoped_edge_scalar_edit_preserves_locked_presentation(
     assert provider_stages == ["components", "connections"]
     expected_edge = {**original["edges"][0], field: stored_value}
     if field == "label":
-        expected_edge.update(
-            edge_id="applied:n1__payment_submission__n2", relation="payment_submission"
-        )
+        expected_edge.update(applied_edge_metadata("n1", "n2", "payment submission"))
     assert result["graph_data"]["edges"] == [expected_edge]
     for key in ("nodes", "groups", "sequence", "title", "assumptions"):
         assert result["graph_data"][key] == original[key]

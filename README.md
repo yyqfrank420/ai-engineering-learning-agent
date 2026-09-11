@@ -32,6 +32,12 @@ creation and edits use `GRAPH_PIPELINE_MODE=staged` by default:
 6. allow one correction per stage; a connection correction keeps the accepted components fixed
 7. write the walkthrough, atomically persist the accepted graph and its server-only contract, then publish the authoritative graph and completed response
 
+When the requested workflow is unclear, the component planner can ask up to three
+questions and stop before connection generation or review. Replies continue the
+design using the prior user requirements. A failed creation retains its failure
+notice and can still answer independent explanatory questions within the remaining
+request deadline.
+
 Scoped edits generate additions and authorized field updates. The server preserves locked
 records, retained IDs, and unaffected presentation. Prior semantic approval is reused only
 when graph and reviewer fingerprints and accepted context still match. Review covers the

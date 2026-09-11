@@ -786,7 +786,7 @@ export function D3Graph({
         const sameColumn = d.source.topologyRank === d.target.topologyRank;
         const sourceIsRight = d.source.x > d.target.x;
         const sourceDirection = sameColumn || sourceIsRight ? -1 : 1;
-        const targetDirection = sameColumn || sourceIsRight ? 1 : -1;
+        const targetDirection = sameColumn ? -1 : sourceIsRight ? 1 : -1;
         const sourceBorderX = d.source.x + sourceDirection * NODE_W / 2;
         const targetBorderX = d.target.x + targetDirection * NODE_W / 2;
         const sourceGutterX = sameColumn
@@ -1365,7 +1365,8 @@ export function D3Graph({
 
     nodeSel.filter((d: RenderNode) => sourceNodeIds.has(d.id) && renderGraphData.design_origin !== 'applied')
       .append('text').text('ENTRY')
-      .attr('x', -NODE_W / 2 - MARKER_GAP - MARKER_W / 2)
+      // Keep the badge clear of the preceding card across the 24px gap.
+      .attr('x', -NODE_W / 2 - MARKER_GAP - MARKER_W / 2 + 2)
       .attr('y', -MARKER_H / 2 - 4)
       .attr('text-anchor', 'middle')
       .attr('font-size', '0.38rem').attr('font-weight', 700).attr('letter-spacing', '0.1em')
@@ -1498,10 +1499,15 @@ export function D3Graph({
       }));
       const placedLabels: Array<{ x: number; y: number; width: number; height: number }> = [];
 
-      edgeLabelGroup.each(function(d: RenderLink) {
-        const grp = d3.select(this);
+      const labelsByPriority = edgeLabelGroup.nodes().map(element => ({
+        element,
+        link: d3.select<SVGGElement, RenderLink>(element).datum(),
+      })).sort((left, right) => Number(right.link.overviewRequired) - Number(left.link.overviewRequired));
+
+      for (const { element, link: d } of labelsByPriority) {
+        const grp = d3.select(element).attr('display', null);
         const textEl = grp.select('text').node() as SVGTextElement | null;
-        if (!textEl) return;
+        if (!textEl) continue;
 
         const textBox = textEl.getBBox();
         const labelWidth = textBox.width + 6;
@@ -1546,16 +1552,21 @@ export function D3Graph({
                 : (attempt % 2 === 1 ? -1 : 1)
                   * (14 + Math.floor((attempt - 1) / 2) * (isForward(d) ? 6 : 7))),
             }));
-        const boundedCandidates = candidates.map(candidate => boundLabelCenter(
+        const nearbyCandidates = Array.from({ length: 9 }, (_, column) => (
+          Array.from({ length: 9 }, (_, row) => ({
+            x: labelCenterX + (column - 4) * Math.max(NODE_W / 4, labelWidth / 2 + 8),
+            y: baseY + (row - 4) * (labelHeight + 6),
+          }))
+        )).flat();
+        const boundedCandidates = [...candidates, ...nearbyCandidates].map(candidate => boundLabelCenter(
           candidate,
           { width: labelWidth, height: labelHeight },
           { width: layoutW, height: layoutH },
+        )).sort((left, right) => (
+          Math.hypot(left.x - centerX, left.y - centerY)
+          - Math.hypot(right.x - centerX, right.y - centerY)
         ));
-        let placement = boundedCandidates.at(-1) ?? boundLabelCenter(
-          { x: labelCenterX, y: baseY },
-          { width: labelWidth, height: labelHeight },
-          { width: layoutW, height: layoutH },
-        );
+        let placement: { x: number; y: number } | undefined;
 
         for (const candidatePosition of boundedCandidates) {
           const candidate = {
@@ -1564,20 +1575,31 @@ export function D3Graph({
             width: labelWidth,
             height: labelHeight,
           };
-          const collides = occupiedBoxes.some((box) => boxesIntersect(candidate, box))
+          const collides = candidate.x < 0 || candidate.y < 0
+            || candidate.x + candidate.width > layoutW
+            || candidate.y + candidate.height > layoutH
+            || occupiedBoxes.some((box) => boxesIntersect(candidate, box))
             || placedLabels.some((box) => boxesIntersect(candidate, box));
           if (!collides) {
-            placedLabels.push(candidate);
+            if (overviewEdgeLabelOpacity({ flow: d.flow, type: d.edgeType }, d.overviewRequired) > 0) {
+              placedLabels.push(candidate);
+            }
             placement = candidatePosition;
             break;
           }
         }
 
+        // Keep an unplaceable label hidden even when hover changes opacity.
+        // Its edge tooltip and node connection list still expose the contract.
+        if (!placement) {
+          grp.attr('display', 'none');
+          continue;
+        }
         grp.attr(
           'transform',
           `translate(${placement.x - localLabelCenter.x},${placement.y - localLabelCenter.y})`,
         );
-      });
+      }
     }
 
     // Initial render — static layout, no animation delay

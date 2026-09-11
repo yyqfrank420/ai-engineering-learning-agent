@@ -321,6 +321,69 @@ time, the maximum call duration, downstream reserves, and preservation of the
 approved graph when a stage cannot be admitted. Components keep the separately
 enforced first-preview boundary.
 
+### Complete full-corpus capture and batched follow-up
+
+Run `34653111423` completed with 14 of 20 browser cases passing. Semantic evaluation
+reported 12 passes, two cases for manual review, and six deterministic failures.
+It recorded 75 provider attempts across 73 application operations and 14 judge
+calls. Eight cancelled generation attempts lacked token usage. The known
+application subtotal was $2.024380 and judge usage was $0.555010; total application
+cost is unknown. The browser phase took 1,311.247 seconds. All artifacts were
+downloaded, and their 90-day retention was verified.
+
+| Case | Observed failure | Correction or evidence limit |
+| --- | --- | --- |
+| `rag-grounding` | Component scope rejected twice; no explanation after graph rejection | Explicit subject boundary; independent grounded answer after failed creation |
+| `graph-expansion` | Four retained edge IDs changed during admission | Preserve baseline identities through normalization; shared identity owner for new edges |
+| `applied-domain`, `architecture-controls`, `arbitrary-architecture` | Connection generation timed out twice | Borrow unused time within the absolute deadline and retain downstream reserves |
+| `graph-renderability` | A second capability defect appeared after the first correction | Audit each capability against named ownership in the same review |
+| `ambiguity` | A vague request triggered construction, then returned only rejection status | Structured clarification in the existing component call; no downstream generation or review |
+| `memory` | Follow-up presupposed two ranked mitigations that turn one never requested | First prompt now explicitly requests two mitigations; human labels remain pending |
+
+The expansion contained all twelve prior semantic connections and one addition.
+The staged projector truncated relation slugs to 56 characters; the patch
+normalizer regenerated them at 64 characters. Its locked-record check omitted
+`edge_id` and `relation`. The captured graph reproduces this without model calls.
+Baseline identities now survive unchanged endpoints and labels, and the validator
+checks their values and presence. Authorized label or endpoint changes receive
+new identities. A separate local probe found collisions for long, punctuation,
+and Unicode labels. New edges now use one shared readable label plus digest in
+both projection and normalization. Existing stored identities remain unchanged.
+
+Local lifecycle checks reload the saved graph as JSON, add two components, and
+remove the first addition. The original nodes, edges, and sequence remain exact.
+Neighbor checks also found normalization clearing saved node `tier` and `detail`;
+patch admission now retains those baseline-owned fields, including absence and
+null values. New records keep their creation defaults.
+Saved uppercase and long node IDs also survive edits unchanged. New IDs still
+normalize and reserve existing IDs before resolving collisions, independent of
+record ordering.
+
+The failed-create response path now retains a truthful graph status while allowing
+an independent grounded answer or clarification. Failed edits retain their exact
+status without inventing another proposal. The component planner can return a
+validated clarification result instead of a candidate, using its existing call.
+The response is emitted directly without connection generation, reviews, or another
+synthesis call. Ordinary replies to those questions can continue the design through
+the existing router call and prior user context.
+An independent three-turn replay caught dropped intermediate requirements. The
+router now retains user constraints through the active design conversation and
+stops at detected topic changes; assistant text cannot supply design authority.
+
+A saved RAG screenshot exposed edge labels overlapping unrelated cards. Placement
+now searches bounded positions in both dimensions and gives required labels
+priority. An unplaceable label stays hidden even on hover; required-label coverage
+still controls render admission. Real Chromium rendering of the saved RAG graph
+shows all four required labels with no label-card or label-label overlap.
+Screenshot review also found same-column return edges entering the far side of
+their target and crossing its text. They now terminate at the near border. The
+regression checks edge segments against source, target, and intervening cards.
+
+All twenty semantic evidence packets passed the actual projection and prompt-size
+checks offline. The largest was 48,697 characters against an 80,000-character limit.
+Captured answer, book, and research text was preserved. This rules out packet
+truncation as the cause of these failures.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.
@@ -342,8 +405,13 @@ validation and are not represented by that run's source identity.
 
 Commit `971292d6e175ff7b7e3b9d1959f021661304ffdb` passed the next complete local
 and cloud check runs: all eleven groups, 1,862 backend tests at 91% coverage,
-243 frontend tests, and 221 policy tests. The capacity and subject-boundary changes
-follow that commit and require separate validation.
+243 frontend tests, and 221 policy tests.
+
+Commit `5d08d336afe0be327fbc140eeb216d10119ec3d9` passed all eleven groups with
+1,904 backend tests at 91% coverage, 243 frontend tests, and 237 policy tests.
+That check includes capacity, deadline, and subject-boundary changes. The next
+batched identity, clarification, recovery, and label-placement changes require a
+separate complete validation and live capture.
 
 Existing optional ingestion tests remain skipped without the source PDF or model
 opt-in. Dependency deprecation warnings, the local Node storage warning, and two

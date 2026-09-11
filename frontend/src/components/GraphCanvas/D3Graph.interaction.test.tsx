@@ -153,6 +153,53 @@ describe('graph node activation', () => {
     }
   });
 
+  it('keeps an unplaceable label hidden on hover while exposing its edge tooltip', async () => {
+    const unplaceableLabel = 'returns detailed feedback';
+    const measure = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox')
+      .mockImplementation(function(this: SVGElement) {
+        const width = this.closest('.edge-label')?.textContent?.includes('returns detailed') ? 10_000 : 48;
+        return { x: -width / 2, y: -6, width, height: 12 } as DOMRect;
+      });
+    const baseGraph: GraphData = {
+      ...graph,
+      nodes: [graph.nodes[0], { ...graph.nodes[0], id: 'service', label: 'Serving API' }],
+      edges: [{ ...edge('sensor_gateway', 'service', 'sends request'), flow: 'runtime' }],
+    };
+    const props = { currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: () => undefined };
+    try {
+      const view = render(<D3Graph {...props} graphData={baseGraph} />);
+      const baselinePlacement = view.container.querySelector('g.edge-label')?.getAttribute('transform');
+      view.rerender(<D3Graph {...props} graphData={{
+        ...baseGraph,
+        edges: [
+          { ...edge('service', 'sensor_gateway', unplaceableLabel), flow: 'feedback' },
+          ...baseGraph.edges,
+        ],
+      }} />);
+      const labels = view.container.querySelectorAll('g.edge-label');
+      expect(labels[0].getAttribute('display')).toBe('none');
+      expect(labels[1].getAttribute('transform')).toBe(baselinePlacement);
+      expect(labels[1].getAttribute('display')).not.toBe('none');
+
+      fireEvent.mouseOver(screen.getByRole('button', { name: 'Explore Serving API' }));
+      await waitFor(() => expect(labels[0].getAttribute('opacity')).toBe('1'));
+      expect(labels[0].getAttribute('display')).toBe('none');
+      fireEvent.mouseOver(view.container.querySelectorAll('path.edge-hit')[0]);
+      expect(screen.getByText(unplaceableLabel)).toBeTruthy();
+      expect(labels[0].getAttribute('display')).toBe('none');
+
+      view.rerender(<D3Graph {...props} graphData={{
+        ...baseGraph,
+        edges: [{ ...edge('service', 'sensor_gateway', unplaceableLabel), flow: 'runtime' }],
+      }} />);
+      const requiredLabel = view.container.querySelector('g.edge-label');
+      expect(requiredLabel?.getAttribute('display')).toBe('none');
+      expect(requiredLabel?.getAttribute('data-overview-required')).toBe('true');
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
   it('preserves control-flow styling after the sequence effect runs', async () => {
     const controlGraph: GraphData = {
       ...graph,

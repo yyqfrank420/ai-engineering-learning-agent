@@ -75,7 +75,7 @@ class GraphData(TypedDict):
 
 class GraphOperation(TypedDict):
     kind: Literal["create", "edit"]
-    status: Literal["candidate", "applied", "failed"]
+    status: Literal["candidate", "applied", "failed", "needs_clarification"]
     failure_code: str | None
 
 
@@ -138,6 +138,7 @@ class AgentState(TypedDict):
     graph_publication: NotRequired[GraphPublicationDisposition]
     graph_review: NotRequired[dict[str, Any]]
     graph_operation: NotRequired[GraphOperation]
+    clarification_questions: NotRequired[list[str]]
     graph_intent: NotRequired[Literal["create", "edit"] | None]
     graph_revision_count: NotRequired[int]
     graph_repair_round_count: NotRequired[int]

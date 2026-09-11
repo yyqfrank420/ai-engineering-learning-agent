@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 import pytest
 from agent.complexity import resolve_complexity
+from agent.graph_identity import applied_edge_metadata
 from agent.graph_repair_contract import validate_local_repair_admission
 from agent.nodes import graph_worker
 
@@ -2546,7 +2547,7 @@ def test_group_only_repair_rederives_lane_without_unlocking_components():
     )
     assert before["lane"] == "main"
     assert after["lane"] == "bottom"
-    assert after["tier"] is None
+    assert after["tier"] == before["tier"]
     assert {
         field: after[field] for field in graph_worker._PATCH_NODE_MUTABLE_FIELDS
     } == {field: before[field] for field in graph_worker._PATCH_NODE_MUTABLE_FIELDS}
@@ -6052,3 +6053,292 @@ def test_leaf_node_removal_can_leave_one_connected_root():
     assert [node["id"] for node in result["nodes"]] == ["fulfilment_stage_0"]
     assert result["edges"] == []
     assert result["sequence"] == graph["sequence"][:1]
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("sync", "sync"),
+        ("flow", "control"),
+        ("description", "Updated transport detail."),
+    ],
+)
+def test_patch_retains_legacy_identity_for_non_identity_edge_changes(field, value):
+    graph = _domain_graph(3)
+    graph["edges"][0]["edge_id"] = "legacy:authoritative-edge"
+    graph["edges"][0]["relation"] = "legacy_relation"
+    result = graph_worker._apply_applied_graph_patch(
+        graph,
+        {"update_edges": [{"edge_id": "edge_1", "set": {field: value}}]},
+        safety_max_nodes=3,
+        resolved_complexity="prototype",
+    )
+    assert result["edges"][0] == {**graph["edges"][0], field: value}
+    second = graph_worker._apply_applied_graph_patch(
+        result,
+        {
+            "update_nodes": [
+                {"id": result["nodes"][0]["id"], "set": {"label": "Updated Intake"}}
+            ]
+        },
+        safety_max_nodes=3,
+        resolved_complexity="prototype",
+    )
+    assert second["edges"] == result["edges"]
+
+
+def test_authorized_label_update_recomputes_edge_identity():
+    graph = _domain_graph(3)
+    graph["edges"][0]["edge_id"] = "legacy:authoritative-edge"
+    graph["edges"][0]["relation"] = "legacy_relation"
+    query = 'Rename edge 1 to "publishes verified shipping state".'
+    contract, permissions = graph_worker.staged_edit_scope(
+        query, graph, resolved_complexity="prototype"
+    )
+    candidate = copy.deepcopy(graph)
+    candidate["edges"][0]["label"] = "publishes verified shipping state"
+    result = graph_worker.admit_staged_graph_edit(
+        graph,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+    edge = result["edges"][0]
+    assert {field: edge[field] for field in ("edge_id", "relation")} == (
+        applied_edge_metadata(edge["source"], edge["target"], edge["label"])
+    )
+    assert result["edges"][1:] == graph["edges"][1:]
+
+
+@pytest.mark.parametrize("field", ["edge_id", "relation"])
+def test_locked_edge_validation_rejects_identity_drift(field):
+    graph = _domain_graph(3)
+    candidate = copy.deepcopy(graph)
+    candidate["edges"][0][field] = "tampered"
+    with pytest.raises(
+        ValueError, match=f"normalization changed locked edge field: edge_1.{field}"
+    ):
+        graph_worker._validate_locked_edges_after_normalization(
+            graph,
+            candidate,
+            {"editable_edge_fields": {}},
+            {},
+        )
+
+
+def test_initial_edge_creation_ignores_supplied_identity_and_keeps_current_slug_length():
+    graph = _domain_graph(3)
+    raw = {
+        **graph["edges"][0],
+        "label": "Publish verified delivery outcome with complete provenance and shipping metadata",
+        "edge_id": "model-controlled",
+        "relation": "model-controlled",
+    }
+    edge = graph_worker._normalise_edges(
+        [raw], {node["id"]: node["id"] for node in graph["nodes"]}, max_edges=1
+    )[0]
+    assert len(edge["relation"]) == 64
+    assert (
+        edge["edge_id"]
+        == f"applied:{edge['source']}__{edge['relation']}__{edge['target']}"
+    )
+    assert edge["relation"] != "model-controlled"
+
+
+@pytest.mark.parametrize("field", ["edge_id", "relation"])
+def test_patch_rejects_supplied_identity_mutation(field):
+    with pytest.raises(ValueError, match="unknown|unsupported|fields"):
+        graph_worker._apply_applied_graph_patch(
+            _domain_graph(3),
+            {"update_edges": [{"edge_id": "edge_1", "set": {field: "tampered"}}]},
+            safety_max_nodes=3,
+            resolved_complexity="prototype",
+        )
+
+
+@pytest.mark.parametrize("field", ["tier", "detail"])
+@pytest.mark.parametrize("presence", ["missing", "null", "value"])
+def test_scoped_patch_preserves_saved_node_metadata_after_json_reload(field, presence):
+    graph = _domain_graph(3)
+    node = graph["nodes"][0]
+    if presence == "missing":
+        node.pop(field, None)
+    else:
+        node[field] = None if presence == "null" else "Saved node metadata"
+    graph = json.loads(json.dumps(graph))
+    contract, permissions = graph_worker.staged_edit_scope(
+        "Rename Fulfilment Stage 1 to Parcel Routing.",
+        graph,
+        resolved_complexity="prototype",
+    )
+    candidate = copy.deepcopy(graph)
+    candidate["nodes"][1]["label"] = "Parcel Routing"
+
+    result = graph_worker.admit_staged_graph_edit(
+        graph,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+
+    assert (field in result["nodes"][0]) == (field in graph["nodes"][0])
+    assert result["nodes"][0].get(field) == graph["nodes"][0].get(field)
+    assert result["nodes"][1]["label"] == "Parcel Routing"
+
+
+@pytest.mark.parametrize("field", ["tier", "detail"])
+@pytest.mark.parametrize("drift", ["changed", "missing", "added_null"])
+def test_locked_node_validation_rejects_saved_metadata_drift(field, drift):
+    graph = _domain_graph(3)
+    graph["nodes"][0][field] = "Saved node metadata"
+    candidate = copy.deepcopy(graph)
+    if drift == "changed":
+        candidate["nodes"][0][field] = "Changed metadata"
+    elif drift == "missing":
+        candidate["nodes"][0].pop(field)
+    else:
+        graph["nodes"][0].pop(field)
+        candidate["nodes"][0][field] = None
+
+    with pytest.raises(
+        ValueError,
+        match=f"normalization changed locked node field: fulfilment_stage_0.{field}",
+    ):
+        graph_worker._validate_locked_nodes_after_normalization(
+            graph,
+            candidate,
+            {"editable_node_fields": {}, "removable_node_ids": []},
+        )
+
+
+@pytest.mark.parametrize("field", ["tier", "detail"])
+def test_patch_rejects_model_authored_saved_node_metadata(field):
+    with pytest.raises(ValueError, match="unknown|unsupported|fields"):
+        graph_worker._apply_applied_graph_patch(
+            _domain_graph(3),
+            {"update_nodes": [{"id": "fulfilment_stage_0", "set": {field: "new"}}]},
+            safety_max_nodes=3,
+            resolved_complexity="prototype",
+        )
+
+
+@pytest.mark.parametrize("id_shape", ["uppercase", "65_chars", "80_chars"])
+@pytest.mark.parametrize("operation", ["label", "edge", "add", "remove"])
+def test_scoped_patch_preserves_saved_node_ids(id_shape, operation):
+    graph = _domain_graph(3)
+    ids = {
+        node["id"]: (
+            node["id"].upper()
+            if id_shape == "uppercase"
+            else "x" * (int(id_shape.split("_")[0]) - 2) + f"{index:02d}"
+        )
+        for index, node in enumerate(graph["nodes"])
+    }
+    for node in graph["nodes"]:
+        node["id"] = ids[node["id"]]
+    for edge in graph["edges"]:
+        edge["source"] = ids[edge["source"]]
+        edge["target"] = ids[edge["target"]]
+    graph = json.loads(json.dumps(graph))
+    candidate = copy.deepcopy(graph)
+    if operation == "label":
+        query = "Rename Fulfilment Stage 0 to Parcel Intake."
+        candidate["nodes"][0]["label"] = "Parcel Intake"
+    elif operation == "edge":
+        query = 'Rename edge 1 to "dispatches verified parcels".'
+        candidate["edges"][0]["label"] = "dispatches verified parcels"
+    elif operation == "add":
+        query = "Expand Fulfilment Stage 1."
+        candidate["nodes"].append(
+            {**graph["nodes"][1], "id": "New Added Node", "label": "Audit Receiver"}
+        )
+        candidate["edges"].append(
+            {
+                **graph["edges"][0],
+                "source": graph["nodes"][1]["id"],
+                "target": "New Added Node",
+                "label": "dispatches audit events",
+            }
+        )
+    else:
+        query = "Remove Fulfilment Stage 1."
+        removed = candidate["nodes"].pop(1)["id"]
+        candidate["edges"] = [
+            edge
+            for edge in candidate["edges"]
+            if removed not in (edge["source"], edge["target"])
+        ]
+    contract, permissions = graph_worker.staged_edit_scope(
+        query, graph, resolved_complexity="prototype"
+    )
+
+    result = graph_worker.admit_staged_graph_edit(
+        graph,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+
+    retained_ids = [
+        node["id"] for node in candidate["nodes"] if node["id"] in ids.values()
+    ]
+    assert [node["id"] for node in result["nodes"][: len(retained_ids)]] == retained_ids
+    expected_endpoints = [
+        (edge["source"], edge["target"].replace("New Added Node", "new_added_node"))
+        for edge in candidate["edges"]
+    ]
+    assert [(edge["source"], edge["target"]) for edge in result["edges"]] == (
+        expected_endpoints
+    )
+    if operation == "add":
+        assert result["nodes"][-1]["id"] == "new_added_node"
+
+
+@pytest.mark.parametrize("new_first", [False, True])
+def test_normalizer_reserves_retained_id_before_new_node_normalization(new_first):
+    graph = _domain_graph(2)
+    retained_id = graph["nodes"][1]["id"]
+    new_id = retained_id.upper()
+    graph["nodes"][0]["id"] = new_id
+    graph["edges"][0]["source"] = new_id
+    graph["edges"][1]["target"] = new_id
+    if not new_first:
+        graph["nodes"].reverse()
+
+    result = graph_worker._normalise_applied_graph(
+        graph,
+        safety_max_nodes=2,
+        resolved_complexity="prototype",
+        trusted_existing_node_ids=frozenset({retained_id}),
+    )
+
+    by_label = {node["label"]: node["id"] for node in result["nodes"]}
+    assert by_label["Fulfilment Stage 1"] == retained_id
+    assert by_label["Fulfilment Stage 0"] != retained_id
+    assert len(set(by_label.values())) == 2
+    assert result["edges"][0]["target"] == retained_id
+    assert result["edges"][1]["source"] == retained_id
+
+
+def test_initial_normalization_still_slugifies_new_ids_and_rejects_duplicates():
+    graph = _domain_graph(2)
+    original_id = graph["nodes"][0]["id"]
+    graph["nodes"][0]["id"] = original_id.upper()
+    graph["edges"][0]["source"] = original_id.upper()
+    graph["edges"][1]["target"] = original_id.upper()
+    result = graph_worker._normalise_applied_graph(
+        graph, safety_max_nodes=2, resolved_complexity="prototype"
+    )
+    assert result["nodes"][0]["id"] == original_id
+
+    graph["nodes"][1]["id"] = graph["nodes"][0]["id"]
+    with pytest.raises(ValueError, match="duplicate node id"):
+        graph_worker._normalise_applied_graph(
+            graph,
+            safety_max_nodes=2,
+            resolved_complexity="prototype",
+            trusted_existing_node_ids=frozenset({graph["nodes"][0]["id"]}),
+        )

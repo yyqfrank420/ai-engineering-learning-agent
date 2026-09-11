@@ -35,9 +35,9 @@ from agent.stream_utils import stream_structured_llm
 
 _MODEL = "kimi-k3"
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v5"
+_COMPONENT_PROMPT_VERSION = "staged_components_v6"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v5"
-_COMPONENT_SCHEMA_VERSION = "staged_components_wire_v1"
+_COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _FINDING_TOKEN = re.compile(r"[a-zA-Z0-9_.:/-]{1,96}")
@@ -67,6 +67,11 @@ GROUP_KIND_CODES = {600 + index: value for index, value in enumerate(_GROUP_KIND
 
 class GenerationResult(TypedDict):
     wire: dict[str, Any]
+    prompt_fingerprint: str
+
+
+class ComponentClarification(TypedDict):
+    clarification_questions: list[str]
     prompt_fingerprint: str
 
 
@@ -217,6 +222,50 @@ def component_generation_schema(write_set: Mapping[str, Any]) -> dict[str, Any]:
     }
 
 
+def _component_create_response_schema(
+    candidate_schema: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["candidate", "clarification_questions"],
+        "properties": {
+            "candidate": {"anyOf": [candidate_schema, {"type": "null"}]},
+            "clarification_questions": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {"type": "string", "minLength": 1, "maxLength": 240},
+            },
+        },
+    }
+
+
+def _parse_component_response(text: str, *, component_limit: int) -> dict[str, Any]:
+    payload = _parse_json(text)
+    _require_exact_keys(payload, {"candidate", "clarification_questions"})
+    questions = payload["clarification_questions"]
+    if (
+        not isinstance(questions, list)
+        or len(questions) > 3
+        or any(
+            not isinstance(question, str) or not question.strip() or len(question) > 240
+            for question in questions
+        )
+    ):
+        raise StagedGenerationError("component_clarification_invalid")
+    if payload["candidate"] is None:
+        if not questions:
+            raise StagedGenerationError("component_clarification_invalid")
+        return {"clarification_questions": [question.strip() for question in questions]}
+    if questions:
+        raise StagedGenerationError("component_clarification_invalid")
+    return {
+        "wire": _parse_component_wire(
+            _canonical_json(payload["candidate"]), component_limit=component_limit
+        )
+    }
+
+
 def connection_generation_schema(write_set: Mapping[str, Any]) -> dict[str, Any]:
     """Return the compact connection-only schema. It cannot emit nodes."""
     limits = _write_limits(_validated_write_set(write_set))
@@ -273,7 +322,7 @@ async def generate_component_candidate(
     state: Mapping[str, Any] | None = None,
     timeout_seconds: float | None = None,
     max_output_tokens: int | None = None,
-) -> GenerationResult:
+) -> GenerationResult | ComponentClarification:
     """Generate an ID-free component candidate in one Kimi provider attempt."""
     valid_write_set = _validated_write_set(write_set)
     validated_context = _accepted_architecture_context(architecture_context)
@@ -315,7 +364,7 @@ async def generate_component_candidate(
             stage="components",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema if delta else schema,
+            schema=delta.schema if delta else _component_create_response_schema(schema),
             state=state,
             attempt=attempt,
             upstream_fingerprint=upstream_fingerprint,
@@ -323,14 +372,26 @@ async def generate_component_candidate(
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
         )
-        wire = _parse_component_wire(
-            _canonical_json(delta.assemble(response)) if delta else response,
-            component_limit=_write_limits(valid_write_set)["component_limit"],
+        component_limit = _write_limits(valid_write_set)["component_limit"]
+        parsed = (
+            {
+                "wire": _parse_component_wire(
+                    _canonical_json(delta.assemble(response)),
+                    component_limit=component_limit,
+                )
+            }
+            if delta
+            else _parse_component_response(response, component_limit=component_limit)
         )
     except StagedGenerationError as exc:
         exc.prompt_fingerprint = prompt_fingerprint
         raise
-    return {"wire": wire, "prompt_fingerprint": prompt_fingerprint}
+    if "clarification_questions" in parsed:
+        return {
+            "clarification_questions": parsed["clarification_questions"],
+            "prompt_fingerprint": prompt_fingerprint,
+        }
+    return {"wire": parsed["wire"], "prompt_fingerprint": prompt_fingerprint}
 
 
 async def generate_connection_candidate(
@@ -655,6 +716,17 @@ def _attempt_prompt(
             "turning every checklist question into a component. "
             f"Use these integer codes: {codebook}."
         )
+        if edit_delta is None:
+            instructions += (
+                " Return exactly one outcome: candidate containing the component object with "
+                "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
+                "of at most 240 characters each. Ask only when the business goal or actual "
+                "workflow is missing and cannot be recovered from the request context. "
+                "Use the request and supplied context before asking. Do not demand vendor, "
+                "budget, or implementation details when reasonable stated assumptions suffice. "
+                "For an educational diagram with an explicit subject, proceed with a candidate. "
+                "Never include both a candidate and clarification questions."
+            )
     else:
         if architecture_context is not None:
             raise StagedGenerationError("unexpected_architecture_context")

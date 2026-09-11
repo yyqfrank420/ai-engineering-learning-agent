@@ -9,6 +9,7 @@ from typing import Any
 from adapters.llm_adapter import build_telemetry
 from agent.architecture_rubric import repair_requirements
 from agent.complexity import resolve_complexity, resolve_graph_operation
+from agent.graph_identity import applied_edge_metadata
 from agent.deadlines import (
     StageAdmissionDenied,
     design_timeout_seconds as _configured_design_timeout_seconds,
@@ -2639,6 +2640,13 @@ def _validate_locked_nodes_after_normalization(
                 raise ValueError(
                     f"normalization changed locked node field: {node_id}.{field}"
                 )
+        for field in ("tier", "detail"):
+            if (field in candidate_node) != (field in node) or (
+                candidate_node.get(field) != node.get(field)
+            ):
+                raise ValueError(
+                    f"normalization changed locked node field: {node_id}.{field}"
+                )
 
 
 def _validate_locked_edges_after_normalization(
@@ -2673,6 +2681,17 @@ def _validate_locked_edges_after_normalization(
                 raise ValueError(
                     f"normalization changed locked edge field: {edge_id}.{field}"
                 )
+        if all(
+            candidate_edge.get(field) == edge.get(field)
+            for field in ("source", "target", "label")
+        ):
+            for field in ("edge_id", "relation"):
+                if (field in candidate_edge) != (field in edge) or (
+                    candidate_edge.get(field) != edge.get(field)
+                ):
+                    raise ValueError(
+                        f"normalization changed locked edge field: {edge_id}.{field}"
+                    )
 
 
 def _validate_locked_composition_after_normalization(
@@ -2940,7 +2959,12 @@ def _apply_applied_graph_patch(
         safety_max_nodes=safety_max_nodes,
         resolved_complexity=resolved_complexity,
         context="incremental_patch",
+        trusted_existing_node_ids=frozenset(
+            node["id"] for node in existing_graph.get("nodes") or []
+        )
+        & final_node_ids,
     )
+    _preserve_existing_record_metadata(existing_graph, normalised, patch)
     if repair_contract is not None:
         permissions = mutation_permissions or _repair_permissions(
             existing_graph, repair_contract
@@ -2954,6 +2978,43 @@ def _apply_applied_graph_patch(
     if _same_graph_payload(existing_graph, normalised):
         raise ValueError("graph patch produced no semantic change")
     return normalised
+
+
+def _preserve_existing_record_metadata(
+    existing_graph: GraphData, candidate: GraphData, patch: dict[str, Any]
+) -> None:
+    prior_nodes = {node["id"]: node for node in existing_graph.get("nodes") or []}
+    for node in candidate.get("nodes") or []:
+        prior = prior_nodes.get(node["id"])
+        if prior is None:
+            continue
+        # Saved presentation details are outside patch authority. Creation
+        # defaults apply only to new records, including field presence.
+        for field in ("tier", "detail"):
+            if field in prior:
+                node[field] = copy.deepcopy(prior[field])
+            else:
+                node.pop(field, None)
+    removed = set(_patch_list(patch, "remove_edges"))
+    retained = [
+        edge
+        for index, edge in enumerate(existing_graph.get("edges") or [])
+        if _patch_edge_id(index) not in removed
+    ]
+    # Patch application retains surviving base rows and appends additions.
+    for prior, edge in zip(retained, candidate.get("edges") or []):
+        if any(
+            edge.get(field) != prior.get(field)
+            for field in ("source", "target", "label")
+        ):
+            continue
+        # Creation paths historically used different slug lengths. A bounded
+        # edit must retain baseline-owned identity, including legacy metadata.
+        for field in ("edge_id", "relation"):
+            if field in prior:
+                edge[field] = copy.deepcopy(prior[field])
+            else:
+                edge.pop(field, None)
 
 
 def _same_graph_payload(left: dict[str, Any], right: dict[str, Any]) -> bool:
@@ -3430,6 +3491,7 @@ def _normalise_applied_graph_candidate(
     safety_max_nodes: int,
     resolved_complexity: str,
     context: str,
+    trusted_existing_node_ids: frozenset[str] = frozenset(),
 ) -> GraphData:
     candidate = _canonicalise_node_technologies(payload, context=context)
     candidate = _canonicalise_graph_edge_labels(candidate, context=context)
@@ -3437,6 +3499,7 @@ def _normalise_applied_graph_candidate(
         candidate,
         safety_max_nodes=safety_max_nodes,
         resolved_complexity=resolved_complexity,
+        trusted_existing_node_ids=trusted_existing_node_ids,
     )
 
 
@@ -3445,6 +3508,7 @@ def _normalise_applied_graph(
     *,
     safety_max_nodes: int,
     resolved_complexity: str,
+    trusted_existing_node_ids: frozenset[str] = frozenset(),
 ) -> GraphData:
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list):
@@ -3459,15 +3523,20 @@ def _normalise_applied_graph(
 
     nodes: list[dict[str, Any]] = []
     id_map: dict[str, str] = {}
-    used_ids: set[str] = set()
+    # Reserve retained IDs before additions so input order cannot reassign them.
+    used_ids: set[str] = set(trusted_existing_node_ids)
     for raw_node in raw_nodes:
         if not isinstance(raw_node, dict):
             raise ValueError("every graph node must be an object")
         raw_id = _required_text(raw_node.get("id"), "node id", 80)
         label = _required_text(raw_node.get("label"), "node label", 60)
-        node_id = _unique_id(_slug(raw_id) or _slug(label), used_ids)
         if raw_id in id_map:
             raise ValueError(f"duplicate node id: {raw_id}")
+        node_id = (
+            raw_id
+            if raw_id in trusted_existing_node_ids
+            else _unique_id(_slug(raw_id) or _slug(label), used_ids)
+        )
         id_map[raw_id] = node_id
         used_ids.add(node_id)
         node_type = str(raw_node.get("type") or "service").lower()
@@ -3641,8 +3710,7 @@ def _normalise_edges(
                 raw_edge.get("description"), "edge description", 220
             ),
             "flow": _normalise_flow(raw_edge),
-            "edge_id": f"applied:{source}__{_slug(label)}__{target}",
-            "relation": _slug(label),
+            **applied_edge_metadata(source, target, label),
         }
         if raw_edge.get("type") == "loop":
             edge["type"] = "loop"
