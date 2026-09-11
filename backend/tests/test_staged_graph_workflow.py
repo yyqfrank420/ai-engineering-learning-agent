@@ -835,7 +835,7 @@ async def test_connection_retry_keeps_the_accepted_component_candidate_locked(
 
 
 @pytest.mark.asyncio
-async def test_only_connection_generation_borrows_spare_workflow_time(monkeypatch):
+async def test_staged_provider_calls_receive_admitted_timeouts(monkeypatch):
     from agent import deadlines
 
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
@@ -850,8 +850,18 @@ async def test_only_connection_generation_borrows_spare_workflow_time(monkeypatc
         timeouts["connections"] = kwargs["timeout_seconds"]
         return {"wire": _connections_wire(), "prompt_fingerprint": "connection-prompt"}
 
+    async def component_gate(**kwargs):
+        timeouts["component_review"] = kwargs["timeout_seconds"]
+        return _approved_gate()
+
+    async def connection_gate(**kwargs):
+        timeouts["connection_review"] = kwargs["timeout_seconds"]
+        return _approved_gate()
+
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
     monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
 
     result = await workflow.run_staged_graph_pipeline(
         _state(terminal_deadline_s=1_000.0)
@@ -861,43 +871,154 @@ async def test_only_connection_generation_borrows_spare_workflow_time(monkeypatc
     assert timeouts == {
         "components": workflow.settings.staged_component_timeout_s,
         "connections": workflow.settings.graph_builder_max_timeout_s,
+        "component_review": workflow.settings.graph_critic_max_timeout_s,
+        "connection_review": workflow.settings.graph_critic_max_timeout_s,
     }
     assert timeouts["connections"] > workflow.settings.staged_connection_timeout_s
 
 
+@pytest.mark.asyncio
+async def test_real_staged_gates_forward_workflow_timeout_to_provider(monkeypatch):
+    from agent import deadlines
+    from agent.nodes import staged_graph_gate as gate
+    from agent.stream_utils import StructuredLLMResponse
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    _install_success_boundaries(monkeypatch)
+    provider_timeouts = []
+
+    async def provider(**kwargs):
+        provider_timeouts.append(kwargs["timeout_seconds"])
+        schema = kwargs["response_schema"]["properties"]
+        payload = {
+            "approved": True,
+            "checked_rules": schema["checked_rules"]["items"]["enum"],
+            "findings": [],
+        }
+        if "proofs" in schema:
+            payload["proofs"] = []
+        return StructuredLLMResponse(
+            text=json.dumps(payload),
+            finish_reason="end_turn",
+            input_tokens=1,
+            output_tokens=1,
+            provider="test",
+            model="test",
+        )
+
+    monkeypatch.setattr(workflow, "review_components", gate.review_components)
+    monkeypatch.setattr(workflow, "review_connections", gate.review_connections)
+    monkeypatch.setattr(gate, "stream_structured_llm", provider)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(terminal_deadline_s=2_000.0)
+    )
+    assert result["graph_publication"] == "approved"
+    assert provider_timeouts == [workflow.settings.graph_critic_max_timeout_s] * 2
+
+
+@pytest.mark.asyncio
+async def test_component_correction_uses_local_count_after_first_preview(monkeypatch):
+    from agent import deadlines
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    _install_success_boundaries(monkeypatch)
+    generation_timeouts = []
+    reviews = []
+
+    async def components(**kwargs):
+        generation_timeouts.append(kwargs["timeout_seconds"])
+        wire = _components_wire()
+        wire["components"][1]["responsibility"] += f" Revision {kwargs['attempt']}."
+        return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
+
+    async def render(state, graph, *, preview_count):
+        rendered = await _render_ok(state, graph, preview_count=preview_count)
+        return {
+            **rendered,
+            "graph_preview_deadline_s": 100.0,
+            "graph_stage_preview_count": preview_count,
+        }
+
+    async def component_gate(**kwargs):
+        reviews.append(kwargs)
+        return _rejected_gate() if len(reviews) == 1 else _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "_render", render)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            terminal_deadline_s=2_000.0,
+            graph_preview_deadline_s=1_000.0,
+        )
+    )
+    assert result["graph_publication"] == "approved"
+    assert generation_timeouts == [workflow.settings.staged_component_timeout_s] * 2
+
+
+@pytest.mark.parametrize("phase", ["components", "connections"])
+@pytest.mark.parametrize("action", ["generate", "review"])
 @pytest.mark.parametrize("denied_attempt", [0, 1])
 @pytest.mark.parametrize("has_approved_graph", [False, True])
 @pytest.mark.asyncio
-async def test_connection_deadline_denial_skips_generation_and_restores_approved_graph(
-    monkeypatch, denied_attempt, has_approved_graph
+async def test_staged_deadline_denial_skips_provider_and_restores_approved_graph(
+    monkeypatch, phase, action, denied_attempt, has_approved_graph
 ):
     from agent import deadlines
 
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
-    events = []
-    _install_success_boundaries(monkeypatch, events=events)
+    _install_success_boundaries(monkeypatch)
     approved_graph = _approved_graph() if has_approved_graph else None
     approved_contract = (
         {"maturity": "prototype", "graph_version": "approved-v1"}
         if has_approved_graph
         else None
     )
+    calls = []
+    original_timeout = workflow.staged_timeout_seconds
+    denied_position = (phase, action, denied_attempt)
 
-    async def render(state, graph, *, preview_count):
-        rendered = await _render_ok(state, graph, preview_count=preview_count)
-        if bool(graph["edges"]) == bool(denied_attempt):
-            return {**rendered, "terminal_deadline_s": 100.0}
-        return rendered
+    def timeout(state, **position):
+        if (
+            position["phase"],
+            position["action"],
+            position["attempt"],
+        ) == denied_position:
+            state = {**state, "terminal_deadline_s": 100.0}
+        return original_timeout(state, **position)
 
-    async def reject_connection(**_kwargs):
-        events.append("connection_gate")
+    async def components(**kwargs):
+        attempt = kwargs["attempt"]
+        calls.append(("components", "generate", attempt))
+        wire = _components_wire()
+        wire["components"][1]["responsibility"] += f" Revision {attempt}."
+        return {"wire": wire, "prompt_fingerprint": f"component-{attempt}"}
+
+    async def connections(**kwargs):
+        attempt = kwargs["attempt"]
+        calls.append(("connections", "generate", attempt))
+        wire = _connections_wire()
+        wire["edges"][0]["label"] += f" revision {attempt}"
+        return {"wire": wire, "prompt_fingerprint": f"connection-{attempt}"}
+
+    async def component_gate(**kwargs):
+        attempt = kwargs["telemetry_context"]["staged_attempt"] - 1
+        calls.append(("components", "review", attempt))
+        return _rejected_gate() if phase == "components" else _approved_gate()
+
+    async def connection_gate(**kwargs):
+        attempt = kwargs["telemetry_context"]["staged_attempt"] - 1
+        calls.append(("connections", "review", attempt))
         return _rejected_gate()
 
-    monkeypatch.setattr(workflow, "_render", render)
-    monkeypatch.setattr(workflow, "review_connections", reject_connection)
+    monkeypatch.setattr(workflow, "staged_timeout_seconds", timeout)
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
     result = await workflow.run_staged_graph_pipeline(
         _state(
-            terminal_deadline_s=1_000.0,
+            terminal_deadline_s=2_000.0,
             approved_graph_data=approved_graph,
             approved_graph_contract=approved_contract,
             graph_data=approved_graph,
@@ -905,12 +1026,16 @@ async def test_connection_deadline_denial_skips_generation_and_restores_approved
         )
     )
 
-    assert events.count("components") == 1
-    assert events.count("component_gate") == 1
-    assert events.count("connections") == denied_attempt
-    assert events.count("connection_gate") == denied_attempt
-    assert result["graph_operation"]["failure_code"] == (
-        "staged_connection_deadline_admission_denied"
+    assert denied_position not in calls
+    assert not any(call[0] == phase and call[2] > denied_attempt for call in calls)
+    if phase == "components":
+        assert not any(call[0] == "connections" for call in calls)
+    if denied_attempt:
+        assert (phase, "review", 0) in calls
+    singular = "component" if phase == "components" else "connection"
+    assert (
+        result["graph_operation"]["failure_code"]
+        == f"staged_{singular}_deadline_admission_denied"
     )
     assert result["graph_review"]["terminal"] is True
     assert result["graph_changed"] is False
@@ -1568,6 +1693,68 @@ async def test_selected_maturity_does_not_authorize_graph_replacement(
     assert result["graph_publication"] == "preserved"
     assert result["graph_data"] == previous_graph
     assert result["graph_contract"] == previous_contract
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_monitoring_expansion_preserves_graph_and_requests_exact_target(
+    monkeypatch,
+):
+    graph = _accepted_staged_graph()
+    graph["nodes"][0]["label"] = "Monitoring Collector"
+    graph["nodes"][1]["label"] = "Monitoring Dashboard"
+    query = (
+        "Expand the monitoring component while preserving the original graph topic "
+        "and existing components. Add exactly one directly connected responsibility."
+    )
+
+    async def unexpected_generation(**_kwargs):
+        pytest.fail("Ambiguous edit must fail before provider generation")
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", unexpected_generation)
+    monkeypatch.setattr(
+        workflow, "generate_connection_candidate", unexpected_generation
+    )
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message=query,
+            design_query=query,
+            graph_data=graph,
+            approved_graph_data=graph,
+        )
+    )
+
+    assert result["graph_operation"]["failure_code"] == "staged_edit_scope_ambiguous"
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_data"] == graph
+    assert result["graph_review"]["revision_instruction"] == (
+        "Identify the component or connection by its exact label or ID, then repeat the edit."
+    )
+
+
+@pytest.mark.parametrize(
+    "target,expected_id",
+    [
+        ("Monitoring Collector", "n1"),
+        ("Monitoring Dashboard", "n2"),
+        ("n1", "n1"),
+        ("n2", "n2"),
+    ],
+)
+def test_monitoring_expansion_exact_label_or_id_selects_one_authorized_anchor(
+    target, expected_id
+):
+    graph = _accepted_staged_graph()
+    graph["nodes"][0]["label"] = "Monitoring Collector"
+    graph["nodes"][1]["label"] = "Monitoring Dashboard"
+
+    _, permissions = workflow.staged_edit_scope(
+        f"Expand {target}.", graph, resolved_complexity="prototype"
+    )
+
+    assert permissions["added_edge_anchor_node_ids"] == [expected_id]
+    assert permissions["allowed_new_node_count"] == 1
+    assert permissions["allowed_new_edge_count"] == 1
 
 
 @pytest.mark.parametrize(

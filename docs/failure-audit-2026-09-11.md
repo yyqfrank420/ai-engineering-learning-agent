@@ -384,6 +384,94 @@ checks offline. The largest was 48,697 characters against an 80,000-character li
 Captured answer, book, and research text was preserved. This rules out packet
 truncation as the cause of these failures.
 
+### Follow-up staging evidence
+
+Full run `34656915601` evaluates commit
+`f1e1a7421e46a29fedb022da73c5d7ab70948974`. Its deployed revision
+`agent-backend-staging-00375-sev` uses the staged pipeline and verified concurrency
+of 16. A connection generation completed in 150.96 seconds, beyond the former
+130-second cutoff. The RAG case corrected its initial scope, passed both gates,
+and completed an answer with an approved eight-component graph.
+
+The ambiguity and marketing traces then exposed the next deadline boundary:
+connection reviews stopped at 54.93 seconds with incomplete usage and no final
+output. The deployed reviewer uses a fixed 55-second timeout. Both graphs were
+withheld; the failed-create response path still returned useful answers and
+clarification. A shared staged deadline calculation now covers generation and
+review in both phases, retaining baseline time for future attempts, synthesis,
+and persistence. The first component preview keeps its own deadline.
+
+The document-processing connection call completed in 198.90 seconds. Its exact
+30-component, 95-edge candidate passed wire parsing and primary-flow reachability.
+An offline Chromium replay and the actual backend render gate then rejected it:
+only seven of eight required overview labels were visible. The missing label was
+"ingestion receipt with source key". The renderer's fixed nearby search grid
+missed a free position beside the node cards by 1.78 pixels. Free space existed;
+the search did not cover it. The placement repair keeps successful nearby
+positions and searches obstacle boundary coordinates only when the first search
+fails. Required labels remain mandatory in the render gate.
+
+The cold-chain candidate exposed a separate phase-ownership error. Component
+generation selected the AI triage service as root even though sensor intake,
+normalization, detection, and queueing were marked as upstream primary members.
+Both connection attempts completed, taking 189.44 and 184.93 seconds, then failed
+the same primary-flow reachability rule. The parser and projector agreed. Root
+semantics were described only by the connection-stage logical-flow criterion,
+after the component root and membership had been locked. The component-owned
+objective criterion and creation prompt now define the initiating primary actor
+and distinguish independent inputs from the primary path. Scoped edits retain
+their existing root authority.
+
+The expansion follow-up failed before any provider call because "the monitoring
+component" matched both Monitoring Collector and Monitoring Dashboard. Exact
+label controls each compiled a valid one-node, one-edge addition. The evaluator
+accepted a connection to any monitoring node, while the product required one
+identified target. The corpus now requests a component named Serving Monitor in
+the first turn and explicitly expands that component in the second. Preservation,
+addition count, and direct-connection checks remain mandatory. Ambiguous product
+edits retain the approved graph and tell the user to repeat the edit with an exact
+label or ID.
+
+The completed run passed 15 of 20 browser cases. Semantic proposals contain 12
+passes, three manual-review cases, and five failures. Application telemetry records
+79 of 150 permitted provider attempts; three cancelled reviews lack complete usage.
+The known application subtotal is $2.658481, not a complete run cost. Fifteen judge
+calls cost $0.636020. All artifacts were downloaded with 90-day retention verified.
+The manual-review proposals flag extra material in the RAG answer, a missed
+one-paragraph constraint in the memory case, and disagreement about clarification
+on the underspecified operations request. These are not clean semantic passes.
+The judge and human labels were not changed to convert them into passes.
+
+An independent deadline audit found no shorter wrapper around staged reviews.
+The allocated timeout includes provider queue waiting; SDK and adapter retries
+are disabled for these calls. The backend uses the same absolute deadline as the
+budget calculation. Browser and Cloud Run deadlines are longer. Tests cover all
+eight generation/review positions and admission failure before provider calls.
+
+The ambiguity candidate also invented an IT operations domain in its assumptions.
+Generation and review now distinguish implementation assumptions from missing user
+goals. Retrieved examples cannot choose the user's business domain or workflow.
+Clarification can replace correction of a candidate built around an invented goal.
+
+An offline retrieval experiment used the cached embedding model and all twenty
+first-turn corpus queries. Removing the literal book title improved this RAG
+query's ranking, but lost the subject of an explicit question about the book.
+Filtering frontmatter promoted irrelevant backmatter in that negative control.
+Neither blanket change was adopted. The application still passes the full design
+request to retrieval; there is no earlier subject-query model output being ignored.
+
+PostHog's trace error count remained zero for the cancelled reviews. It cannot
+establish successful graph publication. The captured graph operation and browser
+result remain necessary evidence. Connector-rendered trace inputs can also contain
+10,000-character truncation markers; those files are not complete raw prompts.
+
+Five `/api/analytics/capture` requests received application rate-limit responses
+under the shared evaluation account. These were not Cloud Run capacity failures.
+The client drops failed mirrors, so product dashboard counts can undercount these
+events. Chat state, graph publication, and server-side LLM usage accounting have
+separate writers and were unaffected. Access logs do not identify the five event
+payloads. The analytics delivery limitation remains outside this graph repair.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.
@@ -412,6 +500,13 @@ Commit `5d08d336afe0be327fbc140eeb216d10119ec3d9` passed all eleven groups with
 That check includes capacity, deadline, and subject-boundary changes. The next
 batched identity, clarification, recovery, and label-placement changes require a
 separate complete validation and live capture.
+
+Commit `f1e1a7421e46a29fedb022da73c5d7ab70948974` passed all eleven local and
+cloud groups: 1,993 backend tests at 91% coverage, 246 frontend tests, and 237
+policy tests. All 362 committed file contents matched the unchanged local test
+snapshot. Eight saved Chromium renders had no sampled edge/card intersections,
+node overlap, clipping, or visible label collisions. The shared deadline and
+clarification refinements require their own validation after this commit.
 
 Existing optional ingestion tests remain skipped without the source PDF or model
 opt-in. Dependency deprecation warnings, the local Node storage warning, and two

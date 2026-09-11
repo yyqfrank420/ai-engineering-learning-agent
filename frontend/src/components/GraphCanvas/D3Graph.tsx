@@ -22,6 +22,7 @@ import {
   H_PAD,
   INITIAL_FIT_PADDING,
   initialFitScale,
+  labelAxisCandidates,
   MIN_COL_W,
   MIN_PUBLISHED_TITLE_PX,
   NODE_H,
@@ -1566,9 +1567,7 @@ export function D3Graph({
           Math.hypot(left.x - centerX, left.y - centerY)
           - Math.hypot(right.x - centerX, right.y - centerY)
         ));
-        let placement: { x: number; y: number } | undefined;
-
-        for (const candidatePosition of boundedCandidates) {
+        const canPlace = (candidatePosition: { x: number; y: number }): boolean => {
           const candidate = {
             x: candidatePosition.x - labelWidth / 2,
             y: candidatePosition.y - labelHeight / 2,
@@ -1580,12 +1579,26 @@ export function D3Graph({
             || candidate.y + candidate.height > layoutH
             || occupiedBoxes.some((box) => boxesIntersect(candidate, box))
             || placedLabels.some((box) => boxesIntersect(candidate, box));
-          if (!collides) {
-            if (overviewEdgeLabelOpacity({ flow: d.flow, type: d.edgeType }, d.overviewRequired) > 0) {
-              placedLabels.push(candidate);
+          return !collides;
+        };
+        let placement = boundedCandidates.find(canPlace);
+        if (!placement && d.overviewRequired) {
+          // A fixed sampling grid can miss free space beside an obstacle.
+          // Search its boundaries only after the nearby positions fail.
+          const obstacles = [...occupiedBoxes, ...placedLabels];
+          const xs = labelAxisCandidates(centerX, layoutW, labelWidth,
+            obstacles.map(box => ({ start: box.x, end: box.x + box.width })));
+          const ys = labelAxisCandidates(centerY, layoutH, labelHeight,
+            obstacles.map(box => ({ start: box.y, end: box.y + box.height })));
+          let nearestDistance = Infinity;
+          for (const x of xs) {
+            for (const y of ys) {
+              const distance = (x - centerX) ** 2 + (y - centerY) ** 2;
+              if (distance < nearestDistance && canPlace({ x, y })) {
+                placement = { x, y };
+                nearestDistance = distance;
+              }
             }
-            placement = candidatePosition;
-            break;
           }
         }
 
@@ -1594,6 +1607,12 @@ export function D3Graph({
         if (!placement) {
           grp.attr('display', 'none');
           continue;
+        }
+        if (overviewEdgeLabelOpacity({ flow: d.flow, type: d.edgeType }, d.overviewRequired) > 0) {
+          placedLabels.push({
+            x: placement.x - labelWidth / 2, y: placement.y - labelHeight / 2,
+            width: labelWidth, height: labelHeight,
+          });
         }
         grp.attr(
           'transform',

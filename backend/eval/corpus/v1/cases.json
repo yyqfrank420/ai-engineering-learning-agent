@@ -328,7 +328,7 @@
       "provenance": "Seeded from graph expansion behavior.",
       "steps": [
         {
-          "prompt": "Design a production model-serving stack with a monitoring component.",
+          "prompt": "Design a production model-serving stack with a monitoring component named Serving Monitor.",
           "ui": {
             "complexity": "prototype",
             "graph_mode": "on",
@@ -337,7 +337,7 @@
           "graph_output_max_latency_ms": 180000
         },
         {
-          "prompt": "Expand the monitoring component while preserving the original graph topic and existing components. Add exactly one directly connected responsibility.",
+          "prompt": "Expand the Serving Monitor component while preserving the original graph topic and existing components. Add exactly one directly connected responsibility.",
           "ui": {
             "complexity": "auto",
             "graph_mode": "on",
@@ -348,7 +348,7 @@
             "preserve_prior_graph": true,
             "added_node_count": 1,
             "new_node_directly_connected_to_prior_graph": true,
-            "new_node_connected_to_prior_label_contains": "monitor"
+            "new_node_connected_to_prior_label_contains": "serving monitor"
           }
         }
       ],

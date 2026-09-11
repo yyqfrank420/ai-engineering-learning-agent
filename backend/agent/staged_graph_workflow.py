@@ -13,7 +13,7 @@ from analytics.events import enqueue_analytics_event
 from agent.architecture_playbook import format_evidence_bundle
 from agent.architecture_rubric import MAX_REVIEW_REASON_CHARS
 from agent.complexity import resolve_complexity
-from agent.deadlines import StageAdmissionDenied, staged_connection_timeout_seconds
+from agent.deadlines import StageAdmissionDenied, staged_timeout_seconds
 from agent.nodes.graph_critic import graph_render_gate_node
 from agent.nodes.graph_worker import (
     _attach_graph_version,
@@ -946,7 +946,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
         except ValueError:
             if not _EXPLICIT_GRAPH_REBUILD.search(raw_request):
-                return await _failed(state, "staged_edit_scope_ambiguous")
+                return await _failed(
+                    state,
+                    "staged_edit_scope_ambiguous",
+                    revision_instruction=(
+                        "Identify the component or connection by its exact label or ID, "
+                        "then repeat the edit."
+                    ),
+                )
         if permissions is not None and maturity_changed:
             return await _failed(
                 state,
@@ -1022,7 +1029,12 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 edit_permissions=permissions,
                 rejected_candidate=rejected_component_candidate,
                 state=state,
-                timeout_seconds=settings.staged_component_timeout_s,
+                timeout_seconds=staged_timeout_seconds(
+                    {**working_state, "graph_stage_preview_count": preview_count},
+                    phase="components",
+                    action="generate",
+                    attempt=attempt,
+                ),
             )
             if "clarification_questions" in generated:
                 if permissions is not None:
@@ -1183,6 +1195,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 resolved_maturity=maturity,
                 candidate_records=reviewed_component_records,
                 telemetry_context={**state, "staged_attempt": attempt + 1},
+                timeout_seconds=staged_timeout_seconds(
+                    rendered, phase="components", action="review", attempt=attempt
+                ),
             )
             if component_gate["approved"]:
                 component_build = assigned
@@ -1224,6 +1239,10 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 )
             else:
                 working_state = rendered
+        except StageAdmissionDenied:
+            return await _failed(
+                working_state, "staged_component_deadline_admission_denied"
+            )
         except (GraphContractError, StagedGenerationError, ValueError) as exc:
             if attempt + 1 >= STAGED_COMPONENT_GENERATION_CALLS:
                 return await _failed(
@@ -1318,8 +1337,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 edit_permissions=permissions,
                 rejected_candidate=rejected_connection_candidate,
                 state=state,
-                timeout_seconds=staged_connection_timeout_seconds(
-                    working_state, attempt=attempt
+                timeout_seconds=staged_timeout_seconds(
+                    working_state,
+                    phase="connections",
+                    action="generate",
+                    attempt=attempt,
                 ),
             )
             rejected_connection_candidate = copy.deepcopy(generated["wire"])
@@ -1422,6 +1444,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     candidate_build["capabilities"], maturity=maturity
                 ),
                 telemetry_context={**state, "staged_attempt": attempt + 1},
+                timeout_seconds=staged_timeout_seconds(
+                    rendered, phase="connections", action="review", attempt=attempt
+                ),
             )
             if connection_gate["approved"]:
                 graph_contract = _contract(

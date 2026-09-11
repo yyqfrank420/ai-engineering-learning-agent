@@ -4,6 +4,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vites
 import type { GraphData, GraphEdge, GraphNode } from '../../types';
 import { D3Graph } from './D3Graph';
 import { modelServingPaidCandidate } from './__fixtures__/modelServingPaidCandidate';
+import documentProcessingPaidCandidate from './__fixtures__/documentProcessingPaidCandidate.json';
 import {
   BOTTOM_NODE_GAP,
   MAX_PUBLISHED_GRAPH_NODES,
@@ -281,6 +282,53 @@ function segmentIntersectsNode(
 }
 
 describe('dense production graph rendering', () => {
+  it('places every required label in the captured 30-node document-processing graph', () => {
+    viewport = PUBLICATION_VIEWPORT;
+    const measuredText = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox')
+      .mockImplementation(function(this: SVGElement) {
+        const width = this.textContent === 'ingestion receipt with …'
+          ? 112.8125
+          : (this.textContent?.length ?? 0) * 4.2;
+        return { x: -width / 2, y: -6.421875, width, height: 11 } as DOMRect;
+      });
+    try {
+      const graph = documentProcessingPaidCandidate as unknown as GraphData;
+      expect(graph.nodes).toHaveLength(30);
+      expect(graph.edges).toHaveLength(95);
+      const { container } = render(
+        <D3Graph graphData={graph} minimumTitlePx={11} currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined} />,
+      );
+      const labels = Array.from(container.querySelectorAll<SVGGElement>('g.edge-label[data-overview-required="true"]'));
+      expect(labels).toHaveLength(8);
+      expect(labels.some(label => label.textContent === 'ingestion receipt with …')).toBe(true);
+      const view = parseTransform(container.querySelector('svg > g')!.getAttribute('transform'));
+      const occupied = Array.from(container.querySelectorAll<SVGGElement>('g.node')).map(element => {
+        const point = parsePosition(element.getAttribute('transform'));
+        return { x: point.x - NODE_W / 2 - 14, y: point.y - NODE_H / 2 - 14, width: NODE_W + 28, height: NODE_H + 28 };
+      });
+      for (const label of labels) {
+        expect(label.getAttribute('display'), label.textContent ?? '').not.toBe('none');
+        const point = parsePosition(label.getAttribute('transform'));
+        const rect = label.querySelector('rect')!;
+        const bounds = {
+          x: point.x + Number(rect.getAttribute('x')), y: point.y + Number(rect.getAttribute('y')),
+          width: Number(rect.getAttribute('width')), height: Number(rect.getAttribute('height')),
+        };
+        expect(view.x + bounds.x * view.scale).toBeGreaterThanOrEqual(0);
+        expect(view.y + bounds.y * view.scale).toBeGreaterThanOrEqual(0);
+        expect(view.x + (bounds.x + bounds.width) * view.scale).toBeLessThanOrEqual(viewport.width);
+        expect(view.y + (bounds.y + bounds.height) * view.scale).toBeLessThanOrEqual(viewport.height);
+        for (const other of occupied) {
+          expect(bounds.x + bounds.width < other.x || other.x + other.width < bounds.x
+            || bounds.y + bounds.height < other.y || other.y + other.height < bounds.y).toBe(true);
+        }
+        occupied.push(bounds);
+      }
+    } finally {
+      measuredText.mockRestore();
+    }
+  });
+
   it('keeps the captured RAG overview labels and entry badges clear of cards', () => {
     viewport = { width: 724, height: 814 };
     const measuredText = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox')

@@ -605,58 +605,167 @@ def test_patch_admission_uses_available_time_after_following_reserve():
     assert max_timeout_s == settings.graph_builder_max_timeout_s
 
 
-@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.parametrize(
+    "phase,action,attempt,reserved_s",
+    [
+        ("components", "generate", 0, 763.0),
+        ("components", "review", 0, 693.0),
+        ("components", "generate", 1, 563.0),
+        ("components", "review", 1, 493.0),
+        ("connections", "generate", 0, 363.0),
+        ("connections", "review", 0, 293.0),
+        ("connections", "generate", 1, 163.0),
+        ("connections", "review", 1, 93.0),
+    ],
+)
 @pytest.mark.parametrize("available_s", [10.0, 180.0, 300.0])
-def test_staged_connections_borrow_time_while_reserving_the_remaining_path(
-    monkeypatch, attempt, available_s
+def test_staged_timeout_preserves_every_remaining_baseline_stage(
+    monkeypatch, phase, action, attempt, reserved_s, available_s
 ):
     from agent import deadlines
-    from config import STAGED_CONNECTION_GENERATION_CALLS, settings
+    from config import settings
 
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
-    remaining_attempts = STAGED_CONNECTION_GENERATION_CALLS - attempt - 1
-    render_and_gate_s = (
-        settings.diagram_evaluation_timeout_s + settings.staged_gate_timeout_s
+    timeout_s = deadlines.staged_timeout_seconds(
+        {"terminal_deadline_s": 100.0 + reserved_s + available_s},
+        phase=phase,
+        action=action,
+        attempt=attempt,
     )
-    reserved_s = (
-        (remaining_attempts + 1) * render_and_gate_s
-        + remaining_attempts * settings.staged_connection_timeout_s
-        + settings.graph_synthesis_timeout_s
-        + settings.graph_finalization_reserve_s
-        + settings.agent_orchestration_reserve_s
+    cap = (
+        settings.graph_critic_max_timeout_s
+        if action == "review"
+        else (
+            settings.staged_component_timeout_s
+            if phase == "components"
+            else settings.graph_builder_max_timeout_s
+        )
     )
-
-    timeout_s = deadlines.staged_connection_timeout_seconds(
-        {"terminal_deadline_s": 100.0 + reserved_s + available_s}, attempt=attempt
-    )
-
-    assert timeout_s == min(settings.graph_builder_max_timeout_s, available_s)
-    assert timeout_s <= available_s
-    if available_s == 180.0:
-        assert timeout_s > settings.staged_connection_timeout_s
-
+    assert timeout_s == min(cap, available_s)
     with pytest.raises(deadlines.StageAdmissionDenied):
-        deadlines.staged_connection_timeout_seconds(
-            {"terminal_deadline_s": 100.0 + reserved_s}, attempt=attempt
+        deadlines.staged_timeout_seconds(
+            {"terminal_deadline_s": 100.0 + reserved_s},
+            phase=phase,
+            action=action,
+            attempt=attempt,
         )
 
 
+@pytest.mark.parametrize("phase", ["components", "connections"])
+@pytest.mark.parametrize("action", ["generate", "review"])
 @pytest.mark.parametrize("attempt", [0, 1])
-def test_staged_connections_without_workflow_deadline_keep_baseline_timeout(attempt):
-    from agent.deadlines import staged_connection_timeout_seconds
+def test_staged_timeout_without_workflow_deadline_keeps_baseline(
+    phase, action, attempt
+):
+    from agent.deadlines import staged_timeout_seconds
     from config import settings
 
-    assert staged_connection_timeout_seconds({}, attempt=attempt) == (
-        settings.staged_connection_timeout_s
+    baseline = (
+        settings.staged_gate_timeout_s
+        if action == "review"
+        else (
+            settings.staged_component_timeout_s
+            if phase == "components"
+            else settings.staged_connection_timeout_s
+        )
+    )
+    assert (
+        staged_timeout_seconds({}, phase=phase, action=action, attempt=attempt)
+        == baseline
     )
 
 
-@pytest.mark.parametrize("attempt", [-1, 2, True, 0.5, None])
-def test_staged_connection_timeout_rejects_invalid_attempt(attempt):
-    from agent.deadlines import staged_connection_timeout_seconds
+@pytest.mark.parametrize(
+    "phase,action,attempt",
+    [("unknown", "generate", 0), ("components", "unknown", 0)]
+    + [("components", "generate", value) for value in [-1, 2, True, 0.5, None]],
+)
+def test_staged_timeout_rejects_invalid_schedule_position(phase, action, attempt):
+    from agent.deadlines import staged_timeout_seconds
 
-    with pytest.raises(ValueError, match="attempt"):
-        staged_connection_timeout_seconds({}, attempt=attempt)
+    with pytest.raises(ValueError):
+        staged_timeout_seconds({}, phase=phase, action=action, attempt=attempt)
+
+
+@pytest.mark.parametrize("attempt", [0, 1])
+def test_staged_component_generation_honors_preview_deadline_until_preview_exists(
+    monkeypatch, attempt
+):
+    from agent import deadlines
+    from config import settings
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    state = {"terminal_deadline_s": 2_000.0, "graph_preview_deadline_s": 140.0}
+    assert (
+        deadlines.staged_timeout_seconds(
+            state,
+            phase="components",
+            action="generate",
+            attempt=attempt,
+        )
+        == 10.0
+    )
+    with pytest.raises(deadlines.StageAdmissionDenied, match="visible preview"):
+        deadlines.staged_timeout_seconds(
+            {**state, "graph_preview_deadline_s": 130.0},
+            phase="components",
+            action="generate",
+            attempt=attempt,
+        )
+    assert (
+        deadlines.staged_timeout_seconds(
+            {**state, "graph_stage_preview_count": 1},
+            phase="components",
+            action="generate",
+            attempt=attempt,
+        )
+        == settings.staged_component_timeout_s
+    )
+    assert (
+        deadlines.staged_timeout_seconds(
+            state,
+            phase="components",
+            action="review",
+            attempt=attempt,
+        )
+        == settings.graph_critic_max_timeout_s
+    )
+
+
+def test_staged_borrowing_leaves_a_complete_correction_path(monkeypatch):
+    from agent import deadlines
+    from config import settings
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
+    state = {"terminal_deadline_s": 1_010.0}
+    observed = []
+    for phase in ("components", "connections"):
+        for attempt in (0, 1):
+            generate_s = deadlines.staged_timeout_seconds(
+                state,
+                phase=phase,
+                action="generate",
+                attempt=attempt,
+            )
+            observed.append(generate_s)
+            clock["now"] += generate_s + settings.diagram_evaluation_timeout_s
+            review_s = deadlines.staged_timeout_seconds(
+                state,
+                phase=phase,
+                action="review",
+                attempt=attempt,
+            )
+            observed.append(review_s)
+            clock["now"] += review_s
+    assert observed == [130.0, 72.0, 130.0, 55.0, 130.0, 55.0, 130.0, 55.0]
+    assert (
+        deadlines.synthesis_timeout_seconds(state) == settings.graph_synthesis_timeout_s
+    )
+    clock["now"] += settings.graph_synthesis_timeout_s
+    assert state["terminal_deadline_s"] - clock["now"] == (
+        settings.graph_finalization_reserve_s + settings.agent_orchestration_reserve_s
+    )
 
 
 def test_initial_design_uses_the_visible_preview_deadline(monkeypatch):

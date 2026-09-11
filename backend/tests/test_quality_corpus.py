@@ -119,10 +119,10 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         for other in corpus.cases
     )
     assert first_turn.prompt == (
-        "Design a production model-serving stack with a monitoring component."
+        "Design a production model-serving stack with a monitoring component named Serving Monitor."
     )
     assert second_turn.prompt == (
-        "Expand the monitoring component while preserving the original graph topic "
+        "Expand the Serving Monitor component while preserving the original graph topic "
         "and existing components. Add exactly one directly connected responsibility."
     )
     assert first_turn.ui.complexity == "prototype"
@@ -134,7 +134,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     assert second_turn.graph_expansion.added_node_count == 1
     assert (
         second_turn.graph_expansion.new_node_connected_to_prior_label_contains
-        == "monitor"
+        == "serving monitor"
     )
     stored_maturity = resolve_complexity(
         first_turn.ui.complexity,
@@ -145,7 +145,10 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     contract, permissions = graph_worker._user_edit_scope(
         second_turn.prompt,
         {
-            "nodes": [{"id": "monitoring", "label": "Monitoring"}],
+            "nodes": [
+                {"id": "monitoring", "label": "Serving Monitor"},
+                {"id": "dashboard", "label": "Monitoring Dashboard"},
+            ],
             "edges": [],
             "groups": [],
             "sequence": [],
@@ -1260,7 +1263,7 @@ async def test_required_graph_turn_accepts_graph_data_at_its_latency_limit(monke
                     "data": {
                         "version": f"graph-v{step_index + 1}",
                         "nodes": [
-                            {"id": "existing", "label": "Monitoring"},
+                            {"id": "existing", "label": "Serving Monitor"},
                             *([{"id": "added"}] if step_index == 1 else []),
                         ],
                         "edges": (

@@ -5,11 +5,12 @@ from __future__ import annotations
 import inspect
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 from config import (
     GRAPH_MAX_CONTRACT_CORRECTIONS,
     GRAPH_MAX_REPAIR_ROUNDS,
+    STAGED_COMPONENT_GENERATION_CALLS,
     STAGED_CONNECTION_GENERATION_CALLS,
     settings,
 )
@@ -107,32 +108,87 @@ def design_timeout_seconds(state: dict[str, Any]) -> float:
     )
 
 
-def staged_connection_timeout_seconds(state: dict[str, Any], *, attempt: int) -> float:
+def staged_timeout_seconds(
+    state: dict[str, Any],
+    *,
+    phase: Literal["components", "connections"],
+    action: Literal["generate", "review"],
+    attempt: int,
+) -> float:
+    if phase not in {"components", "connections"}:
+        raise ValueError("phase must be components or connections")
+    if action not in {"generate", "review"}:
+        raise ValueError("action must be generate or review")
+    component_phase = phase == "components"
+    generation_calls = (
+        STAGED_COMPONENT_GENERATION_CALLS
+        if component_phase
+        else STAGED_CONNECTION_GENERATION_CALLS
+    )
     if (
         not isinstance(attempt, int)
         or isinstance(attempt, bool)
-        or not 0 <= attempt < STAGED_CONNECTION_GENERATION_CALLS
+        or not 0 <= attempt < generation_calls
     ):
-        raise ValueError(
-            "attempt must identify a configured connection generation call"
-        )
-    remaining_attempts = STAGED_CONNECTION_GENERATION_CALLS - attempt - 1
+        raise ValueError("attempt must identify a configured generation call")
+    generation_s = (
+        settings.staged_component_timeout_s
+        if component_phase
+        else settings.staged_connection_timeout_s
+    )
+    remaining_attempts = generation_calls - attempt - 1
     review_reserve_s = (
         settings.diagram_evaluation_timeout_s + settings.staged_gate_timeout_s
     )
     downstream_reserve_s = (
-        review_reserve_s
-        + remaining_attempts * (settings.staged_connection_timeout_s + review_reserve_s)
+        (review_reserve_s if action == "generate" else 0)
+        + remaining_attempts * (generation_s + review_reserve_s)
+        + (
+            STAGED_CONNECTION_GENERATION_CALLS
+            * (settings.staged_connection_timeout_s + review_reserve_s)
+            if component_phase
+            else 0
+        )
         + settings.graph_synthesis_timeout_s
         + settings.graph_finalization_reserve_s
     )
-    return _stage_timeout(
-        state,
-        max_s=settings.graph_builder_max_timeout_s,
-        downstream_reserve_s=downstream_reserve_s,
-        stage="staged connection generation",
-        standalone_s=settings.staged_connection_timeout_s,
+    generation_max_s = (
+        settings.staged_component_timeout_s
+        if component_phase
+        else settings.graph_builder_max_timeout_s
     )
+    timeout_s = _stage_timeout(
+        state,
+        max_s=(
+            generation_max_s
+            if action == "generate"
+            else settings.graph_critic_max_timeout_s
+        ),
+        downstream_reserve_s=downstream_reserve_s,
+        stage=f"staged {phase} {action}",
+        standalone_s=(
+            generation_s if action == "generate" else settings.staged_gate_timeout_s
+        ),
+    )
+    preview_deadline = state.get("graph_preview_deadline_s")
+    if (
+        component_phase
+        and action == "generate"
+        and state.get("graph_stage_preview_count", 0) == 0
+        and isinstance(preview_deadline, (int, float))
+    ):
+        available = (
+            float(preview_deadline)
+            - time.monotonic()
+            - settings.diagram_evaluation_timeout_s
+            - settings.graph_preview_finalization_reserve_s
+        )
+        if available <= 0:
+            raise StageAdmissionDenied(
+                "staged component generation cannot preserve the visible preview deadline"
+            )
+        return min(timeout_s, available)
+    return timeout_s
 
 
 def critic_timeout_seconds(state: dict[str, Any]) -> float:
