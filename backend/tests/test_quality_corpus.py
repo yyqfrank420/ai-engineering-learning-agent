@@ -17,6 +17,7 @@ from eval.runtime_budget import (
     browser_infrastructure_retry_count,
     browser_suite_timeout_seconds,
     semantic_suite_timeout_seconds,
+    staging_request_concurrency,
 )
 
 
@@ -196,12 +197,63 @@ def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
     )
     assert browser_suite_timeout_seconds(corpus.cases * 10) == 3600
     assert browser_case_concurrency() == 4
+    assert staging_request_concurrency() == 16
     assert browser_graph_case_concurrency() == 2
     assert browser_infrastructure_retry_count() == 0
     assert application_turn_timeout_seconds() == 970
     assert semantic_suite_timeout_seconds("pr") == 1200
     assert semantic_suite_timeout_seconds("diagnostic") == 1200
     assert semantic_suite_timeout_seconds("full") == 3600
+
+
+@pytest.mark.parametrize(
+    ("request_concurrency", "case_concurrency", "valid"),
+    [
+        (16, 4, True),
+        (8, 4, True),
+        (24, 10, True),
+        (7, 4, False),
+        (16, 9, False),
+        (0, 4, False),
+        (-1, 4, False),
+        (True, 4, False),
+        (16.0, 4, False),
+        ("16", 4, False),
+        (None, 4, False),
+    ],
+)
+def test_staging_capacity_reserves_http_headroom(
+    tmp_path, monkeypatch, request_concurrency, case_concurrency, valid
+):
+    from eval import runtime_budget
+
+    manifest = json.loads(runtime_budget.QUALITY_MANIFEST.read_text())
+    manifest["live"]["budgets"]["staging_request_concurrency"] = request_concurrency
+    manifest["live"]["budgets"]["browser_case_concurrency"] = case_concurrency
+    path = tmp_path / "quality.json"
+    path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(runtime_budget, "QUALITY_MANIFEST", path)
+
+    if valid:
+        assert staging_request_concurrency() == request_concurrency
+    else:
+        with pytest.raises(ValueError):
+            staging_request_concurrency()
+        with pytest.raises(ValueError):
+            browser_case_concurrency()
+
+
+def test_staging_capacity_is_required_in_the_versioned_manifest(tmp_path, monkeypatch):
+    from eval import runtime_budget
+
+    manifest = json.loads(runtime_budget.QUALITY_MANIFEST.read_text())
+    del manifest["live"]["budgets"]["staging_request_concurrency"]
+    path = tmp_path / "quality.json"
+    path.write_text(json.dumps(manifest))
+    monkeypatch.setattr(runtime_budget, "QUALITY_MANIFEST", path)
+
+    with pytest.raises(ValueError, match="at least twice browser case concurrency"):
+        staging_request_concurrency()
 
 
 @pytest.mark.asyncio

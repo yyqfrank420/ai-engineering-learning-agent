@@ -261,6 +261,66 @@ earlier turn graphs. It now includes complete per-turn evidence and a digest/lin
 for the exact raw capture. Untrusted text remains escaped. This produces reviewable
 evidence; it does not supply human grades.
 
+The full run exposed a capacity regression before semantic evaluation. Staging
+allowed four concurrent HTTP requests on one instance, while the browser runner
+allowed four simultaneous cases. Four open WebSockets consumed every request
+slot. Cloud Run logged fourteen capacity-related HTTP 429 responses, including
+two WebSocket handshakes. These were platform capacity failures, not application
+rate-limit responses. The new shared staging budget reserves sixteen request slots
+and rejects configurations below twice the browser concurrency. Terraform and both
+evaluation deployments read that budget; deployments verify and record the
+configured value. The one-instance staging limit remains.
+
+The first RAG runtime candidate also depicted an unrequested explainer application.
+Its `Runtime Flow Modeler` owned downstream diagram construction. The initial
+review rejected duplicated orchestration responsibilities; the corrected candidate
+retained the modeler and the second review rejected diagram-authoring mechanics.
+Shared objective and coverage criteria now distinguish the depicted subject's
+runtime from instructions to explain, ground, or draw the response. Explicitly
+requested explainer and diagram-authoring products remain valid domains. Changed
+criteria invalidate prior component review identities. Live semantic effectiveness
+must be checked on the next candidate.
+
+The production marketing and document-processing cases each made two connection
+generation calls that ended at approximately 129.94 seconds. Neither reached a
+connection review. The staged caller supplied the same 130-second timeout on every
+attempt, even when earlier stages finished below their budgets. The correction
+uses the existing absolute-deadline admission layer for connections. It can borrow
+unused time up to the existing 240-second builder limit while reserving the current
+review, every remaining connection attempt and review, rendering, synthesis, and
+finalization. Initial component generation retains its preview deadline.
+
+The closed-loop evaluation case exposed an incomplete first review. Its first
+review rejected `learning_or_release`; its second rejected `external_effects` on
+unchanged component records. The candidate only owned dataset updates and described
+a passive downstream registry. Shared capability criteria now require each true
+flag to have a named owner for the relevant mutation or model change. This reduces
+an ambiguous boundary; another live run must establish its semantic effect.
+
+### Why earlier fixes did not prevent recurrence
+
+Commit `1b1fe204` on July 19 raised staging concurrency from one to four so one
+WebSocket left room for API requests. Commit `30c54b6` on August 2 raised browser
+concurrency from two to four without increasing staging capacity. Tests asserted
+the separate constants instead of the required relationship. The shared budget
+and capacity invariant address that missing relationship.
+
+Commit `8ac4a7f`, incorporated into `77df25e`, excluded diagram-authoring mechanics
+in the legacy rubric and worker prompts. The later staged pipeline in `8f061d0`
+bypassed those workers and supplied rule names without their requirement text.
+Commit `d329888` restored shared requirement text and tests its projection into
+both generation and review. The fresh semantic failure occurred with that text
+present. It requires the explicit subject boundary and another real evaluation;
+it does not show that the restored rule was deleted again.
+
+Deadline admission was introduced in `cbbc892`. Commit `77df25e` allowed graph
+generation to borrow unused upstream time, and `fdd70d1` reserved all remaining
+repair and correction work. The staged pipeline in `8f061d0` bypassed that layer
+with fixed generation timeouts. The new connection admission tests cover borrowed
+time, the maximum call duration, downstream reserves, and preservation of the
+approved graph when a stage cannot be admitted. Components keep the separately
+enforced first-preview boundary.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.
@@ -279,6 +339,11 @@ policy tests. Cloud CI passed the same groups. Its full 20-case protected stagin
 evaluation is [run 34653111423](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34653111423).
 Later named-addition, transport, and review-renderer fixes require their own final
 validation and are not represented by that run's source identity.
+
+Commit `971292d6e175ff7b7e3b9d1959f021661304ffdb` passed the next complete local
+and cloud check runs: all eleven groups, 1,862 backend tests at 91% coverage,
+243 frontend tests, and 221 policy tests. The capacity and subject-boundary changes
+follow that commit and require separate validation.
 
 Existing optional ingestion tests remain skipped without the source PDF or model
 opt-in. Dependency deprecation warnings, the local Node storage warning, and two

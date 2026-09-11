@@ -172,6 +172,11 @@ jobs:
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
 
+      - name: Resolve staging request concurrency
+        run: |
+          staging_concurrency="$(PYTHONPATH=backend python -c 'from eval.runtime_budget import staging_request_concurrency; print(staging_request_concurrency())')"
+          echo "STAGING_REQUEST_CONCURRENCY=$staging_concurrency" >> "$GITHUB_ENV"
+
       - name: Resolve versioned graph pipeline mode
         run: |
           pipeline_mode="$(PYTHONPATH=backend python -c 'from config import Settings; print(Settings.model_fields["graph_pipeline_mode"].default)')"
@@ -238,15 +243,21 @@ jobs:
         env:
           REVISION_TAG: eval-${{ github.run_id }}-${{ github.run_attempt }}
         run: |
-          gcloud run deploy "$STAGING_SERVICE" \
+          configured_concurrency="$(gcloud run deploy "$STAGING_SERVICE" \
             --project "$PROJECT_ID" \
             --region "$REGION" \
             --image "$IMAGE@$IMAGE_DIGEST" \
             --no-traffic \
             --tag "$REVISION_TAG" \
             --timeout 1000s \
+            --concurrency "$STAGING_REQUEST_CONCURRENCY" \
             --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$EVALUATION_PROVIDER_ATTEMPT_LIMIT,GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE \
-            --quiet
+            --quiet --format='value(spec.template.spec.containerConcurrency)')"
+          if [ "$configured_concurrency" != "$STAGING_REQUEST_CONCURRENCY" ]; then
+            echo "Cloud Run staging request concurrency does not match the versioned budget." >&2
+            exit 1
+          fi
+          echo "CONFIGURED_STAGING_REQUEST_CONCURRENCY=$configured_concurrency" >> "$GITHUB_ENV"
           candidate_url="$(gcloud run services describe "$STAGING_SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | python -c 'import json,os,sys; data=json.load(sys.stdin); tag=os.environ["REVISION_TAG"]; print(next((x.get("url", "") for x in data.get("status", {}).get("traffic", []) if x.get("tag") == tag), ""))')"
           if [ -z "$candidate_url" ]; then
             echo "Cloud Run did not expose the tagged candidate URL." >&2
@@ -309,6 +320,7 @@ jobs:
               "image": os.environ["IMAGE"],
               "digest": os.environ.get("IMAGE_DIGEST", ""),
               "pipeline_mode": os.environ.get("GRAPH_PIPELINE_MODE", ""),
+              "staging_request_concurrency": int(os.environ["CONFIGURED_STAGING_REQUEST_CONCURRENCY"]) if os.environ.get("CONFIGURED_STAGING_REQUEST_CONCURRENCY") else None,
           }, indent=2) + "\n")
           PY
 

@@ -13,7 +13,7 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Make the requested goal and constraints visible in component responsibilities.",
+        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
@@ -49,7 +49,7 @@ RUBRIC_CRITERIA = {
     ),
     "mece_scope": (
         "components",
-        "Give each material responsibility one clear owner, remove needless duplicates, and exclude diagram-authoring mechanics from the designed runtime.",
+        "Give each material responsibility one clear owner, remove needless duplicates, and exclude mechanics used to author this response unless explicitly requested as runtime features of the subject system.",
     ),
     "authored_composition": (
         "composition",
@@ -57,7 +57,7 @@ RUBRIC_CRITERIA = {
     ),
     "brief_coverage": (
         "components",
-        "Give every requested responsibility a component owner.",
+        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities.",
     ),
     "branch_completion": (
         "connections",
@@ -206,7 +206,13 @@ def staged_review_requirements(
             "Classify capabilities from the candidate responsibilities and assumptions: "
             "external_effects means it can mutate an external system; retrieval_or_reuse "
             "means it retrieves or reuses stored artifacts; learning_or_release means "
-            "feedback can change a model, prompt, ranking, or live configuration."
+            "feedback can change a model, prompt, ranking, or live configuration. "
+            "Check each flag independently against named component responsibilities "
+            "and assumptions, and report every unsupported flag in the same review. "
+            "Internal dataset curation or publication and a passive downstream consumer "
+            "alone do not imply external_effects or learning_or_release. Require an "
+            "owner in this system for the external write or the feedback-driven change "
+            "to a model, prompt, ranking, or live configuration, respectively."
         )
     elif maturity == "production":
         for guarantee in required_production_guarantees:

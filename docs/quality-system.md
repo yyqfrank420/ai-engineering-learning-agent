@@ -88,6 +88,18 @@ attempt receives its own authenticated browser context and thread. Turns within 
 multi-turn case remain sequential on that context, and result ordering remains the
 canonical corpus ordering even when cases finish out of order.
 
+Staging request concurrency is 16, owned by
+`ci/quality.json` at `live.budgets.staging_request_concurrency`. Terraform and both
+evaluation deployments read that budget. Runtime validation requires at least
+twice the browser case concurrency to leave HTTP capacity alongside long-lived
+WebSockets. A September 11 full-corpus run exhausted the previous four-request
+limit with four browser cases and received Cloud Run 429 responses because its
+single instance had no request capacity. Staging retains a maximum of one instance
+and serialized evaluation workflows. Each deployment verifies Cloud Run's returned
+request concurrency against the budget before browser evaluation and records the
+verified value in `deployment.json`. Production retains its separate concurrency
+setting.
+
 The Anthropic semaphore allows four streams per application process/Cloud Run
 instance; it is not a global account cap. It bounds Opus architecture and Sonnet QA
 calls. Kimi graph construction uses the Moonshot OpenAI-compatible endpoint and the

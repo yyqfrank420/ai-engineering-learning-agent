@@ -50,6 +50,7 @@
             "backend/tests/test_staged_graph_contract.py",
             "backend/tests/test_staged_graph_generation.py",
             "backend/tests/test_staged_graph_gate.py",
+            "backend/tests/test_staged_capability_policy.py",
             "backend/tests/test_staged_graph_workflow.py"
           ]
         }
@@ -246,6 +247,7 @@
       "application_full_calls": 150,
       "judge_calls": 16,
       "browser_case_concurrency": 4,
+      "staging_request_concurrency": 16,
       "browser_graph_case_concurrency": 2,
       "browser_infrastructure_retry_count": 0,
       "application_turn_timeout_seconds": 970,

@@ -282,6 +282,7 @@ def test_gcp_federation_separates_staging_and_production_credentials():
 def test_staging_allows_control_traffic_without_parallel_schema_mutation():
     cloud_run = (ROOT / "infra/terraform/gcp/cloud_run.tf").read_text(encoding="utf-8")
     variables = (ROOT / "infra/terraform/gcp/variables.tf").read_text(encoding="utf-8")
+    locals_source = (ROOT / "infra/terraform/gcp/locals.tf").read_text(encoding="utf-8")
     staging = cloud_run.split(
         'resource "google_cloud_run_v2_service" "backend_staging"', 1
     )[1]
@@ -291,12 +292,150 @@ def test_staging_allows_control_traffic_without_parallel_schema_mutation():
     ].split("}", 1)[0]
 
     assert (
-        "max_instance_request_concurrency = var.container_concurrency"
+        "max_instance_request_concurrency = local.live_budgets.staging_request_concurrency"
         in staging_template
     )
+    assert (
+        'jsondecode(file("${path.module}/../../../ci/quality.json")).live.budgets'
+        in locals_source
+    )
+    production = cloud_run.split(
+        'resource "google_cloud_run_v2_service" "backend_staging"', 1
+    )[0]
+    assert "max_instance_request_concurrency = var.container_concurrency" in production
     assert "min_instance_count = 0" in staging_template
     assert "max_instance_count = 1" in staging_template
     assert "default     = 4" in container_concurrency
+
+
+@pytest.mark.parametrize("workflow_name", ["live-eval.yml", "scheduled-eval.yml"])
+@pytest.mark.parametrize("concurrency", [16, 24, 7])
+def test_staging_deployment_resolves_versioned_request_capacity(
+    tmp_path, workflow_name, concurrency
+):
+    workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+    step = workflow.split("name: Resolve staging request concurrency\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
+    module = tmp_path / "backend/eval"
+    module.mkdir(parents=True)
+    (module / "runtime_budget.py").write_text(
+        (ROOT / "backend/eval/runtime_budget.py").read_text()
+    )
+    (tmp_path / "ci").mkdir()
+    manifest = load_manifest()
+    manifest["live"]["budgets"]["staging_request_concurrency"] = concurrency
+    (tmp_path / "ci/quality.json").write_text(json.dumps(manifest))
+    github_env = tmp_path / "github-env"
+
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env={
+            "PATH": str(Path(sys.executable).parent) + os.pathsep + os.defpath,
+            "GITHUB_ENV": str(github_env),
+            "STAGING_REQUEST_CONCURRENCY": "4",
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+        check=False,
+    )
+
+    if concurrency < 8:
+        assert result.returncode != 0
+        assert "at least twice browser case concurrency" in result.stderr
+        assert not github_env.exists()
+    else:
+        assert result.returncode == 0, result.stderr
+        assert github_env.read_text() == f"STAGING_REQUEST_CONCURRENCY={concurrency}\n"
+    assert (
+        workflow.index("pip install -r backend/requirements.txt")
+        < workflow.index("name: Resolve staging request concurrency")
+        < workflow.index("gcloud run deploy")
+    )
+
+
+@pytest.mark.parametrize("workflow_name", ["live-eval.yml", "scheduled-eval.yml"])
+@pytest.mark.parametrize("configured_concurrency", ["16", "4", "", "true", "32"])
+def test_staging_deploy_verifies_the_returned_request_capacity(
+    tmp_path, workflow_name, configured_concurrency
+):
+    workflow = (ROOT / ".github/workflows" / workflow_name).read_text()
+    step_name = (
+        "Deploy digest as a no-traffic staging revision"
+        if workflow_name == "live-eval.yml"
+        else "Deploy evaluation digest to a tagged staging revision"
+    )
+    step = workflow.split(f"name: {step_name}\n", 1)[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n      - ", 1)[0])
+    # Stop after deployment verification, before the unrelated traffic lookup.
+    separator = (
+        "candidate_url="
+        if workflow_name == "live-eval.yml"
+        else "gcloud run services describe"
+    )
+    script = script.split(separator, 1)[0]
+    script += (
+        'printf "%s" "$CONFIGURED_STAGING_REQUEST_CONCURRENCY"\n'
+        if workflow_name == "scheduled-eval.yml"
+        else ""
+    )
+    gcloud = tmp_path / "gcloud"
+    gcloud.write_text(
+        '#!/bin/bash\nprintf "%s\\n" "$@" > "$GCLOUD_ARGS"\nprintf "%s\\n" "$OBSERVED_CONCURRENCY"\n'
+    )
+    gcloud.chmod(0o755)
+    github_env = tmp_path / "github-env"
+    arguments_path = tmp_path / "gcloud-args"
+    result = subprocess.run(
+        ["bash", "-euo", "pipefail", "-c", script],
+        cwd=tmp_path,
+        env={
+            "PATH": str(tmp_path) + os.pathsep + os.defpath,
+            "GCLOUD_ARGS": str(arguments_path),
+            "OBSERVED_CONCURRENCY": configured_concurrency,
+            "GITHUB_ENV": str(github_env),
+            "GITHUB_RUN_ID": "123",
+            "STAGING_SERVICE": "agent-backend-staging",
+            "PROJECT_ID": "test-project",
+            "REGION": "europe-west2",
+            "IMAGE": "registry.example.test/agent",
+            "IMAGE_DIGEST": "sha256:" + "c" * 64,
+            "REVISION_TAG": "eval-123-1",
+            "STAGING_REQUEST_CONCURRENCY": "16",
+            "EVALUATION_RUN_ID": "123-1",
+            "EVALUATION_PROVIDER_ATTEMPT_LIMIT": "64",
+            "EVALUATION_FULL_PROVIDER_ATTEMPT_LIMIT": "150",
+            "EVALUATION_PR_PROVIDER_ATTEMPT_LIMIT": "64",
+            "GRAPH_PIPELINE_MODE": "staged",
+            "EVAL_PIPELINE_MODE": "staged",
+            "EVAL_SUITE": "full",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    arguments = arguments_path.read_text().splitlines()
+    assert arguments[arguments.index("--concurrency") + 1] == "16"
+    assert "--format=value(spec.template.spec.containerConcurrency)" in arguments
+    assert "--no-traffic" in arguments
+    if configured_concurrency == "16":
+        assert result.returncode == 0, result.stderr
+        if workflow_name == "live-eval.yml":
+            assert (
+                "CONFIGURED_STAGING_REQUEST_CONCURRENCY=16\n" in github_env.read_text()
+            )
+        else:
+            assert result.stdout == "16"
+    else:
+        assert result.returncode != 0
+        assert "does not match the versioned budget" in result.stderr
+        assert (
+            not github_env.exists()
+            or "CONFIGURED_STAGING_REQUEST_CONCURRENCY" not in github_env.read_text()
+        )
 
 
 def test_required_check_names_are_stable():
@@ -805,6 +944,7 @@ def test_scheduled_eval_records_exact_deployment_identity(tmp_path, invalid_iden
             "EVAL_PIPELINE_MODE": "staged",
             "EVAL_SUITE": "diagnostic",
             "EVAL_CASE_IDS": "graph-expansion",
+            "CONFIGURED_STAGING_REQUEST_CONCURRENCY": "16",
             "ANTHROPIC_API_KEY": "must-not-appear-in-evidence",
         },
         capture_output=True,
@@ -828,6 +968,7 @@ def test_scheduled_eval_records_exact_deployment_identity(tmp_path, invalid_iden
         "image": "registry.example.test/agent",
         "digest": "sha256:" + "c" * 64,
         "revision_name": "agent-backend-staging-123",
+        "staging_request_concurrency": 16,
         "pipeline_mode": "staged",
         "suite": "diagnostic",
         "case_ids": ["graph-expansion"],
@@ -1030,6 +1171,7 @@ def test_deployment_manifest_records_resolved_mode_without_environment_secrets(
             "IMAGE": "registry.example.test/agent",
             "IMAGE_DIGEST": "sha256:" + "c" * 64,
             "GRAPH_PIPELINE_MODE": "staged",
+            "CONFIGURED_STAGING_REQUEST_CONCURRENCY": "16",
             "ANTHROPIC_API_KEY": "must-not-appear-in-evidence",
         },
         capture_output=True,
@@ -1041,6 +1183,8 @@ def test_deployment_manifest_records_resolved_mode_without_environment_secrets(
     assert result.returncode == 0, result.stderr
     manifest = (artifact_dir / "deployment.json").read_text()
     assert json.loads(manifest)["pipeline_mode"] == "staged"
+    if workflow_name == "live-eval.yml":
+        assert json.loads(manifest)["staging_request_concurrency"] == 16
     assert "must-not-appear-in-evidence" not in manifest
 
 

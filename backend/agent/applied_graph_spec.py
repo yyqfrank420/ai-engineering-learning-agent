@@ -283,8 +283,9 @@ def applied_graph_topology_prompt(
         "A component earns a row when ownership, trust, authoritative state, a decision, an external "
         "action, or an outcome changes. Fold other implementation detail into its owner. An edge earns "
         "a record when its contract is needed to follow behavior or prove a guarantee. Consolidate "
-        "semantic duplicates. Do not add diagram authoring, rendering, or graph-generation mechanics "
-        "unless requested.\n"
+        "semantic duplicates. Do not add mechanics used to author this response, including diagram "
+        "authoring, rendering, or graph generation, unless explicitly requested as runtime features "
+        "of the subject system.\n"
         "SEQUENCE RULES\n"
         "composition.steps declares primary runtime-sequence membership. The server derives stage "
         "order from directed primary/runtime edges. A nonempty list includes root index 0. Every other "
@@ -565,12 +566,8 @@ def _validate_links(
     ]
     endpoint_rows = [
         (
-            _required_index(
-                edge_record[0], path=f"connections.links[{link_index}][0]"
-            ),
-            _required_index(
-                edge_record[1], path=f"connections.links[{link_index}][1]"
-            ),
+            _required_index(edge_record[0], path=f"connections.links[{link_index}][0]"),
+            _required_index(edge_record[1], path=f"connections.links[{link_index}][1]"),
         )
         for link_index, edge_record in enumerate(link_records)
     ]
@@ -750,9 +747,7 @@ def validate_applied_graph_topology(
         {
             **component,
             "tier": None,
-            "lane": (
-                "bottom" if component["group_kind"] == "operations" else "main"
-            ),
+            "lane": ("bottom" if component["group_kind"] == "operations" else "main"),
             "sequence_step": sequence_step,
         }
         for component, sequence_step in zip(components, sequence_steps, strict=True)

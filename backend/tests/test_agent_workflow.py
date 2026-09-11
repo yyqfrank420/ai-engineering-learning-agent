@@ -605,6 +605,60 @@ def test_patch_admission_uses_available_time_after_following_reserve():
     assert max_timeout_s == settings.graph_builder_max_timeout_s
 
 
+@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.parametrize("available_s", [10.0, 180.0, 300.0])
+def test_staged_connections_borrow_time_while_reserving_the_remaining_path(
+    monkeypatch, attempt, available_s
+):
+    from agent import deadlines
+    from config import STAGED_CONNECTION_GENERATION_CALLS, settings
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    remaining_attempts = STAGED_CONNECTION_GENERATION_CALLS - attempt - 1
+    render_and_gate_s = (
+        settings.diagram_evaluation_timeout_s + settings.staged_gate_timeout_s
+    )
+    reserved_s = (
+        (remaining_attempts + 1) * render_and_gate_s
+        + remaining_attempts * settings.staged_connection_timeout_s
+        + settings.graph_synthesis_timeout_s
+        + settings.graph_finalization_reserve_s
+        + settings.agent_orchestration_reserve_s
+    )
+
+    timeout_s = deadlines.staged_connection_timeout_seconds(
+        {"terminal_deadline_s": 100.0 + reserved_s + available_s}, attempt=attempt
+    )
+
+    assert timeout_s == min(settings.graph_builder_max_timeout_s, available_s)
+    assert timeout_s <= available_s
+    if available_s == 180.0:
+        assert timeout_s > settings.staged_connection_timeout_s
+
+    with pytest.raises(deadlines.StageAdmissionDenied):
+        deadlines.staged_connection_timeout_seconds(
+            {"terminal_deadline_s": 100.0 + reserved_s}, attempt=attempt
+        )
+
+
+@pytest.mark.parametrize("attempt", [0, 1])
+def test_staged_connections_without_workflow_deadline_keep_baseline_timeout(attempt):
+    from agent.deadlines import staged_connection_timeout_seconds
+    from config import settings
+
+    assert staged_connection_timeout_seconds({}, attempt=attempt) == (
+        settings.staged_connection_timeout_s
+    )
+
+
+@pytest.mark.parametrize("attempt", [-1, 2, True, 0.5, None])
+def test_staged_connection_timeout_rejects_invalid_attempt(attempt):
+    from agent.deadlines import staged_connection_timeout_seconds
+
+    with pytest.raises(ValueError, match="attempt"):
+        staged_connection_timeout_seconds({}, attempt=attempt)
+
+
 def test_initial_design_uses_the_visible_preview_deadline(monkeypatch):
     from agent import deadlines
     from config import settings
