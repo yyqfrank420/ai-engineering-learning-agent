@@ -100,6 +100,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
     await websocket.accept()
     stream_id: str | None = None
+    thread_stream_id: str | None = None
     receiver_task: asyncio.Task | None = None
     agent_task: asyncio.Task | None = None
     active_metric_counted = False
@@ -149,42 +150,48 @@ async def chat_websocket(websocket: WebSocket) -> None:
             return
 
         request_id = str(uuid.uuid4())
-        try:
-            completed_turn = thread_store.get_completed_turn(
-                user_id,
-                body.thread_id,
-                body.client_request_id,
-            )
-        except RuntimeError:
-            logger.exception("Stored idempotent turn is incomplete")
-            await _send_error(
-                websocket, "Previous request is incomplete — start a new request"
-            )
-            await websocket.send_json({"type": "done"})
-            return
-        if completed_turn is not None:
-            enqueue_analytics_event(
-                event_name="stream_replayed",
-                event_category="stream",
-                user_id=user_id,
-                thread_id=body.thread_id,
-                request_id=request_id,
-                client_request_id=body.client_request_id,
-                properties={"stream_type": "websocket"},
-            )
-            await websocket.send_json(
-                {
-                    "type": "response_delta",
-                    "content": completed_turn["assistant_content"],
-                }
-            )
-            await websocket.send_json(
-                {
-                    "type": "graph_data",
-                    "data": thread_store.get_graph(user_id, body.thread_id),
-                }
-            )
-            await websocket.send_json({"type": "done"})
+
+        async def replay_completed_turn() -> bool:
+            try:
+                completed_turn = thread_store.get_completed_turn(
+                    user_id,
+                    body.thread_id,
+                    body.client_request_id,
+                )
+            except RuntimeError:
+                logger.exception("Stored idempotent turn is incomplete")
+                await _send_error(
+                    websocket, "Previous request is incomplete — start a new request"
+                )
+                await websocket.send_json({"type": "done"})
+                return True
+            if completed_turn is not None:
+                enqueue_analytics_event(
+                    event_name="stream_replayed",
+                    event_category="stream",
+                    user_id=user_id,
+                    thread_id=body.thread_id,
+                    request_id=request_id,
+                    client_request_id=body.client_request_id,
+                    properties={"stream_type": "websocket"},
+                )
+                await websocket.send_json(
+                    {
+                        "type": "response_delta",
+                        "content": completed_turn["assistant_content"],
+                    }
+                )
+                await websocket.send_json(
+                    {
+                        "type": "graph_data",
+                        "data": thread_store.get_graph(user_id, body.thread_id),
+                    }
+                )
+                await websocket.send_json({"type": "done"})
+                return True
+            return False
+
+        if await replay_completed_turn():
             return
 
         preflight_error = _new_turn_preflight_error(websocket, user_id, body)
@@ -206,6 +213,24 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "Another response is already running. Stop it or wait for it to finish.",
             )
             await websocket.send_json({"type": "done"})
+            return
+
+        thread_stream_id = runtime_state_store.try_acquire_active_stream(
+            user_id,
+            "chat-thread",
+            limit=1,
+            ttl_s=settings.agent_timeout_s + 30,
+            scope_id=body.thread_id,
+        )
+        if thread_stream_id is None:
+            await _send_error(
+                websocket,
+                "Another response is already running. Stop it or wait for it to finish.",
+            )
+            await websocket.send_json({"type": "done"})
+            return
+        # A competing instance may have committed after the early replay check.
+        if await replay_completed_turn():
             return
 
         if thread is None:  # Defensive: preflight already rejects this branch.
@@ -608,23 +633,35 @@ async def chat_websocket(websocket: WebSocket) -> None:
             await _send_error(websocket, "Response failed — please try again")
             await websocket.send_json({"type": "done"})
     finally:
-        if agent_task and not agent_task.done():
-            agent_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await agent_task
-        if receiver_task and not receiver_task.done():
-            receiver_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await receiver_task
-        runtime_state_store.release_active_stream(stream_id)
-        if active_metric_counted:
-            change_active_chat_streams(-1)
-            record_agent_duration(
-                max(1, int((time.perf_counter() - session_started_at) * 1000)),
-                route="/api/chat/ws",
-            )
-        with suppress(Exception):
-            await websocket.close()
+        try:
+            try:
+                if agent_task and not agent_task.done():
+                    agent_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await agent_task
+            finally:
+                if receiver_task and not receiver_task.done():
+                    receiver_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await receiver_task
+        except Exception as exc:
+            logger.error("WebSocket task cleanup failed: %s", type(exc).__name__)
+            raise
+        finally:
+            try:
+                try:
+                    runtime_state_store.release_active_stream(thread_stream_id)
+                finally:
+                    runtime_state_store.release_active_stream(stream_id)
+            finally:
+                if active_metric_counted:
+                    change_active_chat_streams(-1)
+                    record_agent_duration(
+                        max(1, int((time.perf_counter() - session_started_at) * 1000)),
+                        route="/api/chat/ws",
+                    )
+                with suppress(Exception):
+                    await websocket.close()
 
 
 def _request_error(body: ChatRequest, thread: dict | None) -> str | None:

@@ -174,7 +174,8 @@ async def chat_endpoint(
         logger.exception("Stored idempotent turn is incomplete")
         record_chat_rejected("incomplete_stored_turn")
         return sse_error("Previous request is incomplete — start a new request")
-    if completed_turn is not None:
+
+    async def replay_completed_turn(completed_turn: dict):
         enqueue_analytics_event(
             event_name="stream_replayed",
             event_category="stream",
@@ -186,22 +187,22 @@ async def chat_endpoint(
             properties={"stream_type": "chat"},
         )
 
-        async def replay_completed_turn():
-            yield sse(
-                {
-                    "type": "response_delta",
-                    "content": completed_turn["assistant_content"],
-                }
-            )
-            yield sse(
-                {
-                    "type": "graph_data",
-                    "data": thread_store.get_graph(user_id, thread_id),
-                }
-            )
-            yield sse({"type": "done"})
+        yield sse(
+            {
+                "type": "response_delta",
+                "content": completed_turn["assistant_content"],
+            }
+        )
+        yield sse(
+            {
+                "type": "graph_data",
+                "data": thread_store.get_graph(user_id, thread_id),
+            }
+        )
+        yield sse({"type": "done"})
 
-        return streaming_response(replay_completed_turn())
+    if completed_turn is not None:
+        return streaming_response(replay_completed_turn(completed_turn))
 
     message_count = message_store.count_messages(user_id, thread_id)
     if message_count + 2 > settings.max_messages_per_thread:
@@ -223,21 +224,63 @@ async def chat_endpoint(
         record_chat_rejected("security_filter")
         return sse_error("Message blocked by security filter")
 
-    stream_id = runtime_state_store.try_acquire_active_stream(
-        user_id,
-        "chat",
-        limit=settings.max_active_chat_streams_per_user,
-        ttl_s=settings.agent_timeout_s + 30,
-        scope_id=internal_test_stream_scope(user, thread_id),
-    )
-    if stream_id is None:
-        record_chat_rejected("active_stream_limit")
-        return sse_error(
-            "Another response is already running. Stop it or wait for it to finish."
-        )
-
     async def stream():
+        stream_id = None
+        thread_stream_id = None
         try:
+            stream_id = runtime_state_store.try_acquire_active_stream(
+                user_id,
+                "chat",
+                limit=settings.max_active_chat_streams_per_user,
+                ttl_s=settings.agent_timeout_s + 30,
+                scope_id=internal_test_stream_scope(user, thread_id),
+            )
+            if stream_id is None:
+                record_chat_rejected("active_stream_limit")
+                yield sse(
+                    {
+                        "type": "error",
+                        "content": "Another response is already running. Stop it or wait for it to finish.",
+                    }
+                )
+                return
+            thread_stream_id = runtime_state_store.try_acquire_active_stream(
+                user_id,
+                "chat-thread",
+                limit=1,
+                ttl_s=settings.agent_timeout_s + 30,
+                scope_id=thread_id,
+            )
+            if thread_stream_id is None:
+                record_chat_rejected("active_stream_limit")
+                yield sse(
+                    {
+                        "type": "error",
+                        "content": "Another response is already running. Stop it or wait for it to finish.",
+                    }
+                )
+                yield sse({"type": "done"})
+                return
+            # Recheck under both leases before reading context or running a model.
+            try:
+                completed_turn = thread_store.get_completed_turn(
+                    user_id, thread_id, body.client_request_id
+                )
+            except RuntimeError:
+                logger.exception("Stored idempotent turn is incomplete")
+                record_chat_rejected("incomplete_stored_turn")
+                yield sse(
+                    {
+                        "type": "error",
+                        "content": "Previous request is incomplete — start a new request",
+                    }
+                )
+                yield sse({"type": "done"})
+                return
+            if completed_turn is not None:
+                async for event in replay_completed_turn(completed_turn):
+                    yield event
+                return
             rag_tools, graph_tools, node_detail_tools = _make_agent_tools(request)
             from observability import (
                 change_active_chat_streams,
@@ -615,7 +658,10 @@ async def chat_endpoint(
                 yield sse({"type": "done"})
         finally:
             # A new turn must not read its base graph before this turn commits.
-            runtime_state_store.release_active_stream(stream_id)
+            try:
+                runtime_state_store.release_active_stream(thread_stream_id)
+            finally:
+                runtime_state_store.release_active_stream(stream_id)
 
     return streaming_response(stream())
 

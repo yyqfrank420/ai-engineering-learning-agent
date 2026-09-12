@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "corpus_version": "2026-08-12.v1",
-  "release_identity": "browser-rubric-v2",
+  "corpus_version": "2026-09-12.v1",
+  "release_identity": "browser-rubric-v3",
   "approval": {
     "status": "pending_human_review",
     "reviewed_by": null,
@@ -18,7 +18,7 @@
       "critical_false_passes": null,
       "evaluated_at": null
     },
-    "notes": "The graph-expansion contract changed in 2026-08-12.v1 and is pending human review. Each turn now requires visible graph output within 180 seconds, followed by authoritative graph_data after persistence. A new full protected capture, 20-case human review, judge recalibration, and approved manifest hash are required before blocking or promotion."
+    "notes": "The 2026-09-12.v1 corpus retains the graph, persistence, streaming, and safety requirements. Domain specificity is judged against the requested application or educational subject; missing material requirements permit targeted clarification. The memory prompt requests two mitigations explicitly, and graph expansion targets Serving Monitor by name. A new full protected capture, actual human review of all 20 cases, judge calibration, and approved manifest hash are required before blocking or promotion."
   },
   "rubrics": {
     "correctness": {
@@ -47,9 +47,9 @@
     },
     "domain_specificity": {
       "critical": false,
-      "pass": "Components, flows, risks, and trade-offs are concretely tailored to the stated domain.",
-      "borderline": "Some domain details appear but major parts could be copied into an unrelated architecture.",
-      "fail": "The answer is a generic agent or textbook taxonomy with domain nouns substituted."
+      "pass": "For a stated application domain, components, flows, risks, and trade-offs are concretely tailored to that domain. For an educational subject, the response explains concrete mechanisms of that subject without requiring an invented business use case. When material domain or workflow requirements are missing, targeted clarification identifies those requirements and decision boundaries; a speculative architecture is not required.",
+      "borderline": "The response includes relevant details but leaves a material domain mechanism or missing requirement unaddressed, or its clarification remains too broad to guide the requested work.",
+      "fail": "The response substitutes domain nouns into unrelated generic material, invents an unstated application domain, or asks vague questions that do not identify the missing requirements."
     },
     "safety": {
       "critical": true,

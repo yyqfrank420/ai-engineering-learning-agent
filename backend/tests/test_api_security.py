@@ -1636,3 +1636,130 @@ def test_use_search_tool_endpoint_reports_missing_thread_and_expired_request(
 
     assert missing_thread.json() == {"ok": False, "status": "thread_not_found"}
     assert expired.json() == {"ok": False, "status": "expired"}
+
+
+def test_chat_rechecks_completed_turn_after_thread_admission(
+    temp_data_dir, monkeypatch
+):
+    from adapters.database_adapter import fetchone
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    app = _authed_app()
+    canonical = {"version": "persisted-v1", "nodes": [], "edges": []}
+    original_acquire = runtime_state_store.try_acquire_active_stream
+
+    def acquire_after_commit(*args, **kwargs):
+        if args[1] == "chat-thread":
+            persist_turn(
+                "user-1",
+                thread["id"],
+                title="Stored",
+                user_content="Build an agent",
+                assistant_content="Canonical answer",
+                graph_data=canonical,
+                client_request_id="admission-race",
+            )
+        return original_acquire(*args, **kwargs)
+
+    async def unexpected_model(*_args):
+        pytest.fail("completed request must replay before running the model")
+
+    monkeypatch.setattr(
+        runtime_state_store, "try_acquire_active_stream", acquire_after_commit
+    )
+    monkeypatch.setattr(sse_handler, "run_agent", unexpected_model)
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat",
+            json={
+                "thread_id": thread["id"],
+                "content": "Build an agent",
+                "client_request_id": "admission-race",
+            },
+        )
+    assert _parse_sse_events(response.text) == [
+        {"type": "response_delta", "content": "Canonical answer"},
+        {"type": "graph_data", "data": canonical},
+        {"type": "done"},
+    ]
+    assert get_graph("user-1", thread["id"]) == canonical
+    assert len(message_store.get_messages("user-1", thread["id"])) == 2
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure_point", ["response", "tools"])
+async def test_chat_releases_leases_on_response_or_setup_failure(
+    temp_data_dir, monkeypatch, failure_point
+):
+    from adapters.database_adapter import fetchone
+    from starlette.requests import Request
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    request = Request({"type": "http", "app": _authed_app(), "state": {}})
+
+    def fail(*_args):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(
+        sse_handler,
+        "streaming_response" if failure_point == "response" else "_make_agent_tools",
+        fail,
+    )
+    with pytest.raises(RuntimeError, match="setup failed"):
+        response = await chat_endpoint(
+            ChatRequest(thread_id=thread["id"], content="Build an agent"),
+            request,
+            {"id": "user-1", "email": "friend@example.com"},
+        )
+        async for _event in response.body_iterator:
+            pass
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("response_failure", ["before_body", "unstarted_close"])
+async def test_chat_does_not_admit_work_before_response_body_starts(
+    temp_data_dir, monkeypatch, response_failure
+):
+    from adapters.database_adapter import fetchone
+    from starlette.requests import Request
+    from starlette.requests import ClientDisconnect
+    import api.sse_handler as sse_handler
+
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    request = Request({"type": "http", "app": _authed_app(), "state": {}})
+    model = AsyncMock(
+        side_effect=AssertionError("disconnected response must not start model")
+    )
+    monkeypatch.setattr(sse_handler, "run_agent", model)
+    response = await chat_endpoint(
+        ChatRequest(thread_id=thread["id"], content="Build an agent"),
+        request,
+        {"id": "user-1", "email": "friend@example.com"},
+    )
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+    if response_failure == "unstarted_close":
+        await response.body_iterator.aclose()
+    else:
+
+        async def failed_send(event):
+            assert event["type"] == "http.response.start"
+            raise OSError("disconnected")
+
+        with pytest.raises(ClientDisconnect):
+            await response(
+                {"type": "http", "asgi": {"spec_version": "2.4"}},
+                AsyncMock(return_value={"type": "http.disconnect"}),
+                failed_send,
+            )
+    model.assert_not_called()
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0

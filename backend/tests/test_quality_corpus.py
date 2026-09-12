@@ -82,7 +82,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     case = corpus.by_id["graph-expansion"]
     first_turn, second_turn = case.steps
 
-    assert corpus.corpus_version == "2026-08-12.v1"
+    assert corpus.corpus_version == "2026-09-12.v1"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
