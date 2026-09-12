@@ -504,7 +504,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v8"
+    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v9"
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
 
@@ -1519,7 +1519,271 @@ async def test_component_generation_receives_root_selection_before_connections(
         in root_rule
     )
     assert "Every primary member must be naturally reachable outward" in root_rule
+    pull_rule = "Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources."
+    assert pull_rule in root_rule
+    assert pull_rule in prompt
     assert (
         "Scoped edits preserve the accepted root and primary membership outside the authorized write set"
         in root_rule
     )
+
+
+@pytest.mark.parametrize(
+    ("primary_members", "edge_contracts", "accepted"),
+    [
+        ([True, True], [(0, 1, 400), (1, 0, 400)], True),
+        ([True, True], [(1, 0, 400)], False),
+        ([True, True], [(0, 1, 402), (1, 0, 400)], False),
+        ([True, False, True], [(0, 1, 400), (1, 2, 400)], False),
+    ],
+    ids=[
+        "pull-request-response",
+        "response-only",
+        "feedback-request",
+        "nonprimary-transit",
+    ],
+)
+def test_pull_root_requires_outward_primary_runtime_contract(
+    primary_members, edge_contracts, accepted
+):
+    roles = [
+        ("Optimizer", "Initiates optimization by requesting evaluated outcomes."),
+        ("Evaluator", "Computes and returns evaluated outcomes for the optimizer."),
+        ("Outcome consumer", "Processes evaluated outcomes."),
+    ]
+    components = [
+        {
+            **_component_wire()["components"][0],
+            "label": label,
+            "responsibility": responsibility,
+            "primary_flow_member": primary,
+        }
+        for (label, responsibility), primary in zip(roles, primary_members)
+    ]
+    edges = [
+        {
+            "source_index": source,
+            "target_index": target,
+            "label": "Request evaluated outcomes"
+            if source == 0
+            else "Return evaluated outcomes",
+            "flow": flow,
+            "sync": 500,
+        }
+        for source, target, flow in edge_contracts
+    ]
+    accepted_components = [
+        {"index": index, "is_root": index == 0, "primary_flow_member": primary}
+        for index, primary in enumerate(primary_members)
+    ]
+    build = contract.assign_server_ids(
+        {
+            **_component_wire(),
+            "request_id": "pull-root-regression",
+            "maturity": "prototype",
+            "source": "test",
+            "stage": "connections",
+            "components": [
+                {
+                    **component,
+                    "model_index": index,
+                    "type": "service",
+                    "group_kind": "runtime",
+                }
+                for index, component in enumerate(components)
+            ],
+            "connections": [
+                {
+                    "source_id": str(edge["source_index"]),
+                    "target_id": str(edge["target_index"]),
+                    "label": edge["label"],
+                    "flow": generation.FLOW_CODES[edge["flow"]],
+                    "sync": generation.SYNC_CODES[edge["sync"]],
+                }
+                for edge in edges
+            ],
+        }
+    )
+    if accepted:
+        assert generation._parse_connection_wire(
+            json.dumps({"edges": edges}),
+            accepted_components=accepted_components,
+            edge_limit=2,
+        ) == {"edges": edges}
+        graph = contract.project_graph_data(build)
+        assert graph["sequence"][0]["nodes"] == ["n1"]
+        assert {(edge["source"], edge["target"]) for edge in graph["edges"]} == {
+            ("n1", "n2"),
+            ("n2", "n1"),
+        }
+    else:
+        with pytest.raises(
+            generation.StagedGenerationError, match="connection_wire_unreachable"
+        ):
+            generation._parse_connection_wire(
+                json.dumps({"edges": edges}),
+                accepted_components=accepted_components,
+                edge_limit=2,
+            )
+        with pytest.raises(
+            contract.GraphContractError,
+            match="every primary flow member must be reachable",
+        ):
+            contract.project_graph_data(build)
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_component_executable_ownership_is_shared_and_production_only(maturity):
+    from agent.architecture_rubric import RUBRIC_CRITERIA, staged_review_requirements
+    from agent.nodes import staged_graph_gate as gate
+
+    request = "Design document automation with feedback-driven prompt releases."
+    prompt, _ = generation._attempt_prompt(
+        stage="components",
+        request=request,
+        resolved_maturity=maturity,
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Document processing owns prompt evaluation and release.",
+    )
+    review_prompt = gate._prompt(
+        gate="components",
+        user_request=request,
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        required_production_guarantees=(),
+    )
+    generated = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    reviewed = json.loads(
+        review_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert generated == reviewed == staged_review_requirements("components", maturity)
+    assert (
+        generated.keys() == staged_review_requirements("components", "prototype").keys()
+    )
+    feasibility_rule = "At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here."
+    assert feasibility_rule in generated["objective_fidelity"]
+    assert feasibility_rule in reviewed["objective_fidelity"]
+    base_depth = RUBRIC_CRITERIA["selected_depth"][1]
+    selected_depth = generated["selected_depth"]
+    if maturity == "prototype":
+        assert selected_depth == base_depth
+    else:
+        assert selected_depth.startswith(base_depth)
+        assert (
+            "Before freezing the component set, require named executable ownership"
+            in selected_depth
+        )
+        assert (
+            "applicable to declared responsibilities and capabilities" in selected_depth
+        )
+        assert (
+            "external_effects requires controlled execution, reconciliation, and compensation"
+            in selected_depth
+        )
+        assert (
+            "retrieval_or_reuse requires validation, reuse lifecycle management, and invalidation"
+            in selected_depth
+        )
+        assert (
+            "learning_or_release requires curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback"
+            in selected_depth
+        )
+        assert "Existing components may own compatible operations" in selected_depth
+        assert (
+            "do not require a separate component for every checklist step"
+            in selected_depth
+        )
+        assert (
+            "A datastore, registry, or audit label, or an assumption alone, cannot execute evaluation, release, or control"
+            in selected_depth
+        )
+
+
+def test_declared_human_authorization_supports_primary_recovery_path():
+    components = [
+        {
+            **_component_wire()["components"][0],
+            "label": "Human Decision Console",
+            "responsibility": "Issues exact-action authorization after a human decision.",
+        },
+        {
+            **_component_wire()["components"][0],
+            "label": "Recovery Workflow",
+            "responsibility": "Executes authorized recovery actions and records results.",
+        },
+    ]
+    candidate = {
+        **_component_wire(),
+        "assumptions": ["Recovery runs only after explicit human authorization."],
+        "components": components,
+    }
+    assert (
+        "edges"
+        not in generation.component_generation_schema(_write_set())["properties"]
+    )
+    assert (
+        generation._parse_component_wire(json.dumps(candidate), component_limit=2)
+        == candidate
+    )
+    wire = {
+        "edges": [
+            {
+                "source_index": 0,
+                "target_index": 1,
+                "label": "Authorizes exact recovery action",
+                "flow": 401,
+                "sync": 501,
+            }
+        ]
+    }
+    assert (
+        generation._parse_connection_wire(
+            json.dumps(wire),
+            accepted_components=[
+                {"index": index, "is_root": index == 0, "primary_flow_member": True}
+                for index in range(2)
+            ],
+            edge_limit=1,
+        )
+        == wire
+    )
+    build = contract.assign_server_ids(
+        {
+            **candidate,
+            "request_id": "authorized-recovery-feasibility",
+            "maturity": "prototype",
+            "source": "test",
+            "stage": "connections",
+            "components": [
+                {
+                    **component,
+                    "model_index": index,
+                    "type": "service",
+                    "group_kind": "runtime",
+                }
+                for index, component in enumerate(components)
+            ],
+            "connections": [
+                {
+                    "source_id": "0",
+                    "target_id": "1",
+                    "label": "Authorizes exact recovery action",
+                    "flow": "control",
+                    "sync": "async",
+                }
+            ],
+        }
+    )
+    graph = contract.project_graph_data(build)
+    assert [step["nodes"] for step in graph["sequence"]] == [["n1"], ["n2"]]
+    assert graph["edges"][0]["flow"] == "control"

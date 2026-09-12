@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from agent.architecture_rubric import RUBRIC_CRITERIA, TOPOLOGY_PROOF_REQUIREMENTS
+from agent.architecture_rubric import (
+    RUBRIC_CRITERIA,
+    TOPOLOGY_PROOF_REQUIREMENTS,
+    staged_review_requirements,
+)
 from agent.nodes import staged_graph_gate as gate
 from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import production_proofs_for_capabilities
@@ -252,6 +256,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         reviewed_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
     assert generated_criteria == reviewed_criteria
+    assert generated_criteria == staged_review_requirements(stage, maturity, guarantees)
     assert set(generated_criteria) == set(rules)
     assert set(guarantees) <= set(rules)
     assert "independent_risk_coverage" not in generated_criteria
@@ -278,7 +283,13 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             in generated_criteria["mece_scope"]
         )
     for code, requirement in generated_criteria.items():
-        if code in RUBRIC_CRITERIA:
+        if (
+            code == "selected_depth"
+            and stage == "components"
+            and maturity == "production"
+        ):
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+        elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
             assert requirement == TOPOLOGY_PROOF_REQUIREMENTS[code]
@@ -481,7 +492,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v5"
+        == "staged_connection_gate_v6"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -609,6 +620,9 @@ def test_invalid_production_witnesses_fail_terminally(monkeypatch, route):
         )
     )
     assert result["terminal"] is True
+    assert result["approved"] is False
+    assert result["findings"] == []
+    assert result["proofs"] == []
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -1264,3 +1278,100 @@ def test_review_capture_send_failure_preserves_gate_result(
     assert "RuntimeError" in caplog.text
     assert "sensitive failure details" not in caplog.text
     assert "Design the service" not in caplog.text
+
+
+@pytest.mark.parametrize("provider_approved", [False, True])
+@pytest.mark.parametrize("proof_approved", [False, True])
+def test_malformed_proof_preserves_valid_semantic_findings_for_correction(
+    monkeypatch, provider_approved, proof_approved
+):
+    finding = {
+        "rule_code": "branch_completion",
+        "reason": "The rejection branch has no terminal outcome.",
+        "record_indexes": [0, 1],
+    }
+    _stub_response(
+        monkeypatch,
+        {
+            "approved": provider_approved,
+            "findings": [finding],
+            "production_proofs": [
+                {
+                    "guarantee": "audit_and_provenance",
+                    "approved": proof_approved,
+                    "edge_witnesses": [0],
+                    "route_witnesses": [[0, 1]],
+                }
+            ],
+        },
+    )
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Draw the runtime.",
+            evidence_bundle={},
+            resolved_maturity="production",
+            candidate_records=[
+                {"source": "entry", "target": "accepted"},
+                {"source": "entry", "target": "rejected"},
+            ],
+            required_production_guarantees=["audit_and_provenance"],
+        )
+    )
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert result["findings"] == [finding]
+    assert result["proofs"] == []
+    assert "production proof has an invalid route witness" in result["diagnostics"]
+    assert set(result["checked_rules"]) == set(
+        gate._rules_for_connections("production", ["audit_and_provenance"])
+    )
+
+
+@pytest.mark.parametrize("failure", ["incomplete", "shape", "findings"])
+def test_malformed_review_cannot_recover_from_unvalidated_findings(failure):
+    guarantees = ["audit_and_provenance"]
+    rules = gate._rules_for_connections("production", guarantees)
+    schema = gate._response_schema(
+        rule_codes=rules, required_production_guarantees=guarantees
+    )
+    payload = {
+        "approved": False,
+        "checked_rules": list(rules),
+        "findings": [{"rule_code": "branch_completion", "reason": "Missing outcome."}],
+        "production_proofs": [],
+    }
+    if failure == "shape":
+        payload["unexpected"] = True
+    elif failure == "findings":
+        payload["findings"].append({"rule_code": "invented", "reason": "Invalid."})
+    result = gate._review_result(
+        _response(
+            payload,
+            finish_reason="max_tokens" if failure == "incomplete" else "end_turn",
+        ),
+        schema=schema,
+        rule_codes=rules,
+        guarantees=guarantees,
+        records=[{"source": "a", "target": "b"}],
+    )
+    assert result["terminal"] is True
+    assert result["approved"] is False
+    assert result["findings"] == []
+    assert result["proofs"] == []
+
+
+def test_production_witness_prompt_distinguishes_branches_from_directed_routes():
+    guarantees = ["audit_and_provenance"]
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Draw the runtime.",
+        evidence_bundle={},
+        resolved_maturity="production",
+        candidate_records=[],
+        rule_codes=gate._rules_for_connections("production", guarantees),
+        required_production_guarantees=guarantees,
+    )
+    assert "each edge's target must equal the next edge's source" in prompt
+    assert "edge_witnesses for disconnected branches" in prompt
+    assert "never combine branch alternatives into one route" in prompt
+    assert "route_witnesses may be [] when edge_witnesses suffice" in prompt

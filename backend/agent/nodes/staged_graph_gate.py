@@ -25,7 +25,7 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v6"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v5"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v6"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -279,7 +279,11 @@ def _prompt(
         production_instructions = (
             "\nFor every required production guarantee, return one proof row. A passed proof "
             "must cite one or more valid edge or route witnesses. A route witness is an ordered "
-            "list of zero-based connection-record indexes.\nRequired production guarantees: "
+            "list of zero-based connection-record indexes forming a contiguous directed "
+            "chain: each edge's target must equal the next edge's source. Use "
+            "edge_witnesses for disconnected branches; never combine branch alternatives "
+            "into one route. route_witnesses may be [] when edge_witnesses suffice."
+            "\nRequired production guarantees: "
             + json.dumps(list(required_production_guarantees))
         )
     return (
@@ -576,7 +580,12 @@ def _review_result(
             records=records,
         )
         if proof_error:
-            return _terminal_result(proof_error)
+            if not findings:
+                return _terminal_result(proof_error)
+            # Valid semantic blockers can drive the existing correction even
+            # when proof citations are malformed. No proof is accepted.
+            proofs = []
+            diagnostics.append(proof_error)
         findings.extend(
             {
                 "rule_code": proof["guarantee"],

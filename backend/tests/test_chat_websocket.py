@@ -1001,3 +1001,232 @@ def test_websocket_frame_and_origin_boundaries(monkeypatch):
     assert _origin_allowed("http://localhost:5173") is True
     monkeypatch.setattr(settings, "vercel_origin_regex", "[")
     assert _origin_allowed("https://preview.example") is False
+
+
+def test_websocket_rechecks_completed_turn_after_thread_admission(
+    temp_data_dir, monkeypatch
+):
+    from adapters.database_adapter import fetchone
+    from storage import thread_store
+
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    canonical = {"version": "persisted-v1", "nodes": [], "edges": []}
+    original_acquire = runtime_state_store.try_acquire_active_stream
+
+    def acquire_after_commit(*args, **kwargs):
+        if args[1] == "chat-thread":
+            persist_turn(
+                user["id"],
+                thread["id"],
+                title="Stored",
+                user_content="Build an agent",
+                assistant_content="Canonical answer",
+                graph_data=canonical,
+                client_request_id="admission-race",
+            )
+        return original_acquire(*args, **kwargs)
+
+    async def unexpected_model(*_args):
+        pytest.fail("completed request must replay before running the model")
+
+    monkeypatch.setattr(
+        runtime_state_store, "try_acquire_active_stream", acquire_after_commit
+    )
+    monkeypatch.setattr(chat_websocket, "run_agent", unexpected_model)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json() == {"type": "ready"}
+            socket.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Build an agent",
+                    "client_request_id": "admission-race",
+                }
+            )
+            events = _receive_until(socket, "done")
+    assert events == [
+        {"type": "response_delta", "content": "Canonical answer"},
+        {"type": "graph_data", "data": canonical},
+        {"type": "done"},
+    ]
+    assert thread_store.get_graph(user["id"], thread["id"]) == canonical
+    assert len(get_history(user["id"], thread["id"])) == 2
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+@pytest.mark.parametrize("secondary_transport", ["websocket", "sse"])
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_chat_thread_serialization_allows_other_threads_with_user_capacity(
+    temp_data_dir, monkeypatch, secondary_transport, duplicate
+):
+    from adapters.database_adapter import fetchone
+    from adapters.supabase_auth_adapter import get_current_user
+    from test_api_security import _parse_sse_events
+
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    other_thread = create_thread(user["id"])
+    app.dependency_overrides[get_current_user] = lambda: user
+    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 3)
+    calls = []
+
+    async def blocking_agent(state, *_tools):
+        calls.append(state["session_id"])
+        await state["send"]({"type": "response_delta", "content": "running"})
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(chat_websocket, "run_agent", blocking_agent)
+    monkeypatch.setattr("api.sse_handler.run_agent", blocking_agent)
+    headers = {"origin": "http://localhost:5173"}
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/chat/ws", headers=headers) as first:
+            first.send_json({"type": "auth", "access_token": "test-token"})
+            assert first.receive_json() == {"type": "ready"}
+            first.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Build an agent",
+                    "client_request_id": "first",
+                }
+            )
+            _receive_until(first, "response_delta")
+            body = {
+                "thread_id": thread["id"],
+                "content": "Build an agent",
+                "client_request_id": "first" if duplicate else "second",
+            }
+            if secondary_transport == "websocket":
+                with client.websocket_connect(
+                    "/api/chat/ws", headers=headers
+                ) as second:
+                    second.send_json({"type": "auth", "access_token": "test-token"})
+                    assert second.receive_json() == {"type": "ready"}
+                    second.send_json({"type": "start", **body})
+                    rejected = _receive_until(second, "done")
+            else:
+                rejected = _parse_sse_events(client.post("/api/chat", json=body).text)
+            assert rejected[0]["type"] == "error"
+            assert "already running" in rejected[0]["content"]
+            assert calls == [thread["id"]]
+            with client.websocket_connect("/api/chat/ws", headers=headers) as other:
+                other.send_json({"type": "auth", "access_token": "test-token"})
+                assert other.receive_json() == {"type": "ready"}
+                other.send_json(
+                    {
+                        "type": "start",
+                        "thread_id": other_thread["id"],
+                        "content": "Build a different agent",
+                        "client_request_id": "other",
+                    }
+                )
+                _receive_until(other, "response_delta")
+                assert calls == [thread["id"], other_thread["id"]]
+                other.send_json({"type": "stop", "client_request_id": "other"})
+                _receive_until(other, "stopped")
+            first.send_json({"type": "stop", "client_request_id": "first"})
+            _receive_until(first, "stopped")
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+def test_websocket_releases_both_leases_on_setup_failure(temp_data_dir, monkeypatch):
+    from adapters.database_adapter import fetchone
+
+    app, _user, thread = _ready_app(temp_data_dir, monkeypatch)
+
+    def failed_setup(*_args):
+        raise RuntimeError("setup failed")
+
+    monkeypatch.setattr(chat_websocket, "_make_agent_tools", failed_setup)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json() == {"type": "ready"}
+            socket.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Build an agent",
+                }
+            )
+            assert _receive_until(socket, "done")[0]["type"] == "error"
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+@pytest.mark.asyncio
+async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    ws = chat_websocket
+    started = asyncio.Event()
+    acquired, released = [], []
+    user = {"id": "user", "email": "user@example.com"}
+    monkeypatch.setattr(ws, "_origin_allowed", lambda origin: True)
+    monkeypatch.setattr(ws, "get_current_user", lambda **kw: user)
+    monkeypatch.setattr(ws, "upsert_profile", lambda *a: None)
+    monkeypatch.setattr(ws.thread_store, "get_thread", lambda *a: {"title": "New chat"})
+    monkeypatch.setattr(ws.thread_store, "get_completed_turn", lambda *a: None)
+    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None))
+    monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
+    monkeypatch.setattr(ws, "_request_error", lambda *a: None)
+    monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
+    monkeypatch.setattr(ws, "_make_agent_tools", lambda *a: (None, None, None))
+    monkeypatch.setattr(ws, "enqueue_analytics_event", lambda **kw: None)
+    metric_changes = []
+    monkeypatch.setattr(ws, "change_active_chat_streams", metric_changes.append)
+    monkeypatch.setattr(ws, "record_agent_duration", lambda *a, **kw: None)
+
+    def acquire(*args, **kw):
+        acquired.append(args[1])
+        return args[1]
+
+    monkeypatch.setattr(ws.runtime_state_store, "try_acquire_active_stream", acquire)
+    monkeypatch.setattr(
+        ws.runtime_state_store, "release_active_stream", released.append
+    )
+
+    async def agent(*args):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            raise RuntimeError("cleanup failed")
+
+    monkeypatch.setattr(ws, "run_agent", agent)
+    socket = SimpleNamespace(
+        headers={}, accept=AsyncMock(), close=AsyncMock(), send_json=AsyncMock()
+    )
+    incoming = iter(
+        [
+            {"type": "auth", "access_token": "test"},
+            {
+                "type": "start",
+                "thread_id": "thread",
+                "content": "hello",
+                "client_request_id": "request",
+            },
+        ]
+    )
+
+    async def receive(*args):
+        try:
+            return next(incoming)
+        except StopIteration:
+            await asyncio.Future()
+
+    monkeypatch.setattr(ws, "_receive_object", receive)
+    task = asyncio.create_task(ws.chat_websocket(socket))
+    await asyncio.wait_for(started.wait(), 1)
+    task.cancel()
+    with pytest.raises(RuntimeError, match="cleanup failed"):
+        await task
+    assert acquired == ["chat", "chat-thread"]
+    assert released == ["chat-thread", "chat"]
+    assert metric_changes == [1, -1]
+    socket.close.assert_awaited_once()

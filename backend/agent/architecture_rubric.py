@@ -13,7 +13,7 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Every primary member must be naturally reachable outward from that root along a path of primary members using directed runtime or control contracts. Keep independent ingress and supporting components in the design, marking them non-primary when they are outside that directed main path. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
+        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Every primary member must be naturally reachable outward from that root along a path of primary members using directed runtime or control contracts. Keep independent ingress and supporting components in the design, marking them non-primary when they are outside that directed main path. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
@@ -214,6 +214,18 @@ def staged_review_requirements(
             "owner in this system for the external write or the feedback-driven change "
             "to a model, prompt, ranking, or live configuration, respectively."
         )
+        if maturity == "production":
+            requirements["selected_depth"] += (
+                " Before freezing the component set, require named executable ownership "
+                "for production obligations applicable to declared responsibilities and "
+                "capabilities: external_effects requires controlled execution, reconciliation, "
+                "and compensation; retrieval_or_reuse requires validation, reuse lifecycle "
+                "management, and invalidation; learning_or_release requires curated evidence, "
+                "offline evaluation, reviewed release, canary, promotion, and rollback. "
+                "Existing components may own compatible operations; do not require a separate "
+                "component for every checklist step. A datastore, registry, or audit label, "
+                "or an assumption alone, cannot execute evaluation, release, or control."
+            )
     elif maturity == "production":
         for guarantee in required_production_guarantees:
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:

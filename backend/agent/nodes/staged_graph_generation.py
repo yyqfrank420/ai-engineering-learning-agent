@@ -35,7 +35,7 @@ from agent.stream_utils import stream_structured_llm
 
 _MODEL = "kimi-k3"
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v8"
+_COMPONENT_PROMPT_VERSION = "staged_components_v9"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v5"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
@@ -746,7 +746,12 @@ def _attempt_prompt(
                 "primary members over directed runtime or control contracts. Keep independent ingress and support "
                 "components in the design with primary_flow_member=false when they lie "
                 "outside that directed main path. Do not invent reverse or control edges "
-                "to make an unsuitable root or primary membership reachable."
+                "to make an unsuitable root or primary membership reachable. "
+                "Determine initiation from declared behavior. A component that pulls or "
+                "requests data may initiate an outward request with a return response; "
+                "inbound responses and independent inputs do not disqualify that root. "
+                "Require contracts consistent with the declared responsibilities, without "
+                "inventing requests for push-only sources."
             )
     else:
         if architecture_context is not None:

@@ -472,6 +472,75 @@ events. Chat state, graph publication, and server-side LLM usage accounting have
 separate writers and were unaffected. Access logs do not identify the five event
 payloads. The analytics delivery limitation remains outside this graph repair.
 
+### Review boundaries and concurrent retries
+
+The completed full run passed 16 of 20 browser cases. Semantic proposals had 13
+passes, three manual reviews, and four failures. RAG, memory, and the exact Serving
+Monitor expansion passed semantic review. The failures were marketing, document
+processing, closed-loop evaluation, and cold-chain architecture. Complete usage
+records account for 77 provider attempts and 16 judge calls: $2.504474 for the
+application and $0.680132 for the judge. No incomplete usage was reported.
+
+The full capture at `179c4d4451c437d3c3e417709d0f7c51d4327280`
+([run 34659637747](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34659637747))
+completed browser execution in 15 minutes 49.6 seconds. The shared deadline budget
+allowed the marketing review to finish in 79.9 seconds and the document review in
+61.7 seconds, beyond the former 55-second limit.
+
+Both reviews then encountered a separate parser failure. An invalid route witness
+caused the parser to discard eight valid marketing findings, two valid document
+findings, and two closed-loop evaluation findings, then terminate without the
+available correction. The parser now retains
+validated semantic findings and the proof diagnostic. It accepts no malformed
+proof and cannot approve that candidate. A malformed proof without valid semantic
+findings still terminates. Review instructions distinguish contiguous route
+witnesses from separate edges that demonstrate branches.
+
+The marketing component review also rejected an optimizer that explicitly initiates
+work by pulling evaluated outcomes. An offline witness preserved all 17 original
+components and the optimizer root: adding the outward request to the existing
+return response passed both connection parsing and graph projection. Removing the
+request failed both checks. Root selection now recognizes declared pull behavior
+without inventing requests for push-only sources.
+
+The cold-chain component review demanded incoming edges for a recovery owner before
+connection generation. Component review now assesses whether the declared
+responsibilities support a feasible directed path. Missing edges or absent peer
+names alone cannot reject a component plan. Actual directed reachability remains
+mandatory when connections are generated and projected.
+
+The document candidate exposed an upstream ownership gap. It enabled learning and
+release but assigned regression-gated release only to a version registry. No
+executable component owned offline evaluation. The connection stage could not add
+that owner after component approval. Production component criteria now require
+executable ownership for applicable mutation, reuse, and release obligations.
+Compatible operations may share an existing owner; this does not require one
+component per checklist item. Prototype criteria remain unchanged.
+
+A separate offline transport audit reproduced a duplicate-request race with real
+SQLite persistence. A competing instance completed after the early replay check
+but before stream admission. The second instance recomputed a response, persistence
+correctly deduplicated it, and WebSocket publication displayed the unsaved second
+graph. Chat now serializes each thread independently of the per-user concurrency
+limit and rechecks completed requests after acquiring both leases. The retry
+replays the saved answer and graph without a model call. The same check applies
+to SSE. Lease lifetime covers context reads, execution, persistence, and publication.
+
+The concurrency review also checked cancellation and responses that never start
+streaming. SSE acquires its leases inside the stream generator, so an unstarted
+response owns no lease. Task cleanup failures must not skip WebSocket lease release.
+These cases use deterministic transport tests rather than paid model reruns.
+
+The domain-specificity rubric also conflicted with two corpus requests. It
+penalized an explicitly educational tools-and-memory diagram for not inventing a
+business use case, and an underspecified operations clarification for not drawing
+an architecture. Corpus `2026-09-12.v1` / `browser-rubric-v3` now judges the stated
+application or educational subject and permits targeted clarification of missing
+requirements. Generic substitutions and vague questions still fail. Existing
+human labels remain empty; model proposals are not human approval. The separate
+long-context answer exceeded its explicit summary-only scope, so that manual
+instruction-following finding remains valid.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.
@@ -507,6 +576,13 @@ policy tests. All 362 committed file contents matched the unchanged local test
 snapshot. Eight saved Chromium renders had no sampled edge/card intersections,
 node overlap, clipping, or visible label collisions. The shared deadline and
 clarification refinements require their own validation after this commit.
+
+Commit `179c4d4451c437d3c3e417709d0f7c51d4327280` passed all eleven local and
+cloud groups: 2,065 backend tests at 91% coverage, 249 frontend tests, and 237 policy
+tests. All 363 committed source blobs matched the unchanged local test snapshot.
+The captured 30-node, 95-edge document graph showed all eight required labels and
+passed the unchanged render gate. The review-boundary and concurrent-retry repairs
+above require their own complete validation and live capture.
 
 Existing optional ingestion tests remain skipped without the source PDF or model
 opt-in. Dependency deprecation warnings, the local Node storage warning, and two
