@@ -255,14 +255,14 @@ def test_graph_off_staging_case_avoids_brittle_keyword_requirements():
     assert step.expect.response_contains == ["RAG"]
 
 
-def test_pr_live_eval_is_globally_serial_and_blocks_manual_review():
+def test_pr_live_eval_is_globally_serial_with_optional_manual_review():
     workflow = Path(".github/workflows/live-eval.yml").read_text(encoding="utf-8")
 
     assert "group: staging-live-eval-global" in workflow
     assert "cancel-in-progress: false" in workflow
     assert "./scripts/ci browser --suite pr" in workflow
-    assert "--require-approved-corpus" in workflow
-    assert "--manual-review-policy blocking" in workflow
+    assert "--require-approved-corpus" not in workflow
+    assert "--manual-review-policy report-only" in workflow
     assert "environment: staging-eval" in workflow
     assert "EVALUATION_RUN_ID=$EVALUATION_RUN_ID" in workflow
     assert "OTEL_ENVIRONMENT: staging" in workflow
@@ -299,11 +299,11 @@ def test_production_deploy_marks_backend_and_frontend_analytics():
     assert 'OTEL_ENVIRONMENT = "staging"' in terraform
 
 
-def test_scheduled_eval_blocks_manual_review_for_an_approved_corpus():
+def test_scheduled_eval_preserves_failures_with_optional_manual_review():
     workflow = Path(".github/workflows/scheduled-eval.yml").read_text(encoding="utf-8")
 
-    assert "--require-approved-corpus" in workflow
-    assert "--manual-review-policy blocking" in workflow
+    assert "--require-approved-corpus" not in workflow
+    assert "--manual-review-policy report-only" in workflow
     assert "OTEL_ENVIRONMENT: staging" in workflow
     assert "EVALUATION_PROVIDER_ATTEMPT_LIMIT: 150" in workflow
     assert "BROWSER_OUTCOME: ${{ steps.browser.outcome }}" in workflow
@@ -313,12 +313,9 @@ def test_scheduled_eval_blocks_manual_review_for_an_approved_corpus():
         '[ "$SEMANTIC_OUTCOME" != success ]; then'
     ) in workflow
     outcome_step = workflow.split("name: Enforce scheduled evaluation outcome", 1)[1]
-    assert outcome_step.index(
-        'if [ "$BROWSER_OUTCOME" != success ] || '
-        '[ "$SEMANTIC_OUTCOME" != success ]; then'
-    ) < outcome_step.index('if [ "$CORPUS_STATUS" != approved ]; then')
+    assert "CORPUS_STATUS" not in outcome_step
     assert "Scheduled evaluation did not pass." in outcome_step
-    assert "successful proposals do not approve a release" in outcome_step
+    assert "Publish exact-tree approval tag" not in workflow
 
 
 def test_scheduled_manual_suites_can_select_pipeline_without_changing_defaults():

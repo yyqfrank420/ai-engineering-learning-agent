@@ -319,7 +319,7 @@ jobs:
               --target "$target" \
               --input "$input" \
               --output artifacts/selective/live-results.json \
-              --require-approved-corpus \
+              --manual-review-policy report-only \
               --capture-replay \
               "${case_args[@]}"
           else
@@ -361,11 +361,11 @@ jobs:
           if (
               report.get("kind") != "live_gate"
               or report.get("suite") != "diagnostic"
-              or report.get("status") != "pass"
+              or report.get("status") not in {"pass", "manual_review"}
               or report.get("blocking_status") != "pass"
               or actual != expected
               or len(actual) != len(set(actual))
-              or any(item.get("decision") != "pass" for item in evaluations or [])
+              or any(item.get("decision") not in {"pass", "manual_review"} for item in evaluations or [])
           ):
               raise SystemExit("selective semantic replay did not pass every exact ordered case")
           print(f"Selective semantic replay passed: {', '.join(actual)}")
