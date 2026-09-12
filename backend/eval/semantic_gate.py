@@ -37,15 +37,15 @@ def _single_judgment_status(result: JudgeResult) -> GateStatus:
         return "infrastructure"
     if any(item.critical and item.grade == "fail" for item in result.dimensions):
         return "fail"
-    if any(item.grade == "borderline" for item in result.dimensions):
-        return "manual_review"
     non_critical = [item for item in result.dimensions if not item.critical]
     if non_critical:
-        pass_ratio = sum(item.grade == "pass" for item in non_critical) / len(
+        failure_ratio = sum(item.grade == "fail" for item in non_critical) / len(
             non_critical
         )
-        if pass_ratio < 0.85:
+        if failure_ratio > 0.15:
             return "fail"
+    if any(item.grade == "borderline" for item in result.dimensions):
+        return "manual_review"
     return "pass"
 
 

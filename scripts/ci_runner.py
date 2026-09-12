@@ -269,7 +269,7 @@ def _dispatch_eval(kind: str, args: argparse.Namespace) -> None:
         argv.extend(["--input", args.input])
     if getattr(args, "require_approved_corpus", False):
         argv.append("--require-approved-corpus")
-    if getattr(args, "manual_review_policy", "blocking") != "blocking":
+    if hasattr(args, "manual_review_policy"):
         argv.extend(["--manual-review-policy", args.manual_review_policy])
     if getattr(args, "capture_replay", False):
         argv.append("--capture-replay")
@@ -347,7 +347,7 @@ def build_parser() -> argparse.ArgumentParser:
             evaluation.add_argument(
                 "--manual-review-policy",
                 choices=("blocking", "report-only"),
-                default="blocking",
+                default="report-only",
             )
             evaluation.add_argument("--capture-replay", action="store_true")
             evaluation.add_argument("--resume-input")

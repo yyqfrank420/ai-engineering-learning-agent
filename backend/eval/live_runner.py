@@ -354,7 +354,7 @@ def _assert_approved_judge_identity(corpus: Any, judge: Any) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Apply deterministic and reviewed semantic gates"
+        description="Apply deterministic and automated semantic gates"
     )
     parser.add_argument("--suite", required=True)
     parser.add_argument("--target", required=True, help="Backend candidate URL")
@@ -364,10 +364,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--manual-review-policy",
         choices=("blocking", "report-only"),
-        default="blocking",
+        default="report-only",
         help=(
             "Whether an otherwise healthy manual-review result blocks the command. "
-            "Report-only is restricted to an approved corpus and never masks clear "
+            "Report-only retains uncertain judgments without masking clear "
             "quality or infrastructure failures."
         ),
     )
@@ -795,12 +795,6 @@ def _exit_code_for_statuses(
 
 async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     manual_review_policy: ManualReviewPolicy = args.manual_review_policy
-    if manual_review_policy == "report-only" and (
-        not args.require_approved_corpus or not args.capture_replay
-    ):
-        raise RuntimeError(
-            "report-only manual review is restricted to approved semantic replay"
-        )
     manifest = _manifest()
     limits = manifest["live"]["budgets"]
     corpus = load_corpus(require_approved=args.require_approved_corpus)

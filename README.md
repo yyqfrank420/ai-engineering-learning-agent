@@ -133,15 +133,15 @@ Protected staging evaluation commands:
 
 The GitHub gate supplies the protected credentials, starts a frontend wired to the
 no-traffic candidate, captures the real WebSocket/browser journey, and then applies
-deterministic invariants plus reviewed semantic rubrics. Corpus `2026-08-12.v1` is
-pending human review; diagnostic runs can select individual unresolved cases, while the
-manual override fails closed unless its evidence covers every protected PR case exactly once.
+deterministic invariants plus anchored semantic rubrics. Human corpus review and judge
+calibration are optional. Automated failures block; borderline judgments stay visible
+as nonblocking findings. Diagnostic runs can select individual unresolved cases.
 Evaluation and release provenance binds the content commit, Git tree, and immutable
 image digest across synthetic PR merge refs and later squash merges. Selective semantic
 replay reuses only authenticated, successful graph-free cases; runtime-affected cases
 rerun as scheduled diagnostics. Scheduled evaluation now reports a missing image tag in
-preflight, while a manual diagnostic builds an ephemeral image from the exact requested
-tree. The staged pipeline permits one correction per layer, and failed admission preserves
+preflight, while a manually dispatched full or diagnostic run can build an ephemeral
+image from the exact requested tree. The staged pipeline permits one correction per layer, and failed admission preserves
 the approved graph. The legacy whole-graph repair loop remains available through explicit rollback.
 These controls do not imply that paid validation or a pending production
 deployment has completed. See [docs/quality-system.md](docs/quality-system.md) for the
@@ -150,8 +150,8 @@ full evidence, replay, and deployment procedures.
 The [2026-09-11 failure audit](docs/failure-audit-2026-09-11.md) reconciles all 55 failed
 single-case graph-expansion diagnostics with their available evidence. Scoped staged edits now
 generate additions and authorized field updates while the server preserves locked records.
-Generation and review share their acceptance criteria. The required live status fails when corpus
-approval is missing; offline success does not replace protected live evaluation.
+Generation and review share their acceptance criteria. Required live status follows automated
+evaluation results; offline success does not replace live evaluation.
 Scoped review verifies prior approvals against graph and reviewer fingerprints and checks each
 edit's effects on dependencies. Edge edits preserve authored presentation; node deletion cleans
 only affected sequence memberships. Scheduled failures stay failed and retain review evidence

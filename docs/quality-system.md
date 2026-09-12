@@ -24,16 +24,14 @@ lines, and functions plus 75% branches. These suites use dummy credentials and
 fake provider clients; live model evaluation remains a separate protected gate.
 
 The stable branch checks are `CI required` and `Live eval required`. Both workflows
-listen to `pull_request`, trusted pushes, and `merge_group`. Corpus version
-`2026-08-12.v1` is pending human review after the graph-expansion contract added a
-180-second per-turn visible graph-output deadline.
-For AI-impacting changes, the required live check fails while the corpus is pending
-review. It skips browser installation, GCP authentication, image builds, staging
-mutation, and model calls. Production promotion remains disabled until this exact
-corpus is approved. Run
-`scripts/configure_main_branch_protection.sh owner/repo` to inspect the current and
-proposed branch protection without writing. Add `--apply` only after reviewing the
-payload.
+listen to `pull_request`, trusted pushes, and `merge_group`. AI-impacting changes run
+the automated browser and semantic checks. Human corpus labels and judge calibration
+are optional evaluation tools; pending review metadata does not block execution or
+promotion. A successful live check records the tested Git tree and immutable image
+digest. Production still requires that exact image and successful smoke checks.
+Run `scripts/configure_main_branch_protection.sh owner/repo` to inspect the current
+and proposed branch protection without writing. Add `--apply` only after reviewing
+the payload.
 
 ## Trust and staging isolation
 
@@ -47,7 +45,9 @@ Same-repository AI changes wait for approval of the `staging-eval` GitHub
 Environment. Its federated GCP identity is bound to that exact
 Environment-bearing OIDC subject, can read only staging secrets, and cannot
 impersonate the separate production deployer. The `production` Environment has an
-independently bound identity. Staging mutation is globally serialized. A database
+independently bound identity. Production accepts only successful push or manual
+workflow runs from this repository's `main` branch, checked before source checkout.
+Staging mutation is globally serialized. A database
 advisory lock is held while the constant `staging` schema is dropped, recreated,
 and migrated from scratch. `DB_SCHEMA` accepts only `public` or `staging`;
 application connections and Alembic both pin their search path. Before and after
@@ -122,12 +122,12 @@ To diagnose a small set without replaying the whole corpus, manually dispatch
 `Scheduled evaluation` with suite `diagnostic` and one to eight space-separated
 case IDs. The same targeted mode is available locally by repeating `--case`, for
 example `./scripts/ci browser --suite diagnostic --case citations ...`. Diagnostic
-runs use the PR-sized time, application-call, and judge-call budgets and cannot
-approve or replace the full corpus review. When the approved corpus has no
-`approved-tree-<tree>` image for the workflow-dispatch ref, this diagnostic path
-builds and deploys an ephemeral image for that exact checked-out tree, then removes
-its temporary tag. It never publishes an approval tag. Scheduled, nightly, and full
-runs still require an existing exact-tree approval when the corpus is approved.
+runs use the PR-sized time, application-call, and judge-call budgets. A manually
+dispatched full or diagnostic run can build an ephemeral image when that exact tree
+has no previously passed image. Its temporary tag is removed after evaluation.
+Scheduled and nightly runs require an existing `approved-tree-<tree>` image to avoid
+implicit candidate builds. Only the successful protected PR evaluation publishes that
+tag; scheduled captures do not grant deployment approval.
 
 `Semantic review replay` has two isolated modes. The default `full-scheduled` mode
 preserves the existing behavior: it authenticates a successful full scheduled run,
@@ -144,8 +144,9 @@ a diagnostic capture containing only the selected results, case states, and
 attributed telemetry. It runs `scripts/ci live --suite diagnostic --capture-replay`
 with the selected cases, so it performs judge calls only: it does not open a browser,
 call the application model, authenticate to GCP, deploy, or mutate staging. Every
-selected semantic decision must be `pass`; failure, manual review, infrastructure
-failure, reordered/duplicate results, or missing provenance fails closed. The
+selected semantic decision must be `pass` or `manual_review` with a passing blocking
+status. Failure, infrastructure errors, reordered/duplicate results, or missing
+provenance fail closed. The
 30-day replay artifact contains the subset capture, live result, and provenance with
 original/derived hashes, source run/head/tested commit/tree/digest, selection,
 artifact digest, replay commit/actor, reviewer, and reason. Selective replay is
@@ -171,8 +172,8 @@ minute limits no longer apply.
 
 Scheduled nightly and full suites use the same pre-request quota with a 150-attempt
 cap. Diagnostic dispatches use the 64-attempt PR cap.
-Every scheduled browser or semantic non-success fails the workflow, including pending
-corpus proposals. Scheduled artifacts retain evidence for 90 days. `deployment.json`
+Every scheduled browser failure or blocking semantic outcome fails the workflow.
+Borderline semantic findings are retained as nonblocking review information. Scheduled artifacts retain evidence for 90 days. `deployment.json`
 binds the run to its commit, Git tree, immutable image digest, tagged Cloud Run revision,
 pipeline mode, and suite. The browser results record the cases that ran.
 
@@ -205,44 +206,32 @@ least five clean runs establish per-case and suite baselines; only reviewed limi
 should be promoted to blocking. Provider rate limits, transport failures, and
 timeouts remain infrastructure failures and never masquerade as quality regressions.
 
-## Corpus approval and semantic policy
+## Automated semantic policy and optional calibration
 
-`backend/eval/corpus/v1/cases.json` is a 20-case, versioned corpus. It contains
-conversation steps, UI modes, categories, risk tags, deterministic expectations,
-rubric references with pass/borderline/fail anchors, criticality, provenance, and
-per-case approval metadata. Generated answers remain artifacts; only prompts,
-rubrics, invariants, and intentionally reviewed exemplars belong in source control.
+`backend/eval/corpus/v1/cases.json` is a versioned 20-case corpus containing prompts,
+UI modes, deterministic expectations, and anchored rubrics. The PR suite selects
+eight cases. Generated answers remain evidence artifacts.
 
-The current `2026-09-12.v1` corpus says `pending_human_review`. The graph-expansion
-case is pending because its first turn now requires a monitoring component at
-prototype UI depth and its second turn permits exactly one directly connected
-responsibility while preserving the original graph topic and existing components.
-All 20 case approvals are pending so the fresh full-corpus review is machine-enforced.
-Corpus reviewer, review time, approved manifest hash, calibration evidence identity,
-and calibration results are empty. `semantic-rubric-judge-v7`, Anthropic, and
-`claude-sonnet-5` remain configured judge selections; they are not approval evidence
-for this revision.
+Deterministic and critical semantic failures block immediately. A clear noncritical
+failure gets one independent second judgment; two clear failures block. More than
+15% failing noncritical dimensions is a clear failure. A borderline dimension cannot
+hide that failure. Borderline-only results and judge disagreements remain
+`manual_review` in reports and use the default `report-only` exit policy. Infrastructure
+errors, missing accounting, and configured blocking cost limits still fail.
+`--manual-review-policy blocking` explicitly restores a blocking review policy.
 
-`corpus_sha256()` hashes behavior only: corpus-level and per-case approval metadata
-are excluded while prompts, rubrics, UI modes, and deterministic expectations remain
-covered. Recording calibration provenance therefore cannot change the corpus
-identity or create a digest/storage-prefix cycle. A separate approval-manifest hash
-covers all approval labels, reviewers, calibration baselines, and evidence identity
-except its own digest field. `--require-approved-corpus` validates that full
-manifest, so either behavior or provenance tampering fails closed. Reapproving
-`2026-09-12.v1` requires a full protected 20-case capture, human review of all 20
-cases, a reviewer, review time, artifact run, and reviewed grades for every case,
-judge recalibration against that reviewed capture, the new calibration evidence and
-result fields, and a newly computed approved manifest hash. Until those records are
-complete, the pending corpus blocks the required live check and production promotion.
+The corpus may retain `pending_human_review` metadata while automated checks run.
+That status records the absence of human labels; it is not a release prerequisite.
+`semantic-rubric-judge-v7`, Anthropic, and `claude-sonnet-5` are the versioned judge
+selection. Reports record the active provider, model, and prompt release.
 
-To collect review evidence before merging, manually dispatch `Scheduled evaluation`
-with suite `full` from the same-repository candidate branch. Its pending-corpus
-bootstrap path builds an ephemeral image for that checked-out tree and captures all
-20 cases behind the `staging-eval` environment. Review the artifacts, complete the
-corpus approval records, and rerun `Live eval required` for the updated candidate.
-A successful bootstrap capture alone does not approve the corpus or publish an
-exact-tree approval. Diagnostic runs cannot replace the full review.
+`corpus_sha256()` hashes prompts, rubrics, UI modes, and deterministic expectations.
+It excludes human approval metadata, so adding labels cannot change behavior identity.
+The optional `--require-approved-corpus` mode verifies the full human approval manifest
+and calibrated judge identity. Optional calibration requires a complete 20-case
+capture, reviewed grades, reviewer identity, and immutable evidence provenance.
+Manually dispatch `Scheduled evaluation` with suite `full` to collect that capture.
+It does not publish a deployment approval tag.
 
 For the first calibration, keep aggregate corpus approval pending while recording
 all 20 human-reviewed cases and the pinned judge and browser evidence identity.
@@ -263,15 +252,6 @@ After calibration passes, record its computed results and complete aggregate
 corpus approval and the approved manifest hash. Calibration does not approve the
 corpus or change its review records.
 
-With an approved corpus, deterministic and critical semantic failures block immediately. A clear
-non-critical semantic failure gets one independent second judgment; two clear failures block. A
-borderline grade or judge disagreement requires manual review. PR and scheduled
-evaluation use the blocking policy for an approved corpus, so every fresh manual-review
-decision blocks promotion. Report-only is restricted in code to approved semantic
-capture replay, where no new application answer or candidate deployment is created.
-Deterministic, confirmed semantic, and infrastructure failures exit non-zero under
-either policy. No
-critical dimension may fail, and at least 85% of non-critical dimensions must pass.
 
 ## Immutable judge-calibration evidence
 

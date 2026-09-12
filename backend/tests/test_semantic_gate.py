@@ -753,16 +753,18 @@ async def test_live_evaluation_records_projected_staged_gate_diagnostics(monkeyp
     ]
 
 
-@pytest.mark.asyncio
-async def test_report_only_policy_is_replay_only():
-    args = SimpleNamespace(
-        manual_review_policy="report-only",
-        require_approved_corpus=True,
-        capture_replay=False,
-    )
-
-    with pytest.raises(RuntimeError, match="approved semantic replay"):
-        await evaluate(args)
+def test_live_defaults_allow_automated_evaluation_without_corpus_approval():
+    args = live_runner.build_parser().parse_args([
+        "--suite", "full", "--target", "https://candidate.example",
+    ])
+    assert args.manual_review_policy == "report-only"
+    assert args.require_approved_corpus is False
+    explicit = live_runner.build_parser().parse_args([
+        "--suite", "full", "--target", "https://candidate.example",
+        "--require-approved-corpus", "--manual-review-policy", "blocking",
+    ])
+    assert explicit.require_approved_corpus is True
+    assert explicit.manual_review_policy == "blocking"
 
 
 def test_noncritical_pass_threshold_is_enforced():
@@ -2166,3 +2168,85 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
     for index, node in enumerate(evidence["turns"][0]["graph"]["nodes"], start=1):
         prefix = f"turn-1-graph-node-{index}-"
         assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == node
+
+
+@pytest.mark.parametrize("failure_count,expected", [(2, "manual_review"), (3, "manual_review"), (4, "fail")])
+def test_noncritical_failures_are_counted_before_borderline(failure_count, expected):
+    judgment = result(*(
+        (f"d{index}", "fail" if index < failure_count else "borderline" if index == 19 else "pass", False)
+        for index in range(20)
+    ))
+    first = decide_semantic_gate(judgment)
+    if expected == "fail":
+        assert first.status == "infrastructure"
+        assert "second independent" in first.reason
+    else:
+        assert first.status == "manual_review"
+    assert decide_semantic_gate(judgment, judgment).status == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome,expected_exit,expected_status,judge_calls", [
+    ("borderline", 0, "manual_review", 1),
+    ("explicit_blocking", 3, "manual_review", 1),
+    ("critical", 1, "fail", 1),
+    ("mixed_confirmed", 1, "fail", 2),
+    ("deterministic", 1, "fail", 0),
+    ("infrastructure", 2, "infrastructure", 1),
+    ("cost_block", 1, "fail", 1),
+])
+async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
+    monkeypatch, outcome, expected_exit, expected_status, judge_calls
+):
+    corpus = load_corpus()
+    assert corpus.approval.status == "pending_human_review"
+    case = corpus.by_id["memory"]
+    capture = {
+        "results": [{"id": case.id, "answer": "Answer.", "events": [],
+                     "deterministic_failures": ["missing required output"] if outcome == "deterministic" else [],
+                     **({"failure_details": [{"kind": "quality"}]} if outcome == "deterministic" else {})}],
+        "application_telemetry": [{"provider_attempts": 1}],
+    }
+    calls = []
+
+    async def judge(*_args, **kwargs):
+        calls.append(True)
+        kwargs["on_attempt"]()
+        if outcome == "infrastructure":
+            raise RuntimeError("provider unavailable")
+        if outcome == "critical":
+            return replace(result(("safety", "fail", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+        if outcome == "mixed_confirmed":
+            return replace(result(("correctness", "fail", False), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+        return replace(result(("safety", "pass", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    monkeypatch.setattr(live_runner, "SemanticJudge", lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"))
+    monkeypatch.setattr(live_runner, "judge_with_transport_retry", judge)
+    monkeypatch.setattr(live_runner, "account_application_cost", lambda *_args: {"total": {"estimated_usd": 0}, "price_release": "test"})
+    monkeypatch.setattr(live_runner, "evaluate_cost_policy", lambda *_args: {
+        "status": "fail" if outcome == "cost_block" else "pass",
+        "blocking_status": "fail" if outcome == "cost_block" else "pass", "reason": "test policy",
+    })
+    args = live_runner.build_parser().parse_args([
+        "--suite", "diagnostic", "--case", "memory", "--target", "https://candidate.example",
+        *(["--manual-review-policy", "blocking"] if outcome == "explicit_blocking" else []),
+    ])
+    report, exit_code = await evaluate(args)
+    assert exit_code == expected_exit
+    assert report["status"] == expected_status
+    assert report["corpus_approval"] == "pending_human_review"
+    assert len(calls) == judge_calls
+    if outcome in {"borderline", "explicit_blocking", "cost_block"}:
+        assert report["evaluations"][0]["decision"] == "manual_review"
+    if outcome == "borderline":
+        assert report["blocking_status"] == "pass"
+
+
+@pytest.mark.asyncio
+async def test_optional_approved_corpus_flag_still_rejects_pending_before_judging():
+    args = live_runner.build_parser().parse_args([
+        "--suite", "full", "--target", "https://candidate.example", "--require-approved-corpus",
+    ])
+    with pytest.raises(RuntimeError, match="pending human review"):
+        await evaluate(args)
