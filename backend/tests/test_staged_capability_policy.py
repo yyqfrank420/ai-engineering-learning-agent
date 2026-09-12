@@ -63,7 +63,6 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
         evidence_bundle={},
         resolved_maturity=maturity,
         candidate_records=[],
-        rule_codes=gate.COMPONENT_RULE_CODES,
         required_production_guarantees=(),
     )
     generated_criteria = json.loads(generated_prompt.split("\nINPUT\n", 1)[1])[
@@ -95,3 +94,51 @@ def test_capability_clarification_invalidates_prior_review_identity(
     monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
 
     assert gate.review_identity("components", maturity) != current_identity
+
+
+def test_production_review_consolidates_obligations_without_losing_failure_outcomes():
+    requirements = staged_review_requirements(
+        "connections",
+        "production",
+        ("state_effect_reconciliation", "retrieval_and_reuse_trust"),
+    )
+
+    assert "complete_reconciliation" not in requirements
+    assert "safe_factual_failure" not in requirements
+    assert "controlled_learning_and_release" not in requirements
+    assert "learning_and_release" not in requirements
+    reconciliation = requirements["state_effect_reconciliation"]
+    for obligation in ("COMMITTED", "NOT_FOUND", "STILL_UNKNOWN", "same-key", "bounded"):
+        assert obligation in reconciliation
+    retrieval = requirements["retrieval_and_reuse_trust"]
+    for obligation in ("rejected/stale", "abstention", "invalidation", "entailment"):
+        assert obligation in retrieval
+
+
+def test_production_contracts_allow_internal_ownership_without_extra_graph_edges():
+    requirements = staged_review_requirements("connections", "production")
+
+    assert "between components" in requirements["topology_enforced_guarantees"]
+    assert "required interaction" in requirements["topology_enforced_guarantees"]
+    assert "state_order_integrity" not in requirements
+    component_requirements = staged_review_requirements("components", "production")
+    assert "required internal ordering" in component_requirements["selected_depth"]
+    assert "connection generation cannot change" in component_requirements["selected_depth"]
+    assert "does not need a separate edge" in requirements["streaming_integrity"]
+    assert "streaming_integrity" not in staged_review_requirements(
+        "connections", "prototype"
+    )
+
+
+def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
+    requirements = staged_review_requirements(
+        "connections", "production", ("audit_and_provenance", "retrieval_and_reuse_trust")
+    )
+
+    assert "authorization_and_compensation" not in requirements
+    reconciliation = requirements["state_effect_reconciliation"]
+    for obligation in (
+        "internal durable mutations", "deduplicate atomically", "same-key",
+        "freshness", "fencing before execution",
+    ):
+        assert obligation in reconciliation

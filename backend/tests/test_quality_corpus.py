@@ -94,7 +94,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v5", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v6", "anthropic", "claude-sonnet-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -169,7 +169,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         }
     ]
     assert permissions["allowed_new_node_count"] == 1
-    assert permissions["allowed_new_edge_count"] == 1
+    assert permissions["allowed_new_edge_count"] == 2
 
 
 def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
@@ -2644,14 +2644,19 @@ def test_selective_replay_rejects_unattributed_ambiguous_or_graph_telemetry():
             expected_source_case_ids=_REPLAY_PR_CASES,
         )
 
-    graph_operation = _selective_replay_source_capture()
-    graph_operation["application_telemetry"][1]["operation"] = "graph_critic"
-    with pytest.raises(EvidenceReplayError, match="used graph operation"):
-        subset_browser_capture(
-            graph_operation,
-            selected_case_ids=("memory",),
-            expected_source_case_ids=_REPLAY_PR_CASES,
-        )
+    for operation in (
+        "graph_critic",
+        "staged_graph_components",
+        "staged_graph_connections_gate",
+    ):
+        graph_operation = _selective_replay_source_capture()
+        graph_operation["application_telemetry"][1]["operation"] = operation
+        with pytest.raises(EvidenceReplayError, match="used graph operation"):
+            subset_browser_capture(
+                graph_operation,
+                selected_case_ids=("memory",),
+                expected_source_case_ids=_REPLAY_PR_CASES,
+            )
 
     missing_telemetry = _selective_replay_source_capture()
     missing_telemetry["application_telemetry"] = [

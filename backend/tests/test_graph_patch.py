@@ -1152,7 +1152,7 @@ def test_new_component_words_do_not_become_existing_connection_anchors():
     assert permissions["added_edge_anchor_node_ids"] == ["fulfilment_stage_0"]
 
 
-def test_unique_broad_expansion_compiles_one_child_and_one_directed_edge():
+def test_unique_broad_expansion_compiles_one_child_and_bounded_attachment():
     graph = _domain_graph(5)
     graph["nodes"][2]["label"] = "Drift & Quality Monitor"
 
@@ -1181,7 +1181,9 @@ def test_unique_broad_expansion_compiles_one_child_and_one_directed_edge():
     assert permissions["allowed_new_node_ids"] is None
     assert permissions["editable_node_ids"] == []
     assert permissions["allowed_new_node_count"] == 1
-    assert permissions["allowed_new_edge_count"] == 1
+    assert permissions["allowed_new_edge_count"] == 2
+    assert permissions["minimum_new_edge_count"] == 1
+    assert permissions["connection_addition_mode"] == "attachment"
 
 
 def test_expansion_prefers_an_exact_token_match_over_a_broader_component_name():
@@ -6342,3 +6344,180 @@ def test_initial_normalization_still_slugifies_new_ids_and_rejects_duplicates():
             resolved_complexity="prototype",
             trusted_existing_node_ids=frozenset({graph["nodes"][0]["id"]}),
         )
+
+
+@pytest.mark.parametrize("directions", [(False,), (True,), (False, True)])
+def test_retained_expansion_allows_only_needed_attachment_directions(directions):
+    from pathlib import Path
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/staged_expansion_34663963035.json"
+        ).read_text()
+    )
+    base = fixture["base_graph"]
+    candidate = copy.deepcopy(fixture["initial_candidate"])
+    request_edge = candidate["edges"][-1]
+    response_edge = {
+        **request_edge,
+        "source": "n7",
+        "target": "n5",
+        "label": fixture["correction_delta"]["additions"][0]["label"],
+    }
+    candidate["edges"] = copy.deepcopy(base["edges"]) + [
+        response_edge if reverse else request_edge for reverse in directions
+    ]
+    contract, permissions = graph_worker.staged_edit_scope(
+        fixture["request"], base, resolved_complexity="prototype"
+    )
+    result = graph_worker.admit_staged_graph_edit(
+        base,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+    assert result["nodes"][:-1] == base["nodes"]
+    assert result["edges"][: len(base["edges"])] == base["edges"]
+    assert len(result["edges"]) == len(base["edges"]) + len(directions)
+    # This proves authority admission, not semantic approval of a request without its response.
+    assert fixture["connection_review"]["approved"] is False
+
+
+@pytest.mark.parametrize(
+    "suffix,expected_count,directions",
+    [
+        ("Use exactly one edge.", 1, None),
+        ("Use one new edge.", 1, None),
+        ("Use a single additional connection.", 1, None),
+        ("Use exactly one new feedback edge.", 1, None),
+        ("Use exactly two connections.", 2, None),
+        (
+            "Use one edge from Serving Monitor to the new component.",
+            1,
+            [("n5", "$new_node_1")],
+        ),
+        (
+            "Use one edge from the new component to Serving Monitor.",
+            1,
+            [("$new_node_1", "n5")],
+        ),
+    ],
+)
+def test_component_attachment_preserves_explicit_count_and_direction(
+    suffix, expected_count, directions
+):
+    graph = _domain_graph(3)
+    graph["nodes"][0].update(id="n5", label="Serving Monitor")
+    # Scope compilation reads node identity; the contract also validates graph endpoints.
+    for edge in graph["edges"]:
+        for key in ("source", "target"):
+            if edge[key] == "fulfilment_stage_0":
+                edge[key] = "n5"
+    _, permissions = graph_worker.staged_edit_scope(
+        "Expand Serving Monitor while preserving existing components. " + suffix,
+        graph,
+        resolved_complexity="prototype",
+    )
+    assert permissions["allowed_new_edge_count"] == expected_count
+    assert permissions.get("minimum_new_edge_count", expected_count) == expected_count
+    if directions is not None:
+        assert permissions.get("connection_addition_mode", "exact") == "exact"
+        assert [
+            (o["source"], o["target"])
+            for o in permissions["connection_addition_obligations"]
+        ] == directions
+    valid_edges = (
+        [
+            {
+                "source": source.replace("$new_node_1", "child"),
+                "target": target.replace("$new_node_1", "child"),
+            }
+            for source, target in directions
+        ]
+        if directions
+        else [{"source": "n5", "target": "child"}, {"source": "child", "target": "n5"}][
+            :expected_count
+        ]
+    )
+    patch = {"add_nodes": [{"id": "child"}], "add_edges": valid_edges}
+    graph_worker._validate_added_record_scope(patch, permissions)
+    if directions:
+        invalid = copy.deepcopy(patch)
+        invalid["add_edges"][0]["source"], invalid["add_edges"][0]["target"] = (
+            invalid["add_edges"][0]["target"],
+            invalid["add_edges"][0]["source"],
+        )
+        with pytest.raises(ValueError, match="exact connection"):
+            graph_worker._validate_added_record_scope(invalid, permissions)
+    patch["add_edges"] = valid_edges + [{"source": "child", "target": "n5"}]
+    with pytest.raises(ValueError, match="wrong number of edges"):
+        graph_worker._validate_added_record_scope(patch, permissions)
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        [],
+        [("parent", "other")],
+        [("child", "child")],
+        [("parent", "child"), ("parent", "child")],
+        [("parent", "child"), ("child", "parent"), ("parent", "child")],
+    ],
+)
+def test_component_attachment_rejects_unrelated_self_duplicate_and_excess_edges(edges):
+    graph = _domain_graph(3)
+    _, permissions = graph_worker.staged_edit_scope(
+        "Expand Fulfilment Stage 0 while preserving existing components.",
+        graph,
+        resolved_complexity="prototype",
+    )
+    patch = {
+        "add_nodes": [{"id": "child"}],
+        "add_edges": [
+            {
+                "source": "fulfilment_stage_0" if source == "parent" else source,
+                "target": "fulfilment_stage_0" if target == "parent" else target,
+            }
+            for source, target in edges
+        ],
+    }
+    with pytest.raises(ValueError):
+        graph_worker._validate_added_record_scope(patch, permissions)
+
+
+@pytest.mark.parametrize(
+    "constraint",
+    [
+        "exactly three edges",
+        "exactly eleven edges",
+        "no edges",
+        "one edge Fulfilment Stage 0 -> new component",
+        "exactly 0 edges",
+        "one incoming edge",
+        "only one outgoing edge",
+        "one edge from an unspecified source",
+        "two edges from the new component to Fulfilment Stage 0",
+    ],
+)
+def test_component_attachment_rejects_unsupported_or_conflicting_explicit_authority(
+    constraint,
+):
+    with pytest.raises(ValueError):
+        graph_worker.staged_edit_scope(
+            "Expand Fulfilment Stage 0 while preserving existing components. Use "
+            + constraint,
+            _domain_graph(3),
+            resolved_complexity="prototype",
+        )
+
+
+def test_component_attachment_does_not_treat_data_provenance_as_edge_direction():
+    _, permissions = graph_worker.staged_edit_scope(
+        "Expand Fulfilment Stage 0 while preserving existing components, using data from last week.",
+        _domain_graph(3),
+        resolved_complexity="prototype",
+    )
+    assert permissions["connection_addition_mode"] == "attachment"
+    assert permissions["minimum_new_edge_count"] == 1
+    assert permissions["allowed_new_edge_count"] == 2

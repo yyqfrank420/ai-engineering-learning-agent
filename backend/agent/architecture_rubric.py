@@ -180,6 +180,52 @@ TOPOLOGY_PROOF_REQUIREMENTS = {
 }
 
 
+# Legacy review still uses the proof protocol above. Staged review checks each
+# production obligation once, selected by the accepted system's capabilities.
+STAGED_PRODUCTION_REQUIREMENTS = {
+    "authorization_and_compensation": (
+        "For external mutations, connect authoritative observation, a typed exact-action "
+        "proposal, policy and approval, execution, and the authoritative target. Compensation must "
+        "use the same policy, approval, execution, reconciliation, and audit controls."
+    ),
+    "state_effect_reconciliation": (
+        "For retryable writes, including internal durable mutations, reserve a stable "
+        "operation identity durably before the effect. Revalidate applicable authorization, "
+        "policy, freshness, and fencing before execution. Converge "
+        "alternative delivery paths and deduplicate atomically at the writer. Reconcile "
+        "timeout-after-commit by authoritative read-back using that identity: COMMITTED "
+        "records success, NOT_FOUND permits same-key retry under valid authorization, and "
+        "STILL_UNKNOWN has a bounded escalation. Correlate late anomalies with bounded "
+        "compensation. A response contract may describe these outcomes together."
+    ),
+    "retrieval_and_reuse_trust": (
+        "Treat retrieved bytes as untrusted. Validate material claim entailment before "
+        "delivery or reuse. Failed factual retrieval or rejected/stale artifacts must end "
+        "in clarification, abstention, or a bounded validated retry. Scope reuse by access "
+        "identity, version, and provenance, including model/prompt/index release when "
+        "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
+        "these controls."
+    ),
+    "learning_and_release": (
+        "Route feedback through curated versioned evidence, including hostile traces, "
+        "offline evaluation, reviewed immutable release, and canary. Keep promotion and "
+        "rollback as distinct controlled operations and record their outcomes."
+    ),
+    "audit_and_provenance": (
+        "Give lifecycle state one authoritative owner; caches and projections cannot own "
+        "it. Validate model-proposed actions deterministically. Retain provenance and "
+        "correlated audit evidence for material inputs, decisions, actions, and terminal "
+        "outcomes."
+    ),
+    "streaming_integrity": (
+        "For continuous streams, name ownership of bounded backpressure, ordering or "
+        "event-time rules, replay and deduplication, late-data handling, and schema "
+        "compatibility. Component responsibilities or channel contracts may specify "
+        "these properties; each property does not need a separate edge."
+    ),
+}
+
+
 def staged_review_requirements(
     stage: str,
     maturity: str,
@@ -192,8 +238,8 @@ def staged_review_requirements(
         raise ValueError("maturity must be prototype or production")
     # Wire rule order is versioned; the production extension begins at index 16.
     excluded = set(advisory_rubric_codes(maturity))
-    if maturity == "prototype":
-        excluded.update(RUBRIC_CODES[16:])
+    # The staged production rules below replace overlapping legacy checks.
+    excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
     requirements = {
@@ -225,12 +271,30 @@ def staged_review_requirements(
                 "Existing components may own compatible operations; do not require a separate "
                 "component for every checklist step. A datastore, registry, or audit label, "
                 "or an assumption alone, cannot execute evaluation, release, or control."
+                " Retryable internal writes also need reservation, atomic deduplication, "
+                "and reconciliation ownership. State required internal ordering, such as "
+                "reserve before send and validate before deliver, in the owning component's "
+                "responsibility; connection generation cannot change that responsibility."
             )
     elif maturity == "production":
+        requirements["topology_enforced_guarantees"] = (
+            "Show necessary directed contracts between components, including controls "
+            "that must precede cross-boundary actions. Compatible internal operations "
+            "may stay with one executable owner whose responsibility states the behavior. "
+            "A typed response may contain success and rejection outcomes. A title or "
+            "assumption cannot substitute for an owner or a required interaction."
+        )
+        requirements.update(
+            (code, STAGED_PRODUCTION_REQUIREMENTS[code])
+            for code in (
+                "streaming_integrity",
+                "state_effect_reconciliation",
+            )
+        )
         for guarantee in required_production_guarantees:
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
                 raise ValueError(f"unknown production guarantee: {guarantee!r}")
-            requirements[guarantee] = TOPOLOGY_PROOF_REQUIREMENTS[guarantee]
+            requirements[guarantee] = STAGED_PRODUCTION_REQUIREMENTS[guarantee]
     return requirements
 
 

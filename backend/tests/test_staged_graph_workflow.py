@@ -1754,7 +1754,8 @@ def test_monitoring_expansion_exact_label_or_id_selects_one_authorized_anchor(
 
     assert permissions["added_edge_anchor_node_ids"] == [expected_id]
     assert permissions["allowed_new_node_count"] == 1
-    assert permissions["allowed_new_edge_count"] == 1
+    assert permissions["minimum_new_edge_count"] == 1
+    assert permissions["allowed_new_edge_count"] == 2
 
 
 @pytest.mark.parametrize(
@@ -2245,7 +2246,7 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
     assert result["graph_publication"] == "approved", result["graph_operation"]
     assert component_inputs[0]["write_set"]["mode"] == "edit"
     assert len(component_inputs[0]["write_set"]["component_ids"]) == 3
-    assert len(component_inputs[0]["write_set"]["edge_ids"]) == 2
+    assert len(component_inputs[0]["write_set"]["edge_ids"]) == 3
     assert len(scope_calls) == 1
     assert scope_queries == ["Expand Request gateway."]
     assert scope_calls[0][0]["repair_scope"] == "local"
@@ -2332,10 +2333,9 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
         provider_stages.append(kwargs["stage"])
         properties = kwargs["schema"]["properties"]
         assert properties["updates"]["properties"] == {}
-        assert (
-            properties["additions"]["minItems"]
-            == properties["additions"]["maxItems"]
-            == 1
+        assert properties["additions"]["minItems"] == 1
+        assert properties["additions"]["maxItems"] == (
+            1 if kwargs["stage"] == "components" else 2
         )
         if kwargs["stage"] == "components":
             return json.dumps(

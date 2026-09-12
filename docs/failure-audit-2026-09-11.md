@@ -4,6 +4,49 @@ Audited on 2026-09-11 using GitHub logs, retained result artifacts, source histo
 and local reproductions. Historical collection required no paid models or deployments.
 Fresh staging experiments are recorded separately below.
 
+## September 12 AI pipeline reassessment
+
+The last full capture, run `34663963035` at `de7bd658`, completed with 18/20 browser
+cases passing, 15 semantic passes, three manual reviews, and two failures. It took
+29 minutes 18 seconds. Known application and judge cost totals $3.790517; three
+cancelled application attempts have unknown usage. No new provider calls were used
+for the following diagnosis and offline changes.
+
+- Graph expansion approved a baseline-store responsibility but authorized exactly
+  one outbound edge. The reviewer correctly required returned data. The correction
+  reversed the edge, then deterministic admission rejected its direction. The user
+  asked for one responsibility, not one edge. Scoped attachments now allow one or
+  two directions between the same anchor and new component; explicit counts and
+  directions remain exact. A retained fixture tests both directions and rejects
+  unrelated changes.
+- The marketing candidate took 611.992 seconds and contained 20 nodes and 74 edges.
+  A connection attempt timed out at 240 seconds. The next candidate had missing
+  same-key reconciliation and failed/stale reuse outcomes, alongside a reviewer
+  demand for separate edges for stream properties. Shared production criteria now
+  consolidate 22 checks into 13 when every capability applies. Internal operations
+  can remain with their executable owner. The missing retry and reuse outcomes
+  remain blocking requirements. Model-written proof tables are removed.
+- Text synthesis supplied the same design-heavy system prompt to memory, summary,
+  and explanation requests. The shared system is reduced from 10,603 to 2,330
+  characters. Depth controls detail within the task; graph-specific instructions
+  apply only to graph answers. Prior assistant proposals are not user requirements.
+- The judge received longer book passages than synthesis, and discarded directed
+  flow and synchronization fields from its graph input. Release v6 consumes exact
+  synthesis context when captured and retains public graph semantics. Older evidence
+  is labeled as an incomplete record of synthesis input. A critical failure blocks
+  immediately, including when another dimension is borderline.
+- Calibration required all browser cases to pass before it could judge them.
+  Complete captured product failures can now be negative calibration examples.
+  Application release gates still fail on those outcomes; human grades and pinned
+  evidence identity remain required.
+
+These changes have offline regression coverage. The historical 18/20 result does
+not validate the changed prompts, establish a new pass rate, or measure their live
+latency. Component and connection authoring remain separate, with bounded correction
+and preserved prior graphs on failure. The current architecture document records
+that remaining repair boundary. Further model testing should target changed cases
+after offline checks, then use one full capture for a release decision.
+
 ## Findings and scope
 
 GitHub records identify **55 failed single-case `graph-expansion` diagnostic

@@ -21,6 +21,7 @@ from eval.cost_gate import (
     account_judge_cost,
     evaluate_cost_policy,
 )
+from eval.evidence_replay import validate_calibration_capture
 from eval.judge_adapter import (
     JUDGE_PROMPT_RELEASE,
     SemanticJudge,
@@ -416,6 +417,8 @@ def _load_resume_evaluations(
     corpus: Any,
     judge: Any,
     actual_ids: list[str],
+    *,
+    deterministic_failures_by_case: dict[str, list[str]] | None = None,
 ) -> dict[str, dict[str, Any]]:
     if not args.resume_input:
         return {}
@@ -450,9 +453,16 @@ def _load_resume_evaluations(
         case = corpus.by_id[case_id]
         if evaluation.get("decision") not in {"pass", "manual_review", "fail"}:
             raise RuntimeError(f"resume report has an invalid decision for {case_id}")
-        if evaluation.get("deterministic_failures"):
+        expected_failures = (deterministic_failures_by_case or {}).get(case_id, [])
+        if evaluation.get("deterministic_failures") != expected_failures:
             raise RuntimeError(
-                f"resume judgment for {case_id} has deterministic failures"
+                f"resume deterministic failures do not match the capture for {case_id}"
+            )
+        if expected_failures and (
+            args.suite != "full" or evaluation["decision"] != "fail"
+        ):
+            raise RuntimeError(
+                f"resume judgment for failed capture {case_id} must remain failed"
             )
         for judgment in judgments:
             if judgment.get("provider") != judge.provider:
@@ -488,6 +498,8 @@ def _compact_judge_graph(graph: Any) -> dict[str, Any] | None:
                 "title",
                 "design_origin",
                 "resolved_complexity",
+                "capabilities",
+                "root_node_id",
                 "assumptions",
                 "groups",
                 "sequence",
@@ -507,6 +519,9 @@ def _compact_judge_graph(graph: Any) -> dict[str, Any] | None:
                     "description",
                     "tier",
                     "layer",
+                    "lane",
+                    "primary_flow_member",
+                    "is_root",
                 )
                 if node.get(key) is not None
             }
@@ -516,7 +531,17 @@ def _compact_judge_graph(graph: Any) -> dict[str, Any] | None:
         compact_graph["edges"] = [
             {
                 key: edge[key]
-                for key in ("source", "target", "label", "technology")
+                for key in (
+                    "source",
+                    "target",
+                    "label",
+                    "technology",
+                    "description",
+                    "flow",
+                    "sync",
+                    "type",
+                    "relation",
+                )
                 if edge.get(key) is not None
             }
             for edge in graph.get("edges") or []
@@ -567,16 +592,68 @@ def _judge_payload(result: dict[str, Any]) -> dict[str, Any]:
         max(1, 40_000 // len(captured_turn_records)) if captured_turn_records else 0
     )
 
+    turn_count = max(1, len(captured_turn_records))
+    events = result.get("events") or []
+    last_reset_by_turn = {
+        event.get("eval_turn", 1 if turn_count == 1 else None): index
+        for index, event in enumerate(events)
+        if event.get("type") == "response_reset"
+    }
+    evidence_events = [
+        event
+        for index, event in enumerate(events)
+        if index
+        > last_reset_by_turn.get(
+            event.get("eval_turn", 1 if turn_count == 1 else None), -1
+        )
+    ]
+    answer_evidence_by_turn: dict[int, dict[str, Any]] = {}
+    for event in evidence_events:
+        if event.get("type") != "answer_evidence":
+            continue
+        eval_turn = event.get("eval_turn", 1 if turn_count == 1 else None)
+        if (
+            type(event.get("schema_version")) is not int
+            or event["schema_version"] != 1
+            or event.get("source") != "synthesis_input"
+            or not isinstance(event.get("prompt_version"), str)
+            or not event["prompt_version"].strip()
+            or not isinstance(event.get("book_context"), str)
+            or not isinstance(event.get("research_context"), str)
+            or not isinstance(eval_turn, int)
+            or isinstance(eval_turn, bool)
+            or not 1 <= eval_turn <= turn_count
+        ):
+            raise ValueError(
+                "answer_evidence has an invalid schema or turn attribution"
+            )
+        answer_evidence_by_turn[eval_turn] = {
+            "eval_turn": eval_turn,
+            "source": "synthesis_input",
+            "prompt_version": event["prompt_version"],
+            "book_context": event["book_context"],
+            "research_context": event["research_context"],
+        }
+    answer_evidence = list(answer_evidence_by_turn.values())
+    exact_turns = set(answer_evidence_by_turn)
+
     retrieval_chunks: list[dict[str, Any]] = []
     research_results: list[dict[str, Any]] = []
-    for event in result.get("events") or []:
+    for event in evidence_events:
+        eval_turn = event.get("eval_turn", 1 if turn_count == 1 else None)
+        if eval_turn in exact_turns or len(exact_turns) == turn_count:
+            continue
         if event.get("type") == "research_evidence":
             query = str(event.get("query") or "")[:500]
             eval_turn = event.get("eval_turn")
             event_results = event.get("results")
             if isinstance(event_results, list):
                 for item in event_results[:6]:
-                    result_record = {"query": query, "result": str(item)[:1_000]}
+                    result_record = {
+                        "query": query,
+                        "result": str(item)[:1_000],
+                        "provenance": "legacy_telemetry_not_exact_synthesis_input",
+                    }
                     if eval_turn is not None:
                         result_record["eval_turn"] = eval_turn
                     research_results.append(result_record)
@@ -590,6 +667,7 @@ def _judge_payload(result: dict[str, Any]) -> dict[str, Any]:
                 continue
             chunk_record = {
                 "query": query,
+                "provenance": "legacy_telemetry_not_exact_synthesis_input",
                 **{
                     key: chunk.get(key)
                     for key in (
@@ -614,6 +692,18 @@ def _judge_payload(result: dict[str, Any]) -> dict[str, Any]:
 
     payload = {
         "graph": compact_graph,
+        "answer_evidence": answer_evidence,
+        "evidence_provenance": [
+            {
+                "eval_turn": turn,
+                "status": (
+                    "exact_synthesis_input"
+                    if turn in exact_turns
+                    else "legacy_capture_exact_synthesis_input_unavailable"
+                ),
+            }
+            for turn in range(1, turn_count + 1)
+        ],
         "retrieval_evidence": retrieval_chunks,
         "research_evidence": research_results[:12],
         "events": [
@@ -715,6 +805,9 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     limits = manifest["live"]["budgets"]
     corpus = load_corpus(require_approved=args.require_approved_corpus)
     capture = _load_capture(args)
+    calibration_replay = args.capture_replay and args.suite == "full"
+    if calibration_replay:
+        validate_calibration_capture(capture, corpus.model_dump(mode="json"))
     expected_ids = manifest["live"]["suites"].get(args.suite)
     if args.suite == "diagnostic":
         expected_ids = args.case
@@ -765,10 +858,23 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         if capture.get("results") and not app_telemetry
         else None
     )
-    budget.record_application_calls(
-        sum(max(1, int(call.get("provider_attempts") or 1)) for call in app_telemetry)
+    source_application_calls = sum(
+        max(1, int(call.get("provider_attempts") or 1)) for call in app_telemetry
     )
+    if not args.capture_replay:
+        budget.record_application_calls(source_application_calls)
     application_cost = account_application_cost(capture["results"], app_telemetry)
+    if telemetry_failure:
+        application_cost = {
+            **application_cost,
+            "status": "infrastructure",
+            "reason": telemetry_failure,
+            "total": {**application_cost["total"], "estimated_usd": None},
+            "cases": [
+                {**case_cost, "estimated_usd": None}
+                for case_cost in application_cost["cases"]
+            ],
+        }
     cost_policy_config = manifest["live"].get("cost_policy") or {}
     if not isinstance(cost_policy_config, dict):
         raise RuntimeError("live cost policy must be an object")
@@ -781,13 +887,26 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             baseline_min_runs=int(cost_policy_config.get("baseline_min_runs", 5)),
         ),
     )
+    # Replay spends only on judging. Preserve source accounting as evidence even
+    # when the historical provider omitted usage for a cancelled attempt.
+    if args.capture_replay:
+        cost_policy = {**cost_policy, "scope": "source_capture"}
     judge = None
     resume_evaluations = {}
     if args.resume_input:
         judge = SemanticJudge()
         if args.require_approved_corpus:
             _assert_approved_judge_identity(corpus, judge)
-        resume_evaluations = _load_resume_evaluations(args, corpus, judge, actual_ids)
+        resume_evaluations = _load_resume_evaluations(
+            args,
+            corpus,
+            judge,
+            actual_ids,
+            deterministic_failures_by_case={
+                item["id"]: item.get("deterministic_failures") or []
+                for item in capture["results"]
+            },
+        )
     evaluations: list[dict[str, Any]] = []
 
     for browser_result in capture["results"]:
@@ -798,7 +917,7 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         deterministic_failures = tuple(
             browser_result.get("deterministic_failures") or []
         )
-        if deterministic_failures:
+        if deterministic_failures and not calibration_replay:
             classification = _classify_deterministic(
                 list(deterministic_failures),
                 browser_result.get("failure_details"),
@@ -819,7 +938,7 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
             continue
 
-        if telemetry_failure:
+        if telemetry_failure and not args.capture_replay:
             evaluations.append(
                 {
                     "id": case.id,
@@ -841,9 +960,9 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
             continue
 
-        payload = _judge_payload(browser_result)
         judgments = []
         try:
+            payload = _judge_payload(browser_result)
             if judge is None:
                 candidate_judge = SemanticJudge()
                 if args.require_approved_corpus:
@@ -871,6 +990,10 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 )
                 judgments.append(second)
                 decision = decide_semantic_gate(first, second)
+            if deterministic_failures and decision.status != "infrastructure":
+                decision = decide_semantic_gate(
+                    first, deterministic_failures=deterministic_failures
+                )
         except Exception as exc:
             decision = GateDecision(
                 "infrastructure",
@@ -881,17 +1004,18 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 "id": case.id,
                 "decision": decision.status,
                 "reason": decision.reason,
-                "deterministic_failures": [],
+                "deterministic_failures": list(deterministic_failures),
                 "judgments": [_result_to_json(item) for item in judgments],
                 "graph_review_diagnostics": graph_review_diagnostics,
             }
         )
 
     statuses = {item["decision"] for item in evaluations}
-    if telemetry_failure or cost_policy["status"] == "infrastructure":
-        statuses.add("infrastructure")
-    elif cost_policy["blocking_status"] == "fail":
-        statuses.add("fail")
+    if not args.capture_replay:
+        if telemetry_failure or cost_policy["status"] == "infrastructure":
+            statuses.add("infrastructure")
+        elif cost_policy["blocking_status"] == "fail":
+            statuses.add("fail")
     # Quality failures retain their higher-priority exit even when accounting is
     # also unavailable, so telemetry health never hides a product regression.
     semantic_exit_code = _exit_code_for_statuses(statuses, "blocking")
@@ -920,9 +1044,15 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         ),
         "manual_review_policy": manual_review_policy,
         "blocking_status": "pass" if exit_code == 0 else "fail",
-        "reason": telemetry_failure or cost_policy["reason"],
+        "reason": (
+            "Source capture accounting: "
+            + (telemetry_failure or cost_policy["reason"] or "complete")
+            if args.capture_replay
+            else telemetry_failure or cost_policy["reason"]
+        ),
         "budget": {
             "application_calls": budget.application_calls,
+            "source_application_calls": source_application_calls,
             "application_limit": budget.application_limit,
             "judge_calls": budget.judge_calls,
             "judge_limit": budget.judge_limit,
@@ -976,11 +1106,14 @@ def _write_outputs(path: Path, report: dict[str, Any]) -> None:
     if cost_policy:
         cost_status = str(cost_policy.get("status") or "infrastructure")
         cost_reason = str(cost_policy.get("reason") or cost_status)
-        cost_is_failure = (
+        source_only = cost_policy.get("scope") == "source_capture"
+        cost_is_failure = not source_only and (
             cost_status == "infrastructure"
             or cost_policy.get("blocking_status") == "fail"
         )
-        cost_is_skipped = cost_status == "over_budget" and not cost_is_failure
+        cost_is_skipped = source_only or (
+            cost_status == "over_budget" and not cost_is_failure
+        )
         if cost_is_failure:
             cost_outcome = (
                 f'<failure message="{html.escape(cost_reason, quote=True)}" />'

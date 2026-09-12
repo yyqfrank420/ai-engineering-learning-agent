@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-08-16
+Last updated: 2026-09-12
 
 This is the current runtime contract for the production-quality demo.
 
@@ -12,7 +12,7 @@ This is the current runtime contract for the production-quality demo.
   - private candidate rendering, typed progress events, and progressive explanation cards
 - `backend/`
   - FastAPI
-  - legacy LangGraph orchestration by default, with staged applied create/edit diagnostics behind a feature flag
+  - LangGraph routing with staged applied graph creation and editing by default
   - server-owned graph contracts, progressive previews, and deterministic maturity and render checks
   - Supabase-backed user/thread/message persistence
   - FAISS-backed book retrieval loaded by a non-blocking readiness task
@@ -54,10 +54,15 @@ This is the current runtime contract for the production-quality demo.
    numbers the emitted stages consecutively; this walkthrough does not claim causal execution order.
    Initial and corrected connections use the same structural checks. Control behavior is reviewed
    against accepted responsibilities.
-8. Prototype gates exclude production criteria. Production proof requirements derive from the
+8. Prototype gates exclude production criteria. Production semantic requirements derive from the
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
    gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
+   Both gates return only approval, checked rules, and typed findings. Model-authored proof tables
+   and route witnesses are removed. Shared criteria require necessary interactions across component
+   boundaries; compatible internal operations belong in component responsibilities. Internal ordering
+   is checked before those responsibilities freeze. Retryable internal writes retain idempotence and
+   reconciliation requirements even when the design has no external business mutations.
 9. The transport atomically persists graph data and its server-only contract before emitting
    authoritative `graph_data` and `done`. `auto` edits inherit stored maturity. A legacy graph with
    no stored contract defaults to prototype. A bounded edit that selects a different maturity
@@ -65,16 +70,20 @@ This is the current runtime contract for the production-quality demo.
    Scoped review includes the prior objective, exact delta, and affected dependencies. Prior approval
    is trusted only when the stored graph fingerprint, both reviewer identities, and global context
    still match. Changed maturity, capabilities, assumptions, title, or root require full review.
-   Both gates still inspect current records and validate current production proof witnesses.
+   Both gates still inspect current records against their applicable semantic requirements.
    Reviewer identities bind prompt content, model settings, rubric definitions, and response schema.
    Scoped projection preserves authored edge presentation and sequence descriptions. Authorized node
    deletion removes only that node's sequence memberships and incident edges, then renumbers steps.
    Only an explicit graph rebuild can authorize restaging at another depth. Scoped edits preserve
    locked assumptions and prior composition records. Capability changes are reviewed against the
-   complete candidate and determine the subsequent connection proofs.
+   complete candidate and determine subsequent connection requirements. Adding one responsibility
+   with an unspecified attachment permits one or two directed edges between that responsibility and
+   the named existing anchor. It does not permit unrelated endpoints or baseline changes. Explicit
+   connection counts and directions retain exact authority.
    The prior durable graph is restored after failure, retry exhaustion, steering, stop, timeout, or
    persistence failure. The 90-second prototype first-preview target is an SLO. Generation calls
-   use a 130-second timeout, gates use 55 seconds, and the request ceiling includes orchestration
+   reserve 130 seconds, gates reserve 55 seconds, and saved time can extend a generation call to
+   240 seconds while preserving downstream budgets. The request ceiling includes orchestration
    and private renders.
 
 The model never writes SVG. Its typed graph JSON is an intermediate representation with named
@@ -113,6 +122,18 @@ validation, maturity, and all state transitions. Opus 5 low writes the explanati
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and the standing checklist
 do not add model calls.
+
+Text answers use one short scope and evidence contract. UI depth changes detail within the user's
+task; it does not turn a memory, summary, or explanation request into a system design. Prior assistant
+proposals become requirements only when the user adopts them. Graph publication instructions apply
+only to graph answers. Internal evaluation captures the exact book and research strings passed to
+synthesis, including empty context, under the prompt release identity.
+
+The September 12 simplification keeps two authoring stages because a complete graph can be a large
+output. Component review catches responsibility defects while that stage can repair them; connection
+review owns interactions after components freeze. The remaining limitation is explicit: connection
+correction cannot redesign components. A rejected graph stays unpublished. This bounded pipeline
+still makes five calls without correction; prompt simplification does not establish lower live latency.
 
 During steps 4-7 the client may send `steer`. The server cancels the active workflow, emits
 `response_reset`, and restarts with the steering correction folded into the same turn. `stop`

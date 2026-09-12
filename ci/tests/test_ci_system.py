@@ -1231,8 +1231,8 @@ def test_judge_calibration_uses_immutable_reviewed_evidence():
     assert "--evidence artifacts/calibration/browser-results.json" in calibration
     assert "environment: staging-eval" in calibration
     assert "environment: staging-eval" in promotion
-    assert "source browser evidence is incomplete" in promotion
-    assert "actual_ids != expected_ids" in promotion
+    assert "validate_calibration_capture(capture, current)" in promotion
+    assert "validate_calibration_capture(capture, current)" in calibration
     assert "hashlib.sha256(capture_path.read_bytes()).hexdigest()" in promotion
     assert "source evidence digest does not match" in promotion
     assert "ensure_object artifacts/source/browser-results.json" in promotion
@@ -1261,7 +1261,7 @@ def _calibration_workflow_python(workflow_name, step_name, *, marker="PY", index
     return dedent(blocks[index])
 
 
-@pytest.mark.parametrize("workflow_name", _CALIBRATION_WORKFLOWS)
+@pytest.mark.parametrize("workflow_name", (*_CALIBRATION_WORKFLOWS, "semantic-review-replay.yml"))
 @pytest.mark.parametrize(
     "change",
     [
@@ -1303,6 +1303,8 @@ def test_calibration_source_accepts_only_pinned_completed_repository_runs(
     step_name = (
         "Download the exact human-reviewed full-suite artifact"
         if workflow_name.startswith("promote-")
+        else "Download and authenticate immutable scheduled browser evidence"
+        if workflow_name == "semantic-review-replay.yml"
         else "Download and authenticate the fixed evidence bundle"
     )
     script = _calibration_workflow_python(workflow_name, step_name, marker="PY_SOURCE")
@@ -1366,13 +1368,26 @@ def reviewed_calibration_files(tmp_path, monkeypatch):
         lambda **kwargs: load_corpus(path=corpus_path, **kwargs),
     )
     return corpus_path, {
+        "format_version": 1,
         "kind": "browser_capture",
         "suite": "full",
         "status": "complete",
         "corpus_version": corpus["corpus_version"],
+        "release_identity": corpus["release_identity"],
         "corpus_sha256": behavior_sha,
+        "case_states": [{"id": case["id"], "state": "completed"} for case in corpus["cases"]],
         "results": [
-            {"id": case["id"], "passed": True, "deterministic_failures": []}
+            {
+                "id": case["id"], "passed": True, "deterministic_failures": [],
+                "failure_details": [], "execution_state": "completed",
+                "turns": [
+                    {"turn": index, "prompt": step["prompt"], "answer": "Captured answer."}
+                    for index, step in enumerate(case["steps"], 1)
+                ],
+                "events": [{"type": "done", "eval_turn": index} for index in range(1, len(case["steps"]) + 1)],
+                "screenshot": f"screenshots/{case['id']}.png",
+                "trace": f"traces/{case['id']}.zip",
+            }
             for case in corpus["cases"]
         ],
         "dashboard_smoke": {"passed": True},
@@ -1422,9 +1437,19 @@ def test_calibration_promotion_requires_complete_human_review(
         "deterministic",
         "dashboard",
         "digest",
+        "negative",
+        "missing_turn",
+        "missing_done",
+        "wrong_prompt",
+        "infrastructure",
+        "mixed_failure",
+        "missing_answer",
+        "missing_artifact",
+        "case_state",
+        "release_identity",
     ],
 )
-def test_calibration_evidence_requires_complete_passing_browser_capture(
+def test_calibration_evidence_requires_complete_reviewable_browser_capture(
     reviewed_calibration_files, monkeypatch, workflow_name, change
 ):
     _corpus_path, capture = reviewed_calibration_files
@@ -1446,6 +1471,30 @@ def test_calibration_evidence_requires_complete_passing_browser_capture(
         capture["results"][0]["deterministic_failures"] = ["graph missing"]
     elif change == "dashboard":
         capture["dashboard_smoke"]["passed"] = False
+    elif change in {"negative", "infrastructure", "mixed_failure"}:
+        capture["results"][0].update(
+            passed=False,
+            deterministic_failures=["graph missing"],
+            failure_details=[{"kind": "quality", "code": "required_graph_missing", "message": "graph missing"}],
+        )
+        if change == "infrastructure":
+            capture["results"][0]["failure_details"][0]["kind"] = "infrastructure"
+        elif change == "mixed_failure":
+            capture["results"][0]["failure_details"].append({"kind": "infrastructure"})
+    elif change == "missing_turn":
+        capture["results"][0]["turns"].pop()
+    elif change == "missing_done":
+        capture["results"][0]["events"] = []
+    elif change == "wrong_prompt":
+        capture["results"][0]["turns"][0]["prompt"] = "Different prompt"
+    elif change == "missing_answer":
+        capture["results"][0]["turns"][0]["answer"] = ""
+    elif change == "missing_artifact":
+        capture["results"][0].pop("trace")
+    elif change == "case_state":
+        capture["case_states"][0]["state"] = "cancelled"
+    elif change == "release_identity":
+        capture["release_identity"] = "different"
     capture_path = Path("artifacts/source/browser-results.json")
     capture_path.write_text(json.dumps(capture))
     evidence_sha = hashlib.sha256(capture_path.read_bytes()).hexdigest()
@@ -1457,7 +1506,7 @@ def test_calibration_evidence_requires_complete_passing_browser_capture(
         else "Download and authenticate the fixed evidence bundle"
     )
     script = _calibration_workflow_python(workflow_name, step_name)
-    if change is None:
+    if change in {None, "negative"}:
         exec(compile(script, workflow_name, "exec"), {})
         output_dir = (
             "promotion" if workflow_name.startswith("promote-") else "calibration"
@@ -1466,8 +1515,9 @@ def test_calibration_evidence_requires_complete_passing_browser_capture(
             Path(f"artifacts/{output_dir}/promotion.json").read_text()
         )
         assert promotion["evidence_sha256"] == evidence_sha
+        assert json.loads(capture_path.read_text()) == capture
     else:
-        with pytest.raises(SystemExit):
+        with pytest.raises((SystemExit, ValueError)):
             exec(compile(script, workflow_name, "exec"), {})
 
 
@@ -1504,8 +1554,45 @@ def test_calibration_revalidates_already_promoted_browser_evidence(
         exec(compile(script, "judge-calibration.yml", "exec"), {})
         assert (output / "browser-results-replay.json").exists()
     else:
-        with pytest.raises(SystemExit):
+        with pytest.raises((SystemExit, ValueError)):
             exec(compile(script, "judge-calibration.yml", "exec"), {})
+
+
+@pytest.mark.parametrize("change", [None, "negative", "missing_done", "wrong_commit", "digest"])
+def test_full_semantic_replay_preserves_reviewable_negative_evidence(
+    reviewed_calibration_files, monkeypatch, change
+):
+    _corpus_path, capture = reviewed_calibration_files
+    source = Path("artifacts/source")
+    if change == "negative":
+        capture["results"][0].update(
+            passed=False,
+            deterministic_failures=["graph missing"],
+            failure_details=[{"kind": "quality", "code": "required_graph_missing"}],
+        )
+    elif change == "missing_done":
+        capture["results"][0]["events"] = []
+    elif change == "wrong_commit":
+        (source / "run-context.json").write_text(json.dumps({"run_id": "123", "commit_sha": "c" * 40}))
+    elif change == "digest":
+        capture["corpus_sha256"] = "0" * 64
+    capture_path = source / "browser-results.json"
+    capture_path.write_text(json.dumps(capture))
+    original = capture_path.read_bytes()
+    monkeypatch.setenv("GITHUB_SHA", "b" * 40)
+    monkeypatch.setenv("GITHUB_ACTOR", "reviewer")
+    monkeypatch.setattr("backend.eval.quality_corpus.corpus_sha256", lambda: os.environ["CORPUS_SHA"])
+    script = _calibration_workflow_python(
+        "semantic-review-replay.yml", "Validate deterministic scheduled source evidence"
+    )
+    if change in {None, "negative"}:
+        exec(compile(script, "semantic-review-replay.yml", "exec"), {})
+        context = json.loads(Path("artifacts/semantic-replay/replay-context.json").read_text())
+        assert context["source_browser_sha256"] == hashlib.sha256(original).hexdigest()
+        assert capture_path.read_bytes() == original
+    else:
+        with pytest.raises((SystemExit, ValueError)):
+            exec(compile(script, "semantic-review-replay.yml", "exec"), {})
 
 
 def test_pending_corpus_pr_skips_expensive_live_work():
