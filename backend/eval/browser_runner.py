@@ -533,6 +533,28 @@ def _extract_public_graph_data(events: list[dict[str, Any]]) -> dict[str, Any] |
     return None
 
 
+def _persisted_graph_failure(
+    published_graph: dict[str, Any] | None, persisted_graph: Any
+) -> tuple[str, str] | None:
+    if not isinstance(persisted_graph, dict):
+        return (
+            "persisted_graph_missing",
+            "published graph was not durably visible after streaming",
+        )
+    # The layout writer may change view_state after publication; all other
+    # fields, including the server version, belong to the persisted graph.
+    if not isinstance(published_graph, dict) or {
+        key: value for key, value in persisted_graph.items() if key != "view_state"
+    } != {
+        key: value for key, value in published_graph.items() if key != "view_state"
+    }:
+        return (
+            "persisted_graph_mismatch",
+            "persisted graph content or version differs from the published graph",
+        )
+    return None
+
+
 def _graph_expansion_failure(
     previous_graph: dict[str, Any],
     current_graph: dict[str, Any],
@@ -1833,6 +1855,8 @@ async def _run_browser_attempt(
             )
         thread_id = _thread_id(frames)
         persisted = False
+        persisted_graph = None
+        persistence_checked = False
         persistence_error: Exception | None = None
         if thread_id and not evaluation_failed:
             try:
@@ -1844,9 +1868,17 @@ async def _run_browser_attempt(
                     session["access_token"],
                 )
                 persisted = len(thread.get("messages") or []) >= len(case.steps) * 2
+                stored_thread = thread.get("thread")
+                persisted_graph = (
+                    stored_thread.get("graph_data")
+                    if isinstance(stored_thread, dict)
+                    else None
+                )
+                persistence_checked = True
             except Exception as exc:
                 persistence_error = exc
-        if case.deterministic.persistence and not evaluation_failed and not persisted:
+        requires_graph = case.deterministic.graph_emitted is True
+        if not evaluation_failed and (case.deterministic.persistence or requires_graph):
             if persistence_error is not None:
                 failure_details.append(
                     _failure_detail(
@@ -1857,13 +1889,18 @@ async def _run_browser_attempt(
                     )
                 )
             else:
-                failure_details.append(
-                    _failure_detail(
-                        "quality",
-                        "persistence_missing",
-                        "conversation was not durably visible after streaming",
+                if case.deterministic.persistence and not persisted:
+                    failure_details.append(
+                        _failure_detail(
+                            "quality",
+                            "persistence_missing",
+                            "conversation was not durably visible after streaming",
+                        )
                     )
-                )
+                if requires_graph:
+                    graph_failure = _persisted_graph_failure(graph, persisted_graph)
+                    if graph_failure is not None:
+                        failure_details.append(_failure_detail("quality", *graph_failure))
 
         if thread_id and case.deterministic.cleanup:
             try:
@@ -1912,6 +1949,8 @@ async def _run_browser_attempt(
             ],
             "events": case_events,
             "graph": graph,
+            "persisted_graph": persisted_graph,
+            "persistence_checked": persistence_checked,
             "rendered_nodes": rendered_nodes,
             "rendered_edges": rendered_edges,
             "rendered_graph_version": rendered_graph_version,

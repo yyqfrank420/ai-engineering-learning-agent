@@ -27,7 +27,7 @@ from eval.semantic_gate import DimensionJudgment, JudgeResult
 DEFAULT_JUDGE_PROVIDER = "anthropic"
 DEFAULT_JUDGE_MODEL = "gpt-5.4-mini-2026-03-17"
 DEFAULT_ANTHROPIC_JUDGE_MODEL = "claude-sonnet-5"
-JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v6"
+JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v7"
 INPUT_USD_PER_MILLION = 0.75
 OUTPUT_USD_PER_MILLION = 4.50
 _JUDGE_PRICING_USD_PER_MILLION = {
@@ -209,7 +209,12 @@ def _artifact_sources(evidence: dict[str, Any]) -> dict[str, str]:
     else:
         _add_bounded_sources(sources, "answer", str(evidence.get("answer") or ""))
     graph = evidence.get("graph")
-    if isinstance(graph, dict):
+    if isinstance(graph, dict) and not (
+        isinstance(turns, list)
+        and turns
+        and isinstance(turns[-1], dict)
+        and turns[-1].get("graph") == graph
+    ):
         _add_graph_sources(sources, "graph", graph)
     for index, chunk in enumerate(evidence.get("retrieval_evidence") or [], start=1):
         if not isinstance(chunk, dict):

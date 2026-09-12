@@ -94,7 +94,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v6", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v7", "anthropic", "claude-sonnet-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -2799,3 +2799,95 @@ def test_candidate_calibration_accepts_alternate_identity_but_production_rejects
             corpus,
             SimpleNamespace(provider=candidate_provider, model=candidate_model),
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("scenario", "expected_failure"),
+    [
+        ("valid", None),
+        ("missing", ("quality", "persisted_graph_missing")),
+        ("content", ("quality", "persisted_graph_mismatch")),
+        ("version", ("quality", "persisted_graph_mismatch")),
+        ("view_state", None),
+        ("request_error", ("infrastructure", "persistence_check_failed")),
+        ("message_only", None),
+    ],
+)
+async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
+    tmp_path, monkeypatch, scenario, expected_failure
+):
+    from copy import deepcopy
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id[
+        "memory" if scenario == "message_only" else "graph-expansion"
+    ].model_copy(deep=True)
+    case.deterministic.cleanup = False
+    published = None if scenario == "message_only" else {
+        "version": "published-v2",
+        "nodes": [{"id": "n1", "label": "Serving Monitor"}],
+        "edges": [],
+    }
+    saved = deepcopy(published)
+    if scenario == "missing":
+        saved = None
+    elif scenario == "content":
+        saved["nodes"][0]["label"] = "Unrelated component"
+    elif scenario == "version":
+        saved["version"] = "stale-v1"
+    elif scenario == "view_state":
+        saved["view_state"] = {"viewport": {"x": 12, "y": 8, "k": 1.2}}
+    page = Mock()
+    page.goto = AsyncMock()
+    page.get_by_role.return_value.is_visible = AsyncMock(return_value=False)
+    page.screenshot = AsyncMock()
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        add_init_script=AsyncMock(), new_page=AsyncMock(return_value=page),
+        close=AsyncMock(),
+    )
+    browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
+    monkeypatch.setattr(browser_runner, "_internal_session", AsyncMock(return_value={"access_token": "test-token"}))
+    monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
+    monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
+    monkeypatch.setattr(browser_runner, "_should_inspect_graph_dom", lambda *_args: False)
+    monkeypatch.setattr(browser_runner, "_deterministic_failure_details", lambda *_args: [])
+    monkeypatch.setattr(browser_runner, "_node_followup_interaction_failure_details", AsyncMock(return_value=[]))
+    monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
+
+    async def send_steps(_page, _case, frames, events, **_kwargs):
+        frames.append({"direction": "sent", "message": {"type": "start", "thread_id": "thread-1"}})
+        events.extend([{"type": "graph_data", "data": published}, {"type": "done"}])
+
+    requests = []
+
+    def read_thread(method, url, payload, token):
+        requests.append((method, url, payload, token))
+        if scenario == "request_error":
+            raise RuntimeError("read failed")
+        return {
+            "thread": {"id": "thread-1", "graph_data": saved},
+            "messages": [{"role": role} for _ in case.steps for role in ("user", "assistant")],
+        }
+
+    monkeypatch.setattr(browser_runner, "_send_case_steps", send_steps)
+    monkeypatch.setattr(browser_runner, "_blocking_json_request", read_thread)
+    result = await browser_runner._run_browser_attempt(
+        browser,
+        SimpleNamespace(target="http://frontend", backend_target="http://backend", email="eval@example.com", internal_password="test-password"),
+        case,
+        artifact_dir=tmp_path, screenshot_dir=tmp_path, trace_dir=tmp_path,
+        turn_timeout_seconds=10, attempt_number=1,
+    )
+
+    assert requests == [("GET", "http://backend/api/threads/thread-1", None, "test-token")]
+    assert result["persistence_checked"] is (scenario != "request_error")
+    assert result["persisted_graph"] == (None if scenario == "request_error" else saved)
+    assert result["passed"] is (expected_failure is None)
+    assert [(item["kind"], item["code"]) for item in result["failure_details"]] == (
+        [] if expected_failure is None else [expected_failure]
+    )

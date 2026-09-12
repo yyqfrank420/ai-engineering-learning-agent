@@ -48,7 +48,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v18"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v19"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v3"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -1767,6 +1767,8 @@ async def test_text_task_preserves_history_without_design_contract(monkeypatch, 
     assert depth.capitalize() + " depth:" in message
     assert "buildable design" not in message
     assert "useful words" not in message
+    assert "Retrieved book sections:" not in message
+    assert "(no retrieved sections)" not in message
     assert "<trusted_turn_result>" not in message
     assert "<graph_answer>" not in captured["system"]
     assert "<streaming_output_contract>" not in captured["system"]
@@ -1824,9 +1826,12 @@ async def test_answer_evidence_matches_provider_visible_sources(monkeypatch, int
         assert packet["research_context"] in message
         assert hidden not in packet["book_context"]
         if path == "memory":
-            assert packet["book_context"] == "(no retrieved sections)"
+            assert packet["book_context"] == ""
+            assert "Retrieved book sections:" not in message
+            assert "(no retrieved sections)" not in message
             assert packet["research_context"] == ""
         else:
+            assert "Retrieved book sections:\n" + packet["book_context"] in message
             assert packet["book_context"] == "[1] Chapter 3, p.42\n" + visible
             assert packet["research_context"] == research
 
