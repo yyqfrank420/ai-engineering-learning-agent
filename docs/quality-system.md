@@ -213,13 +213,13 @@ rubric references with pass/borderline/fail anchors, criticality, provenance, an
 per-case approval metadata. Generated answers remain artifacts; only prompts,
 rubrics, invariants, and intentionally reviewed exemplars belong in source control.
 
-The current `2026-08-12.v1` corpus says `pending_human_review`. The graph-expansion
+The current `2026-09-12.v1` corpus says `pending_human_review`. The graph-expansion
 case is pending because its first turn now requires a monitoring component at
 prototype UI depth and its second turn permits exactly one directly connected
 responsibility while preserving the original graph topic and existing components.
 All 20 case approvals are pending so the fresh full-corpus review is machine-enforced.
 Corpus reviewer, review time, approved manifest hash, calibration evidence identity,
-and calibration results are empty. `semantic-rubric-judge-v5`, Anthropic, and
+and calibration results are empty. `semantic-rubric-judge-v6`, Anthropic, and
 `claude-sonnet-5` remain configured judge selections; they are not approval evidence
 for this revision.
 
@@ -230,7 +230,7 @@ identity or create a digest/storage-prefix cycle. A separate approval-manifest h
 covers all approval labels, reviewers, calibration baselines, and evidence identity
 except its own digest field. `--require-approved-corpus` validates that full
 manifest, so either behavior or provenance tampering fails closed. Reapproving
-`2026-08-12.v1` requires a full protected 20-case capture, human review of all 20
+`2026-09-12.v1` requires a full protected 20-case capture, human review of all 20
 cases, a reviewer, review time, artifact run, and reviewed grades for every case,
 judge recalibration against that reviewed capture, the new calibration evidence and
 result fields, and a newly computed approved manifest hash. Until those records are
@@ -263,8 +263,8 @@ After calibration passes, record its computed results and complete aggregate
 corpus approval and the approved manifest hash. Calibration does not approve the
 corpus or change its review records.
 
-With an approved corpus, deterministic failures block immediately. A clear
-semantic failure gets one independent second judgment; two clear failures block. A
+With an approved corpus, deterministic and critical semantic failures block immediately. A clear
+non-critical semantic failure gets one independent second judgment; two clear failures block. A
 borderline grade or judge disagreement requires manual review. PR and scheduled
 evaluation use the blocking policy for an approved corpus, so every fresh manual-review
 decision blocks promotion. Report-only is restricted in code to approved semantic
@@ -279,9 +279,11 @@ Judge calibration replays the exact browser evidence that humans reviewed; it ne
 generates fresh application answers. The manual `Promote calibration evidence`
 workflow reads the pinned identity from the approved corpus. It authenticates the
 exact completed same-repository `Scheduled evaluation`, source commit and run
-context, source corpus behavior, ordered passing 20-case browser capture, dashboard
+context, source corpus behavior, ordered complete 20-case browser capture, dashboard
 success, and browser digest. The source may be a candidate branch and may conclude
-`failure` after a semantic rejection; its browser evidence must pass every check.
+`failure`. Complete captured product failures are eligible negative examples; missing turns,
+terminal events, answers, artifact references, or infrastructure-failed cases are ineligible.
+Calibration retains deterministic failures even when its semantic judge passes a response.
 Every human-reviewed case must identify that same evidence run. It then stores both the
 content-addressed browser JSON and its promotion manifest under
 `reviewed/<corpus-sha>/` in the private GCS evaluation-evidence bucket. Uniform
@@ -301,6 +303,11 @@ then compares the active judge prompt/model with the fixed human grades and fail
 agreement, above one critical false pass, on an identity mismatch, or after an
 agreement drop greater than five percentage points from the approved calibration.
 Reports are kept in 90-day GitHub artifacts and copied to GCS calibration history.
+
+The judge receives the public graph's directed flow, synchronization, descriptions, and sequence.
+For new captures it receives the exact synthesis-visible book and research strings. Older retrieval
+telemetry is labeled as incomplete knowledge of the model input; source text beyond the supplied
+excerpt cannot certify the answer's grounding. Judge release v6 records this changed evidence contract.
 
 An override is an audited `workflow_dispatch` requiring original run ID, full
 commit SHA, authenticated reviewer, and reason. Dispatch it from the tested

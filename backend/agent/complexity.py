@@ -513,11 +513,9 @@ def resolve_complexity(requested: str, query: str) -> ComplexityProfile:
             resolved=resolved,
             thinking_budget=settings.production_thinking_budget_tokens,
             answer_contract=(
-                "Production depth: give an implementable design, including component boundaries, "
-                "data contracts, the decision/feedback loop, safety controls, approval where "
-                "external writes exist, failure "
-                "handling, observability, and a staged rollout. Aim for 600-900 useful words when "
-                "the request warrants it; density matters more than length."
+                "Production depth: give detailed reasoning and evidence for the requested task, "
+                "including material assumptions, limitations, and trade-offs where relevant. "
+                "Depth does not expand the requested scope or override its format or length."
             ),
         )
     if resolved == "prototype":
@@ -526,9 +524,9 @@ def resolve_complexity(requested: str, query: str) -> ComplexityProfile:
             resolved=resolved,
             thinking_budget=settings.thinking_budget_tokens,
             answer_contract=(
-                "Prototype depth: produce a concrete buildable design with responsibilities, key "
-                "interfaces, the main data/control loop, important assumptions, and the first "
-                "trade-offs to test. Aim for 350-600 useful words when the request warrants it."
+                "Prototype depth: give enough detail to understand the requested subject and "
+                "its important assumptions and trade-offs. Depth does not expand the requested "
+                "scope or override its format or length."
             ),
         )
     return ComplexityProfile(
@@ -536,9 +534,7 @@ def resolve_complexity(requested: str, query: str) -> ComplexityProfile:
         resolved="low",
         thinking_budget=None,
         answer_contract=(
-            "Low depth: answer the user's actual question directly and concisely. For an explanation "
-            "or safety lesson, stop after the requested concept and necessary evidence; do not add "
-            "an unrequested architecture, operations plan, or rollout. For an actual design request, "
-            "cover the main design and one important trade-off without a production review."
+            "Low depth: answer the requested task directly and concisely, with only the "
+            "explanation and evidence needed to answer it."
         ),
     )

@@ -870,13 +870,90 @@ def _add_required_group_scope(
         group_ids.update(anchor_group_ids)
 
 
+def _component_attachment_permissions(
+    text: str,
+    *,
+    anchor: dict[str, Any],
+    new_component_id: str | None,
+    obligations: list[dict[str, str]],
+) -> tuple[dict[str, Any], list[dict[str, str]]]:
+    """Bound one attachment without inventing its interaction direction or cardinality."""
+    counts = re.findall(
+        r"(?:\b(?:exactly|only)\s+(\w+)|\b(single|no|zero|one|two|three|four|five|six|seven|eight|nine|ten|\d+))\s+"
+        r"(?:(?!(?:nodes?|components?|responsibilit\w*|and|with)\b)[a-z]+\s+){0,3}"
+        r"(?:edges?|connections?|links?|arrows?)\b",
+        text,
+    )
+    numbers = {
+        int(value)
+        if value.isdigit()
+        else {"single": 1, "one": 1, "two": 2}.get(value, 3)
+        for matches in counts
+        for value in matches
+        if value
+    }
+    if len(numbers) > 1 or numbers - {1, 2}:
+        raise ValueError("the component attachment requires one or two connections")
+    count = next(iter(numbers), None)
+    anchor_aliases = {
+        _reference_text(anchor.get(field) or "") for field in ("id", "label")
+    } - {""}
+    new_aliases = {"new component", "new responsibility", "new node", "added component"}
+    if new_component_id:
+        new_aliases.add(_reference_text(new_component_id))
+    directions = set()
+    for source_aliases, target_aliases, reverse in (
+        (anchor_aliases, new_aliases, False),
+        (new_aliases, anchor_aliases, True),
+    ):
+        if any(
+            re.search(
+                rf"\bfrom\s+(?:the\s+)?{re.escape(source)}\s+to\s+(?:the\s+)?{re.escape(target)}\b",
+                text,
+            )
+            for source in source_aliases
+            for target in target_aliases
+        ):
+            directions.add(reverse)
+    directional_words = re.search(
+        r"\b(?:direction\w*|one way|unidirectional|incoming|outgoing)\b"
+        r"|\b(?:edges?|connections?|links?|arrows?)\s+from\b",
+        text,
+    )
+    if directional_words and not directions:
+        raise ValueError(
+            "the component attachment direction must identify both endpoints"
+        )
+    if directions:
+        if count is not None and count != len(directions):
+            raise ValueError(
+                "the component attachment count contradicts its directions"
+            )
+        original = obligations[0]
+        directed_obligations = [
+            {
+                **original,
+                "source": original["target"] if reverse else original["source"],
+                "target": original["source"] if reverse else original["target"],
+            }
+            for reverse in sorted(directions)
+        ]
+        return {"allowed_new_edge_count": len(directions)}, directed_obligations
+    return {
+        "connection_addition_mode": "attachment",
+        "minimum_new_edge_count": count or 1,
+        # This is a ceiling for an attachment, not an inferred exact edge count.
+        "allowed_new_edge_count": count or 2,
+    }, obligations
+
+
 def _user_edit_scope(
     query: str,
     graph: GraphData,
     *,
     resolved_complexity: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Compile one user edit into layer locks and exact mutation permissions."""
+    """Compile one user edit into layer locks and bounded mutation permissions."""
     text = _reference_text(query)
     if not text or _USER_EDIT_GRAPH_REPLACEMENT.search(text):
         raise ValueError("the edit does not identify a bounded mutation scope")
@@ -1016,7 +1093,12 @@ def _user_edit_scope(
         connection_requested and _USER_EDIT_CONNECTION_ADDITION.search(text)
     )
     connection_addition_obligations: list[dict[str, str]] = []
+    attachment_permissions: dict[str, Any] = {}
     if allow_node_additions:
+        if re.search(r"(?:->|<-|→|←)", query):
+            raise ValueError(
+                "express the component attachment direction with from and to"
+            )
         anchor_node_id = next(iter(node_ids))
         required_contract = (
             "Add one directly connected responsibility that expands only the named component."
@@ -1030,6 +1112,14 @@ def _user_edit_scope(
                 "required_contract": required_contract,
             }
         ]
+        attachment_permissions, connection_addition_obligations = (
+            _component_attachment_permissions(
+                text,
+                anchor=next(node for node in nodes if node["id"] == anchor_node_id),
+                new_component_id=requested_component_id,
+                obligations=connection_addition_obligations,
+            )
+        )
     elif allow_edge_additions:
         ordered_node_ids = _ordered_record_ids(text, nodes, node_ids)
         if len(ordered_node_ids) != 2:
@@ -1121,7 +1211,7 @@ def _user_edit_scope(
                 failed=connections_failed,
                 edge_selectors=edge_selectors,
                 context_node_ids=(sorted(node_ids) if allow_edge_additions else []),
-                addition_count=1 if allow_edge_additions else 0,
+                addition_count=len(connection_addition_obligations),
                 connection_addition_obligations=connection_addition_obligations,
             ),
             "composition": _user_edit_layer(
@@ -1170,6 +1260,7 @@ def _user_edit_scope(
     )
     permissions["allowed_new_node_count"] = 1 if allow_node_additions else 0
     permissions["allowed_new_edge_count"] = 1 if allow_edge_additions else 0
+    permissions.update(attachment_permissions)
     permissions["allowed_new_group_ids"] = (
         None
         if allow_node_additions and resolved_complexity == "production" and not groups
@@ -2265,7 +2356,9 @@ def _validate_added_record_scope(
     if len(added_node_ids) != permissions["allowed_new_node_count"]:
         raise ValueError("graph patch added the wrong number of nodes")
     added_edges = _patch_list(patch, "add_edges")
-    if len(added_edges) != permissions["allowed_new_edge_count"]:
+    edge_limit = permissions["allowed_new_edge_count"]
+    edge_minimum = permissions.get("minimum_new_edge_count", edge_limit)
+    if not edge_minimum <= len(added_edges) <= edge_limit:
         raise ValueError("graph patch added the wrong number of edges")
     anchor_node_ids = set(permissions["added_edge_anchor_node_ids"])
     added_edge_node_ids: set[str] = set()
@@ -2314,7 +2407,19 @@ def _validate_added_record_scope(
                 _normalise_obligation_edge_label(obligation["required_contract"]),
             )
         )
-    if sorted(actual_added_edge_endpoints) != sorted(expected_added_edge_endpoints):
+    if permissions.get("connection_addition_mode") == "attachment":
+        if (
+            len(expected_added_edge_endpoints) != 1
+            or len(added_node_ids) != 1
+            or len(anchor_node_ids) != 1
+            or len(set(actual_added_edge_endpoints)) != len(actual_added_edge_endpoints)
+            or any(
+                set(endpoints) != set(expected_added_edge_endpoints[0])
+                for endpoints in actual_added_edge_endpoints
+            )
+        ):
+            raise ValueError("added edges do not match the component attachment")
+    elif sorted(actual_added_edge_endpoints) != sorted(expected_added_edge_endpoints):
         raise ValueError(
             "added edges do not match the exact connection addition obligations"
         )

@@ -428,7 +428,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v6"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v7"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -561,10 +561,13 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_seconds", [None, 129.875])
-async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetry(
+@pytest.mark.parametrize("model", ["kimi-k3", "configured-builder-model"])
+async def test_component_generation_uses_configured_model_high_one_attempt_and_safe_telemetry(
     monkeypatch,
     timeout_seconds,
+    model,
 ):
+    monkeypatch.setattr(generation.settings, "graph_builder_model", model)
     calls = []
 
     async def fake_stream(**kwargs):
@@ -584,13 +587,13 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
 
     assert result["wire"] == _component_wire()
     assert len(result["prompt_fingerprint"]) == 64
-    assert calls[0]["model"] == "kimi-k3"
+    assert calls[0]["model"] == model
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v10"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v11"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1236,7 +1239,7 @@ def test_scalar_parser_rejects_invalid_code_types(invalid_code):
 
 
 @pytest.mark.asyncio
-async def test_recorded_expansion_preserves_exact_connection_plan_through_both_stages_and_correction(
+async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_and_correction(
     monkeypatch,
 ):
     from pathlib import Path
@@ -1321,7 +1324,9 @@ async def test_recorded_expansion_preserves_exact_connection_plan_through_both_s
     )
     prompts = [json.loads(call["prompt"].split("\nINPUT\n")[1]) for call in calls]
     expected = {
-        "addition_count": 1,
+        "mode": "attachment",
+        "minimum_addition_count": 1,
+        "maximum_addition_count": 2,
         "anchor_component_indexes": [5],
         "component_addition_count": 1,
         "enforce_added_edge_contract_label": False,
@@ -1652,12 +1657,6 @@ async def test_component_generation_receives_root_selection_before_connections(
     assert result["wire"]["root_index"] == 0
     assert len(calls) == 1
     prompt = calls[0]["prompt"]
-    assert (
-        "set root_index to the initiating actor of the primary runtime path" in prompt
-    )
-    assert "A central AI service is the root only when it initiates that path" in prompt
-    assert "Keep independent ingress and support components in the design" in prompt
-    assert "Do not invent reverse or control edges" in prompt
     criteria = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
     root_rule = criteria["objective_fidelity"]
     assert (
@@ -1812,7 +1811,6 @@ def test_component_executable_ownership_is_shared_and_production_only(maturity):
         evidence_bundle={},
         resolved_maturity=maturity,
         candidate_records=[],
-        rule_codes=gate.COMPONENT_RULE_CODES,
         required_production_guarantees=(),
     )
     generated = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
@@ -1940,3 +1938,68 @@ def test_declared_human_authorization_supports_primary_recovery_path():
     graph = contract.project_graph_data(build)
     assert [step["nodes"] for step in graph["sequence"]] == [["n1"], ["n2"]]
     assert graph["edges"][0]["flow"] == "control"
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3])
+def test_retained_expansion_delta_schema_admits_request_response_pair_without_baseline_updates(
+    count,
+):
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/staged_expansion_34663963035.json"
+        ).read_text()
+    )
+    base = contract.reconstruct_staged_graph_build(fixture["base_graph"])
+    _, permissions = staged_edit_scope(
+        fixture["request"], fixture["base_graph"], resolved_complexity="prototype"
+    )
+    accepted = [
+        {"id": node["id"], "index": index}
+        for index, node in enumerate(fixture["initial_candidate"]["nodes"])
+    ]
+    indexes = {row["id"]: row["index"] for row in accepted}
+    base_edges = [
+        {
+            "source_index": indexes[row["source_id"]],
+            "target_index": indexes[row["target_id"]],
+            "label": row["label"],
+            "flow": next(
+                code
+                for code, value in generation.FLOW_CODES.items()
+                if value == row["flow"]
+            ),
+            "sync": next(
+                code
+                for code, value in generation.SYNC_CODES.items()
+                if value == row["sync"]
+            ),
+        }
+        for row in base["connections"]
+    ]
+    delta = generation._connection_edit_delta(
+        base_edges,
+        permissions,
+        generation.connection_generation_schema(
+            generation.create_write_set(component_limit=7, edge_limit=10)
+        ),
+        accepted,
+    )
+    assert delta.schema["properties"]["additions"]["minItems"] == 1
+    assert delta.schema["properties"]["additions"]["maxItems"] == 2
+    assert delta.schema["properties"]["updates"]["properties"] == {}
+    pair = (
+        fixture["initial_connection_delta"]["additions"]
+        + fixture["correction_delta"]["additions"]
+    )
+    payload = json.dumps({"updates": {}, "additions": (pair + pair)[:count]})
+    if count not in {1, 2}:
+        with pytest.raises(
+            generation.StagedGenerationError, match="edit_delta_addition_count"
+        ):
+            delta.assemble(payload)
+    else:
+        assembled = delta.assemble(payload)
+        assert assembled["edges"][: len(base_edges)] == base_edges
+        assert assembled["edges"][len(base_edges) :] == pair[:count]

@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from agent.architecture_rubric import (
+    STAGED_PRODUCTION_REQUIREMENTS,
     RUBRIC_CRITERIA,
     TOPOLOGY_PROOF_REQUIREMENTS,
     staged_review_requirements,
@@ -78,7 +79,6 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
                 "record_indexes": [0],
             }
         ],
-        "proofs": [],
         "diagnostics": [],
         "review_identity": gate.review_identity("components", "prototype"),
         "checked_rules": list(gate.COMPONENT_RULE_CODES),
@@ -116,7 +116,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v7"
+        "staged_component_gate_v8"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -249,7 +249,6 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         evidence_bundle={},
         resolved_maturity=maturity,
         candidate_records=[],
-        rule_codes=rules,
         required_production_guarantees=guarantees,
     )
     reviewed_criteria = json.loads(
@@ -284,6 +283,19 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         )
     for code, requirement in generated_criteria.items():
         if (
+            stage == "connections"
+            and maturity == "production"
+            and code == "topology_enforced_guarantees"
+        ):
+            assert "between components" in requirement
+            assert "internal operations" in requirement
+        elif (
+            stage == "connections"
+            and maturity == "production"
+            and code in STAGED_PRODUCTION_REQUIREMENTS
+        ):
+            assert requirement == STAGED_PRODUCTION_REQUIREMENTS[code]
+        elif (
             code == "selected_depth"
             and stage == "components"
             and maturity == "production"
@@ -374,49 +386,6 @@ def test_rejection_without_findings_is_terminal(monkeypatch, stage):
     assert result["diagnostics"] == ["provider rejected without blocking findings"]
 
 
-def test_production_proofs_cover_required_guarantees_and_validate_route(monkeypatch):
-    calls = _stub_response(
-        monkeypatch,
-        {
-            "approved": True,
-            "findings": [],
-            "production_proofs": [
-                {
-                    "guarantee": "audit_and_provenance",
-                    "approved": True,
-                    "edge_witnesses": [],
-                    "route_witnesses": [[0, 1]],
-                }
-            ],
-        },
-    )
-    result = asyncio.run(
-        gate.review_connections(
-            user_request="Design a service.",
-            evidence_bundle={},
-            resolved_maturity="production",
-            candidate_records=[
-                {"source": "entry", "target": "audit"},
-                {"source": "audit", "target": "outcome"},
-            ],
-            required_production_guarantees=["audit_and_provenance"],
-        )
-    )
-
-    assert result["approved"] is True
-    assert result["proofs"][0]["route_witnesses"] == [[0, 1]]
-    assert calls[0]["response_schema"]["required"] == [
-        "approved",
-        "checked_rules",
-        "findings",
-        "production_proofs",
-    ]
-    assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == gate._CONNECTION_GATE_PROMPT_VERSION
-    )
-
-
 def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
     calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
 
@@ -492,13 +461,12 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v6"
+        == "staged_connection_gate_v7"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
     assert "candidate component responsibilities" in prompt
     assert "Resolved maturity remains authoritative." in prompt
-    assert "Do not require an undeclared action or control loop." in prompt
     assert "a durable telemetry sink is a complete outcome" in prompt
 
 
@@ -531,47 +499,25 @@ def test_production_connection_schema_preserves_hard_rules(monkeypatch):
     assert "branch_completion" in codes
 
 
-def test_failed_production_proof_is_an_independent_finding(monkeypatch):
-    _stub_response(
-        monkeypatch,
-        {
-            "approved": False,
-            "findings": [],
-            "production_proofs": [
-                {
-                    "guarantee": "audit_and_provenance",
-                    "approved": False,
-                    "edge_witnesses": [],
-                    "route_witnesses": [],
-                }
-            ],
-        },
-    )
+@pytest.mark.parametrize(
+    "invalid_audit", ["missing", "duplicate", "unknown", "invalid"]
+)
+def test_gate_rejects_an_incomplete_rule_audit(monkeypatch, invalid_audit):
+    rules = list(gate.COMPONENT_RULE_CODES)
+    if invalid_audit == "missing":
+        rules.pop()
+    elif invalid_audit == "duplicate":
+        rules[-1] = rules[0]
+    elif invalid_audit == "unknown":
+        rules[-1] = "invented"
+    else:
+        rules[-1] = None
 
-    result = asyncio.run(
-        gate.review_connections(
-            user_request="Design a service.",
-            evidence_bundle={},
-            resolved_maturity="production",
-            candidate_records=[],
-            required_production_guarantees=["audit_and_provenance"],
-        )
-    )
-
-    assert result["findings"] == [
-        {
-            "rule_code": "audit_and_provenance",
-            "reason": "The required production guarantee has no accepted proof.",
-        }
-    ]
-
-
-def test_gate_rejects_an_incomplete_rule_audit(monkeypatch):
     async def fake_stream(**_kwargs):
         return _response(
             {
                 "approved": True,
-                "checked_rules": ["domain_specificity"],
+                "checked_rules": rules,
                 "findings": [],
             }
         )
@@ -588,41 +534,6 @@ def test_gate_rejects_an_incomplete_rule_audit(monkeypatch):
 
     assert result["terminal"] is True
     assert result["diagnostics"] == ["provider response has invalid top-level fields"]
-
-
-@pytest.mark.parametrize(
-    "route",
-    [[], [0, 0], [1], [0, 1]],
-)
-def test_invalid_production_witnesses_fail_terminally(monkeypatch, route):
-    _stub_response(
-        monkeypatch,
-        {
-            "approved": True,
-            "findings": [],
-            "production_proofs": [
-                {
-                    "guarantee": "audit_and_provenance",
-                    "approved": True,
-                    "edge_witnesses": [],
-                    "route_witnesses": [route],
-                }
-            ],
-        },
-    )
-    result = asyncio.run(
-        gate.review_connections(
-            user_request="Design a service.",
-            evidence_bundle={},
-            resolved_maturity="production",
-            candidate_records=[{"source": "a", "target": "b"}],
-            required_production_guarantees=["audit_and_provenance"],
-        )
-    )
-    assert result["terminal"] is True
-    assert result["approved"] is False
-    assert result["findings"] == []
-    assert result["proofs"] == []
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -777,7 +688,7 @@ def test_edit_review_scope_preserves_baseline_context_and_full_candidate(
     assert evidence["review_scope"] == scope
     assert reviewed_records == records
     assert "original title and assumptions" in prompt
-    assert "witnesses always refer to the full current candidate records" in prompt
+    assert "Finding indexes refer to the full current candidate records" in prompt
     if trusted is True:
         assert "Do not reopen unrelated unchanged baseline design decisions" in prompt
         assert "regressions and affected dependencies" in prompt
@@ -798,7 +709,7 @@ def test_edit_review_scope_preserves_baseline_context_and_full_candidate(
         )
 
 
-def test_scoped_review_preserves_blockers_and_proofs_outside_changed_records(
+def test_scoped_review_preserves_blockers_outside_changed_records(
     monkeypatch,
 ):
     _stub_response(
@@ -810,14 +721,6 @@ def test_scoped_review_preserves_blockers_and_proofs_outside_changed_records(
                     "rule_code": "runtime_completeness",
                     "reason": "The edit disconnects the retained outcome.",
                     "record_indexes": [2],
-                }
-            ],
-            "production_proofs": [
-                {
-                    "guarantee": "audit_and_provenance",
-                    "approved": True,
-                    "edge_witnesses": [],
-                    "route_witnesses": [[1, 2]],
                 }
             ],
         },
@@ -846,7 +749,6 @@ def test_scoped_review_preserves_blockers_and_proofs_outside_changed_records(
     assert result["approved"] is False
     assert result["terminal"] is False
     assert result["findings"][0]["record_indexes"] == [2]
-    assert result["proofs"][0]["route_witnesses"] == [[1, 2]]
 
 
 @pytest.mark.parametrize("approved", [True, False])
@@ -1089,7 +991,6 @@ def test_review_capture_requires_every_protected_evaluation_condition(
         ("fields", "provider response has invalid top-level fields"),
         ("finding", "unknown finding rule at row 0"),
         ("empty_rejection", "provider rejected without blocking findings"),
-        ("proof", "production proofs do not cover exactly the required guarantees"),
     ],
 )
 def test_terminal_review_capture_retains_diagnostic_without_raw_response(
@@ -1118,8 +1019,6 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
             payload["findings"] = [{"rule_code": "unknown", "reason": "Invalid."}]
         elif failure == "empty_rejection":
             payload["approved"] = False
-        elif failure == "proof":
-            payload["production_proofs"] = []
         response = _response(
             payload,
             finish_reason="max_tokens" if failure == "unfinished" else "end_turn",
@@ -1141,16 +1040,13 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
     async def send(event):
         events.append(event)
 
-    review = gate.review_connections if failure == "proof" else gate.review_components
+    review = gate.review_components
     result = asyncio.run(
         review(
             user_request="Design the service.",
             evidence_bundle={},
-            resolved_maturity="production" if failure == "proof" else "prototype",
+            resolved_maturity="prototype",
             candidate_records=[],
-            required_production_guarantees=["audit_and_provenance"]
-            if failure == "proof"
-            else [],
             telemetry_context={
                 "user_email": "internal@example.com",
                 "send": send,
@@ -1280,65 +1176,15 @@ def test_review_capture_send_failure_preserves_gate_result(
     assert "Design the service" not in caplog.text
 
 
-@pytest.mark.parametrize("provider_approved", [False, True])
-@pytest.mark.parametrize("proof_approved", [False, True])
-def test_malformed_proof_preserves_valid_semantic_findings_for_correction(
-    monkeypatch, provider_approved, proof_approved
-):
-    finding = {
-        "rule_code": "branch_completion",
-        "reason": "The rejection branch has no terminal outcome.",
-        "record_indexes": [0, 1],
-    }
-    _stub_response(
-        monkeypatch,
-        {
-            "approved": provider_approved,
-            "findings": [finding],
-            "production_proofs": [
-                {
-                    "guarantee": "audit_and_provenance",
-                    "approved": proof_approved,
-                    "edge_witnesses": [0],
-                    "route_witnesses": [[0, 1]],
-                }
-            ],
-        },
-    )
-    result = asyncio.run(
-        gate.review_connections(
-            user_request="Draw the runtime.",
-            evidence_bundle={},
-            resolved_maturity="production",
-            candidate_records=[
-                {"source": "entry", "target": "accepted"},
-                {"source": "entry", "target": "rejected"},
-            ],
-            required_production_guarantees=["audit_and_provenance"],
-        )
-    )
-    assert result["approved"] is False
-    assert result["terminal"] is False
-    assert result["findings"] == [finding]
-    assert result["proofs"] == []
-    assert "production proof has an invalid route witness" in result["diagnostics"]
-    assert set(result["checked_rules"]) == set(
-        gate._rules_for_connections("production", ["audit_and_provenance"])
-    )
-
-
 @pytest.mark.parametrize("failure", ["incomplete", "shape", "findings"])
 def test_malformed_review_cannot_recover_from_unvalidated_findings(failure):
     guarantees = ["audit_and_provenance"]
     rules = gate._rules_for_connections("production", guarantees)
-    schema = gate._response_schema(
-        rule_codes=rules, required_production_guarantees=guarantees
-    )
+    schema = gate._response_schema(rule_codes=rules)
     payload = {
         "approved": False,
         "checked_rules": list(rules),
         "findings": [{"rule_code": "branch_completion", "reason": "Missing outcome."}],
-        "production_proofs": [],
     }
     if failure == "shape":
         payload["unexpected"] = True
@@ -1351,27 +1197,89 @@ def test_malformed_review_cannot_recover_from_unvalidated_findings(failure):
         ),
         schema=schema,
         rule_codes=rules,
-        guarantees=guarantees,
         records=[{"source": "a", "target": "b"}],
     )
     assert result["terminal"] is True
     assert result["approved"] is False
     assert result["findings"] == []
-    assert result["proofs"] == []
 
 
-def test_production_witness_prompt_distinguishes_branches_from_directed_routes():
-    guarantees = ["audit_and_provenance"]
-    prompt = gate._prompt(
-        gate="connections",
-        user_request="Draw the runtime.",
-        evidence_bundle={},
-        resolved_maturity="production",
-        candidate_records=[],
-        rule_codes=gate._rules_for_connections("production", guarantees),
-        required_production_guarantees=guarantees,
+@pytest.mark.parametrize("guarantee", tuple(TOPOLOGY_PROOF_REQUIREMENTS))
+@pytest.mark.parametrize("provider_approved", [False, True])
+def test_production_obligations_reject_through_indexed_findings(
+    monkeypatch, guarantee, provider_approved
+):
+    finding = {
+        "rule_code": guarantee,
+        "reason": "The declared production obligation has no directed runtime path.",
+        "record_indexes": [0, 1],
+    }
+    calls = _stub_response(
+        monkeypatch, {"approved": provider_approved, "findings": [finding]}
     )
-    assert "each edge's target must equal the next edge's source" in prompt
-    assert "edge_witnesses for disconnected branches" in prompt
-    assert "never combine branch alternatives into one route" in prompt
-    assert "route_witnesses may be [] when edge_witnesses suffice" in prompt
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Design the production service.",
+            evidence_bundle={},
+            resolved_maturity="production",
+            candidate_records=[
+                {"source": "input", "target": "accepted"},
+                {"source": "input", "target": "rejected"},
+            ],
+            required_production_guarantees=[guarantee],
+        )
+    )
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert result["findings"] == [finding]
+    assert guarantee in result["checked_rules"]
+    assert "proofs" not in result
+    schema = calls[0]["response_schema"]
+    assert set(schema["properties"]) == {"approved", "checked_rules", "findings"}
+    prompt = calls[0]["messages"][0]["content"]
+    requirements = json.loads(
+        prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert requirements[guarantee] == STAGED_PRODUCTION_REQUIREMENTS[guarantee]
+    assert "production_proofs" not in prompt
+    assert "route_witnesses" not in prompt
+
+
+def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    guarantees = tuple(TOPOLOGY_PROOF_REQUIREMENTS)
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Review the production service.",
+            evidence_bundle={},
+            resolved_maturity="production",
+            candidate_records=[],
+            required_production_guarantees=guarantees,
+        )
+    )
+    assert result["approved"] is True
+    assert result["terminal"] is False
+    assert set(result["checked_rules"]) == set(
+        gate._rules_for_connections("production", guarantees)
+    )
+    assert set(calls[0]["response_schema"]["required"]) == {
+        "approved",
+        "checked_rules",
+        "findings",
+    }
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("stage", "version_field", "previous_version"),
+    [
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v7"),
+        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v6"),
+    ],
+)
+def test_simplified_review_version_invalidates_prior_policy_identity(
+    monkeypatch, stage, version_field, previous_version
+):
+    current_identity = gate.review_identity(stage, "production")
+    monkeypatch.setattr(gate, version_field, previous_version)
+    assert gate.review_identity(stage, "production") != current_identity

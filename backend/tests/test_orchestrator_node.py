@@ -38,95 +38,44 @@ def test_synthesis_prompts_preserve_user_language():
     assert "same language as the user's latest message" in _QUICK_SYNTHESIS_SYSTEM
 
 
-def test_synthesis_prompts_answer_adjacent_applications_directly():
-    from agent.nodes.orchestrator_node import _QUICK_SYNTHESIS_SYSTEM, _SYNTHESIS_SYSTEM
-
-    assert "answering the user's actual problem" in _SYNTHESIS_SYSTEM
-    assert 'Do not lead with "the book does not cover this"' in _SYNTHESIS_SYSTEM
-    assert "marketing" in _SYNTHESIS_SYSTEM
-    assert "generic agent recipe" in _SYNTHESIS_SYSTEM
-    assert "live campaign data" in _SYNTHESIS_SYSTEM
-    assert "answer the application directly" in _QUICK_SYNTHESIS_SYSTEM
-
-
-def test_synthesis_prompts_enforce_evidence_bounded_attribution():
+def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication():
     from agent.nodes.orchestrator_node import (
         _BLOCK_OUTPUT_CONTRACT,
+        _GRAPH_ANSWER_CONTRACT,
         _QUICK_SYNTHESIS_PROMPT_VERSION,
         _QUICK_SYNTHESIS_SYSTEM,
         _SYNTHESIS_PROMPT_VERSION,
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v17"
-    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v2"
-    assert "complete citation allowlist" in _SYNTHESIS_SYSTEM
-    assert "exactly one of two provenance lanes" in _SYNTHESIS_SYSTEM
-    for required_claim_boundary in (
-        "subject",
-        "relation",
-        "comparator",
-        "direction",
-        "degree",
-        "scope",
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v18"
+    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v3"
+    assert len(_SYNTHESIS_SYSTEM) < 3500
+    for boundary in (
+        "explicit scope, count, format, and brevity",
+        "it never changes the task",
+        "previous assistant assumptions and recommendations",
+        "complete citation allowlist",
+        "subject,\nrelation, comparator, direction, degree, and scope",
+        "A citation supports only the immediately preceding claim",
+        "cannot\nsupply missing evidence",
+        'uncited "Engineering inference" or',
+        "no book attribution or citation",
+        "Never invent or alter",
+        "Answer adjacent applications directly",
     ):
-        assert required_claim_boundary in _SYNTHESIS_SYSTEM
-    assert "matching page number, unavailable or neighboring chunk" in _SYNTHESIS_SYSTEM
-    assert "cannot fill a missing premise" in _SYNTHESIS_SYSTEM
-    assert (
-        "Never infer a chapter, page, author attribution, or book claim"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert (
-        "A citation supports only the immediately preceding claim" in _SYNTHESIS_SYSTEM
-    )
-    assert "explicit scope, count, format, and brevity" in _SYNTHESIS_SYSTEM
-    assert "unless an earlier answer did so" in _SYNTHESIS_SYSTEM
-    assert "does not prove a system-specific application" in _SYNTHESIS_SYSTEM
-    assert "design artifacts, not evidence of what the book says" in _SYNTHESIS_SYSTEM
-    assert 'Do not call something the "main" failure mode' in _SYNTHESIS_SYSTEM
-    assert 'as an "Engineering inference" or "Recommendation"' in _SYNTHESIS_SYSTEM
-    assert (
-        'Never use vague citations such as "the serving chapter"' in _SYNTHESIS_SYSTEM
-    )
-    assert "Never invent a numerical benchmark" in _SYNTHESIS_SYSTEM
-    assert "directly supported by the supplied evidence" in _SYNTHESIS_SYSTEM
-    assert "complete web evidence allowlist" in _SYNTHESIS_SYSTEM
-    assert (
-        "does not support claims absent from its supplied snippet" in _SYNTHESIS_SYSTEM
-    )
-    assert "does not establish that one adaptation" in _SYNTHESIS_SYSTEM
-    assert "technique is cheaper, faster, or better than another" in _SYNTHESIS_SYSTEM
-    assert (
-        "relabel every grounded conclusion as an untested hypothesis"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert "diagram is rendered" in _SYNTHESIS_SYSTEM
-    assert (
-        "Cache population, logging, feedback capture, index publication"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert (
-        "externally visible business mutations from internal operational state changes"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert '"no downstream business writes"' in _SYNTHESIS_SYSTEM
-    assert (
-        "<trusted_turn_result> block is system-owned and authoritative"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert "Never claim the requested graph or" in _SYNTHESIS_SYSTEM
-    assert (
-        "Follow any required completion sentence in the block exactly"
-        in _SYNTHESIS_SYSTEM
-    )
-    assert "only when its publication state is approved" in _SYNTHESIS_SYSTEM
-    assert "For every other publication state" in _SYNTHESIS_SYSTEM
+        assert boundary in _SYNTHESIS_SYSTEM
+    assert "<trusted_turn_result>" not in _SYNTHESIS_SYSTEM
+    assert "publication" not in _SYNTHESIS_SYSTEM
+    assert "<trusted_turn_result>" in _GRAPH_ANSWER_CONTRACT
+    assert "Only publication state approved" in _GRAPH_ANSWER_CONTRACT
+    assert "prior approved graph remains unchanged" in _GRAPH_ANSWER_CONTRACT
+    assert "Cache population, logging, feedback capture, index publication" in _GRAPH_ANSWER_CONTRACT
+    assert '"no downstream business writes" into "no writes"' in _GRAPH_ANSWER_CONTRACT
+    assert "completion sentence in the block exactly" in _GRAPH_ANSWER_CONTRACT
     assert "Use each required key exactly once" in _BLOCK_OUTPUT_CONTRACT
     assert "evidence_refs must always be an array" in _BLOCK_OUTPUT_CONTRACT
-    assert (
-        "This fast path receives no retrieved book evidence" in _QUICK_SYNTHESIS_SYSTEM
-    )
+    assert "This fast path receives no retrieved book evidence" in _QUICK_SYNTHESIS_SYSTEM
     assert "do not produce chapter/page citations" in _QUICK_SYNTHESIS_SYSTEM
 
 
@@ -222,7 +171,7 @@ def test_quoted_untrusted_payload_cannot_create_applied_design_intent():
     profile = resolve_complexity("auto", query)
     assert profile.resolved == "low"
     assert (
-        "do not add an unrequested architecture, operations plan, or rollout"
+        "answer the requested task directly and concisely"
         in profile.answer_contract
     )
 
@@ -721,10 +670,10 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
     assert events[-1]["status"] == "complete"
     assert not any(event["type"] == "done" for event in events)
 
-    assert "<style>" in captured["system"]
-    assert "Do not force every answer into the same template" in captured["system"]
+    assert "<task>" in captured["system"]
+    assert "Use the shortest" in captured["system"]
     assert "primary runtime loop" in captured["system"]
-    assert "specific to this system" in captured["system"]
+    assert "for the requested parts" in captured["system"]
     assert "exact domain node labels" in captured["system"]
     assert "Do not invent graph positions or edge directions" in captured["system"]
     assert "<streaming_output_contract>" in captured["system"]
@@ -746,7 +695,7 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
     )
     assert "<already_shown_untrusted_frame>" in captured["messages"][-1]["content"]
     assert "supplied Markdown" in captured["system"]
-    assert "Never invent or alter a source URL" in captured["system"]
+    assert "a source URL, chapter, page, quotation" in captured["system"]
     assert captured["effort"] == "low"
     assert captured["max_output_tokens"] == 4500
     assert captured["timeout_seconds"] == settings.graph_synthesis_timeout_s
@@ -1053,7 +1002,7 @@ async def test_requested_unavailable_research_is_explicit_in_synthesis_prompt(
         "External web research status: unavailable"
         in captured["messages"][-1]["content"]
     )
-    assert "do not imply that a web search" in captured["system"]
+    assert "do not imply current research succeeded" in captured["system"]
     assert captured["effort"] == "low"
     assert captured["max_output_tokens"] == 4500
     assert captured["timeout_seconds"] == settings.graph_synthesis_timeout_s
@@ -1781,3 +1730,127 @@ async def test_focused_existing_graph_followup_accepts_one_compact_block(monkeyp
     )
     assert result["graph_data"] == graph
     assert result["graph_changed"] is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("depth", ["low", "prototype", "production"])
+@pytest.mark.parametrize("question", [
+    "Remember that the deployment budget is fixed.",
+    "Recall the constraints I gave you.",
+    "Summarise only the constraints, in one sentence.",
+])
+async def test_text_task_preserves_history_without_design_contract(monkeypatch, depth, question):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    captured = {}
+    history = [
+        {"role": "user", "content": "The budget is fixed."},
+        {"role": "assistant", "content": "Recommendation: add redundant model calls."},
+    ]
+
+    async def provider(**kwargs):
+        captured.update(kwargs)
+        return "The deployment budget is fixed."
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", provider)
+    result = await orchestrator.orchestrator_synthesise({
+        "send": send, "history": history, "user_message": question,
+        "complexity": depth, "route": "memory", "graph_mode": "off",
+        "graph_data": None, "rag_chunks": [],
+    })
+    assert captured["messages"][:-1] == history
+    message = captured["messages"][-1]["content"]
+    assert message.endswith("Question: " + question)
+    assert depth.capitalize() + " depth:" in message
+    assert "buildable design" not in message
+    assert "useful words" not in message
+    assert "<trusted_turn_result>" not in message
+    assert "<graph_answer>" not in captured["system"]
+    assert "<streaming_output_contract>" not in captured["system"]
+    assert "previous assistant assumptions and recommendations" in captured["system"]
+    assert "into user constraints or established facts" in captured["system"]
+    assert result["response_text"] == "The deployment budget is fixed."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("internal", [False, True])
+@pytest.mark.parametrize("path", ["retrieval", "memory", "quick"])
+async def test_answer_evidence_matches_provider_visible_sources(monkeypatch, internal, path):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    captured, events = {}, []
+    monkeypatch.setattr(settings, "internal_test_email_allowlist_raw", "eval@example.test")
+    visible = "V" * 800
+    hidden = "HIDDEN_PASSAGE_TAIL"
+    research = "[Source](https://example.test/source): the exact supplied snippet"
+
+    async def provider(**kwargs):
+        captured.update(kwargs)
+        return "Answer."
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(orchestrator, "stream_llm", provider)
+    state = {
+        "send": send, "history": [], "user_message": "Explain this briefly.",
+        "user_email": "eval@example.test" if internal else "user@example.test",
+        "graph_data": None, "complexity": "low", "route": "memory",
+        "rag_chunks": [] if path == "memory" else [
+            {"chapter": 3, "page_number": 42, "text": visible + hidden}
+        ],
+        "research_context": "" if path == "memory" else research,
+    }
+    function = orchestrator.quick_synthesise if path == "quick" else orchestrator.orchestrator_synthesise
+    await function(state)
+    evidence = [event for event in events if event["type"] == "answer_evidence"]
+    if not internal:
+        assert evidence == []
+        return
+    assert len(evidence) == 1
+    packet = evidence[0]
+    assert packet["schema_version"] == 1
+    assert packet["source"] == "synthesis_input"
+    assert packet["prompt_version"]
+    message = captured["messages"][-1]["content"]
+    if path == "quick":
+        assert packet["book_context"] == packet["research_context"] == ""
+        assert visible not in message and research not in message
+    else:
+        assert packet["book_context"] in message
+        assert packet["research_context"] in message
+        assert hidden not in packet["book_context"]
+        if path == "memory":
+            assert packet["book_context"] == "(no retrieved sections)"
+            assert packet["research_context"] == ""
+        else:
+            assert packet["book_context"] == "[1] Chapter 3, p.42\n" + visible
+            assert packet["research_context"] == research
+
+
+@pytest.mark.asyncio
+async def test_quick_answer_keeps_user_format_without_forced_sentence_count(monkeypatch):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    captured = {}
+    question = "Define an embedding in one sentence."
+
+    async def provider(**kwargs):
+        captured.update(kwargs)
+        return "An embedding represents data as a vector."
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", provider)
+    result = await orchestrator.quick_synthesise({
+        "send": send, "history": [], "user_message": question, "graph_data": None,
+    })
+    assert captured["messages"][-1]["content"] == question
+    assert "user's explicit scope" in captured["system"]
+    assert "2-4" not in captured["system"]
+    assert "no retrieved book evidence" in captured["system"]
+    assert result["response_text"] == "An embedding represents data as a vector."

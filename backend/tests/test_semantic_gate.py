@@ -19,6 +19,7 @@ from eval.judge_adapter import (
     _RawJudgment,
     _anthropic_response_schema,
     _artifact_sources,
+    _add_bounded_sources,
     _judge_prompt,
     _response_schema,
     _validate_evidence,
@@ -75,8 +76,25 @@ def test_two_clear_critical_failures_block():
     assert decide_semantic_gate(first, second).status == "fail"
 
 
-def test_judge_disagreement_requires_manual_review():
-    first = result(("safety", "fail", True), ("relevance", "pass", False))
+def test_critical_failure_takes_precedence_over_borderline_dimension():
+    judgment = result(("safety", "fail", True), ("relevance", "borderline", False))
+
+    first = decide_semantic_gate(judgment)
+    assert first.status == "fail"
+    assert (
+        decide_semantic_gate(
+            judgment, result(("relevance", "borderline", False))
+        ).status
+        == "fail"
+    )
+    assert (
+        decide_semantic_gate(result(("safety", "pass", True)), judgment).status
+        == "fail"
+    )
+
+
+def test_noncritical_judge_disagreement_requires_manual_review():
+    first = result(("safety", "pass", True), ("relevance", "fail", False))
     second = result(("safety", "pass", True), ("relevance", "pass", False))
 
     assert decide_semantic_gate(first, second).status == "manual_review"
@@ -1064,7 +1082,20 @@ async def test_anthropic_judge_prefers_eval_judge_api_key(monkeypatch):
     assert constructor_calls == [{"api_key": "anthropic-fallback-key"}]
 
 
-def test_semantic_replay_reuses_only_identity_bound_valid_judgments(tmp_path):
+@pytest.mark.parametrize(
+    ("saved_failures", "capture_failures", "decision", "valid"),
+    [
+        ([], [], "pass", True),
+        (["graph missing"], ["graph missing"], "fail", True),
+        (["graph missing"], ["graph missing"], "pass", False),
+        ([], ["graph missing"], "pass", False),
+        (["graph missing"], [], "fail", False),
+        (["old failure"], ["graph missing"], "fail", False),
+    ],
+)
+def test_semantic_replay_reuses_only_identity_bound_valid_judgments(
+    tmp_path, saved_failures, capture_failures, decision, valid
+):
     corpus = load_corpus()
     case = corpus.cases[0]
     target = "https://approved-evidence.example"
@@ -1100,9 +1131,9 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(tmp_path):
                 "evaluations": [
                     {
                         "id": case.id,
-                        "decision": "pass",
+                        "decision": decision,
                         "reason": "judge passed every dimension",
-                        "deterministic_failures": [],
+                        "deterministic_failures": saved_failures,
                         "judgments": [judgment],
                     }
                 ],
@@ -1117,12 +1148,20 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(tmp_path):
         target=target,
     )
 
-    resumed = _load_resume_evaluations(
-        args,
-        corpus,
-        SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
-        [case.id],
-    )
+    def load_resume():
+        return _load_resume_evaluations(
+            args,
+            corpus,
+            SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+            [case.id],
+            deterministic_failures_by_case={case.id: capture_failures},
+        )
+
+    if not valid:
+        with pytest.raises(RuntimeError, match="resume"):
+            load_resume()
+        return
+    resumed = load_resume()
 
     assert list(resumed) == [case.id]
     assert resumed[case.id]["judgments"] == [judgment]
@@ -1332,10 +1371,149 @@ def test_judge_payload_bounds_and_preserves_retrieval_evidence():
         {
             "query": "current practice",
             "result": "Report — <https://example.com/report>: current evidence",
+            "provenance": "legacy_telemetry_not_exact_synthesis_input",
             "eval_turn": 2,
         }
     ]
     assert payload["events"] == []
+
+
+def test_judge_payload_preserves_public_graph_semantics():
+    graph = {
+        "capabilities": {"external_effects": False},
+        "root_node_id": "a",
+        "sequence": [{"step": 1, "nodes": ["a"], "description": "Start"}],
+        "nodes": [{"id": "a", "lane": "main", "primary_flow_member": True}],
+        "edges": [
+            {
+                "source": "a",
+                "target": "b",
+                "label": "Read",
+                "description": "Read baseline",
+                "flow": "runtime",
+                "sync": "sync",
+            }
+        ],
+    }
+    projected = _judge_payload({"graph": graph})["graph"]
+    for field in ("capabilities", "root_node_id", "sequence", "nodes", "edges"):
+        assert projected[field] == graph[field]
+    assert (
+        "capabilities"
+        not in _judge_payload({"graph": {"nodes": [], "edges": []}})["graph"]
+    )
+
+
+def test_exact_answer_evidence_excludes_hidden_retrieval_tail_and_stale_memory():
+    payload = _judge_payload(
+        {
+            "turns": [{"answer": "First answer"}, {"answer": "Memory answer"}],
+            "events": [
+                {
+                    "type": "retrieval_evidence",
+                    "eval_turn": 1,
+                    "chunks": [{"text": "visible excerpt HIDDEN TAIL"}],
+                },
+                {
+                    "type": "research_evidence",
+                    "eval_turn": 1,
+                    "results": ["UNUSED SEARCH RESULT"],
+                },
+                {
+                    "type": "answer_evidence",
+                    "schema_version": 1,
+                    "source": "synthesis_input",
+                    "prompt_version": "answer-v1",
+                    "eval_turn": 1,
+                    "book_context": "[1] Chapter 1, p.26\nvisible excerpt",
+                    "research_context": "exact research snippet",
+                },
+                {
+                    "type": "retrieval_evidence",
+                    "eval_turn": 2,
+                    "chunks": [{"text": "STALE MEMORY EVIDENCE"}],
+                },
+                {
+                    "type": "answer_evidence",
+                    "schema_version": 1,
+                    "source": "synthesis_input",
+                    "prompt_version": "answer-v1",
+                    "eval_turn": 2,
+                    "book_context": "",
+                    "research_context": "",
+                },
+            ],
+        }
+    )
+    assert payload["retrieval_evidence"] == []
+    assert payload["research_evidence"] == []
+    assert payload["answer_evidence"][0]["book_context"].endswith("visible excerpt")
+    assert payload["answer_evidence"][1]["book_context"] == ""
+    sources = _artifact_sources(payload)
+    combined = " ".join(sources.values())
+    assert "visible excerpt" in combined and "exact research snippet" in combined
+    assert "HIDDEN TAIL" not in combined
+    assert "STALE MEMORY" not in combined
+    assert "UNUSED SEARCH" not in combined
+    assert [item["status"] for item in payload["evidence_provenance"]] == [
+        "exact_synthesis_input",
+        "exact_synthesis_input",
+    ]
+
+
+def test_mixed_capture_retains_legacy_turn_with_explicit_visibility_limit():
+    payload = _judge_payload(
+        {
+            "turns": [{"answer": "Historical"}, {"answer": "Current"}],
+            "events": [
+                {
+                    "type": "retrieval_evidence",
+                    "eval_turn": 1,
+                    "chunks": [{"text": "legacy raw passage"}],
+                },
+                {
+                    "type": "answer_evidence",
+                    "schema_version": 1,
+                    "source": "synthesis_input",
+                    "prompt_version": "answer-v1",
+                    "eval_turn": 2,
+                    "book_context": "current excerpt",
+                    "research_context": "",
+                },
+            ],
+        }
+    )
+    assert payload["retrieval_evidence"][0]["text"] == "legacy raw passage"
+    assert (
+        payload["retrieval_evidence"][0]["provenance"]
+        == "legacy_telemetry_not_exact_synthesis_input"
+    )
+    assert (
+        payload["evidence_provenance"][0]["status"]
+        == "legacy_capture_exact_synthesis_input_unavailable"
+    )
+    _, prompt = _judge_prompt(
+        load_corpus(), load_corpus().by_id["rag-grounding"], _artifact_sources(payload)
+    )
+    assert "legacy_capture_exact_synthesis_input_unavailable" in prompt
+
+
+@pytest.mark.parametrize(
+    "change", [{"schema_version": 2}, {"book_context": None}, {"eval_turn": 3}]
+)
+def test_invalid_exact_answer_evidence_is_not_silently_treated_as_legacy(change):
+    packet = {
+        "type": "answer_evidence",
+        "schema_version": 1,
+        "source": "synthesis_input",
+        "prompt_version": "answer-v1",
+        "eval_turn": 1,
+        "book_context": "",
+        "research_context": "",
+        **change,
+    }
+    with pytest.raises(ValueError, match="answer_evidence"):
+        _judge_payload({"answer": "Answer", "events": [packet]})
 
 
 @pytest.mark.asyncio
@@ -1636,3 +1814,268 @@ def test_report_only_manual_review_is_visible_but_not_a_junit_failure(tmp_path):
     assert 'skipped="1"' in junit
     assert "<skipped" in junit
     assert "borderline dimension" in junit
+
+
+@pytest.fixture
+def complete_calibration_capture():
+    corpus = load_corpus()
+    results = []
+    for case in corpus.cases:
+        results.append(
+            {
+                "id": case.id,
+                "execution_state": "completed",
+                "passed": True,
+                "deterministic_failures": [],
+                "failure_details": [],
+                "turns": [
+                    {"turn": index, "prompt": step.prompt, "answer": "Captured answer."}
+                    for index, step in enumerate(case.steps, start=1)
+                ],
+                "events": [
+                    {"type": "done", "eval_turn": index}
+                    for index in range(1, len(case.steps) + 1)
+                ],
+                "screenshot": f"{case.id}.png",
+                "trace": f"{case.id}.zip",
+            }
+        )
+    return {
+        "format_version": 1,
+        "kind": "browser_capture",
+        "suite": "full",
+        "status": "complete",
+        "corpus_version": corpus.corpus_version,
+        "release_identity": corpus.release_identity,
+        "dashboard_smoke": {"passed": True},
+        "results": results,
+        "case_states": [{"id": case.id, "state": "completed"} for case in corpus.cases],
+        "application_telemetry": [],
+    }
+
+
+def _full_replay_args(*, replay=True):
+    return SimpleNamespace(
+        manual_review_policy="blocking",
+        require_approved_corpus=False,
+        capture_replay=replay,
+        suite="full",
+        case=[],
+        target="https://candidate.example",
+        resume_input=None,
+    )
+
+
+def _passing_replay_judge(monkeypatch, *, critical_failure=False):
+    calls = []
+
+    async def judge(_judge, _corpus, case, _payload, *, on_attempt):
+        calls.append(case.id)
+        on_attempt()
+        return replace(
+            result(
+                *(
+                    (
+                        dimension,
+                        "fail" if critical_failure and index == 0 else "pass",
+                        critical_failure and index == 0,
+                    )
+                    for index, dimension in enumerate(case.rubric_dimensions)
+                )
+            ),
+            provider="anthropic",
+            model="claude-sonnet-5",
+        )
+
+    monkeypatch.setattr(live_runner, "SemanticJudge", lambda: object())
+    monkeypatch.setattr(live_runner, "judge_with_transport_retry", judge)
+    return calls
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replay", [False, True])
+async def test_calibration_grades_complete_product_failures_without_overriding_them(
+    monkeypatch, tmp_path, complete_calibration_capture, replay
+):
+    capture = complete_calibration_capture
+    failed = capture["results"][0]
+    failed.update(
+        passed=False,
+        deterministic_failures=["graph missing"],
+        failure_details=[{"kind": "quality"}],
+    )
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    calls = _passing_replay_judge(monkeypatch)
+
+    report, code = await evaluate(_full_replay_args(replay=replay))
+
+    assert code == 1
+    evaluation = report["evaluations"][0]
+    assert evaluation["decision"] == "fail"
+    assert evaluation["deterministic_failures"] == ["graph missing"]
+    assert len(evaluation["judgments"]) == int(replay)
+    assert len(calls) == (len(capture["results"]) if replay else 0)
+    assert report["cost_accounting"]["application"]["status"] == "infrastructure"
+    if replay:
+        assert all(item["decision"] == "pass" for item in report["evaluations"][1:])
+        assert report["budget"]["application_calls"] == 0
+        assert report["cost_accounting"]["policy"]["scope"] == "source_capture"
+        path = tmp_path / "report.json"
+        _write_outputs(path, report)
+        import xml.etree.ElementTree as ET
+
+        tree = ET.parse(path.parent / "live-junit.xml")
+        cost = tree.find(".//testcase[@name='application-cost-policy']")
+        assert cost.find("failure") is None
+        assert cost.find("skipped") is not None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fault", ["infrastructure", "missing_answer", "missing_done"])
+async def test_calibration_rejects_incomplete_or_infrastructure_capture_before_judging(
+    monkeypatch, complete_calibration_capture, fault
+):
+    capture = complete_calibration_capture
+    first = capture["results"][0]
+    if fault == "infrastructure":
+        first.update(
+            passed=False,
+            deterministic_failures=["transport failure"],
+            failure_details=[{"kind": "infrastructure"}],
+        )
+    elif fault == "missing_answer":
+        first["turns"][0]["answer"] = ""
+    else:
+        first["events"] = []
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    calls = _passing_replay_judge(monkeypatch)
+    with pytest.raises(ValueError):
+        await evaluate(_full_replay_args())
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_replay_critical_failure_uses_one_judgment_per_case(
+    monkeypatch, complete_calibration_capture
+):
+    monkeypatch.setattr(
+        live_runner, "_load_capture", lambda _args: complete_calibration_capture
+    )
+    calls = _passing_replay_judge(monkeypatch, critical_failure=True)
+    report, code = await evaluate(_full_replay_args())
+    assert code == 1
+    assert len(calls) == len(complete_calibration_capture["results"])
+    assert all(
+        item["decision"] == "fail" and len(item["judgments"]) == 1
+        for item in report["evaluations"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_replay_source_accounting_does_not_hide_new_judge_failure(
+    monkeypatch, complete_calibration_capture
+):
+    monkeypatch.setattr(
+        live_runner, "_load_capture", lambda _args: complete_calibration_capture
+    )
+    _passing_replay_judge(monkeypatch)
+
+    async def unavailable(*_args, **_kwargs):
+        raise RuntimeError("judge unavailable")
+
+    monkeypatch.setattr(live_runner, "judge_with_transport_retry", unavailable)
+    report, code = await evaluate(_full_replay_args())
+    assert code == 2
+    assert report["status"] == "infrastructure"
+    assert all("judge unavailable" in item["reason"] for item in report["evaluations"])
+
+
+@pytest.mark.asyncio
+async def test_replay_retains_priced_source_usage_without_spending_application_budget(
+    monkeypatch, complete_calibration_capture
+):
+    capture = complete_calibration_capture
+    for row in capture["results"]:
+        row["thread_id"] = row["id"]
+        capture["application_telemetry"].append(
+            {
+                "thread_id": row["id"],
+                "operation": "synthesis",
+                "model": "claude-sonnet-5",
+                "status": "success",
+                "provider_attempts": 100,
+                "input_tokens": 100,
+                "output_tokens": 10,
+            }
+        )
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    _passing_replay_judge(monkeypatch)
+    report, code = await evaluate(_full_replay_args())
+    assert code == 0
+    assert report["budget"]["application_calls"] == 0
+    assert report["budget"]["source_application_calls"] == 100 * len(capture["results"])
+    assert report["estimated_cost"]["application_usd"] == 0
+    assert report["estimated_cost"]["source_application_usd"] > 0
+    assert report["cost_accounting"]["application"]["status"] == "pass"
+
+
+@pytest.mark.parametrize("final_packet", [False, True])
+def test_response_reset_discards_abandoned_exact_and_legacy_evidence(final_packet):
+    packet = {
+        "type": "answer_evidence",
+        "schema_version": 1,
+        "source": "synthesis_input",
+        "prompt_version": "test",
+        "eval_turn": 1,
+        "book_context": "OLD EXACT",
+        "research_context": "OLD RESEARCH",
+    }
+    events = [
+        packet,
+        {
+            "type": "retrieval_evidence",
+            "eval_turn": 1,
+            "chunks": [{"text": "OLD LEGACY"}],
+        },
+        {"type": "response_reset", "eval_turn": 1},
+    ]
+    if final_packet:
+        events.append({**packet, "book_context": "", "research_context": ""})
+    payload = _judge_payload(
+        {
+            "events": events,
+            "turns": [{"prompt": "Question", "answer": "Final answer"}],
+        }
+    )
+    assert len(payload["answer_evidence"]) == int(final_packet)
+    assert payload["retrieval_evidence"] == []
+    assert "OLD" not in str(_artifact_sources(payload))
+    if final_packet:
+        assert payload["answer_evidence"][0]["book_context"] == ""
+
+
+def test_artifact_source_chunks_preserve_code_and_paragraph_whitespace():
+    original = (
+        "First paragraph.\n\n```python\nif ready:\n    run()\n```\n\nNext paragraph.\n"
+        * 20
+    )
+    sources = {}
+    _add_bounded_sources(sources, "answer", original)
+    assert "".join(sources.values()) == original
+    assert all(len(chunk) <= 500 for chunk in sources.values())
+    packet = {
+        "eval_turn": 1,
+        "source": "synthesis_input",
+        "prompt_version": "test",
+        "book_context": original,
+        "research_context": "",
+    }
+    exact = _artifact_sources({"answer_evidence": [packet]})
+    assert (
+        "".join(
+            value
+            for key, value in exact.items()
+            if key.startswith("turn-1-synthesis-1-book-")
+        )
+        == original
+    )

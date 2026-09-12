@@ -1120,3 +1120,21 @@ def test_explicit_edit_clause_takes_precedence_over_explanation(query):
 
     graph = {"design_origin": "applied", "nodes": [{"id": "cache", "label": "Cache"}]}
     assert resolve_graph_operation(query, graph) == "edit"
+
+
+@pytest.mark.parametrize("depth", ["low", "prototype", "production"])
+@pytest.mark.parametrize("query", [
+    "Remember these constraints.",
+    "Summarise what we decided.",
+    "Explain reranking.",
+    "Design a production retrieval system.",
+])
+def test_depth_changes_detail_without_assigning_a_new_task(depth, query):
+    from agent.complexity import resolve_complexity
+
+    profile = resolve_complexity(depth, query)
+    assert profile.resolved == depth
+    assert "requested" in profile.answer_contract
+    assert "buildable design" not in profile.answer_contract
+    assert "implementable design" not in profile.answer_contract
+    assert "useful words" not in profile.answer_contract
