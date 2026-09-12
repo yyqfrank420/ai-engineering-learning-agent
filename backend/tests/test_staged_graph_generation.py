@@ -1,5 +1,7 @@
+import asyncio
 import hashlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -10,6 +12,88 @@ from agent.stream_utils import StructuredLLMResponse
 
 def _fingerprint(value: str) -> str:
     return hashlib.sha256(value.encode()).hexdigest()
+
+
+@pytest.mark.parametrize(
+    "connection_key", ["initial_connections", "corrected_connections"]
+)
+def test_retained_closed_loop_primary_reachability(connection_key):
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "staged_closed_loop_34661446928.json"
+        ).read_text()
+    )
+    candidate = fixture["candidate"]
+    wire = fixture[connection_key]
+    accepted_components = [
+        {
+            "index": index,
+            "is_root": index == candidate["root_index"],
+            "primary_flow_member": component["primary_flow_member"],
+        }
+        for index, component in enumerate(candidate["components"])
+    ]
+    build = {
+        **candidate,
+        "request_id": "closed-loop-retained-transit",
+        "maturity": "production",
+        "source": "test",
+        "stage": "connections",
+        "components": [
+            {
+                **component,
+                "model_index": index,
+                "type": generation.NODE_TYPE_CODES[component["type"]],
+                "group_kind": generation.GROUP_KIND_CODES[component["group_kind"]],
+            }
+            for index, component in enumerate(candidate["components"])
+        ],
+        "connections": [
+            {
+                "source_id": str(edge["source_index"]),
+                "target_id": str(edge["target_index"]),
+                "label": edge["label"],
+                "flow": generation.FLOW_CODES[edge["flow"]],
+                "sync": generation.SYNC_CODES[edge["sync"]],
+            }
+            for edge in wire["edges"]
+        ],
+    }
+    if connection_key == "initial_connections":
+        assert len(wire["edges"]) == 28
+        with pytest.raises(
+            generation.StagedGenerationError, match="connection_wire_unreachable"
+        ):
+            generation._parse_connection_wire(
+                json.dumps(wire), accepted_components=accepted_components, edge_limit=30
+            )
+        with pytest.raises(contract.GraphContractError, match="must be reachable"):
+            contract.project_graph_data(build)
+        return
+
+    assert (
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=accepted_components, edge_limit=30
+        )
+        == wire
+    )
+    graph = contract.project_graph_data(build)
+    assert len(graph["nodes"]) == 11
+    assert len(graph["edges"]) == 25
+    assert [step["nodes"] for step in graph["sequence"]] == [
+        ["n1"],
+        ["n2"],
+        ["n3", "n4", "n6", "n7"],
+        ["n5", "n8"],
+    ]
+    assert [step["step"] for step in graph["sequence"]] == [1, 2, 3, 4]
+    assert {node for step in graph["sequence"] for node in step["nodes"]} == {
+        f"n{index}" for index in range(1, 9)
+    }
+    assert (
+        contract.project_graph_data(contract.reconstruct_staged_graph_build(graph))
+        == graph
+    )
 
 
 def _write_set() -> dict:
@@ -344,7 +428,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v5"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v6"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -372,10 +456,6 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     )
     assert (
         "Observation-only monitoring may terminate at a durable telemetry/log sink"
-        in prompt
-    )
-    assert (
-        "A correction cannot introduce control unless an accepted endpoint has type control or decision"
         in prompt
     )
 
@@ -480,8 +560,10 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_seconds", [None, 129.875])
 async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetry(
     monkeypatch,
+    timeout_seconds,
 ):
     calls = []
 
@@ -497,6 +579,7 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
         write_set=_write_set(),
         upstream_fingerprint="a" * 64,
         state={"user_id": "user-1", "session_id": "thread-1", "is_production": True},
+        timeout_seconds=timeout_seconds,
     )
 
     assert result["wire"] == _component_wire()
@@ -504,8 +587,71 @@ async def test_component_generation_uses_kimi_high_one_attempt_and_safe_telemetr
     assert calls[0]["model"] == "kimi-k3"
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
-    assert calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v9"
+    assert calls[0]["timeout_seconds"] == timeout_seconds
+    assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
+    assert (
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v10"
+    )
     assert "request" not in calls[0]["telemetry"]["metadata"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "error_code"),
+    [
+        (TimeoutError("deadline expired"), "staged_generation_timeout"),
+        (RuntimeError("provider unavailable"), "staged_generation_unavailable"),
+    ],
+)
+async def test_component_generation_distinguishes_timeout_from_provider_failure(
+    monkeypatch,
+    failure,
+    error_code,
+):
+    async def fake_stream(**kwargs):
+        raise failure
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    with pytest.raises(generation.StagedGenerationError, match=error_code) as raised:
+        await generation.generate_component_candidate(
+            request="Draw the request path",
+            resolved_maturity="production",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+            timeout_seconds=129.875,
+        )
+    assert raised.value.__cause__ is failure
+
+
+@pytest.mark.asyncio
+async def test_component_generation_preserves_outer_cancellation(monkeypatch):
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def fake_stream(**kwargs):
+        started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    task = asyncio.create_task(
+        generation.generate_component_candidate(
+            request="Draw the request path",
+            resolved_maturity="production",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+            timeout_seconds=129.875,
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()
 
 
 @pytest.mark.asyncio
@@ -1534,13 +1680,21 @@ async def test_component_generation_receives_root_selection_before_connections(
         ([True, True], [(0, 1, 400), (1, 0, 400)], True),
         ([True, True], [(1, 0, 400)], False),
         ([True, True], [(0, 1, 402), (1, 0, 400)], False),
-        ([True, False, True], [(0, 1, 400), (1, 2, 400)], False),
+        ([True, False, True], [(0, 1, 400), (1, 2, 400)], True),
+        ([True, False, True], [(0, 1, 401), (1, 2, 400)], True),
+        ([True, False, True], [(0, 1, 402), (1, 2, 400)], False),
+        ([True, False, True], [(0, 1, 400), (1, 2, 403)], False),
+        ([True, False, True], [(1, 0, 400), (1, 2, 400)], False),
     ],
     ids=[
         "pull-request-response",
         "response-only",
         "feedback-request",
         "nonprimary-transit",
+        "nonprimary-control-transit",
+        "nonprimary-feedback-transit",
+        "nonprimary-deployment-transit",
+        "nonprimary-reversed-transit",
     ],
 )
 def test_pull_root_requires_outward_primary_runtime_contract(
@@ -1613,8 +1767,7 @@ def test_pull_root_requires_outward_primary_runtime_contract(
         graph = contract.project_graph_data(build)
         assert graph["sequence"][0]["nodes"] == ["n1"]
         assert {(edge["source"], edge["target"]) for edge in graph["edges"]} == {
-            ("n1", "n2"),
-            ("n2", "n1"),
+            (f"n{source + 1}", f"n{target + 1}") for source, target, _ in edge_contracts
         }
     else:
         with pytest.raises(

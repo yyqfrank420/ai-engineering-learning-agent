@@ -502,29 +502,40 @@ def _primary_distances(build: Mapping[str, Any]) -> dict[str, int]:
         for component in components
         if component["model_index"] == build["root_index"]
     )["server_id"]
-    adjacency = {node_id: [] for node_id in primary_ids}
-    for connection in build["connections"]:
-        if (
-            connection["flow"] in {"runtime", "control"}
-            and connection["source_id"] in primary_ids
-            and connection["target_id"] in primary_ids
-        ):
-            adjacency[connection["source_id"]].append(connection["target_id"])
-    distances = {root: 0}
-    pending: deque[str] = deque([root])
+    return primary_flow_distances(
+        root_id=root,
+        primary_ids=primary_ids,
+        connections=build["connections"],
+    )
+
+
+def primary_flow_distances(
+    *,
+    root_id: str,
+    primary_ids: set[str],
+    connections: Iterable[Mapping[str, Any]],
+) -> dict[str, int]:
+    """Return selected distances through validated directed runtime/control contracts."""
+    adjacency: dict[str, list[str]] = {}
+    for connection in connections:
+        if connection["flow"] in {"runtime", "control"}:
+            adjacency.setdefault(connection["source_id"], []).append(
+                connection["target_id"]
+            )
+    distances = {root_id: 0}
+    pending: deque[str] = deque([root_id])
     while pending:
         current = pending.popleft()
-        for target in sorted(adjacency[current]):
+        for target in sorted(adjacency.get(current, [])):
             if target not in distances:
                 distances[target] = distances[current] + 1
                 pending.append(target)
-    missing = primary_ids - set(distances)
-    if missing:
+    if primary_ids - distances.keys():
         raise GraphContractError(
             "every primary flow member must be reachable through runtime or control connections",
             path="components.primary_flow_member",
         )
-    return distances
+    return {node_id: distances[node_id] for node_id in sorted(primary_ids)}
 
 
 def _stored_groups(
@@ -589,7 +600,7 @@ def derive_groups(
 
 
 def derive_sequence(build: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Derive shortest directed primary stages through runtime and control connections."""
+    """Select primary walkthrough stages from directed runtime/control distances."""
     assigned = validate_staged_graph_build(assign_server_ids(build))
     distances = _primary_distances(assigned)
     stages: dict[int, list[str]] = {}
@@ -599,11 +610,11 @@ def derive_sequence(build: Mapping[str, Any]) -> list[dict[str, Any]]:
             stages.setdefault(distances[node_id], []).append(node_id)
     return [
         {
-            "step": distance + 1,
+            "step": step,
             "nodes": stages[distance],
-            "description": f"Primary flow stage {distance + 1}",
+            "description": f"Primary flow stage {step}",
         }
-        for distance in sorted(stages)
+        for step, distance in enumerate(sorted(stages), 1)
     ]
 
 

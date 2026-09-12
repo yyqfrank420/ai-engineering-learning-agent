@@ -223,6 +223,8 @@ def test_cloud_run_config_deadline_boundary_includes_contract_correction():
     [
         {"graph_builder_max_timeout_s": 149},
         {"graph_critic_max_timeout_s": 59},
+        {"staged_component_timeout_s": 241},
+        {"staged_connection_timeout_s": 241},
     ],
 )
 def test_cloud_run_config_rejects_a_stage_max_below_its_reserved_time(

@@ -184,6 +184,41 @@ def test_primary_members_must_be_reachable_over_runtime_or_control_edges():
         validate_staged_graph_build(assign_server_ids(plan))
 
 
+def test_nonprimary_transit_keeps_walkthrough_steps_contiguous_and_parallel():
+    plan = _plan()
+    plan["components"][1]["primary_flow_member"] = False
+    plan["components"].append(
+        {**plan["components"][2], "model_index": 3, "label": "Receipt ledger"}
+    )
+    plan["connections"].extend(
+        [
+            {**plan["connections"][1], "target_id": "3"},
+            {**plan["connections"][0], "source_id": "2", "target_id": "1"},
+        ]
+    )
+
+    graph = project_graph_data(plan)
+
+    assert graph["sequence"] == [
+        {"step": 1, "nodes": ["n1"], "description": "Primary flow stage 1"},
+        {"step": 2, "nodes": ["n3", "n4"], "description": "Primary flow stage 2"},
+    ]
+    assert len(graph["nodes"]) == 4
+    assert len(graph["edges"]) == 4
+    assert graph["groups"][0]["nodeIds"] == ["n1", "n2"]
+    assert project_graph_data(reconstruct_staged_graph_build(graph)) == graph
+
+
+@pytest.mark.parametrize("flow", ["feedback", "deployment"])
+def test_nonprimary_transit_cannot_use_nonruntime_contracts(flow):
+    plan = _plan()
+    plan["components"][1]["primary_flow_member"] = False
+    plan["connections"][1]["flow"] = flow
+
+    with pytest.raises(GraphContractError, match="must be reachable"):
+        project_graph_data(plan)
+
+
 def test_component_label_and_type_pairs_must_be_unique():
     plan = _plan()
     plan["components"][1]["label"] = plan["components"][0]["label"].upper()

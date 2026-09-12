@@ -152,15 +152,10 @@ def staged_timeout_seconds(
         + settings.graph_synthesis_timeout_s
         + settings.graph_finalization_reserve_s
     )
-    generation_max_s = (
-        settings.staged_component_timeout_s
-        if component_phase
-        else settings.graph_builder_max_timeout_s
-    )
-    timeout_s = _stage_timeout(
+    return _stage_timeout(
         state,
         max_s=(
-            generation_max_s
+            settings.graph_builder_max_timeout_s
             if action == "generate"
             else settings.graph_critic_max_timeout_s
         ),
@@ -170,25 +165,6 @@ def staged_timeout_seconds(
             generation_s if action == "generate" else settings.staged_gate_timeout_s
         ),
     )
-    preview_deadline = state.get("graph_preview_deadline_s")
-    if (
-        component_phase
-        and action == "generate"
-        and state.get("graph_stage_preview_count", 0) == 0
-        and isinstance(preview_deadline, (int, float))
-    ):
-        available = (
-            float(preview_deadline)
-            - time.monotonic()
-            - settings.diagram_evaluation_timeout_s
-            - settings.graph_preview_finalization_reserve_s
-        )
-        if available <= 0:
-            raise StageAdmissionDenied(
-                "staged component generation cannot preserve the visible preview deadline"
-            )
-        return min(timeout_s, available)
-    return timeout_s
 
 
 def critic_timeout_seconds(state: dict[str, Any]) -> float:

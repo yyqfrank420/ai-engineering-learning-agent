@@ -869,7 +869,7 @@ async def test_staged_provider_calls_receive_admitted_timeouts(monkeypatch):
 
     assert result["graph_publication"] == "approved"
     assert timeouts == {
-        "components": workflow.settings.staged_component_timeout_s,
+        "components": 137.0,
         "connections": workflow.settings.graph_builder_max_timeout_s,
         "component_review": workflow.settings.graph_critic_max_timeout_s,
         "connection_review": workflow.settings.graph_critic_max_timeout_s,
@@ -953,7 +953,7 @@ async def test_component_correction_uses_local_count_after_first_preview(monkeyp
         )
     )
     assert result["graph_publication"] == "approved"
-    assert generation_timeouts == [workflow.settings.staged_component_timeout_s] * 2
+    assert generation_timeouts == [workflow.settings.graph_builder_max_timeout_s] * 2
 
 
 @pytest.mark.parametrize("phase", ["components", "connections"])
@@ -3137,3 +3137,92 @@ def test_scoped_named_additions_reject_invalid_identity_authority(
         )
 
     assert base_components == original
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("render_passes", [True, False])
+async def test_timed_out_components_retry_after_preview_target_still_requires_private_render(
+    monkeypatch, render_passes
+):
+    from agent import deadlines
+    from agent.stream_utils import StructuredLLMResponse
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
+    actual_render = workflow._render
+    downstream = []
+    _install_success_boundaries(monkeypatch, events=downstream)
+    provider_timeouts = []
+    events = []
+    rendered_at = []
+
+    async def component_provider(**kwargs):
+        provider_timeouts.append(kwargs["timeout_seconds"])
+        if len(provider_timeouts) == 1:
+            clock["now"] += 129.955
+            raise TimeoutError("first component stream timed out")
+        clock["now"] += 100.0
+        return StructuredLLMResponse(
+            text=json.dumps(
+                {"candidate": _components_wire(), "clarification_questions": []}
+            ),
+            finish_reason="end_turn",
+            input_tokens=1,
+            output_tokens=1,
+            provider="test",
+            model="test",
+        )
+
+    async def send(event):
+        events.append(event)
+
+    async def private_render(graph):
+        rendered_at.append(clock["now"])
+        return {
+            "screenshot_base64": "private-render",
+            "report": {
+                "rendered_nodes": len(graph["nodes"]),
+                "rendered_edges": len(graph["edges"]),
+                "overlap_count": 0,
+                "clipped_nodes": 0 if render_passes else 1,
+                "clipped_edges": 0,
+                "minimum_text_px": 12,
+            },
+        }
+
+    monkeypatch.setattr(
+        workflow,
+        "generate_component_candidate",
+        generation.generate_component_candidate,
+    )
+    monkeypatch.setattr(generation, "stream_structured_llm", component_provider)
+    monkeypatch.setattr(workflow, "_render", actual_render)
+    approved = _approved_graph()
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            terminal_deadline_s=1_010.0,
+            graph_preview_deadline_s=270.0,
+            approved_graph_data=approved,
+            graph_data=approved,
+            send=send,
+            await_diagram_evaluation=private_render,
+        )
+    )
+
+    assert provider_timeouts == pytest.approx([147.0, 217.045])
+    assert rendered_at and min(rendered_at) > 270.0
+    previews = [event for event in events if event.get("type") == "graph_preview"]
+    if render_passes:
+        assert result["graph_publication"] == "approved"
+        assert downstream == ["component_gate", "connections", "connection_gate"]
+        assert len(rendered_at) == len(previews) == 2
+    else:
+        assert result["graph_publication"] == "preserved"
+        assert result["graph_data"] == approved
+        assert (
+            result["graph_operation"]["failure_code"]
+            == "staged_component_render_rejected"
+        )
+        assert downstream == []
+        assert len(rendered_at) == 1
+        assert previews == []

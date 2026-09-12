@@ -116,7 +116,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v6"
+        "staged_component_gate_v7"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
