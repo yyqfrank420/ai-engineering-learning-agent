@@ -393,6 +393,21 @@ async def dashboard_eval_telemetry(
                     "provider": str(attempt.get("provider") or "unknown")[:64],
                     "model": str(attempt.get("model") or "unknown")[:128],
                     "status": str(attempt.get("status") or "unknown")[:32],
+                    "accepted": (
+                        attempt.get("accepted")
+                        if isinstance(attempt.get("accepted"), bool)
+                        else None
+                    ),
+                    "usage_complete": (
+                        attempt.get("usage_complete")
+                        if isinstance(attempt.get("usage_complete"), bool)
+                        else None
+                    ),
+                    "error_type": (
+                        attempt["error_type"][:128]
+                        if isinstance(attempt.get("error_type"), str)
+                        else None
+                    ),
                     "input_tokens": _nonnegative_int(attempt.get("input_tokens")),
                     "cache_creation_input_tokens": _nonnegative_int(
                         attempt.get("cache_creation_input_tokens")
@@ -411,6 +426,7 @@ async def dashboard_eval_telemetry(
                     ),
                 }
             )
+        allocated_timeout_s = metadata.get("allocated_timeout_s")
         calls.append(
             {
                 "thread_id": row.get("thread_id"),
@@ -424,6 +440,18 @@ async def dashboard_eval_telemetry(
                     else None
                 ),
                 "latency_ms": row["duration_ms"],
+                "allocated_timeout_s": (
+                    allocated_timeout_s
+                    if type(allocated_timeout_s) in (int, float)
+                    and 0 <= allocated_timeout_s < float("inf")
+                    else None
+                ),
+                "output_chars": _nonnegative_int(row.get("output_chars")),
+                "error_type": (
+                    row["error_type"][:128]
+                    if isinstance(row.get("error_type"), str)
+                    else None
+                ),
                 "fallback": row["used_fallback"],
                 "input_tokens": _nonnegative_int(metadata.get("input_tokens")),
                 "cache_creation_input_tokens": _nonnegative_int(

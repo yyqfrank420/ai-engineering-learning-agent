@@ -48,6 +48,10 @@ This is the current runtime contract for the production-quality demo.
    reversible-preview, then connection-gate order. These previews remain nonauthoritative until
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
    two candidates. A connection retry cannot reopen an accepted component layer.
+   Primary membership selects the main walkthrough. Reachability traverses all accepted directed
+   runtime and control contracts, including non-primary transit components. Feedback and deployment
+   edges cannot establish reachability. The server groups selected nodes by shortest distance and
+   numbers the emitted stages consecutively; this walkthrough does not claim causal execution order.
    Initial and corrected connections use the same structural checks. Control behavior is reviewed
    against accepted responsibilities.
 8. Prototype gates exclude production criteria. Production proof requirements derive from the

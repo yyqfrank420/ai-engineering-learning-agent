@@ -70,6 +70,8 @@
             "backend/tests/test_database_adapter_postgres.py",
             "backend/tests/test_faiss_artifact.py",
             "backend/tests/test_faiss_artifact_security.py",
+            "backend/tests/test_message_ordering.py",
+            "backend/tests/test_message_sequence_postgres.py",
             "backend/tests/test_observability_core.py",
             "backend/tests/test_postgres_schema_guardrails.py",
             "backend/tests/test_resource_limits.py",

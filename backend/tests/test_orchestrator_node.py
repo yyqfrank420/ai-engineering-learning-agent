@@ -58,7 +58,7 @@ def test_synthesis_prompts_enforce_evidence_bounded_attribution():
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v16"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v17"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v2"
     assert "complete citation allowlist" in _SYNTHESIS_SYSTEM
     assert "exactly one of two provenance lanes" in _SYNTHESIS_SYSTEM
@@ -1098,7 +1098,7 @@ async def test_production_complexity_keeps_depth_contract_in_low_cost_explanatio
     assert "production design and trade-offs" in events[0]["status"]
 
 
-@pytest.mark.parametrize("operation_kind", ["edit"])
+@pytest.mark.parametrize("operation_kind", ["edit", "create"])
 @pytest.mark.parametrize("has_approved_graph", [False, True])
 @pytest.mark.parametrize(
     "revision_instruction",
@@ -1164,12 +1164,15 @@ async def test_failed_graph_operation_reports_exact_result_without_model_calls(
         expected += "\n\n" + revision_instruction
     assert len(events) == 1
     assert events[0]["content"] == expected
-    assert events[0]["type"] == ("explanation_block" if graph else "response_delta")
-    if graph:
+    graph_block = bool(graph and operation_kind == "edit")
+    assert events[0]["type"] == (
+        "explanation_block" if graph_block else "response_delta"
+    )
+    if graph_block:
         assert events[0]["graph_version"] == "approved-v1"
         assert events[0]["related_node_ids"] == []
     assert result["response_text"] == (
-        "## Diagram unchanged\n\n" + expected if graph else expected
+        "## Diagram unchanged\n\n" + expected if graph_block else expected
     )
     assert result["graph_data"] == graph
     assert "Eval Feedback Collector" not in result["response_text"]
@@ -1207,59 +1210,43 @@ async def test_failed_graph_response_preserves_already_streamed_frame(monkeypatc
 
 
 @pytest.mark.parametrize("has_graph", [False, True])
-@pytest.mark.parametrize(
-    "outcome", ["answer", "provider_error", "timeout", "no_time", "cancel"]
-)
+@pytest.mark.parametrize("expired_deadline", [False, True])
+@pytest.mark.parametrize("early_response", ["", "I will inspect the requested design."])
 @pytest.mark.asyncio
-async def test_failed_create_keeps_notice_and_uses_one_grounded_graph_free_call(
-    monkeypatch, has_graph, outcome
+async def test_failed_create_finishes_without_more_model_work(
+    monkeypatch, has_graph, expired_deadline, early_response
 ):
     import agent.nodes.orchestrator_node as orchestrator
 
-    events, calls = [], []
+    events = []
 
     async def send(event):
         events.append(event)
 
-    async def unexpected(*_args, **_kwargs):
+    def unexpected(*_args, **_kwargs):
         pytest.fail(
-            "failed creates must not condense or generate graph explanation blocks"
+            "failed creates must finish without synthesis or deadline admission"
         )
 
-    async def generate(**kwargs):
-        calls.append(kwargs)
-        await kwargs["send"](
-            {"type": "response_delta", "content": "Uncommitted partial text"}
-        )
-        if outcome == "provider_error":
-            raise RuntimeError("provider unavailable")
-        if outcome == "timeout":
-            raise TimeoutError()
-        if outcome == "cancel":
-            raise asyncio.CancelledError()
-        answer = "RAG retrieves context before generation (Chapter 4, p.88)."
-        await kwargs["send"]({"type": "response_delta", "content": answer})
-        return answer
-
-    monkeypatch.setattr(orchestrator, "maybe_condense_history", unexpected)
-    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", unexpected)
-    monkeypatch.setattr(orchestrator, "stream_llm", generate)
+    for name in (
+        "maybe_condense_history",
+        "stream_explanation_blocks",
+        "stream_llm",
+        "synthesis_timeout_seconds",
+        "_synthesise_answer",
+    ):
+        monkeypatch.setattr(orchestrator, name, unexpected)
     graph = (
-        {"version": "old-v1", "nodes": [{"label": "Prior secret design"}]}
+        {"version": "old-v1", "nodes": [{"label": "Prior approved design"}]}
         if has_graph
         else None
     )
     state = {
         "send": send,
-        "history": [{"role": "assistant", "content": "Rejected secret proposal"}],
+        "history": [{"role": "assistant", "content": "Rejected private proposal"}],
         "user_message": "Explain RAG using book evidence and draw its runtime flow.",
-        "design_query": "Explain RAG using book evidence and draw its runtime flow.\nAdditional user requirements: use support tickets.",
         "rag_chunks": [
-            {
-                "chapter": 4,
-                "page_number": 88,
-                "text": "RAG retrieves context before generation.",
-            }
+            {"chapter": 4, "page_number": 88, "text": "RAG retrieves context."}
         ],
         "graph_data": graph,
         "approved_graph_data": graph,
@@ -1267,46 +1254,51 @@ async def test_failed_create_keeps_notice_and_uses_one_grounded_graph_free_call(
         "graph_publication": "preserved" if has_graph else "withheld",
         "graph_operation": {"kind": "create", "status": "failed"},
         "graph_changed": False,
-        "architect_plan": {"title": "Rejected secret proposal"},
-        "staged_graph_build": {"title": "Rejected secret proposal"},
-        **({"terminal_deadline_s": 0} if outcome == "no_time" else {}),
+        "graph_review": {
+            "staged_gate": {
+                "diagnostics": ["private provider detail"],
+                "findings": [{"reason": "private rejected component detail"}],
+            }
+        },
+        "architect_plan": {"title": "Rejected private proposal"},
+        "staged_graph_build": {"title": "Rejected private proposal"},
+        "early_response_text": early_response,
+        **({"terminal_deadline_s": 0} if expired_deadline else {}),
     }
-    if outcome == "cancel":
-        with pytest.raises(asyncio.CancelledError):
-            await orchestrator.orchestrator_synthesise(state)
-        assert "not approved" in events[0]["content"]
-        return
-
     result = await orchestrator.orchestrator_synthesise(state)
 
-    assert "not approved" in events[0]["content"]
+    assert len(events) == 1
     assert events[0]["type"] == "response_delta"
-    assert "Uncommitted partial text" not in repr(events)
-    assert "Uncommitted partial text" not in result["response_text"]
-    assert events[0]["content"] in result["response_text"]
-    assert result["graph_data"] == graph
-    assert result["graph_contract"] == state["graph_contract"]
-    assert result["graph_publication"] == state["graph_publication"]
-    assert result["graph_changed"] is False
-    assert len(calls) == (0 if outcome == "no_time" else 1)
-    if calls:
-        call = calls[0]
-        assert call["allow_fallback"] is False
-        assert call["provider_attempt_limit"] == 1
-        assert 0 < call["timeout_seconds"] <= settings.graph_synthesis_timeout_s
-        assert "Chapter 4, p.88" in repr(call["messages"])
-        assert "Rejected secret proposal" not in repr(call["messages"])
-        assert "Prior secret design" not in repr(call["messages"])
-        assert "clarification questions" in call["system"]
-        assert "Graph operation: create" in repr(call["messages"])
-        assert "Additional user requirements: use support tickets" in repr(
-            call["messages"]
+    assert "not approved" in events[0]["content"]
+    assert result["response_text"] == early_response + events[0]["content"]
+    for field in (
+        "graph_data",
+        "graph_contract",
+        "graph_publication",
+        "graph_changed",
+        "graph_operation",
+    ):
+        assert result[field] == state[field]
+    assert "private" not in result["response_text"]
+
+
+@pytest.mark.parametrize("operation_kind", ["create", "edit"])
+@pytest.mark.asyncio
+async def test_failed_graph_status_send_does_not_swallow_cancellation(operation_kind):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    async def send(_event):
+        raise asyncio.CancelledError()
+
+    with pytest.raises(asyncio.CancelledError):
+        await orchestrator.orchestrator_synthesise(
+            {
+                "send": send,
+                "graph_operation": {"kind": operation_kind, "status": "failed"},
+                "graph_publication": "withheld",
+                "terminal_deadline_s": 0,
+            }
         )
-    if outcome == "answer":
-        assert result["response_text"].endswith("(Chapter 4, p.88).")
-    assert not any(
-        event["type"] in {"graph_data", "graph_preview", "done"} for event in events
-    )
 
 
 @pytest.mark.parametrize("has_graph", [False, True])
@@ -1689,3 +1681,103 @@ async def test_context_condense_prompt_preserves_open_questions_and_avoids_inven
     assert "graph or architecture topic" in captured["system"]
     assert "Do not invent citations or details" in captured["system"]
     assert captured["temperature"] == context_manager.settings.condense_temperature
+
+
+@pytest.mark.parametrize("graph_mode", ["off", "auto"])
+@pytest.mark.asyncio
+async def test_introductory_architecture_summary_routes_to_memory_without_model(
+    monkeypatch, graph_mode
+):
+    import agent.nodes.orchestrator_node as orchestrator
+    from agent.complexity import (
+        is_applied_system_design_request,
+        resolve_graph_operation,
+    )
+
+    query = "Given everything above, summarise only the deployment constraints that affect architecture."
+    history = [
+        {"role": "user", "content": "Deployment is single-region with a fixed budget."}
+    ]
+
+    async def unexpected_model_call(**_kwargs):
+        pytest.fail("a memory summary must not invoke model routing")
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", unexpected_model_call)
+    assert resolve_graph_operation(query, None) is None
+    assert is_applied_system_design_request(query) is False
+    result = await orchestrator.orchestrator_route(
+        {
+            "send": send,
+            "user_message": query,
+            "history": history,
+            "graph_mode": graph_mode,
+            "graph_data": None,
+        }
+    )
+    assert result["route"] == "memory"
+
+
+@pytest.mark.asyncio
+async def test_focused_existing_graph_followup_accepts_one_compact_block(monkeypatch):
+    import agent.explanation_blocks as explanation_blocks
+    import agent.nodes.orchestrator_node as orchestrator
+
+    calls, events = [], []
+    question = "What is the Cache TTL? Answer in one sentence."
+
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        yield (
+            "text",
+            '{"block_id":"cache_ttl","title":"Cache TTL","content":"The Cache retains entries for 60 seconds.",'
+            '"related_node_ids":["cache"],"evidence_refs":[]}',
+        )
+        yield ("done", "")
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(explanation_blocks, "stream_response", provider)
+    graph = {
+        "title": "Serving architecture",
+        "version": "existing-v1",
+        "nodes": [
+            {
+                "id": "cache",
+                "label": "Cache",
+                "description": "Retains entries for 60 seconds.",
+            }
+        ],
+        "edges": [],
+    }
+    result = await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "history": [],
+            "user_message": question,
+            "rag_chunks": [],
+            "graph_data": graph,
+            "graph_changed": False,
+            "graph_publication": "unchanged",
+            "graph_operation": {"kind": "none", "status": "none"},
+        }
+    )
+    assert len(calls) == 1
+    assert question in calls[0]["messages"][-1]["content"]
+    assert "question may need only one block" in calls[0]["system"]
+    assert (
+        "For a narrower request, include only the relevant blocks" in calls[0]["system"]
+    )
+    assert "3-6" not in calls[0]["system"]
+    blocks = [event for event in events if event["type"] == "explanation_block"]
+    assert len(blocks) == 1
+    assert blocks[0]["content"] == "The Cache retains entries for 60 seconds."
+    assert (
+        result["response_text"]
+        == "## Cache TTL\n\nThe Cache retains entries for 60 seconds."
+    )
+    assert result["graph_data"] == graph
+    assert result["graph_changed"] is False

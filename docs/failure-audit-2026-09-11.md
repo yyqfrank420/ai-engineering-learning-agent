@@ -541,6 +541,65 @@ human labels remain empty; model proposals are not human approval. The separate
 long-context answer exceeded its explicit summary-only scope, so that manual
 instruction-following finding remains valid.
 
+### Deadline, traversal, and conversation ordering
+
+The full run on `e982be12de391e8e30884f1033b7005cbabb5007`
+([34661446928](https://github.com/yyqfrank420/ai-engineering-study-agent/actions/runs/34661446928))
+exposed two further generation failures. Its marketing component call stopped after
+129.955 seconds with incomplete JSON; the retry received 9.798 seconds and returned no
+text. The terminal workflow had reserved another attempt, but a separate 170-second
+preview cutoff allowed only 140 seconds for all generation before the first render.
+Both the generation helper and renderer enforced that cutoff.
+
+Staged generation now uses the existing 240-second maximum and terminal reservations.
+The preview target remains measurable without cancelling a recoverable staged request.
+A fresh 910-second terminal window permits 147 seconds initially and 200 seconds after
+that attempt times out, before orchestration overhead. Every remaining generation,
+review, private render, synthesis, and finalization reserve remains intact. Legacy
+preview deadlines and explicit browser latency assertions are unchanged. Regressions
+exercise a late successful retry, a rejected private render, and a stalled render channel.
+
+The closed-loop candidate placed an event bus outside the walkthrough but routed main
+stages through it. The old parser required all intermediate nodes to be walkthrough
+members. Primary membership now selects walkthrough nodes; reachability traverses all
+accepted directed runtime/control contracts. Feedback and deployment edges cannot
+establish that reachability. One function owns both parser and projection behavior.
+Selected distance levels are renumbered consecutively for playback. The retained
+25-edge correction passes structural replay; the earlier 28-edge candidate still
+fails because its registry has no runtime/control path. Semantic review remains
+required. Protected sequence metadata survives scoped edits, and changed review
+identities invalidate prior approvals.
+
+Two captured conversations also exposed reversed history: an assistant answer preceded
+the user message it answered. Transaction timestamps do not order messages within a
+turn. A database-generated message sequence now supplies an explicit order for both
+model history and UI reloads. PostgreSQL uses an identity sequence with cache 1;
+SQLite uses an explicit autoincrement key while preserving UUID message IDs. Existing
+writers receive sequence values automatically. The additive PostgreSQL migration
+restores known request pairs; it cannot recover the original chronology of historical
+turns whose timestamps tie. Production migration and application promotion remain
+separate release work.
+
+A second source of unwanted design advice was deterministic routing. A request to
+summarise deployment constraints was classified as a new design because it contained
+"architecture". Shared clause classification now recognizes explanatory requests after
+introductory clauses, while preserving independent explicit design/edit requests and
+product-name seeds. This prevents that summary from forcing fresh retrieval. The
+separate graph explanation prompt no longer requires a full walkthrough or three to
+six blocks for a narrow follow-up. The streaming parser also stops adding empty
+sections to reach a minimum block count; a valid focused answer can contain one block.
+These changes remove concrete conflicts; the effect
+of history ordering on model instruction compliance still needs live evaluation.
+
+Failed graph operations now return their existing deterministic status and preserve any
+prior approved graph. The removed failed-create model call could spend another 55
+seconds inventing an unreviewed replacement design. Mixed explanation/design requests
+now receive the failure status when graph creation fails. Independent explanatory
+questions can be asked in a following turn. Timeout diagnostics distinguish timeout
+from provider failure, and the internal evaluation export retains allocated time,
+partial output size, error types, and nullable usage-completeness fields. Missing usage
+is not reported as a free successful call.
+
 ## Validation and remaining release work
 
 Focused regression suites and an independent replay of the retained graph passed.

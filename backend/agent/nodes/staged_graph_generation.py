@@ -26,7 +26,9 @@ from agent.staged_graph_contract import (
     COMPONENT_RESPONSIBILITY_MAX_CHARS,
     CONNECTION_LABEL_MAX_CHARS,
     GROUP_LABEL_MAX_CHARS,
+    GraphContractError,
     TITLE_MAX_CHARS,
+    primary_flow_distances,
     production_proofs_for_capabilities,
 )
 from config import settings
@@ -35,8 +37,8 @@ from agent.stream_utils import stream_structured_llm
 
 _MODEL = "kimi-k3"
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v9"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v5"
+_COMPONENT_PROMPT_VERSION = "staged_components_v10"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v6"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -524,6 +526,7 @@ async def _run_generation(
                         else _CONNECTION_SCHEMA_VERSION
                     ),
                     "correction_attempt": attempt,
+                    "allocated_timeout_s": timeout_seconds,
                     "upstream_fingerprint": upstream_fingerprint,
                     "write_set_fingerprint": _fingerprint(write_set),
                     "prompt_fingerprint": prompt_fingerprint,
@@ -541,6 +544,8 @@ async def _run_generation(
             ),
             provider_attempt_limit=1,
         )
+    except TimeoutError as exc:
+        raise StagedGenerationError("staged_generation_timeout") from exc
     except Exception as exc:
         raise StagedGenerationError("staged_generation_unavailable") from exc
     if response.finish_reason == "max_tokens":
@@ -742,10 +747,12 @@ def _attempt_prompt(
                 "clarification questions. For a new design, set root_index to the initiating "
                 "actor of the primary runtime path. A central AI service is the root only "
                 "when it initiates that path. Choose primary_flow_member values so every "
-                "primary component is naturally reachable outward from the root through other "
-                "primary members over directed runtime or control contracts. Keep independent ingress and support "
-                "components in the design with primary_flow_member=false when they lie "
-                "outside that directed main path. Do not invent reverse or control edges "
+                "primary component is naturally reachable outward from the root over directed "
+                "runtime or control contracts, including paths through non-primary supporting "
+                "components. Primary membership selects the main walkthrough; feedback and "
+                "deployment contracts cannot establish reachability. Keep independent ingress and support "
+                "components in the design with primary_flow_member=false when they are outside "
+                "the walkthrough. Do not invent reverse or control edges "
                 "to make an unsuitable root or primary membership reachable. "
                 "Determine initiation from declared behavior. A component that pulls or "
                 "requests data may initiate an outward request with a return response; "
@@ -760,10 +767,11 @@ def _attempt_prompt(
             "Propose edges only. Use source_index and target_index from accepted_components. "
             "Accepted component types are authoritative. Accepted responsibilities, assumptions, "
             "and capabilities are authoritative. Observation-only monitoring may terminate at a "
-            "durable telemetry/log sink. A correction cannot introduce control unless an accepted "
-            "endpoint has type control or decision. "
+            "durable telemetry/log sink. "
             "Connect every primary_flow_member from is_root through directed runtime or control "
-            "edges. Represent both directions of a synchronous request-response. A read, fetch, "
+            "edges, including paths through non-primary supporting components. Primary membership "
+            "selects the walkthrough and does not restrict transit. Feedback and deployment "
+            "edges cannot establish primary reachability. Represent both directions of a synchronous request-response. A read, fetch, "
             "lookup, load, or query request that expects returned data needs a distinct reverse "
             "response edge. Route each supporting branch to a rejoin or observable outcome. Do "
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "
@@ -1255,24 +1263,21 @@ def _parse_connection_wire(
     }
     if root_indexes:
         root_index = next(iter(root_indexes))
-        adjacency = {index: [] for index in primary_indexes}
-        for edge in edges:
-            if (
-                FLOW_CODES[edge["flow"]] in {"runtime", "control"}
-                and edge["source_index"] in primary_indexes
-                and edge["target_index"] in primary_indexes
-            ):
-                adjacency[edge["source_index"]].append(edge["target_index"])
-        reached = {root_index}
-        pending = [root_index]
-        while pending:
-            current = pending.pop()
-            for target in adjacency[current]:
-                if target not in reached:
-                    reached.add(target)
-                    pending.append(target)
-        if primary_indexes - reached:
-            raise StagedGenerationError("connection_wire_unreachable")
+        try:
+            primary_flow_distances(
+                root_id=str(root_index),
+                primary_ids={str(index) for index in primary_indexes},
+                connections=(
+                    {
+                        "source_id": str(edge["source_index"]),
+                        "target_id": str(edge["target_index"]),
+                        "flow": FLOW_CODES[edge["flow"]],
+                    }
+                    for edge in edges
+                ),
+            )
+        except GraphContractError as exc:
+            raise StagedGenerationError("connection_wire_unreachable") from exc
     return payload
 
 

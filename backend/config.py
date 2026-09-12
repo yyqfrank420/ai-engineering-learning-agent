@@ -48,8 +48,8 @@ class Settings(BaseSettings):
     graph_qa_model: str = "claude-sonnet-5"
     # Applied graphs use staged review; legacy remains an explicit rollback.
     graph_pipeline_mode: Literal["legacy", "staged"] = "staged"
-    # Each staged layer has one generation retry and one gate retry. The
-    # 90-second prototype first-preview target is an SLO, not a runtime cutoff.
+    # Reserve one correction per staged layer. Generation and review may borrow
+    # saved time up to their shared maxima while preserving downstream reserves.
     staged_component_timeout_s: float = 130.0
     staged_connection_timeout_s: float = 130.0
     staged_gate_timeout_s: float = 55.0
@@ -94,9 +94,9 @@ class Settings(BaseSettings):
     # Bound the graph stages while preserving two reviewed repairs and one
     # failed-patch contract correction inside the terminal window.
     graph_design_timeout_s: float = 150.0
-    # Initial topology and the private browser gate have their own user-visible
-    # deadline. Review, repair, synthesis, and persistence retain the terminal
-    # workflow deadline after a reversible preview is visible.
+    # Legacy initial topology and rendering have a separate preview deadline.
+    # Staged previews use this as a latency target; the terminal workflow budget
+    # bounds their generation, correction, rendering, and publication.
     graph_preview_timeout_s: float = 170.0
     graph_preview_design_timeout_s: float = 140.0
     graph_preview_finalization_reserve_s: float = 15.0
@@ -489,9 +489,11 @@ class Settings(BaseSettings):
             self.graph_design_timeout_s,
             self.graph_preview_design_timeout_s,
             self.graph_patch_timeout_s,
+            self.staged_component_timeout_s,
+            self.staged_connection_timeout_s,
         ):
             raise RuntimeError(
-                "GRAPH_BUILDER_MAX_TIMEOUT_S cannot be below the reserved design or patch timeout."
+                "GRAPH_BUILDER_MAX_TIMEOUT_S cannot be below the reserved generation timeout."
             )
         if (
             self.graph_preview_design_timeout_s

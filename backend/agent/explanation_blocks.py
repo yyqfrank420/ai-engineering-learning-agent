@@ -20,7 +20,6 @@ _BLOCK_KEYS = {
     "related_node_ids",
     "evidence_refs",
 }
-_MINIMUM_BLOCKS = 3
 _MAXIMUM_BLOCKS = 6
 
 _PRESERVED_EDIT_COMPLETION_SENTENCE = "The requested diagram edit was not approved, so the prior approved diagram remains unchanged."
@@ -136,11 +135,6 @@ async def stream_explanation_blocks(
         emitted_ids.add(fallback["block_id"])
         await emit_parsed(fallback)
 
-    for block in _supplementary_blocks(emitted_ids):
-        emitted.append(block)
-        emitted_ids.add(block["block_id"])
-        await emit_parsed(block)
-
     if pending_block is not None:
         _append_required_completion_sentence(
             pending_block,
@@ -241,52 +235,6 @@ def _fallback_block(_raw_output: str = "") -> dict[str, Any]:
         "related_node_ids": [],
         "evidence_refs": [],
     }
-
-
-def _supplementary_blocks(emitted_ids: set[str]) -> list[dict[str, Any]]:
-    templates = (
-        (
-            "design_assumptions",
-            "Assumptions to check",
-            "The model response did not provide a separate assumptions block.",
-        ),
-        (
-            "runtime_path",
-            "Runtime path",
-            "The model response did not provide a separate runtime-path block.",
-        ),
-        (
-            "controls",
-            "Controls to review",
-            "The model response did not provide a separate controls block.",
-        ),
-        (
-            "next_decision",
-            "Next decision",
-            "The model response did not provide a separate next-decision block.",
-        ),
-        (
-            "trade_offs",
-            "Trade-offs",
-            "The model response did not provide a separate trade-offs block.",
-        ),
-    )
-    blocks = []
-    for block_id, title, content in templates:
-        if len(emitted_ids) + len(blocks) >= _MINIMUM_BLOCKS:
-            break
-        if block_id in emitted_ids:
-            continue
-        blocks.append(
-            {
-                "block_id": block_id,
-                "title": title,
-                "content": content,
-                "related_node_ids": [],
-                "evidence_refs": [],
-            }
-        )
-    return blocks
 
 
 def _required_completion_sentence(messages: list[dict[str, Any]]) -> str | None:

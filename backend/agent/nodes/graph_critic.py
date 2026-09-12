@@ -3206,7 +3206,8 @@ def _completed_critic_review(
 
 
 def _candidate_preview_deadline(state: AgentState) -> float | None:
-    if int(state.get("graph_stage_preview_count", 0)) > 0:
+    # Staged previews are latency targets; terminal admission bounds their work.
+    if "graph_stage_preview_count" in state:
         return None
     repair_round_count = int(
         state.get("graph_repair_round_count", state.get("graph_revision_count", 0))

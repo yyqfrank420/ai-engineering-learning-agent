@@ -635,11 +635,7 @@ def test_staged_timeout_preserves_every_remaining_baseline_stage(
     cap = (
         settings.graph_critic_max_timeout_s
         if action == "review"
-        else (
-            settings.staged_component_timeout_s
-            if phase == "components"
-            else settings.graph_builder_max_timeout_s
-        )
+        else settings.graph_builder_max_timeout_s
     )
     assert timeout_s == min(cap, available_s)
     with pytest.raises(deadlines.StageAdmissionDenied):
@@ -688,48 +684,57 @@ def test_staged_timeout_rejects_invalid_schedule_position(phase, action, attempt
 
 
 @pytest.mark.parametrize("attempt", [0, 1])
-def test_staged_component_generation_honors_preview_deadline_until_preview_exists(
+def test_staged_component_generation_uses_terminal_budget_after_preview_target(
     monkeypatch, attempt
 ):
     from agent import deadlines
     from config import settings
 
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
-    state = {"terminal_deadline_s": 2_000.0, "graph_preview_deadline_s": 140.0}
+    for preview_count in (0, 1):
+        assert (
+            deadlines.staged_timeout_seconds(
+                {
+                    "terminal_deadline_s": 2_000.0,
+                    "graph_preview_deadline_s": 90.0,
+                    "graph_stage_preview_count": preview_count,
+                },
+                phase="components",
+                action="generate",
+                attempt=attempt,
+            )
+            == settings.graph_builder_max_timeout_s
+        )
+
+
+@pytest.mark.parametrize(
+    "first_duration,retry_budget", [(147.0, 200.0), (129.955, 217.045)]
+)
+def test_component_timeout_reuses_unspent_render_and_review_reserves(
+    monkeypatch, first_duration, retry_budget
+):
+    from agent import deadlines
+
+    clock = {"now": 100.0}
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
+    state = {
+        "terminal_deadline_s": 1_010.0,
+        "graph_preview_deadline_s": 270.0,
+        "graph_stage_preview_count": 0,
+    }
     assert (
         deadlines.staged_timeout_seconds(
-            state,
-            phase="components",
-            action="generate",
-            attempt=attempt,
+            state, phase="components", action="generate", attempt=0
         )
-        == 10.0
+        == 147.0
     )
-    with pytest.raises(deadlines.StageAdmissionDenied, match="visible preview"):
-        deadlines.staged_timeout_seconds(
-            {**state, "graph_preview_deadline_s": 130.0},
-            phase="components",
-            action="generate",
-            attempt=attempt,
-        )
-    assert (
-        deadlines.staged_timeout_seconds(
-            {**state, "graph_stage_preview_count": 1},
-            phase="components",
-            action="generate",
-            attempt=attempt,
-        )
-        == settings.staged_component_timeout_s
-    )
-    assert (
-        deadlines.staged_timeout_seconds(
-            state,
-            phase="components",
-            action="review",
-            attempt=attempt,
-        )
-        == settings.graph_critic_max_timeout_s
-    )
+    # The retained marketing trace ended its first incomplete stream at 129.955s.
+    clock["now"] += first_duration
+    assert deadlines.staged_timeout_seconds(
+        state, phase="components", action="generate", attempt=1
+    ) == pytest.approx(retry_budget)
+    clock["now"] += retry_budget
+    assert state["terminal_deadline_s"] - clock["now"] == 563.0
 
 
 def test_staged_borrowing_leaves_a_complete_correction_path(monkeypatch):
@@ -758,7 +763,7 @@ def test_staged_borrowing_leaves_a_complete_correction_path(monkeypatch):
             )
             observed.append(review_s)
             clock["now"] += review_s
-    assert observed == [130.0, 72.0, 130.0, 55.0, 130.0, 55.0, 130.0, 55.0]
+    assert observed == [147.0, 55.0, 130.0, 55.0, 130.0, 55.0, 130.0, 55.0]
     assert (
         deadlines.synthesis_timeout_seconds(state) == settings.graph_synthesis_timeout_s
     )

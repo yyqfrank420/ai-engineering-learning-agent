@@ -381,7 +381,10 @@ async def test_render_gate_does_not_reuse_initial_preview_deadline_for_repair():
 
 
 @pytest.mark.asyncio
-async def test_render_gate_does_not_reuse_initial_preview_deadline_for_staged_preview():
+@pytest.mark.parametrize("preview_count", [0, 1])
+async def test_render_gate_does_not_reuse_initial_preview_deadline_for_staged_preview(
+    preview_count,
+):
     graph = _domain_graph()
     graph["design_origin"] = "applied"
     events = []
@@ -398,7 +401,7 @@ async def test_render_gate_does_not_reuse_initial_preview_deadline_for_staged_pr
         {
             "graph_data": graph,
             "graph_changed": True,
-            "graph_stage_preview_count": 1,
+            "graph_stage_preview_count": preview_count,
             "send": send,
             "await_diagram_evaluation": render,
             "graph_preview_deadline_s": asyncio.get_running_loop().time() - 1,
@@ -7041,3 +7044,47 @@ def test_blocking_composition_profile_discards_advisory_field_permissions():
     assert composition["composition_append_counts"] == {"assumptions": 1}
     assert normalized["advice"] == [RUBRIC_CRITERIA["authored_composition"][1]]
     validate_local_repair_admission(contract, graph=graph)
+
+
+@pytest.mark.asyncio
+async def test_staged_preview_target_does_not_remove_private_render_timeout(
+    monkeypatch,
+):
+    from api.chat_websocket import _SingleWaitDiagramEvaluationChannel
+    from config import settings
+
+    graph = _domain_graph()
+    graph["design_origin"] = "applied"
+    events = []
+    observed_timeouts = []
+    channel = _SingleWaitDiagramEvaluationChannel(
+        timeout_s=settings.diagram_evaluation_timeout_s,
+        max_screenshot_bytes=settings.max_diagram_screenshot_bytes,
+    )
+
+    async def timed_out_wait(_awaitable, timeout):
+        observed_timeouts.append(timeout)
+        raise TimeoutError("private browser did not respond")
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(asyncio, "wait_for", timed_out_wait)
+    result = await graph_render_gate_node(
+        {
+            "graph_data": graph,
+            "graph_changed": True,
+            "graph_stage_preview_count": 0,
+            "graph_preview_deadline_s": asyncio.get_running_loop().time() - 1,
+            "send": send,
+            "await_diagram_evaluation": lambda candidate: channel.request(
+                candidate, send
+            ),
+        }
+    )
+
+    assert observed_timeouts == [settings.diagram_evaluation_timeout_s] == [15.0]
+    assert result["graph_render_admitted"] is False
+    assert result["graph_review"]["failure_code"] == "diagram_evaluation_timeout"
+    assert not any(event.get("type") == "graph_preview" for event in events)
+    assert channel._waiters == {}
