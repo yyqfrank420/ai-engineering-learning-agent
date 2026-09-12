@@ -35,7 +35,7 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v18"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v19"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v3"
 _ROUTER_PROMPT_VERSION = "intent_router_v2"
 _ROUTER_SYSTEM = """<role>
@@ -556,6 +556,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
     # Build context from RAG chunks
     chunks = state.get("rag_chunks") or []
     context = _format_chunks(chunks)
+    book_block = f"Retrieved book sections:\n{context}\n\n" if context else ""
 
     # External results are explicitly lower-trust data. Preserve their exact
     # source links so current claims remain reviewable.
@@ -607,7 +608,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         {
             "role": "user",
             "content": (
-                f"Retrieved book sections:\n{context}\n\n"
+                f"{book_block}"
                 f"{research_block}"
                 f"{brief_block}"
                 f"{early_response_block}"
@@ -894,7 +895,7 @@ def _format_route_graph_context(graph_data: dict | None) -> str:
 
 def _format_chunks(chunks: list[dict]) -> str:
     if not chunks:
-        return "(no retrieved sections)"
+        return ""
     parts = []
     for i, chunk in enumerate(chunks, 1):
         citation = (

@@ -219,7 +219,7 @@ prototype UI depth and its second turn permits exactly one directly connected
 responsibility while preserving the original graph topic and existing components.
 All 20 case approvals are pending so the fresh full-corpus review is machine-enforced.
 Corpus reviewer, review time, approved manifest hash, calibration evidence identity,
-and calibration results are empty. `semantic-rubric-judge-v6`, Anthropic, and
+and calibration results are empty. `semantic-rubric-judge-v7`, Anthropic, and
 `claude-sonnet-5` remain configured judge selections; they are not approval evidence
 for this revision.
 
@@ -305,6 +305,9 @@ agreement drop greater than five percentage points from the approved calibration
 Reports are kept in 90-day GitHub artifacts and copied to GCS calibration history.
 
 The judge receives the public graph's directed flow, synchronization, descriptions, and sequence.
+The final graph is encoded once when it equals the last turn's graph. A different final graph
+retains its own evidence, including a final state that matches an earlier turn. The 80,000-character
+prompt limit rejects oversized packets without truncating graph contracts.
 For new captures it receives the exact synthesis-visible book and research strings. Older retrieval
 telemetry is labeled as incomplete knowledge of the model input; source text beyond the supplied
 excerpt cannot certify the answer's grounding. Judge release v6 records this changed evidence contract.

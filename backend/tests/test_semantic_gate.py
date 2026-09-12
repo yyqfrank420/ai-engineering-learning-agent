@@ -2079,3 +2079,90 @@ def test_artifact_source_chunks_preserve_code_and_paragraph_whitespace():
         )
         == original
     )
+
+
+@pytest.mark.parametrize("matching_turn", [0, 1])
+def test_judge_sources_omit_only_equal_top_level_graph(matching_turn):
+    import copy
+
+    first = {"version": "first", "nodes": [{"id": "first"}], "edges": []}
+    second = {"version": "second", "nodes": [{"id": "second"}], "edges": []}
+    turns = [
+        {"answer": "First answer.", "graph": first, "rendered_graph_version": "first"},
+        {"answer": "Second answer.", "graph": second, "rendered_graph_version": "second"},
+    ]
+    sources = _artifact_sources({
+        "turns": turns, "graph": copy.deepcopy(turns[matching_turn]["graph"]),
+    })
+    assert any(key.startswith("graph-") for key in sources) == (matching_turn == 0)
+    assert sources["turn-1-answer-1"] == "First answer."
+    assert sources["turn-2-answer-1"] == "Second answer."
+    assert '"first"' in sources["turn-1-graph-node-1-1"]
+    assert '"second"' in sources["turn-2-graph-node-1-1"]
+    assert "first" in sources["turn-1-render-1"]
+    assert "second" in sources["turn-2-render-1"]
+
+
+@pytest.mark.parametrize("turns", [None, [], [{"answer": "No turn graph."}], [
+    {"answer": "Earlier graph.", "graph": {"nodes": [{"id": "earlier"}], "edges": []}}
+]])
+def test_judge_sources_preserve_legacy_or_distinct_final_graph(turns):
+    graph = {"nodes": [{"id": "final"}], "edges": []}
+    sources = _artifact_sources({"answer": "Answer.", "turns": turns, "graph": graph})
+    assert sources["graph-node-1-1"] == '{"id": "final"}'
+
+
+def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
+    import copy
+    import json
+    from eval.judge_adapter import _add_graph_sources
+
+    # Reproduce the retained 34700167991 case's 20-node/92-edge scale with synthetic content.
+    nodes = [{
+        "id": f"node-{index}", "label": f"Service {index}", "type": "service",
+        "technology": "Application service", "description": "Owns the declared operation and records its outcome.",
+        "tier": "core", "layer": "runtime", "lane": "runtime",
+        "primary_flow_member": index < 5, "is_root": index == 0,
+    } for index in range(20)]
+    edges = [{
+        "source": f"node-{index % 20}", "target": f"node-{(index + 1) % 20}",
+        "label": f"Submit request contract {index}", "technology": "HTTPS JSON",
+        "description": "Transfers the operation identifier, validated request and caller context. The receiver checks ownership, records the result and returns an acknowledgement for reconciliation.",
+        "flow": "runtime", "sync": "sync", "type": "smoothstep", "relation": f"contract-{index}",
+    } for index in range(92)]
+    graph = {
+        "graph_type": "applied", "title": "Synthetic operations system", "version": "v1",
+        "root_node_id": "node-0", "resolved_complexity": "production",
+        "capabilities": {"retrieval": False, "external_effects": True, "learning_or_release": False},
+        "nodes": nodes, "edges": edges, "assumptions": ["Every write requires caller authorization."],
+        "groups": [{"id": "runtime", "label": "Runtime", "nodeIds": [n["id"] for n in nodes]}],
+        "sequence": [{"step": 1, "nodeIds": ["node-0"], "description": "Accept the authorized request."}],
+    }
+    answer = "The proposed system processes authorized operations. " * 100
+    render = {
+        "rendered_graph_version": "v1", "rendered_node_ids": [n["id"] for n in nodes],
+        "rendered_edge_identities": [{k: edge[k] for k in ("source", "target", "label")} for edge in edges],
+    }
+    evidence = _judge_payload({
+        "graph": copy.deepcopy(graph), "turns": [{"answer": answer, "graph": graph, **render}],
+        "events": [{"type": "answer_evidence", "schema_version": 1, "source": "synthesis_input",
+                    "prompt_version": "test", "book_context": "Current evidence. " * 200,
+                    "research_context": "", "eval_turn": 1}],
+    })
+    sources = _artifact_sources(evidence)
+    corpus = load_corpus()
+    _, prompt = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
+    assert len(prompt) < 80000
+    duplicated = dict(sources)
+    _add_graph_sources(duplicated, "graph", evidence["graph"])
+    with pytest.raises(RuntimeError, match="bounded prompt size"):
+        _judge_prompt(corpus, corpus.by_id["applied-domain"], duplicated)
+    assert not any(key.startswith("graph-") for key in sources)
+    assert "".join(value for key, value in sources.items() if key.startswith("turn-1-answer-")) == answer
+    assert json.loads("".join(value for key, value in sources.items() if key.startswith("turn-1-render-"))) == render
+    for index, edge in enumerate(evidence["turns"][0]["graph"]["edges"], start=1):
+        prefix = f"turn-1-graph-edge-{index}-"
+        assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == edge
+    for index, node in enumerate(evidence["turns"][0]["graph"]["nodes"], start=1):
+        prefix = f"turn-1-graph-node-{index}-"
+        assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == node
