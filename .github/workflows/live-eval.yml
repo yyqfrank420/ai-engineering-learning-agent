@@ -81,9 +81,9 @@ jobs:
         env:
           TREE_SHA: ${{ needs.classify.outputs.tree-sha }}
         run: |
-          approval_tag="approved-tree-$TREE_SHA"
+          approval_tag="$IMAGE:approved-tree-$TREE_SHA"
           error_file="$(mktemp)"
-          if ! matches="$(gcloud artifacts docker tags list "$IMAGE" --filter="tag~\"/tags/$approval_tag$\"" --format='value(version)' 2>"$error_file")"; then
+          if ! matches="$(gcloud artifacts docker tags list "$IMAGE" --filter="tag=\"$approval_tag\"" --format='value(version)' 2>"$error_file")"; then
             cat "$error_file" >&2
             echo "Approved-tree lookup failed; refusing to bypass protected evaluation." >&2
             exit 1
