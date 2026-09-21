@@ -314,6 +314,20 @@ def staged_review_requirements(
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
                 raise ValueError(f"unknown production guarantee: {guarantee!r}")
             requirements[guarantee] = STAGED_PRODUCTION_REQUIREMENTS[guarantee]
+    else:
+        requirements["safe_action_boundary"] = (
+            "Preserve every explicitly requested approval, audit, recovery, or other "
+            "action control. For a concrete declared external mutation, require "
+            "appropriate authorization before the action and visible failure or denial "
+            "handling. An existing owner may apply a lightweight guardrail before "
+            "dispatch; a separate approval stage is not required unless explicitly "
+            "requested. Generic educational "
+            "tool or environment labels, code execution, or an external_effects flag "
+            "alone do not require distinct approval, audit, or rollback mechanisms. "
+            "Read-only tool calls and internal memory operations do not require a new "
+            "approval stage unless explicitly requested. Identify the concrete mutation "
+            "or requested control when rejecting a candidate."
+        )
     return requirements
 
 

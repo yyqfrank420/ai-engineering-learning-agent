@@ -346,6 +346,13 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             and maturity == "production"
         ):
             assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+        elif (
+            stage == "connections"
+            and maturity == "prototype"
+            and code == "safe_action_boundary"
+        ):
+            assert "concrete declared external mutation" in requirement
+            assert "Preserve every explicitly requested" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -506,7 +513,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v11"
+        == "staged_connection_gate_v12"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
