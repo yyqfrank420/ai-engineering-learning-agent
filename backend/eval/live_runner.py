@@ -1106,7 +1106,7 @@ def _write_outputs(path: Path, report: dict[str, Any]) -> None:
             or cost_policy.get("blocking_status") == "fail"
         )
         cost_is_skipped = source_only or (
-            cost_status == "over_budget" and not cost_is_failure
+            cost_status in {"over_budget", "incomplete"} and not cost_is_failure
         )
         if cost_is_failure:
             cost_outcome = (
@@ -1176,6 +1176,16 @@ def _write_outputs(path: Path, report: dict[str, Any]) -> None:
                     else "`unknown`"
                 )
             )
+            known_subtotal = (
+                (cost_accounting.get("application") or {})
+                .get("total", {})
+                .get("known_subtotal_usd")
+            )
+            if application_total is None and known_subtotal is not None:
+                lines.append(
+                    f"Known application subtotal: `${float(known_subtotal):.6f}` "
+                    "(total unavailable)"
+                )
         if report.get("reason"):
             lines.append(f"Reason: {report['reason']}")
         lines.extend(["", "| Case | Decision | Reason |", "| --- | --- | --- |"])

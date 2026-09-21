@@ -78,6 +78,7 @@ def _usage_attempts(call: dict[str, Any]) -> list[dict[str, Any]]:
             "provider": call.get("provider"),
             "model": call.get("model"),
             "status": call.get("status"),
+            "usage_complete": call.get("usage_complete"),
             "input_tokens": call.get("input_tokens"),
             "cache_creation_input_tokens": call.get(
                 "cache_creation_input_tokens"
@@ -108,6 +109,7 @@ def account_application_cost(
     case_order = [str(result.get("id") or "unknown") for result in browser_results]
     case_by_thread: dict[str, str] = {}
     errors: list[str] = []
+    incomplete_attempts: list[str] = []
     for result, case_id in zip(browser_results, case_order, strict=True):
         for thread_id in _thread_ids(result):
             previous = case_by_thread.setdefault(thread_id, case_id)
@@ -144,6 +146,16 @@ def account_application_cost(
             invalid_operations.add((case_id, operation))
             continue
         for attempt_index, attempt in enumerate(attempts, start=1):
+            if (
+                attempt.get("usage_complete") is False
+                or "incomplete_usage" in str(attempt.get("status") or "")
+            ):
+                # No observed acceptance event does not prove the provider did no work.
+                incomplete_attempts.append(
+                    f"application call {call_index} attempt {attempt_index} has incomplete usage"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
             model = str(attempt.get("model") or "")
             price = _price_for_model(model)
             if price is None:
@@ -219,21 +231,6 @@ def account_application_cost(
                 target["output_tokens"] += output_tokens
                 target["queue_wait_ms"] += queue_wait_ms
                 target["estimated_usd"] += estimated_usd
-            status = str(attempt.get("status") or "")
-            accepted_with_incomplete_usage = (
-                "incomplete_usage" in status
-                or (
-                    attempt.get("accepted") is True
-                    and attempt.get("usage_complete") is False
-                )
-            )
-            if accepted_with_incomplete_usage:
-                errors.append(
-                    f"application call {call_index} attempt {attempt_index} has "
-                    "incomplete usage after provider acceptance"
-                )
-                invalid_cases.add(case_id)
-                invalid_operations.add((case_id, operation))
 
     for result, case_id in zip(browser_results, case_order, strict=True):
         if _thread_ids(result) and attributed_calls[case_id] == 0:
@@ -259,10 +256,15 @@ def account_application_cost(
             else round(usage["estimated_usd"], 6)
         )
         cases.append({"id": case_id, **usage, "operations": operations})
-    total["estimated_usd"] = None if errors else round(total["estimated_usd"], 6)
+    total["known_subtotal_usd"] = round(total["estimated_usd"], 6)
+    total["estimated_usd"] = (
+        None if errors or incomplete_attempts else total["known_subtotal_usd"]
+    )
     return {
-        "status": "infrastructure" if errors else "pass",
-        "reason": "; ".join(dict.fromkeys(errors)) if errors else None,
+        "status": "infrastructure" if errors else "incomplete" if incomplete_attempts else "pass",
+        "reason": "; ".join(dict.fromkeys(errors + incomplete_attempts)) or None,
+        "usage_complete": not errors and not incomplete_attempts,
+        "incomplete_attempt_count": len(incomplete_attempts),
         "price_release": PRICE_RELEASE,
         "total": total,
         "cases": cases,
@@ -295,10 +297,13 @@ def evaluate_cost_policy(
 ) -> dict[str, Any]:
     """Apply optional rollout limits without hiding accounting failures."""
     if application.get("status") != "pass":
+        incomplete = application.get("status") == "incomplete"
         return {
             "mode": policy.mode,
-            "status": "infrastructure",
-            "blocking_status": "fail",
+            "status": "incomplete" if incomplete else "infrastructure",
+            "blocking_status": (
+                "pass" if incomplete and policy.mode == "report-only" else "fail"
+            ),
             "reason": application.get("reason") or "application cost is unavailable",
             "suite_limit_usd": policy.suite_limit_usd,
             "case_limit_usd": policy.case_limit_usd,

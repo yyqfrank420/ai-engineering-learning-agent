@@ -69,7 +69,7 @@ RUBRIC_CRITERIA = {
     ),
     "gate_preserving_reuse": (
         "connections",
-        "Store only accepted post-gate artifacts, or route cache, replay, retry, and shortcut paths back through the required gate with identity and version scope.",
+        "Preserve validation, authorization, policy, and approval gates required by the request, accepted responsibilities, or applicable maturity criteria. Cache, memory, replay, retry, and shortcut paths cannot bypass those gates: store accepted post-gate artifacts or rejoin the required gate with its identity and version scope. Prototype memory or reuse alone does not require a new approval or version gate.",
     ),
     "topology_enforced_guarantees": (
         "connections",

@@ -203,7 +203,11 @@ use their discounted input price. Judge usage is
 reported separately and per case. An unknown model price is an infrastructure
 failure, never zero cost. Cost limits are currently report-only and unset while at
 least five clean runs establish per-case and suite baselines; only reviewed limits
-should be promoted to blocking. Provider rate limits, transport failures, and
+should be promoted to blocking. Explicitly incomplete provider usage, including a
+timeout before an acceptance event, leaves total cost unknown and reports a known
+subtotal. This accounting uncertainty is nonblocking in report-only mode and blocks
+when cost policy is blocking. Malformed or missing telemetry remains an infrastructure
+failure. Unrecovered provider rate limits, transport failures, and
 timeouts remain infrastructure failures and never masquerade as quality regressions.
 
 ## Automated semantic policy and optional calibration
