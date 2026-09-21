@@ -24,8 +24,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v9"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v8"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v10"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v9"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -54,28 +54,31 @@ def _strict_object_schema(properties: dict[str, Any]) -> dict[str, Any]:
 
 
 def _response_schema(*, rule_codes: Sequence[str]) -> dict[str, Any]:
+    # Per-rule objects exceeded Anthropic's grammar limit at 13 production rules.
+    # Keep one item schema and enforce complete rule coverage in the parser.
     return _strict_object_schema(
         {
-            "rule_reviews": _strict_object_schema(
-                {
-                    code: _strict_object_schema(
-                        {
-                            "satisfied": {"type": "boolean"},
-                            "reason": {
-                                "type": "string",
-                                "minLength": 1,
-                                "maxLength": _MAX_REASON_CHARS,
-                            },
-                            "record_indexes": {
-                                "type": "array",
-                                "items": {"type": "integer", "minimum": 0},
-                                "maxItems": _MAX_RECORD_INDEXES,
-                            },
-                        }
-                    )
-                    for code in rule_codes
-                }
-            ),
+            "rule_reviews": {
+                "type": "array",
+                "minItems": len(rule_codes),
+                "maxItems": len(rule_codes),
+                "items": _strict_object_schema(
+                    {
+                        "rule_code": {"type": "string", "enum": list(rule_codes)},
+                        "satisfied": {"type": "boolean"},
+                        "reason": {
+                            "type": "string",
+                            "minLength": 1,
+                            "maxLength": _MAX_REASON_CHARS,
+                        },
+                        "record_indexes": {
+                            "type": "array",
+                            "items": {"type": "integer", "minimum": 0},
+                            "maxItems": _MAX_RECORD_INDEXES,
+                        },
+                    }
+                ),
+            },
         }
     )
 
@@ -225,7 +228,7 @@ def _prompt(
     return (
         f"Review the {gate} candidate records for the requested architecture.\n"
         "Return only the JSON response defined by the supplied schema.\n"
-        "Return one rule_reviews entry for every required rule. Set satisfied from the "
+        "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
         "candidate evidence, with one short reason identifying its concrete witness or "
         "explaining why the rule is inapplicable. When unsatisfied, identify all missing "
         "obligations for that rule in the reason. Do not return a separate approval decision. "
@@ -382,21 +385,34 @@ def _review_result(
     if not isinstance(payload, Mapping) or set(payload) != set(schema["required"]):
         return _terminal_result("provider response has an invalid top-level shape")
     reviews = payload["rule_reviews"]
-    if not isinstance(reviews, Mapping) or set(reviews) != set(rule_codes):
+    if not isinstance(reviews, list) or len(reviews) != len(rule_codes):
         return _terminal_result(
             "provider response has an incomplete or unknown rule review"
         )
-    validated: dict[str, dict[str, Any]] = {}
-    findings: list[dict[str, Any]] = []
-    diagnostics: list[str] = []
-    for code in rule_codes:
-        row = reviews[code]
+    reviews_by_code: dict[str, Mapping[str, Any]] = {}
+    for index, row in enumerate(reviews):
         if not isinstance(row, Mapping) or set(row) != {
+            "rule_code",
             "satisfied",
             "reason",
             "record_indexes",
         }:
-            return _terminal_result(f"invalid review fields for {code}")
+            return _terminal_result(f"invalid review fields at row {index}")
+        code = row["rule_code"]
+        if (
+            not isinstance(code, str)
+            or code not in rule_codes
+            or code in reviews_by_code
+        ):
+            return _terminal_result(
+                "provider response has an incomplete or unknown rule review"
+            )
+        reviews_by_code[code] = row
+    validated: dict[str, dict[str, Any]] = {}
+    findings: list[dict[str, Any]] = []
+    diagnostics: list[str] = []
+    for code in rule_codes:
+        row = reviews_by_code[code]
         reason, indexes = row["reason"], row["record_indexes"]
         if not isinstance(row["satisfied"], bool):
             return _terminal_result(f"invalid satisfaction value for {code}")

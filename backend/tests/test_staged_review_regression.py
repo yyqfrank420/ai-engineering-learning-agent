@@ -73,7 +73,13 @@ def test_review_parser_retains_both_blockers_in_synthetic_combined_response(
         }
     result = gate._review_result(
         StructuredLLMResponse(
-            text=json.dumps({"rule_reviews": rows}),
+            text=json.dumps(
+                {
+                    "rule_reviews": [
+                        {"rule_code": code, **row} for code, row in rows.items()
+                    ]
+                }
+            ),
             finish_reason="end_turn",
             input_tokens=0,
             output_tokens=0,

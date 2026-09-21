@@ -13,7 +13,7 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Primary membership selects components for the main walkthrough. Every primary member must be naturally reachable outward from that root using directed runtime or control contracts, which may pass through non-primary supporting components. Keep independent ingress and supporting components in the design; mark them non-primary when they do not belong in the walkthrough. Feedback and deployment contracts cannot establish primary reachability. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
+        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Primary membership selects components for the main walkthrough. Every primary member must be naturally reachable outward from that root using directed runtime, control, feedback, or deployment contracts, which may pass through non-primary supporting components. Walkthrough order does not establish causal execution order or satisfy required runtime and control behavior. Keep independent ingress and supporting components in the design; mark them non-primary when they do not belong in the walkthrough. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
@@ -25,7 +25,7 @@ RUBRIC_CRITERIA = {
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible.",
+        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions.",
     ),
     "assumption_hygiene": (
         "composition",
@@ -41,7 +41,7 @@ RUBRIC_CRITERIA = {
     ),
     "logical_flow": (
         "connections",
-        "Start the primary operational path at its real trigger and follow directed contracts to an observable outcome.",
+        "Start the primary operational path at its real trigger and follow directed contracts to an observable outcome. Require the runtime and control paths needed for invocation, authorization, and execution; walkthrough reachability alone does not establish those paths.",
     ),
     "succinctness": (
         "components",
@@ -275,6 +275,7 @@ def staged_review_requirements(
                 "and reconciliation ownership. State required internal ordering, such as "
                 "reserve before send and validate before deliver, in the owning component's "
                 "responsibility; connection generation cannot change that responsibility."
+                " " + STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
             )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (

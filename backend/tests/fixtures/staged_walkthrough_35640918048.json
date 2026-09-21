@@ -1,0 +1,564 @@
+{
+  "source": {
+    "run_id": "35640918048",
+    "description": "Initial marketing candidate rejected because an offline evaluation walkthrough member had feedback-only ingress."
+  },
+  "candidate": {
+    "title": "Growth & Performance Marketing AI System",
+    "assumptions": [
+      "Business domain: a growth marketing team running paid acquisition and retention campaigns across external ad networks, using first-party product analytics for outcome measurement.",
+      "Goal: continuously improve campaign performance by generating and adjusting copy, targeting, and conversion event definitions, and by reallocating budget to maximise conversions subject to CAC, budget, and brand constraints.",
+      "High-cost mutations (publishing campaigns, budget shifts above a threshold, new audience activation) require explicit human approval; low-risk variant drafts may proceed automatically within guardrails.",
+      "External ad platforms are reachable via their APIs, and first-party site/app event streams are available for attribution; copy generation uses a foundation model with versioned prompts.",
+      "Feedback from measured outcomes may update prompts, rankings, and live optimization configuration only through an offline-evaluated, reviewed release path."
+    ],
+    "root_index": 0,
+    "capabilities": {
+      "external_effects": true,
+      "retrieval_or_reuse": true,
+      "learning_or_release": true
+    },
+    "components": [
+      {
+        "label": "Marketer Console",
+        "type": 100,
+        "responsibility": "Define growth objectives, constraints and budgets; review proposed copy, targeting, and event-definition changes; approve or reject high-cost mutations at the approval boundary.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Campaign Control API",
+        "type": 101,
+        "responsibility": "Intake objectives and approvals; orchestrate generation, experimentation, publish, evaluation, and release requests; persist campaign state; enforce approval gates before costly mutations.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Objective & Constraint Store",
+        "type": 102,
+        "responsibility": "Authoritative record of the optimization objective, budget and CAC guardrails, brand rules, and approval thresholds consulted by generation, optimization, and publishing.",
+        "group_label": "Data",
+        "group_kind": 601,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Copy Generation Service",
+        "type": 101,
+        "responsibility": "Generate and adjust ad copy variants grounded in approved library assets and brand constraints; validate variants against policy before delivering them for experiment or publish.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Targeting & Event Definition Service",
+        "type": 101,
+        "responsibility": "Propose audience targeting and conversion event definitions; validate event schemas against analytics conventions before they are used in campaigns or attribution.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Creative & Learning Library",
+        "type": 102,
+        "responsibility": "Versioned store of approved copy, segments, event definitions, and validated learnings; manages reuse lifecycle and invalidates stale or underperforming assets.",
+        "group_label": "Data",
+        "group_kind": 601,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Experimentation Service",
+        "type": 101,
+        "responsibility": "Design A/B tests and allocate traffic under significance guardrails; reserve experiment slots atomically before publish so retries cannot duplicate live tests.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Approval & Policy Gate",
+        "type": 108,
+        "responsibility": "Decision point routing costly mutations (publishes, budget shifts, new audiences) to marketer approval; records every decision and blocks auto-execution above thresholds.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Ad Platform Publisher",
+        "type": 101,
+        "responsibility": "Controlled execution of approved changes to ad platforms: reserve-before-send, atomic deduplication for retry-safe writes, reconciliation of platform state, and compensation (pause/revert) on failure.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Ad Network Platforms",
+        "type": 106,
+        "responsibility": "External search and social ad networks that serve campaigns, apply targeting and budgets, and report delivery, spend, and conversion data.",
+        "group_label": "External",
+        "group_kind": 604,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Product Event Sources",
+        "type": 106,
+        "responsibility": "Independent ingress of site and app conversion and engagement events used for attribution; not part of the marketer-initiated walkthrough.",
+        "group_label": "External",
+        "group_kind": 604,
+        "primary_flow_member": false
+      },
+      {
+        "label": "Analytics & Attribution Pipeline",
+        "type": 101,
+        "responsibility": "Ingest and deduplicate outcome events; attribute conversions and revenue to copy variants, audiences, event definitions, and experiments for evaluation.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Outcome Evaluation Service",
+        "type": 101,
+        "responsibility": "Offline evaluation of variants and decision policies against curated evidence with acceptance thresholds; regression gate before any prompt, ranking, or configuration release.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Objective Optimizer",
+        "type": 107,
+        "responsibility": "Reallocate budget and select winning variants to maximise the constrained objective within guardrails; emit proposals, routing those above thresholds to the approval gate.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Learning Release Manager",
+        "type": 101,
+        "responsibility": "Reviewed release of feedback-driven updates to prompts, rankings, and live configuration: curated evidence, canary rollout, staged promotion, and rollback on regression.",
+        "group_label": "Runtime",
+        "group_kind": 600,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Model & Prompt Registry",
+        "type": 102,
+        "responsibility": "Versioned registry of prompts, model selections, and ranking configurations with lineage to the evaluations that approved each version.",
+        "group_label": "Data",
+        "group_kind": 601,
+        "primary_flow_member": true
+      },
+      {
+        "label": "Audit & Reconciliation Log",
+        "type": 102,
+        "responsibility": "Immutable audit of approvals, publishes, reconciliations, compensations, and releases supporting accountability and recovery review.",
+        "group_label": "Data",
+        "group_kind": 601,
+        "primary_flow_member": false
+      },
+      {
+        "label": "Observability & Drift Monitor",
+        "type": 101,
+        "responsibility": "Monitor drift in outcomes and event quality, track latency and model/platform spend against budget, and alert or trigger safe degradation on anomalies.",
+        "group_label": "Operations",
+        "group_kind": 602,
+        "primary_flow_member": false
+      }
+    ]
+  },
+  "connections": {
+    "edges": [
+      {
+        "source_index": 0,
+        "target_index": 1,
+        "label": "Submit growth objectives, constraints, budgets and approval decisions",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 2,
+        "label": "Load objective, budget, CAC guardrails and approval thresholds",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 2,
+        "target_index": 1,
+        "label": "Return authoritative objective, guardrails and thresholds",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 3,
+        "label": "Request copy variant generation grounded in brand constraints",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 3,
+        "target_index": 5,
+        "label": "Fetch approved assets scoped by access identity, version and provenance",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 5,
+        "target_index": 3,
+        "label": "Return versioned approved assets; invalidated or stale assets flagged",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 3,
+        "target_index": 15,
+        "label": "Fetch released prompt version scoped to model/prompt release",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 15,
+        "target_index": 3,
+        "label": "Return prompt version with evaluation lineage and provenance",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 3,
+        "target_index": 1,
+        "label": "Return policy-validated variants or abstain with clarification on failed validation",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 4,
+        "label": "Request audience targeting and conversion event definitions",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 4,
+        "target_index": 11,
+        "label": "Validate event schema against analytics attribution conventions",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 11,
+        "target_index": 4,
+        "label": "Return schema verdict; rejection triggers clarification or bounded validated retry",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 4,
+        "target_index": 5,
+        "label": "Store validated segments and event definitions as versioned approved artifacts",
+        "flow": 400,
+        "sync": 501
+      },
+      {
+        "source_index": 3,
+        "target_index": 5,
+        "label": "Store validated variants as versioned post-gate reusable artifacts",
+        "flow": 400,
+        "sync": 501
+      },
+      {
+        "source_index": 4,
+        "target_index": 1,
+        "label": "Return validated targeting/event definitions or rejection with clarification request",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 6,
+        "label": "Request A/B experiment design under significance guardrails",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 6,
+        "target_index": 1,
+        "label": "Return experiment design with atomically reserved slot (retry-safe)",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 6,
+        "target_index": 11,
+        "label": "Query attributed experiment outcomes for significance evaluation",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 11,
+        "target_index": 6,
+        "label": "Return deduplicated experiment outcome metrics",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 7,
+        "label": "Submit proposed campaign mutation for policy and approval decision",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 7,
+        "target_index": 2,
+        "label": "Fetch approval thresholds and budget guardrails for decision",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 2,
+        "target_index": 7,
+        "label": "Return authoritative thresholds and guardrails",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 7,
+        "target_index": 0,
+        "label": "Escalate above-threshold mutation for marketer approval with full context",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 0,
+        "target_index": 7,
+        "label": "Return approval or rejection decision with rationale",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 7,
+        "target_index": 8,
+        "label": "Dispatch approved or within-threshold mutation with decision record",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 7,
+        "target_index": 1,
+        "label": "Notify rejection with recorded rationale (terminal outcome)",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 7,
+        "target_index": 16,
+        "label": "Record every gate decision immutably for audit",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 13,
+        "target_index": 7,
+        "label": "Route budget-shift and winner-selection proposals by approval threshold",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 7,
+        "target_index": 13,
+        "label": "Return decision outcome: approved and executed, or rejected with rationale",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 8,
+        "target_index": 9,
+        "label": "Publish approved change with pre-reserved operation identity and atomic dedupe",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 9,
+        "target_index": 8,
+        "label": "Return commit status; timeout triggers read-back by operation identity",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 8,
+        "target_index": 9,
+        "label": "Read-back reconcile: COMMITTED=success, NOT_FOUND=retry, STILL_UNKNOWN=bounded escalation",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 9,
+        "target_index": 8,
+        "label": "Return reconciled authoritative platform state for the operation identity",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 8,
+        "target_index": 9,
+        "label": "Compensating pause/revert on failure or correlated late anomaly",
+        "flow": 400,
+        "sync": 501
+      },
+      {
+        "source_index": 8,
+        "target_index": 16,
+        "label": "Record publishes, reconciliations and compensations immutably",
+        "flow": 400,
+        "sync": 501
+      },
+      {
+        "source_index": 9,
+        "target_index": 11,
+        "label": "Report delivery, spend and conversion data for attribution",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 10,
+        "target_index": 11,
+        "label": "Ingest first-party site/app conversion and engagement events",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 11,
+        "target_index": 13,
+        "label": "Deliver attributed outcomes by variant, audience, event definition and experiment",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 13,
+        "target_index": 2,
+        "label": "Load current guardrails and budget state for optimization",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 2,
+        "target_index": 13,
+        "label": "Return current guardrails and budget state",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 13,
+        "target_index": 15,
+        "label": "Fetch released ranking/optimization configuration by version and identity scope",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 15,
+        "target_index": 13,
+        "label": "Return configuration version with provenance and release lineage",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 11,
+        "target_index": 12,
+        "label": "Provide curated versioned evidence including hostile traces",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 12,
+        "target_index": 14,
+        "label": "Deliver offline evaluation verdict against acceptance thresholds (regression gate)",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 14,
+        "target_index": 15,
+        "label": "Register reviewed immutable release (promotion) with evaluation lineage",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 15,
+        "target_index": 14,
+        "label": "Return registered or restored version identifier with outcome",
+        "flow": 400,
+        "sync": 500
+      },
+      {
+        "source_index": 14,
+        "target_index": 15,
+        "label": "Rollback to prior reviewed version on regression (distinct controlled operation)",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 14,
+        "target_index": 1,
+        "label": "Orchestrate canary rollout of released prompts, rankings and configuration",
+        "flow": 401,
+        "sync": 500
+      },
+      {
+        "source_index": 1,
+        "target_index": 14,
+        "label": "Return canary outcome: staged promotion proceed or rollback trigger",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 14,
+        "target_index": 16,
+        "label": "Record release, promotion, canary and rollback outcomes immutably",
+        "flow": 400,
+        "sync": 501
+      },
+      {
+        "source_index": 11,
+        "target_index": 17,
+        "label": "Emit outcome and event-quality telemetry for drift monitoring",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 8,
+        "target_index": 17,
+        "label": "Emit publish, spend and reconciliation telemetry",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 9,
+        "target_index": 17,
+        "label": "Emit delivery and spend telemetry for budget tracking",
+        "flow": 402,
+        "sync": 501
+      },
+      {
+        "source_index": 17,
+        "target_index": 1,
+        "label": "Alert on drift or anomaly and trigger safe degradation",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 17,
+        "target_index": 8,
+        "label": "Signal correlated anomaly triggering bounded compensation",
+        "flow": 401,
+        "sync": 501
+      },
+      {
+        "source_index": 17,
+        "target_index": 16,
+        "label": "Persist anomaly, alert and safe-degradation records to durable audit sink",
+        "flow": 402,
+        "sync": 501
+      }
+    ]
+  }
+}

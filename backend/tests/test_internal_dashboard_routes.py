@@ -279,6 +279,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 "output_chars": 0,
                 "error_type": None,
                 "fallback": False,
+                "usage_complete": True,
                 "input_tokens": 12,
                 "cache_creation_input_tokens": 1_024,
                 "cache_read_input_tokens": 2_048,
@@ -375,6 +376,8 @@ async def test_eval_telemetry_preserves_timeout_and_incomplete_usage_types(
                 {
                     "accepted": accepted,
                     "usage_complete": usage_complete,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
                     "error_type": error_type,
                     "first_reasoning_delta_ms": 4000,
                     "first_text_delta_ms": 70000,
@@ -405,7 +408,95 @@ async def test_eval_telemetry_preserves_timeout_and_incomplete_usage_types(
 
 
 @pytest.mark.asyncio
-async def test_dashboard_self_improvement_surfaces_latency_scores_and_errors(dashboard_data):
+@pytest.mark.parametrize(
+    ("metadata", "complete", "known_cost"),
+    [
+        (None, False, 0),
+        ({}, False, 0),
+        ({"input_tokens": 100}, False, 0.0002),
+        ({"input_tokens": "bad", "output_tokens": 10}, False, 0.0001),
+        ({"input_tokens": -1, "output_tokens": 10}, False, 0.0001),
+        ({"input_tokens": 0, "output_tokens": 0}, True, 0),
+        ({"input_tokens": 100, "output_tokens": 10}, True, 0.0003),
+        (
+            {
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5",
+                        "status": "success",
+                        "usage_complete": True,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                    }
+                ]
+            },
+            True,
+            0,
+        ),
+        (
+            {
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5",
+                        "status": "success",
+                        "usage_complete": True,
+                    }
+                ]
+            },
+            False,
+            0,
+        ),
+        (
+            {
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5",
+                        "status": "cancelled_incomplete_usage",
+                        "usage_complete": False,
+                        "input_tokens": 100,
+                        "output_tokens": 0,
+                    }
+                ]
+            },
+            False,
+            0.0002,
+        ),
+    ],
+)
+async def test_eval_telemetry_preserves_unknown_usage_in_cost_accounting(
+    monkeypatch, metadata, complete, known_cost
+):
+    from eval.cost_gate import account_application_cost
+
+    row = _llm("review", "anthropic", "claude-sonnet-5", metadata=metadata) | {
+        "thread_id": "thread-1"
+    }
+    monkeypatch.setattr(dashboard, "list_recent_llm_telemetry", lambda **_: [row])
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread-1"], _user={}
+    )
+    call = payload["calls"][0]
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread-1"}], payload["calls"]
+    )
+
+    assert type(call["input_tokens"]) is type(call["output_tokens"]) is int
+    assert accounting["usage_complete"] is complete
+    assert accounting["status"] == ("pass" if complete else "incomplete")
+    assert accounting["total"]["known_subtotal_usd"] == known_cost
+    assert accounting["total"]["estimated_usd"] == (known_cost if complete else None)
+    if call["attempts"]:
+        assert call["usage_complete"] is complete
+    if not complete:
+        assert all(
+            usage["usage_complete"] is False for usage in call["attempts"] or [call]
+        )
+
+
+@pytest.mark.asyncio
+async def test_dashboard_self_improvement_surfaces_latency_scores_and_errors(
+    dashboard_data,
+):
     payload = await dashboard.dashboard_self_improvement(_user={"email": "admin@example.com"})
 
     assert payload["window_days"] == 7

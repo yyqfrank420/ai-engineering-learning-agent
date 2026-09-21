@@ -515,13 +515,13 @@ def primary_flow_distances(
     primary_ids: set[str],
     connections: Iterable[Mapping[str, Any]],
 ) -> dict[str, int]:
-    """Return selected distances through validated directed runtime/control contracts."""
+    """Return selected walkthrough distances through all validated directed contracts."""
     adjacency: dict[str, list[str]] = {}
+    # Walkthrough order is presentation; semantic review checks invocation and control paths.
     for connection in connections:
-        if connection["flow"] in {"runtime", "control"}:
-            adjacency.setdefault(connection["source_id"], []).append(
-                connection["target_id"]
-            )
+        adjacency.setdefault(connection["source_id"], []).append(
+            connection["target_id"]
+        )
     distances = {root_id: 0}
     pending: deque[str] = deque([root_id])
     while pending:
@@ -532,7 +532,7 @@ def primary_flow_distances(
                 pending.append(target)
     if primary_ids - distances.keys():
         raise GraphContractError(
-            "every primary flow member must be reachable through runtime or control connections",
+            "every primary flow member must be reachable through directed connections",
             path="components.primary_flow_member",
         )
     return {node_id: distances[node_id] for node_id in sorted(primary_ids)}
@@ -600,7 +600,7 @@ def derive_groups(
 
 
 def derive_sequence(build: Mapping[str, Any]) -> list[dict[str, Any]]:
-    """Select primary walkthrough stages from directed runtime/control distances."""
+    """Select primary walkthrough stages from directed interaction distances."""
     assigned = validate_staged_graph_build(assign_server_ids(build))
     distances = _primary_distances(assigned)
     stages: dict[int, list[str]] = {}

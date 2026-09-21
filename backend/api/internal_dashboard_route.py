@@ -86,6 +86,19 @@ def _nullable_nonnegative_int(value: Any) -> int | None:
         return None
 
 
+def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
+    fields = {"input_tokens", "output_tokens"} | (
+        {"cache_creation_input_tokens", "cache_read_input_tokens"} & usage.keys()
+    )
+    if "incomplete_usage" in str(usage.get("status") or "") or any(
+        type(usage.get(field)) is not int or usage[field] < 0 for field in fields
+    ):
+        # Sanitized zeroes cannot establish that the provider reported zero usage.
+        return False
+    complete = usage.get("usage_complete")
+    return complete if isinstance(complete, bool) else None
+
+
 @router.get("/overview")
 async def dashboard_overview(_user=Depends(get_internal_dashboard_user)):
     now = time.time()
@@ -398,11 +411,7 @@ async def dashboard_eval_telemetry(
                         if isinstance(attempt.get("accepted"), bool)
                         else None
                     ),
-                    "usage_complete": (
-                        attempt.get("usage_complete")
-                        if isinstance(attempt.get("usage_complete"), bool)
-                        else None
-                    ),
+                    "usage_complete": _eval_usage_complete(attempt),
                     "error_type": (
                         attempt["error_type"][:128]
                         if isinstance(attempt.get("error_type"), str)
@@ -453,6 +462,11 @@ async def dashboard_eval_telemetry(
                     else None
                 ),
                 "fallback": row["used_fallback"],
+                "usage_complete": (
+                    all(attempt["usage_complete"] is not False for attempt in attempts)
+                    if attempts
+                    else _eval_usage_complete(metadata)
+                ),
                 "input_tokens": _nonnegative_int(metadata.get("input_tokens")),
                 "cache_creation_input_tokens": _nonnegative_int(
                     metadata.get("cache_creation_input_tokens")
