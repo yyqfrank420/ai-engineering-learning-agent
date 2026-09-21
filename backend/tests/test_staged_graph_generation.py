@@ -428,7 +428,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v7"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v8"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -593,7 +593,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v11"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v12"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2003,3 +2003,345 @@ def test_retained_expansion_delta_schema_admits_request_response_pair_without_ba
         assembled = delta.assemble(payload)
         assert assembled["edges"][: len(base_edges)] == base_edges
         assert assembled["edges"][len(base_edges) :] == pair[:count]
+
+
+def _retained_correction(case):
+    return json.loads(
+        (
+            Path(__file__).parent / "fixtures" / "staged_corrections_34704850592.json"
+        ).read_text()
+    )[case]
+
+
+def _semantic_findings(case):
+    return [
+        {
+            "code": finding["rule_code"],
+            "path": case["stage"],
+            "rule": "semantic_gate",
+            **{key: value for key, value in finding.items() if key != "rule_code"},
+        }
+        for finding in case["first_review"]["findings"]
+    ]
+
+
+def _marketing_delta(case, findings=None, capacity=20):
+    write_set = generation.create_write_set(component_limit=capacity, edge_limit=60)
+    return generation._semantic_correction_delta(
+        stage="components",
+        maturity="production",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=case["original_candidate"],
+        findings=_semantic_findings(case) if findings is None else findings,
+        schema=generation.component_generation_schema(write_set),
+    )
+
+
+def _delta_response(delta):
+    return delta.extract(delta.base)
+
+
+@pytest.mark.asyncio
+async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_replacement(
+    monkeypatch,
+):
+    case = _retained_correction("applied_domain")
+    original = json.loads(json.dumps(case))
+    delta = _marketing_delta(case)
+    response = _delta_response(delta)
+    assert set(response) == {"additions", "updates", "capabilities"}
+    assert set(response["updates"]) == {"slot_4", "slot_7", "slot_12", "slot_15"}
+    for index in case["targeted_record_indexes"]:
+        response["updates"][f"slot_{index}"]["responsibility"] = (
+            f"Corrected ownership for component {index}."
+        )
+    calls = []
+    wire_response = {
+        "candidate": case["bad_corrected_candidate"],
+        "clarification_questions": [],
+    }
+
+    async def fake_stream(**kwargs):
+        calls.append(kwargs)
+        return _response(wire_response)
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    write_set = generation.create_write_set(component_limit=20, edge_limit=60)
+    kwargs = dict(
+        request=case["request"],
+        resolved_maturity="production",
+        architecture_context=_architecture_context(),
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        structural_findings=_semantic_findings(case),
+        rejected_candidate=case["original_candidate"],
+    )
+    with pytest.raises(
+        generation.StagedGenerationError, match="staged_generation_schema_invalid"
+    ):
+        await generation.generate_component_candidate(**kwargs)
+    wire_response = {"candidate": response, "clarification_questions": []}
+    result = await generation.generate_component_candidate(**kwargs)
+    assert len(result["wire"]["components"]) == 17
+    unchanged = set(range(17)) - set(case["targeted_record_indexes"])
+    assert len(unchanged) == 13
+    for index in unchanged:
+        assert (
+            result["wire"]["components"][index]
+            == case["original_candidate"]["components"][index]
+        )
+    for field in ("title", "assumptions", "root_index", "capabilities"):
+        assert result["wire"][field] == case["original_candidate"][field]
+    assert case == original
+    metadata = calls[-1]["telemetry"]["metadata"]
+    assert metadata["schema_version"] == "staged_components_correction_response_v1"
+    prompt = calls[-1]["messages"][0]["content"]
+    prompt_input = json.loads(prompt.split("\nINPUT\n")[1])
+    assert prompt_input["base"] is None
+    assert prompt_input["rejected_candidate"] == case["original_candidate"]
+    assert "never return a full replacement or remove records" in prompt
+
+
+@pytest.mark.asyncio
+async def test_memory_semantic_correction_retains_required_targeted_write(monkeypatch):
+    case = _retained_correction("node_followup")
+    candidate = case["accepted_components"]
+    accepted = [
+        {
+            "index": index,
+            "id": f"n{index + 1}",
+            **record,
+            "is_root": index == candidate["root_index"],
+        }
+        for index, record in enumerate(candidate["components"])
+    ]
+    write_set = generation.create_write_set(component_limit=10, edge_limit=20)
+    response = case["bad_corrected_candidate"]
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(response)
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    kwargs = dict(
+        request=case["request"],
+        resolved_maturity="prototype",
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        accepted_components=accepted,
+        accepted_context={
+            key: candidate[key] for key in ("assumptions", "capabilities")
+        },
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        structural_findings=_semantic_findings(case),
+        rejected_candidate=case["original_candidate"],
+    )
+    with pytest.raises(
+        generation.StagedGenerationError, match="staged_generation_schema_invalid"
+    ):
+        await generation.generate_connection_candidate(**kwargs)
+    response = {
+        "additions": [],
+        "updates": {"slot_7": case["original_candidate"]["edges"][7]},
+    }
+    result = await generation.generate_connection_candidate(**kwargs)
+    assert result["wire"] == case["original_candidate"]
+    assert len(result["wire"]["edges"]) == 16
+    assert "store curated facts" in result["wire"]["edges"][7]["label"]
+    assert calls[-1]["schema"]["properties"]["additions"]["maxItems"] == 4
+    assert (
+        generation._generation_schema_version("connections", calls[-1]["schema"])
+        == "staged_connections_delta_v1"
+    )
+
+
+@pytest.mark.parametrize("indexes", [[True], [-1], [17], [1.5], "4", None])
+def test_semantic_correction_rejects_invalid_targets(indexes):
+    case = _retained_correction("applied_domain")
+    findings = _semantic_findings(case)
+    findings[0]["record_indexes"] = indexes
+    with pytest.raises(
+        generation.StagedGenerationError, match="invalid_correction_findings"
+    ):
+        _marketing_delta(case, findings)
+
+
+def test_semantic_correction_rejects_unknown_rule():
+    case = _retained_correction("applied_domain")
+    findings = _semantic_findings(case)
+    findings[0]["code"] = "invented_rule"
+    with pytest.raises(
+        generation.StagedGenerationError, match="invalid_correction_findings"
+    ):
+        _marketing_delta(case, findings)
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "unknown_slot",
+        "unknown_field",
+        "missing_slot",
+        "removal",
+        "metadata",
+        "capacity",
+    ],
+)
+def test_semantic_correction_rejects_authority_expansion(mutation):
+    case = _retained_correction("applied_domain")
+    delta = _marketing_delta(case, capacity=17)
+    response = _delta_response(delta)
+    if mutation == "unknown_slot":
+        response["updates"]["slot_0"] = case["original_candidate"]["components"][0]
+    elif mutation == "unknown_field":
+        response["updates"]["slot_4"]["invented"] = True
+    elif mutation == "missing_slot":
+        response["updates"].pop("slot_4")
+    elif mutation == "removal":
+        response["removals"] = [7]
+    elif mutation == "metadata":
+        response["assumptions"] = []
+    else:
+        response["additions"] = [case["original_candidate"]["components"][0]]
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps(response))
+
+
+def test_indexless_finding_in_mixed_list_grants_global_updates_without_deletion():
+    case = _retained_correction("applied_domain")
+    findings = _semantic_findings(case)
+    findings.append(
+        {"code": "objective_fidelity", "path": "components", "rule": "semantic_gate"}
+    )
+    delta = _marketing_delta(case, findings, capacity=18)
+    response = _delta_response(delta)
+    assert len(response["updates"]) == 17
+    assert set(response) == {
+        "updates",
+        "additions",
+        "title",
+        "assumptions",
+        "root_index",
+        "capabilities",
+    }
+    addition = {
+        **case["original_candidate"]["components"][0],
+        "label": "New initiating actor",
+    }
+    response["additions"] = [addition]
+    response["root_index"] = 17
+    response["assumptions"] = ["Explicitly corrected global context."]
+    assembled = generation._parse_component_wire(
+        json.dumps(delta.assemble(json.dumps(response))), component_limit=18
+    )
+    assert assembled["components"][:17] == case["original_candidate"]["components"]
+    assert assembled["components"][17] == addition
+    assert assembled["root_index"] == 17
+    assert assembled["assumptions"] == response["assumptions"]
+
+
+@pytest.mark.parametrize(
+    "code,metadata",
+    [
+        ("objective_fidelity", {"title", "assumptions", "root_index"}),
+        ("capability_classification", {"capabilities"}),
+    ],
+)
+def test_targeted_global_criterion_has_explicit_metadata_scope(code, metadata):
+    case = _retained_correction("applied_domain")
+    findings = [
+        {
+            "code": code,
+            "path": "components",
+            "rule": "semantic_gate",
+            "record_indexes": [4],
+        }
+    ]
+    delta = _marketing_delta(case, findings)
+    assert (
+        set(delta.schema["properties"])
+        == {"updates", "additions", "capabilities"} | metadata
+    )
+    assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_4"}
+
+
+@pytest.mark.asyncio
+async def test_semantic_component_correction_can_still_clarify(monkeypatch):
+    case = _retained_correction("applied_domain")
+
+    async def generate(**kwargs):
+        return json.dumps(
+            {
+                "candidate": None,
+                "clarification_questions": [
+                    "Which business workflow should this automate?"
+                ],
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    write_set = generation.create_write_set(component_limit=20, edge_limit=60)
+    result = await generation.generate_component_candidate(
+        request="Build an operations agent",
+        resolved_maturity="production",
+        architecture_context=_architecture_context(),
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        rejected_candidate=case["original_candidate"],
+        structural_findings=[
+            {
+                "code": "objective_fidelity",
+                "path": "components",
+                "rule": "semantic_gate",
+            }
+        ],
+    )
+    assert result["clarification_questions"] == [
+        "Which business workflow should this automate?"
+    ]
+
+
+def test_component_correction_added_owner_can_change_capabilities():
+    original = _component_wire()
+    write_set = _write_set()
+    delta = generation._semantic_correction_delta(
+        stage="components",
+        maturity="prototype",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=original,
+        findings=[
+            {
+                "code": "brief_coverage",
+                "path": "components",
+                "rule": "semantic_gate",
+                "record_indexes": [0],
+            }
+        ],
+        schema=generation.component_generation_schema(write_set),
+    )
+    response = _delta_response(delta)
+    response["additions"] = [
+        {
+            **original["components"][0],
+            "label": "Approved publication service",
+            "responsibility": "Publishes approved changes to the external destination.",
+        }
+    ]
+    response["capabilities"]["external_effects"] = True
+    assembled = generation._parse_component_wire(
+        json.dumps(delta.assemble(json.dumps(response))), component_limit=4
+    )
+    assert assembled["capabilities"]["external_effects"] is True
+    assert assembled["components"][0] == original["components"][0]
+    assert original["capabilities"]["external_effects"] is False

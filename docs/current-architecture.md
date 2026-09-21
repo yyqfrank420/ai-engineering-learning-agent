@@ -135,6 +135,17 @@ review owns interactions after components freeze. The remaining limitation is ex
 correction cannot redesign components. A rejected graph stays unpublished. This bounded pipeline
 still makes five calls without correction; prompt simplification does not establish lower live latency.
 
+Semantic corrections to a new design use the existing delta assembler. The server retains
+every candidate record in order and permits updates to the review's indexed records plus
+bounded additions. An indexless finding permits updates across the candidate. Capabilities
+describe the complete corrected design; other component metadata stays fixed unless the
+finding concerns it or is global. Corrections cannot omit
+records or remove a required connection. Structural failures still use the original repair
+path, and explicit user edits retain their existing removal permissions. A semantic repair
+that needs deletion can still fail review; it does not gain removal authority implicitly.
+Prototype memory does not itself create an approval or version gate. Gates required by
+the request, accepted responsibilities, or production criteria remain binding.
+
 During steps 4-7 the client may send `steer`. The server cancels the active workflow, emits
 `response_reset`, and restarts with the steering correction folded into the same turn. `stop`
 cancels server-side work. Steering is content-filtered, size-bounded, and capped at three updates.

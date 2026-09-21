@@ -1818,6 +1818,57 @@ def test_report_only_manual_review_is_visible_but_not_a_junit_failure(tmp_path):
     assert "borderline dimension" in junit
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode,expected_exit", [("report-only", 0), ("blocking", 1)])
+async def test_recovered_timeout_cost_stays_unknown_through_live_report(
+    monkeypatch, tmp_path, mode, expected_exit
+):
+    capture = {
+        "results": [{"id": "memory", "thread_id": "thread", "answer": "Answer.",
+                     "events": [], "deterministic_failures": []}],
+        "application_telemetry": [{
+            "thread_id": "thread", "operation": "route", "provider_attempts": 2,
+            "attempts": [
+                {"model": "claude-sonnet-5", "status": "APITimeoutError",
+                 "accepted": False, "usage_complete": False},
+                {"model": "claude-sonnet-5", "status": "success",
+                 "accepted": True, "usage_complete": True,
+                 "input_tokens": 100, "output_tokens": 10},
+            ],
+        }],
+    }
+    manifest = live_runner._manifest()
+    manifest["live"]["cost_policy"] = {"mode": mode}
+    monkeypatch.setattr(live_runner, "_manifest", lambda: manifest)
+    monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
+    _passing_replay_judge(monkeypatch)
+    args = live_runner.build_parser().parse_args([
+        "--suite", "diagnostic", "--case", "memory",
+        "--target", "https://candidate.example",
+    ])
+
+    report, exit_code = await evaluate(args)
+
+    assert exit_code == expected_exit
+    assert report["evaluations"][0]["decision"] == "pass"
+    assert report["estimated_cost"]["application_usd"] is None
+    assert report["cost_accounting"]["policy"]["status"] == "incomplete"
+    assert report["cost_accounting"]["application"]["total"]["known_subtotal_usd"] == 0.0003
+    summary_path = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
+    _write_outputs(tmp_path / "live-results.json", report)
+    import xml.etree.ElementTree as ET
+
+    cost = ET.parse(tmp_path / "live-junit.xml").find(
+        ".//testcase[@name='application-cost-policy']"
+    )
+    assert (cost.find("failure") is not None) == (mode == "blocking")
+    assert (cost.find("skipped") is not None) == (mode == "report-only")
+    summary = summary_path.read_text()
+    assert "Application cost: `unknown`" in summary
+    assert "Known application subtotal: `$0.000300` (total unavailable)" in summary
+
+
 @pytest.fixture
 def complete_calibration_capture():
     corpus = load_corpus()

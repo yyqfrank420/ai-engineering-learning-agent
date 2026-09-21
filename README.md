@@ -29,7 +29,7 @@ creation and edits use `GRAPH_PIPELINE_MODE=staged` by default:
 3. use Kimi K3 at high effort to propose component responsibilities, assumptions, and capabilities
 4. assign IDs, validate and render a reversible component preview, then run the Sonnet medium component gate
 5. generate connections against the accepted components, validate the full candidate and its browser render, then run the Sonnet medium connection gate
-6. allow one correction per stage; a connection correction keeps the accepted components fixed
+6. allow one correction per stage; semantic corrections to new designs return targeted updates and bounded additions while the server retains existing records; a connection correction keeps the accepted components fixed
 7. write the walkthrough, atomically persist the accepted graph and its server-only contract, then publish the authoritative graph and completed response
 
 When the requested workflow is unclear, the component planner can ask up to three

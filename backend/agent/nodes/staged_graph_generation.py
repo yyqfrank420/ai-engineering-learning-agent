@@ -36,8 +36,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v11"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v7"
+_COMPONENT_PROMPT_VERSION = "staged_components_v12"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v8"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -241,7 +241,9 @@ def _component_create_response_schema(
     }
 
 
-def _parse_component_response(text: str, *, component_limit: int) -> dict[str, Any]:
+def _parse_component_response(
+    text: str, *, component_limit: int, correction_delta: _EditDelta | None = None
+) -> dict[str, Any]:
     payload = _parse_json(text)
     _require_exact_keys(payload, {"candidate", "clarification_questions"})
     questions = payload["clarification_questions"]
@@ -262,7 +264,12 @@ def _parse_component_response(text: str, *, component_limit: int) -> dict[str, A
         raise StagedGenerationError("component_clarification_invalid")
     return {
         "wire": _parse_component_wire(
-            _canonical_json(payload["candidate"]), component_limit=component_limit
+            _canonical_json(
+                correction_delta.assemble(_canonical_json(payload["candidate"]))
+            )
+            if correction_delta
+            else _canonical_json(payload["candidate"]),
+            component_limit=component_limit,
         )
     }
 
@@ -333,6 +340,19 @@ async def generate_component_candidate(
         if edit_permissions is not None
         else None
     )
+    correction = (
+        _semantic_correction_delta(
+            stage="components",
+            maturity=resolved_maturity,
+            write_set=valid_write_set,
+            attempt=attempt,
+            rejected_candidate=rejected_candidate,
+            findings=(*structural_findings, *gate_findings),
+            schema=schema,
+        )
+        if edit_permissions is None
+        else None
+    )
     prompt, prompt_fingerprint = _attempt_prompt(
         stage="components",
         request=request,
@@ -344,11 +364,12 @@ async def generate_component_candidate(
         prior_write_set_fingerprint=prior_write_set_fingerprint,
         structural_findings=structural_findings,
         gate_findings=gate_findings,
-        base=delta.base if delta else base_components,
+        base=None if correction else delta.base if delta else base_components,
         rejected_candidate=delta.extract(rejected_candidate)
         if delta and rejected_candidate is not None
         else rejected_candidate,
         edit_delta=delta,
+        correction_delta=correction,
         architecture_context=validated_context,
         connection_addition_plan=_connection_addition_plan(
             edit_permissions,
@@ -365,7 +386,11 @@ async def generate_component_candidate(
             stage="components",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema if delta else _component_create_response_schema(schema),
+            schema=delta.schema
+            if delta
+            else _component_create_response_schema(
+                correction.schema if correction else schema
+            ),
             state=state,
             attempt=attempt,
             upstream_fingerprint=upstream_fingerprint,
@@ -382,7 +407,9 @@ async def generate_component_candidate(
                 )
             }
             if delta
-            else _parse_component_response(response, component_limit=component_limit)
+            else _parse_component_response(
+                response, component_limit=component_limit, correction_delta=correction
+            )
         )
     except StagedGenerationError as exc:
         exc.prompt_fingerprint = prompt_fingerprint
@@ -427,6 +454,21 @@ async def generate_connection_candidate(
         if edit_permissions is not None
         else None
     )
+    correction = (
+        _semantic_correction_delta(
+            stage="connections",
+            maturity=resolved_maturity,
+            write_set=valid_write_set,
+            attempt=attempt,
+            rejected_candidate=rejected_candidate,
+            findings=(*structural_findings, *gate_findings),
+            schema=schema,
+            accepted_components=accepted,
+            accepted_context=context,
+        )
+        if edit_permissions is None
+        else None
+    )
     prompt, prompt_fingerprint = _attempt_prompt(
         stage="connections",
         request=request,
@@ -438,11 +480,12 @@ async def generate_connection_candidate(
         prior_write_set_fingerprint=prior_write_set_fingerprint,
         structural_findings=structural_findings,
         gate_findings=gate_findings,
-        base=delta.base if delta else base_connections,
+        base=None if correction else delta.base if delta else base_connections,
         rejected_candidate=delta.extract(rejected_candidate)
         if delta and rejected_candidate is not None
         else rejected_candidate,
         edit_delta=delta,
+        correction_delta=correction,
         accepted_components=accepted,
         accepted_context=context,
         connection_addition_plan=_connection_addition_plan(
@@ -458,7 +501,11 @@ async def generate_connection_candidate(
             stage="connections",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema if delta else schema,
+            schema=delta.schema
+            if delta
+            else correction.schema
+            if correction
+            else schema,
             state=state,
             attempt=attempt,
             upstream_fingerprint=upstream_fingerprint,
@@ -467,7 +514,9 @@ async def generate_connection_candidate(
             max_output_tokens=max_output_tokens,
         )
         wire = _parse_connection_wire(
-            _canonical_json(delta.assemble(response)) if delta else response,
+            _canonical_json((delta or correction).assemble(response))
+            if delta or correction
+            else response,
             accepted_components=accepted,
             edge_limit=_write_limits(valid_write_set)["edge_limit"],
         )
@@ -475,6 +524,18 @@ async def generate_connection_candidate(
         exc.prompt_fingerprint = prompt_fingerprint
         raise
     return {"wire": wire, "prompt_fingerprint": prompt_fingerprint}
+
+
+def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
+    properties = schema["properties"]
+    if "additions" in properties:
+        return f"staged_{stage}_delta_v1"
+    if stage == "components":
+        candidate_properties = properties["candidate"]["anyOf"][0]["properties"]
+        if "additions" in candidate_properties:
+            return "staged_components_correction_response_v1"
+        return _COMPONENT_SCHEMA_VERSION
+    return _CONNECTION_SCHEMA_VERSION
 
 
 async def _run_generation(
@@ -517,13 +578,7 @@ async def _run_generation(
                         if stage == "components"
                         else _CONNECTION_PROMPT_VERSION
                     ),
-                    "schema_version": (
-                        f"staged_{stage}_delta_v1"
-                        if "additions" in schema["properties"]
-                        else _COMPONENT_SCHEMA_VERSION
-                        if stage == "components"
-                        else _CONNECTION_SCHEMA_VERSION
-                    ),
+                    "schema_version": _generation_schema_version(stage, schema),
                     "correction_attempt": attempt,
                     "allocated_timeout_s": timeout_seconds,
                     "upstream_fingerprint": upstream_fingerprint,
@@ -572,6 +627,7 @@ def _attempt_prompt(
     accepted_context: AcceptedContext | None = None,
     architecture_context: str | None = None,
     edit_delta: _EditDelta | None = None,
+    correction_delta: _EditDelta | None = None,
     connection_addition_plan: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     _validate_fingerprint(upstream_fingerprint, "invalid_upstream_fingerprint")
@@ -642,6 +698,8 @@ def _attempt_prompt(
         prompt_input["connection_addition_plan"] = _bounded_json(
             connection_addition_plan
         )
+    if correction_delta is not None:
+        prompt_input["correction_slots"] = correction_delta.schema["properties"]
     codebook = " ".join(
         f"{name}: " + ",".join(f"{code}={value}" for code, value in values.items())
         for name, values in (
@@ -720,6 +778,25 @@ def _attempt_prompt(
                 "Otherwise return a complete corrected candidate, changing only fields needed "
                 "to address the listed findings and preserving unrelated candidate content."
             )
+    if correction_delta is not None:
+        edit_rule = (
+            " The rejected_candidate is preserved by the server. Return only the "
+            "correction delta defined by correction_slots: additions, updates to every listed "
+            "slot, and explicitly exposed metadata fields. slot_N refers to original record "
+            "index N. The server retains all original records in order; never return a full "
+            "replacement or remove records. Preserve unrelated values within editable records. "
+            "Append only additions needed for the findings, within the schema capacity. "
+            "Resolve overlapping ownership by clarifying retained responsibilities; if removal "
+            "is necessary, this correction cannot authorize it."
+        )
+        rejected_candidate_rule = (
+            " The rejected_candidate is diagnostic context. For a component response, put the "
+            "correction delta in candidate with clarification_questions=[]. If the prior "
+            "candidate invented a missing business goal, candidate=null with clarification "
+            "questions remains valid."
+            if stage == "components"
+            else " The rejected_candidate is diagnostic context; return the correction delta."
+        )
     if stage == "components":
         if architecture_context is None:
             raise StagedGenerationError("missing_architecture_context")
@@ -733,7 +810,7 @@ def _attempt_prompt(
         )
         if edit_delta is None:
             instructions += (
-                " Return exactly one outcome: candidate containing the component object with "
+                " Return exactly one outcome: candidate containing the schema-defined object with "
                 "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
                 "of at most 240 characters each. Establish the user's business domain and goal "
                 "from the request or its accepted conversation context. Retrieved examples "
@@ -900,9 +977,7 @@ def _edit_delta(
                 }
             )
     count = permissions.get(f"allowed_new_{kind}_count", 0)
-    minimum = (
-        permissions.get("minimum_new_edge_count", count) if kind == "edge" else count
-    )
+    minimum = permissions.get(f"minimum_new_{kind}_count", count)
     if (
         not _nonnegative_limit(count)
         or not _nonnegative_limit(minimum)
@@ -920,6 +995,101 @@ def _edit_delta(
         **{field: schema["properties"][field] for field in composition_fields},
     }
     return _EditDelta(base, record_key, retained, _delta_object(properties))
+
+
+def _semantic_correction_delta(
+    *,
+    stage: str,
+    maturity: str,
+    write_set: Mapping[str, Any],
+    attempt: int,
+    rejected_candidate: Mapping[str, Any] | None,
+    findings: Sequence[Mapping[str, Any]],
+    schema: Mapping[str, Any],
+    accepted_components: list[dict[str, Any]] | None = None,
+    accepted_context: AcceptedContext | None = None,
+) -> _EditDelta | None:
+    """Limit a semantic create repair to updates and additions over its rejected wire."""
+    semantic_findings = [
+        finding
+        for finding in findings
+        if isinstance(finding, Mapping) and finding.get("rule") == "semantic_gate"
+    ]
+    if (
+        attempt != 1
+        or write_set["mode"] != "create"
+        or rejected_candidate is None
+        or not semantic_findings
+    ):
+        return None
+    criteria = staged_review_requirements(
+        stage,
+        maturity,
+        production_proofs_for_capabilities(
+            accepted_context.prompt_value()["capabilities"], maturity=maturity
+        )
+        if accepted_context is not None
+        else (),
+    )
+    limits = _write_limits(write_set)
+    if stage == "components":
+        base = _parse_component_wire(
+            _canonical_json(rejected_candidate),
+            component_limit=limits["component_limit"],
+        )
+        record_key, kind, capacity = "components", "node", limits["component_limit"]
+    else:
+        base = _parse_connection_wire(
+            _canonical_json(rejected_candidate),
+            accepted_components=accepted_components or [],
+            edge_limit=limits["edge_limit"],
+        )
+        record_key, kind, capacity = "edges", "edge", limits["edge_limit"]
+    count = len(base[record_key])
+    targets: set[int] = set()
+    global_finding = False
+    metadata = {"capabilities"} if stage == "components" else set()
+    for finding in semantic_findings:
+        code = finding.get("code")
+        indexes = finding.get("record_indexes", [])
+        if (
+            not isinstance(code, str)
+            or code not in criteria
+            or finding.get("path") != stage
+            or not isinstance(indexes, list)
+            or len(indexes) > 32
+            or any(
+                not _is_integer(index) or not 0 <= index < count for index in indexes
+            )
+        ):
+            raise StagedGenerationError("invalid_correction_findings")
+        targets.update(indexes)
+        global_finding |= not indexes
+        if code == "objective_fidelity":
+            metadata.update(("title", "assumptions", "root_index"))
+        elif code == "assumption_hygiene":
+            metadata.add("assumptions")
+    if global_finding:
+        targets = set(range(count))
+        metadata.update(("title", "assumptions", "root_index", "capabilities"))
+    fields = schema["properties"][record_key]["items"]["properties"]
+    # Findings identify defects, never permission to delete the affected behavior.
+    return _edit_delta(
+        base=base,
+        record_key=record_key,
+        selectors=[str(index) for index in range(count)],
+        permissions={
+            f"editable_{kind}_fields": {
+                str(index): list(fields) for index in sorted(targets)
+            },
+            f"allowed_new_{kind}_count": capacity - count,
+            f"minimum_new_{kind}_count": 0,
+        },
+        kind=kind,
+        field_names={field: field for field in fields},
+        schema=schema,
+        composition_fields=sorted(metadata) if stage == "components" else (),
+    )
 
 
 def _connection_addition_plan(
