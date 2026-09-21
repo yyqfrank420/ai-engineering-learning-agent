@@ -25,7 +25,7 @@ RUBRIC_CRITERIA = {
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions.",
+        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload.",
     ),
     "assumption_hygiene": (
         "composition",
@@ -271,11 +271,11 @@ def staged_review_requirements(
                 "Existing components may own compatible operations; do not require a separate "
                 "component for every checklist step. A datastore, registry, or audit label, "
                 "or an assumption alone, cannot execute evaluation, release, or control."
-                " Retryable internal writes also need reservation, atomic deduplication, "
-                "and reconciliation ownership. State required internal ordering, such as "
+                " State required internal ordering, such as "
                 "reserve before send and validate before deliver, in the owning component's "
                 "responsibility; connection generation cannot change that responsibility."
-                " " + STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+                " " + STAGED_PRODUCTION_REQUIREMENTS["state_effect_reconciliation"]
+                + " " + STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
             )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (

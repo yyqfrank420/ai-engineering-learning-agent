@@ -117,7 +117,13 @@ def test_production_review_consolidates_obligations_without_losing_failure_outco
     assert "controlled_learning_and_release" not in requirements
     assert "learning_and_release" not in requirements
     reconciliation = requirements["state_effect_reconciliation"]
-    for obligation in ("COMMITTED", "NOT_FOUND", "STILL_UNKNOWN", "same-key", "bounded"):
+    for obligation in (
+        "COMMITTED",
+        "NOT_FOUND",
+        "STILL_UNKNOWN",
+        "same-key",
+        "bounded",
+    ):
         assert obligation in reconciliation
     retrieval = requirements["retrieval_and_reuse_trust"]
     for obligation in ("rejected/stale", "abstention", "invalidation", "entailment"):
@@ -132,14 +138,21 @@ def test_production_contracts_allow_internal_ownership_without_extra_graph_edges
     assert "state_order_integrity" not in requirements
     component_requirements = staged_review_requirements("components", "production")
     assert "required internal ordering" in component_requirements["selected_depth"]
-    assert "connection generation cannot change" in component_requirements["selected_depth"]
     assert (
-        STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+        "connection generation cannot change"
         in component_requirements["selected_depth"]
     )
-    assert STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"] not in (
-        staged_review_requirements("components", "prototype")["selected_depth"]
-    )
+    for code in ("streaming_integrity", "state_effect_reconciliation"):
+        assert (
+            STAGED_PRODUCTION_REQUIREMENTS[code]
+            in component_requirements["selected_depth"]
+        )
+        assert (
+            STAGED_PRODUCTION_REQUIREMENTS[code]
+            not in (
+                staged_review_requirements("components", "prototype")["selected_depth"]
+            )
+        )
     assert "does not need a separate edge" in requirements["streaming_integrity"]
     assert "streaming_integrity" not in staged_review_requirements(
         "connections", "prototype"
@@ -148,14 +161,19 @@ def test_production_contracts_allow_internal_ownership_without_extra_graph_edges
 
 def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
     requirements = staged_review_requirements(
-        "connections", "production", ("audit_and_provenance", "retrieval_and_reuse_trust")
+        "connections",
+        "production",
+        ("audit_and_provenance", "retrieval_and_reuse_trust"),
     )
 
     assert "authorization_and_compensation" not in requirements
     reconciliation = requirements["state_effect_reconciliation"]
     for obligation in (
-        "internal durable mutations", "deduplicate atomically", "same-key",
-        "freshness", "fencing before execution",
+        "internal durable mutations",
+        "deduplicate atomically",
+        "same-key",
+        "freshness",
+        "fencing before execution",
     ):
         assert obligation in reconciliation
 
@@ -209,15 +227,25 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
     assert generated_input["accepted_context"] == context.prompt_value()
     assert generated_input["acceptance_criteria"] == reviewed_criteria
     criterion = reviewed_criteria["gate_preserving_reuse"]
-    assert "required by the request, accepted responsibilities, or applicable maturity" in criterion
+    assert (
+        "required by the request, accepted responsibilities, or applicable maturity"
+        in criterion
+    )
     assert "cannot bypass those gates" in criterion
     assert "rejoin the required gate with its identity and version scope" in criterion
-    assert "Prototype memory or reuse alone does not require a new approval or version gate" in criterion
+    assert (
+        "Prototype memory or reuse alone does not require a new approval or version gate"
+        in criterion
+    )
     if maturity == "prototype":
         assert "retrieval_and_reuse_trust" not in reviewed_criteria
     else:
         trust = reviewed_criteria["retrieval_and_reuse_trust"]
-        for obligation in ("entailment", "identity, version, and provenance", "invalidation"):
+        for obligation in (
+            "entailment",
+            "identity, version, and provenance",
+            "invalidation",
+        ):
             assert obligation in trust
 
 
