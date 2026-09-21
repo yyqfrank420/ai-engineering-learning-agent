@@ -18,6 +18,7 @@ from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_REVIEW_STANDARD,
     staged_review_requirements,
 )
 from agent.staged_graph_contract import (
@@ -35,9 +36,9 @@ from config import settings
 
 from agent.stream_utils import stream_structured_llm
 
-_EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v14"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v11"
+_EFFORT = "low"
+_COMPONENT_PROMPT_VERSION = "staged_components_v15"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v12"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -910,8 +911,10 @@ def _attempt_prompt(
             connection_format
             + "Use source_index and target_index from accepted_components. "
             "Accepted component types are authoritative. Accepted responsibilities, assumptions, "
-            "and capabilities are authoritative. Observation-only monitoring may terminate at a "
-            "durable telemetry/log sink. "
+            "and capabilities are authoritative. A durable telemetry/log sink completes "
+            "observation-only responsibilities. When an accepted responsibility owns an "
+            "action, connect its trigger to the execution path; storing a recommendation "
+            "does not execute that action. "
             "Connect every primary_flow_member from is_root through directed runtime, control, "
             "feedback, or deployment edges, including paths through non-primary supporting "
             "components. Primary membership selects the walkthrough and does not restrict transit. "
@@ -920,6 +923,8 @@ def _attempt_prompt(
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "
             "or duplicate source, target, and label contracts. "
             "For conditional outcomes, describe the action each outcome triggers. "
+            "For example: 'Committed: finish; absent: retry same key after checks; "
+            "unknown: bounded escalation'. Status names alone do not describe the action. "
             "Compatible outcomes may share one response contract on an existing edge. "
             "Do not emit nodes, components, composition, IDs, technology, layout, "
             f"publication, or permissions. Use these integer codes: {codebook}."
@@ -930,6 +935,15 @@ def _attempt_prompt(
         + " The acceptance_criteria are the complete blocking review requirements for this "
         "stage. Satisfy them in the first candidate; requirements for other stages do not "
         "grant authority to change this stage's scope."
+        + " "
+        + STAGED_REVIEW_STANDARD
+        + " Use the smallest coherent graph that covers the requested behavior. Limits "
+        "are ceilings, not targets. Keep compatible internal operations together and "
+        "omit optional subsystems the user did not request. Use complete clauses, aiming "
+        "below 160 characters per responsibility and 80 per connection label; rewrite "
+        "instead of cutting a word or outcome to fit the schema limit. Before emitting records, "
+        "check that every requested behavior has an owner and every cross-component "
+        "invocation has a trigger and any required return contract."
         + edit_rule
         + correction_requirements
         + correction_rule

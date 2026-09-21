@@ -1,0 +1,87 @@
+# Graph latency and first-attempt quality
+
+The product target is a first useful graph just over one minute on average,
+with high first-attempt review acceptance. Completion latency remains a separate
+measure. A component map, a connected graph, and a saved approved graph are
+different milestones and must be reported separately.
+
+## Baseline
+
+Staging run `35647919042`, source `ac674eb`, generated 20 components and 83
+directed edges without correction. Its first component map appeared at 117.6
+seconds; the complete turn took 381.1 seconds. Component generation took 108.3
+seconds, component review 24.3 seconds, connection generation 174.2 seconds,
+connection review 30.4 seconds, and explanation 39.5 seconds. Both staged
+reviews passed on their first attempts. Independent inspection still found
+missing event-change input and incomplete release transitions for one target.
+
+This is one complex production-depth case. It does not establish an average,
+a first-pass rate, or the performance of ordinary learning questions.
+
+## Evidence informing the changes
+
+- [Kimi's reasoning-effort documentation](https://platform.kimi.ai/docs/guide/use-reasoning-effort)
+  supports `low`, `high`, and `max`. The
+  [K3 guide](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) recommends
+  `low` when reasoning takes too long. Our staged author explicitly uses `high`;
+  it does not accidentally fall back to the provider's `max` default.
+- [OpenAI's latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
+  prioritizes generated tokens and serial requests. Input trimming is usually
+  a smaller speed improvement. Keep structured records compact and use code
+  for deterministic assembly.
+- [Anthropic's workflow guidance](https://www.anthropic.com/engineering/building-effective-agents)
+  favors simple workflows and treats extra model calls as a latency and cost
+  tradeoff. Parallelism applies only when tasks have independent inputs.
+- [Anthropic's evaluation guidance](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+  distinguishes task outcomes, trials, and graders. Repeated trials and
+  inspection of retained traces are needed to judge model variability.
+
+These sources motivate experiments. They do not prove the product meets its
+target or that reducing reasoning effort preserves quality.
+
+## Experiment rules
+
+Keep deterministic schema, mutation, rendering, persistence, explicit-request,
+and safety checks. Naming preferences and optional implementation detail do
+not withhold an otherwise usable answer. Authoring and review share that
+standard so generation does not have to guess what the reviewer will require.
+
+Screen lower authoring effort with one new candidate per stage and the normal
+reviewer. Stop on failure, record it, and inspect the cause before spending on
+another call. Do not use repairs in the first-attempt acceptance numerator.
+Retain exact prompts, schemas, outputs, source hashes, timing, and complete cost
+telemetry. Reuse existing captured inputs before running a fresh browser journey.
+
+A screen against an older captured request with updated prompts is a directional
+comparison, not a controlled A/B test. Small samples must show their denominator.
+Report mean latency only for completed comparable trials; list timeouts and
+failures separately so excluding them cannot hide poor reliability.
+
+No new service, model provider, or orchestration layer is needed for the first
+experiment. Do not reduce output limits solely to force speed: truncation can
+create another paid attempt and lower first-attempt quality.
+
+## Local screening results on September 21
+
+| Screen | Components | Component review | Connections | Connection review | Outcome | Estimated cost |
+| --- | ---: | ---: | ---: | ---: | --- | ---: |
+| Low effort, original source context | 27.1s | 12.8s | 51.2s | 30.9s | Rejected | $0.143563 |
+| Low effort, concise ownership and source-only context | 33.2s | 12.7s | 40.1s | 44.3s | Approved | $0.157100 |
+
+Each screen made four calls and no repairs. The first produced 11 components and
+40 edges; its compensation recommendation stopped at storage without reaching
+approval or execution. Some descriptions ended mid-word at schema limits.
+The second produced 14 components and 64 edges, with complete descriptions and
+an execution path for compensation. Its component map was ready at 34.6 seconds,
+connected candidate at 87.4 seconds, and final review at 131.6 seconds, including
+1.4 seconds of local setup. These timings exclude browser rendering and synthesis.
+
+The second review also claimed some mechanisms that the graph did not explicitly
+state. The pending release adds concise ownership guidance for writer deduplication,
+stream backpressure and ordering, an example of outcome actions, and a requirement
+that review reasons acknowledge unspecified detail. Those final prompt adjustments
+need the fresh cloud check; the local approval does not validate them.
+
+The proposed default is low authoring effort with the existing reviewer model,
+review effort, schemas, and correction limits. These two screening trials do not
+establish a high first-pass rate. Their combined estimated cost was $0.300663.

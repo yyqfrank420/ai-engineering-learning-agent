@@ -987,7 +987,12 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             edge_limit=edge_capacity,
         )
 
-    architecture_context = format_evidence_bundle(state.get("evidence_bundle") or {})
+    # Staged prompts own maturity rules and do not emit evidence_ref fields.
+    architecture_context = format_evidence_bundle(
+        state.get("evidence_bundle") or {},
+        include_checklist=False,
+        include_reference_instructions=False,
+    )
 
     upstream_fingerprint = _fingerprint(
         {
@@ -1401,7 +1406,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             if not rendered.get("graph_render_admitted"):
                 return await _failed(rendered, "staged_connection_render_rejected")
             preview_count += 1
-            evidence = copy.deepcopy(state.get("evidence_bundle") or {})
+            evidence: dict[str, Any] = {"architecture_context": architecture_context}
             evidence["candidate_components"] = [
                 {
                     "id": component["server_id"],

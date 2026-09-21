@@ -3,7 +3,9 @@ import json
 import pytest
 
 from agent.architecture_rubric import (
+    RUBRIC_CRITERIA,
     STAGED_PRODUCTION_REQUIREMENTS,
+    STAGED_REVIEW_STANDARD,
     staged_review_requirements,
 )
 from agent.nodes import staged_graph_gate as gate
@@ -82,10 +84,51 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     )
 
     assert generated_criteria == reviewed_criteria
+    assert STAGED_REVIEW_STANDARD in generated_prompt
+    assert STAGED_REVIEW_STANDARD in gate._GATE_SYSTEM
     assert generated_criteria == staged_review_requirements("components", maturity)
     assert generated_criteria["capability_classification"] != (
         _PREVIOUS_CAPABILITY_CRITERION
     )
+    assert {"domain_specificity", "succinctness"}.isdisjoint(generated_criteria)
+    assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= set(
+        generated_criteria
+    )
+    schema = gate._response_schema(rule_codes=tuple(reviewed_criteria))
+    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
+        "enum"
+    ]
+    assert {"domain_specificity", "succinctness"}.isdisjoint(codes)
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_staged_presentation_policy_invalidates_previous_component_review(
+    monkeypatch, maturity
+):
+    current_identity = gate.review_identity("components", maturity)
+
+    def previous_requirements(stage, depth, guarantees=()):
+        requirements = staged_review_requirements(stage, depth, guarantees)
+        if stage == "components":
+            for code in ("domain_specificity", "succinctness"):
+                requirements[code] = RUBRIC_CRITERIA[code][1]
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+
+    assert gate.review_identity("components", maturity) != current_identity
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_staged_presentation_policy_preserves_graph_correctness_rules(maturity):
+    requirements = staged_review_requirements("connections", maturity)
+
+    assert {
+        "runtime_completeness",
+        "edge_semantics",
+        "safe_action_boundary",
+        "gate_preserving_reuse",
+    } <= set(requirements)
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -145,13 +188,21 @@ def test_production_contracts_allow_internal_ownership_without_extra_graph_edges
     for code in ("streaming_integrity", "state_effect_reconciliation"):
         assert (
             STAGED_PRODUCTION_REQUIREMENTS[code]
-            in component_requirements["selected_depth"]
+            not in component_requirements["selected_depth"]
         )
+        assert requirements[code] == STAGED_PRODUCTION_REQUIREMENTS[code]
+    for ownership in (
+        "durable operation identity",
+        "reconciliation",
+        "late data",
+        "schema compatibility",
+    ):
+        assert ownership in component_requirements["selected_depth"]
         assert (
-            STAGED_PRODUCTION_REQUIREMENTS[code]
-            not in (
-                staged_review_requirements("components", "prototype")["selected_depth"]
-            )
+            ownership
+            not in staged_review_requirements("components", "prototype")[
+                "selected_depth"
+            ]
         )
     assert "does not need a separate edge" in requirements["streaming_integrity"]
     assert "streaming_integrity" not in staged_review_requirements(

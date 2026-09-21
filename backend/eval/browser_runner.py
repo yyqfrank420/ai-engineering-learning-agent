@@ -800,6 +800,78 @@ async def _graph_dom_state(
     }
 
 
+def _graph_turn_metrics(
+    received: list[dict[str, Any]],
+    *,
+    turn_started_at: float,
+    previous_graph_versions: set[str],
+) -> dict[str, Any]:
+    """Distinguish a component preview, connected draft, and new durable graph."""
+    metrics: dict[str, Any] = {
+        "connected_graph_output_latency_ms": None,
+        "approved_graph_output_latency_ms": None,
+        "first_component_review_pass": None,
+        "first_connection_review_pass": None,
+    }
+    for frame in received:
+        event = frame["message"]
+        capture = event.get("review_capture")
+        if isinstance(capture, dict) and capture.get("attempt") == 1:
+            field = {
+                "components": "first_component_review_pass",
+                "connections": "first_connection_review_pass",
+            }.get(capture.get("stage"))
+            result = capture.get("result")
+            if field and metrics[field] is None and isinstance(result, dict):
+                approved = result.get("approved")
+                if isinstance(approved, bool):
+                    metrics[field] = approved
+        if event.get("type") not in {"graph_preview", "graph_data"}:
+            continue
+        graph = event.get("data")
+        if not isinstance(graph, dict):
+            continue
+        version = graph.get("version")
+        nodes = graph.get("nodes")
+        if (
+            not isinstance(version, str)
+            or not version
+            or version in previous_graph_versions
+            or not isinstance(nodes, list)
+            or not nodes
+        ):
+            continue
+        elapsed_ms = max(0, int((frame["at"] - turn_started_at) * 1000))
+        node_ids = {
+            node["id"]
+            for node in nodes
+            if isinstance(node, dict) and isinstance(node.get("id"), str)
+        }
+        edges = graph.get("edges")
+        if (
+            metrics["connected_graph_output_latency_ms"] is None
+            and isinstance(edges, list)
+            and any(
+                isinstance(edge, dict)
+                and isinstance(edge.get("source"), str)
+                and isinstance(edge.get("target"), str)
+                and edge["source"] in node_ids
+                and edge["target"] in node_ids
+                and edge["source"] != edge["target"]
+                for edge in edges
+            )
+        ):
+            metrics["connected_graph_output_latency_ms"] = elapsed_ms
+        # graph_data also restores prior versions after rejection or cancellation.
+        # Only a new version measures approval of work performed during this turn.
+        if (
+            event["type"] == "graph_data"
+            and metrics["approved_graph_output_latency_ms"] is None
+        ):
+            metrics["approved_graph_output_latency_ms"] = elapsed_ms
+    return metrics
+
+
 async def _send_case_steps(
     page: Page,
     case: EvaluationCase,
@@ -908,6 +980,11 @@ async def _send_case_steps(
                             else None
                         ),
                         "graph_output_latency_ms": graph_output_latency_ms,
+                        **_graph_turn_metrics(
+                            received,
+                            turn_started_at=turn_started_at,
+                            previous_graph_versions=seen_graph_versions,
+                        ),
                         "client_request_id": (
                             sent_start["message"].get("client_request_id")
                             if sent_start
@@ -2444,9 +2521,10 @@ def _nearest_rank_percentile(values: list[int], percentile: int) -> int | None:
     return ordered[rank - 1]
 
 
-def _latency_metric(values: list[int]) -> dict[str, int | None]:
+def _latency_metric(values: list[int]) -> dict[str, int | float | None]:
     return {
         "sample_count": len(values),
+        "mean_ms": sum(values) / len(values) if values else None,
         "p50_ms": _nearest_rank_percentile(values, 50),
         "p95_ms": _nearest_rank_percentile(values, 95),
     }
@@ -2518,6 +2596,35 @@ def _latency_summary(
         "first_event": _latency_metric(first_event_samples),
         "first_token": _latency_metric(first_token_samples),
     }
+    for name in ("graph_output", "connected_graph_output", "approved_graph_output"):
+        metrics[name] = _latency_metric(
+            [
+                sample
+                for turn in turns
+                if (sample := _numeric_latency(turn.get(f"{name}_latency_ms")))
+                is not None
+            ]
+        )
+    review_turns = [
+        turn
+        for result in results
+        for attempt in result.get("attempts") or [result]
+        for turn in attempt.get("turns") or []
+        if isinstance(turn, dict)
+    ]
+    first_review = {}
+    for stage in ("component", "connection"):
+        outcomes = [
+            outcome
+            for turn in review_turns
+            if isinstance(outcome := turn.get(f"first_{stage}_review_pass"), bool)
+        ]
+        passed_count = sum(outcome is True for outcome in outcomes)
+        first_review[f"{stage}s"] = {
+            "reviewed_count": len(outcomes),
+            "passed_count": passed_count,
+            "pass_rate": passed_count / len(outcomes) if outcomes else None,
+        }
     observed = metrics["case_end_to_end"]
     violations = [
         f"{name} observed {observed[name]}ms exceeds {threshold}ms"
@@ -2537,6 +2644,7 @@ def _latency_summary(
         "eligible_case_count": len(eligible_results),
         "excluded_infrastructure_case_count": len(results) - len(eligible_results),
         "metrics": metrics,
+        "first_review": first_review,
         "thresholds_ms": thresholds,
         "mode": "blocking" if blocking else "report-only",
         "baseline_min_runs": baseline_min_runs,

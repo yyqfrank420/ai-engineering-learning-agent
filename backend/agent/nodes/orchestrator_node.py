@@ -958,7 +958,14 @@ def _format_graph_context(graph_data: dict) -> str:
         flow = edge.get("flow", "").strip()
         sync = edge.get("sync", "").strip()
         details = " | ".join(
-            part for part in (flow, sync, technology, description[:180]) if part
+            part
+            for part in (
+                flow,
+                sync,
+                technology,
+                description[:180] if description != label else "",
+            )
+            if part
         )
         edge_lines.append(
             f"- {source} -> {target}: {label}" + (f" | {details}" if details else "")

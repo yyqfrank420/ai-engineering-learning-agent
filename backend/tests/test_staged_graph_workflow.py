@@ -230,7 +230,10 @@ def _rejected_gate(*, terminal: bool = False) -> dict:
         "approved": False,
         "terminal": terminal,
         "findings": [
-            {"rule_code": "domain_specificity", "reason": "Missing domain ownership."}
+            {
+                "rule_code": "objective_fidelity",
+                "reason": "The requested workflow has no owner.",
+            }
         ],
         "proofs": [],
         "diagnostics": [],
@@ -388,7 +391,11 @@ async def test_component_gate_retries_at_most_twice_and_renders_each_candidate(
     assert component_inputs[1]["attempt"] == 1
     assert component_inputs[1]["prior_prompt_fingerprint"] == "component-1"
     assert component_inputs[0]["write_set"] == component_inputs[1]["write_set"]
-    architecture_context = workflow.format_evidence_bundle(evidence_bundle)
+    architecture_context = workflow.format_evidence_bundle(
+        evidence_bundle,
+        include_checklist=False,
+        include_reference_instructions=False,
+    )
     assert component_inputs[0]["architecture_context"] == architecture_context
     assert component_inputs[1]["architecture_context"] == architecture_context
     assert gate_inputs[0]["evidence_bundle"]["architecture_context"] == (
@@ -403,6 +410,77 @@ async def test_component_gate_retries_at_most_twice_and_renders_each_candidate(
         result["graph_operation"]["failure_code"]
         == "staged_component_attempts_exhausted"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("evidence_quality", ["strong", "weak"])
+async def test_staged_author_and_reviewers_share_source_only_context(
+    monkeypatch, evidence_quality
+):
+    evidence_bundle = {
+        "evidence_quality": evidence_quality,
+        "book_evidence": [
+            None,
+            {"text": ""},
+            {
+                "chapter": 10,
+                "page_number": 473,
+                "text": "Bound payment retries and preserve the idempotency key.",
+            },
+        ],
+        "research_context": "[Payments](https://example.com/payments): Audit writes.",
+    }
+    source_bundle = copy.deepcopy(evidence_bundle)
+    inputs: dict[str, dict] = {}
+    _install_success_boundaries(monkeypatch)
+
+    async def components(**kwargs):
+        inputs["author"] = kwargs
+        return {"wire": _components_wire(), "prompt_fingerprint": "components"}
+
+    async def component_gate(**kwargs):
+        inputs["components"] = kwargs
+        return _approved_gate()
+
+    async def connection_gate(**kwargs):
+        inputs["connections"] = kwargs
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+
+    await workflow.run_staged_graph_pipeline(_state(evidence_bundle=evidence_bundle))
+
+    context = inputs["author"]["architecture_context"]
+    legacy_context = workflow.format_evidence_bundle(evidence_bundle)
+    legacy_sources = legacy_context.split("Source records:\n", 1)[1].rsplit(
+        "\n\nFor book or web evidence,", 1
+    )[0]
+    assert context == f"Source records:\n{legacy_sources}"
+    assert "Bound payment retries and preserve the idempotency key." in context
+    assert "Audit writes." in context
+    assert "Stable review frame:" not in context
+    assert "evidence_ref" not in context
+    assert inputs["components"]["evidence_bundle"]["architecture_context"] == context
+    connection_evidence = inputs["connections"]["evidence_bundle"]
+    assert connection_evidence["architecture_context"] == context
+    assert set(connection_evidence) == {
+        "architecture_context",
+        "candidate_components",
+        "candidate_context",
+    }
+    assert (
+        connection_evidence["candidate_context"]
+        == inputs["components"]["evidence_bundle"]["candidate_context"]
+    )
+    assert [
+        component["id"] for component in connection_evidence["candidate_components"]
+    ] == [
+        component["server_id"]
+        for component in inputs["components"]["candidate_records"]
+    ]
+    assert evidence_bundle == source_bundle
 
 
 @pytest.mark.asyncio
@@ -476,9 +554,9 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
 
     gate_findings = [
         {
-            "rule_code": "domain_specificity",
+            "rule_code": "objective_fidelity",
             "record_indexes": [0, 1, 0, -1, 9, True, "2"],
-            "reason": "Missing domain ownership.",
+            "reason": "The requested workflow has no owner.",
         },
         {"rule_code": "brief_coverage", "record_indexes": "secret-raw-index"},
         {"rule_code": "invented_rule", "record_indexes": [0]},
@@ -531,7 +609,7 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
     assert len(diagnostic["candidate_fingerprint"]) == 64
     assert diagnostic["findings"] == [
         {
-            "rule_code": "domain_specificity",
+            "rule_code": "objective_fidelity",
             "record_paths": ["components.0", "components.1"],
         },
         {"rule_code": "brief_coverage", "record_paths": ["components"]},
@@ -549,7 +627,7 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
     assert [event["status"] for event in progress_events] == ["retry", "rejected"]
     assert all(event["phase"] == "review" for event in progress_events)
     for event in events:
-        assert "Missing domain ownership." not in repr(event)
+        assert "The requested workflow has no owner." not in repr(event)
         assert "secret-" not in repr(event)
         assert "record_indexes" not in repr(event)
     assert analytics[0]["properties"] == diagnostic
@@ -1369,7 +1447,7 @@ async def test_gate_diagnostic_caps_findings_and_redacts_from_non_internal_users
 
     def _too_many_findings() -> list[dict]:
         return [
-            {"rule_code": "domain_specificity", "record_indexes": [index % 2]}
+            {"rule_code": "objective_fidelity", "record_indexes": [index % 2]}
             for index in range(25)
         ]
 
