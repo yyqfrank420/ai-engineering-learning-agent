@@ -218,5 +218,5 @@ The distinction is orchestration versus concurrency, not framework versus no fra
 - frontend transport: `frontend/src/services/agentTransport.ts`
 - frontend stream state: `frontend/src/hooks/useAgentStream.ts`
 
-The older spec in `docs/superpowers/specs/2026-03-31-ai-study-agent-design.md` is design history,
+The older spec in `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is design history,
 not the current runtime contract.

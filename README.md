@@ -1,4 +1,4 @@
-# AI Engineering Study Agent
+# AI Engineering Learning Agent
 
 Production-oriented, graph-guided study companion for *AI Engineering* by Chip Huyen.
 
@@ -163,4 +163,4 @@ Maintained by [Frank Yang](https://github.com/yyqfrank420).
 
 ## Notes
 
-- `docs/superpowers/specs/2026-03-31-ai-study-agent-design.md` is a historical design snapshot, not the current source of truth.
+- `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is a historical design snapshot, not the current source of truth.

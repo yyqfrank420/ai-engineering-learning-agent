@@ -1,7 +1,7 @@
 resource "google_billing_budget" "monthly" {
   count           = var.billing_account_id != "" && var.monthly_budget_amount > 0 ? 1 : 0
   billing_account = var.billing_account_id
-  display_name    = "ai-study-agent-monthly-budget"
+  display_name    = "ai-learning-agent-monthly-budget"
 
   budget_filter {
     projects = ["projects/${var.project_id}"]
