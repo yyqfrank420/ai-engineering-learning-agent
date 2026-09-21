@@ -105,7 +105,7 @@ def account_application_cost(
     browser_results: list[dict[str, Any]],
     telemetry: list[dict[str, Any]],
 ) -> dict[str, Any]:
-    """Attribute every priced provider attempt to a browser case and operation."""
+    """Price normalized eval telemetry with top-level token counters and attempts."""
     case_order = [str(result.get("id") or "unknown") for result in browser_results]
     case_by_thread: dict[str, str] = {}
     errors: list[str] = []

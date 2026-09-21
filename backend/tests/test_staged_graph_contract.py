@@ -177,9 +177,16 @@ def test_existing_group_id_is_retained():
     assert groups[0]["id"] == "runtime-zone"
 
 
-def test_primary_members_must_be_reachable_over_runtime_or_control_edges():
+@pytest.mark.parametrize("failure", ["missing", "reversed", "disconnected"])
+def test_primary_members_require_a_directed_path(failure):
     plan = _plan()
-    plan["connections"][1]["flow"] = "feedback"
+    if failure == "missing":
+        plan["connections"].pop()
+    elif failure == "reversed":
+        edge = plan["connections"][1]
+        edge["source_id"], edge["target_id"] = edge["target_id"], edge["source_id"]
+    else:
+        plan["connections"] = []
     with pytest.raises(GraphContractError, match="must be reachable"):
         validate_staged_graph_build(assign_server_ids(plan))
 
@@ -209,14 +216,20 @@ def test_nonprimary_transit_keeps_walkthrough_steps_contiguous_and_parallel():
     assert project_graph_data(reconstruct_staged_graph_build(graph)) == graph
 
 
-@pytest.mark.parametrize("flow", ["feedback", "deployment"])
-def test_nonprimary_transit_cannot_use_nonruntime_contracts(flow):
+@pytest.mark.parametrize("flow", ["runtime", "control", "feedback", "deployment"])
+def test_walkthrough_can_cross_every_directed_flow_class(flow):
     plan = _plan()
     plan["components"][1]["primary_flow_member"] = False
     plan["connections"][1]["flow"] = flow
+    before = copy.deepcopy(plan)
 
-    with pytest.raises(GraphContractError, match="must be reachable"):
-        project_graph_data(plan)
+    graph = project_graph_data(plan)
+
+    assert [step["nodes"] for step in graph["sequence"]] == [["n1"], ["n3"]]
+    assert len(graph["nodes"]) == 3
+    assert graph["edges"][1]["flow"] == flow
+    assert plan == before
+    assert project_graph_data(reconstruct_staged_graph_build(graph)) == graph
 
 
 def test_component_label_and_type_pairs_must_be_unique():

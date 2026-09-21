@@ -36,8 +36,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v12"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v9"
+_COMPONENT_PROMPT_VERSION = "staged_components_v13"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v10"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -831,10 +831,11 @@ def _attempt_prompt(
             "Accepted component types are authoritative. Accepted responsibilities, assumptions, "
             "and capabilities are authoritative. Observation-only monitoring may terminate at a "
             "durable telemetry/log sink. "
-            "Connect every primary_flow_member from is_root through directed runtime or control "
-            "edges, including paths through non-primary supporting components. Primary membership "
-            "selects the walkthrough and does not restrict transit. Feedback and deployment "
-            "edges cannot establish primary reachability. Represent both directions of a synchronous request-response. A read, fetch, "
+            "Connect every primary_flow_member from is_root through directed runtime, control, "
+            "feedback, or deployment edges, including paths through non-primary supporting "
+            "components. Primary membership selects the walkthrough and does not restrict transit. "
+            "Walkthrough order does not establish execution order or satisfy required runtime "
+            "and control behavior. Represent both directions of a synchronous request-response. A read, fetch, "
             "lookup, load, or query request that expects returned data needs a distinct reverse "
             "response edge. Route each supporting branch to a rejoin or observable outcome. Do "
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "

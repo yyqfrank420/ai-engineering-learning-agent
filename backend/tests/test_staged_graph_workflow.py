@@ -891,14 +891,17 @@ async def test_real_staged_gates_forward_workflow_timeout_to_provider(monkeypatc
         provider_timeouts.append(kwargs["timeout_seconds"])
         schema = kwargs["response_schema"]["properties"]
         payload = {
-            "rule_reviews": {
-                rule: {
+            "rule_reviews": [
+                {
+                    "rule_code": rule,
                     "satisfied": True,
                     "reason": "The candidate satisfies this criterion.",
                     "record_indexes": [],
                 }
-                for rule in schema["rule_reviews"]["properties"]
-            },
+                for rule in schema["rule_reviews"]["items"]["properties"]["rule_code"][
+                    "enum"
+                ]
+            ],
         }
         return StructuredLLMResponse(
             text=json.dumps(payload),

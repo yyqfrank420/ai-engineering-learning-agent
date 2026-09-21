@@ -18,6 +18,14 @@ from agent.stream_utils import StructuredLLMResponse
 
 
 def _response(payload, *, finish_reason="end_turn"):
+    if isinstance(payload.get("rule_reviews"), dict):
+        payload = {
+            **payload,
+            "rule_reviews": [
+                {"rule_code": code, **row} if isinstance(row, dict) else row
+                for code, row in payload["rule_reviews"].items()
+            ],
+        }
     return StructuredLLMResponse(
         text=json.dumps(payload),
         finish_reason=finish_reason,
@@ -54,7 +62,9 @@ def _stub_response(monkeypatch, payload):
         if "rule_reviews" in payload:
             completed = payload
         else:
-            rules = kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
+            rules = kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
+                "properties"
+            ]["rule_code"]["enum"]
             completed = _rule_reviews(rules, payload["findings"])
             completed.update(
                 {
@@ -151,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v9"
+        "staged_component_gate_v10"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -431,7 +441,9 @@ def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["required"]
+    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
+        "enum"
+    ]
     assert result["approved"] is True
     assert "production_proofs" not in schema["properties"]
     assert "topology_enforced_guarantees" not in codes
@@ -454,7 +466,9 @@ def test_connection_schema_keeps_runtime_completeness(monkeypatch, maturity):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["required"]
+    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
+        "enum"
+    ]
 
     assert result["approved"] is True
     assert "runtime_completeness" in codes
@@ -492,7 +506,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v8"
+        == "staged_connection_gate_v9"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -523,7 +537,9 @@ def test_production_connection_schema_preserves_hard_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["required"]
+    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
+        "enum"
+    ]
 
     assert result["approved"] is True
     assert "logical_flow" in codes
@@ -575,7 +591,9 @@ def test_successful_review_retains_identity_and_complete_rule_audit(monkeypatch,
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
     assert (
         result["checked_rules"]
-        == calls[0]["response_schema"]["properties"]["rule_reviews"]["required"]
+        == calls[0]["response_schema"]["properties"]["rule_reviews"]["items"][
+            "properties"
+        ]["rule_code"]["enum"]
     )
     assert len(result["review_identity"]) == 64
 
@@ -1034,7 +1052,9 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
         if failure == "provider":
             raise RuntimeError("private provider error")
         payload = _rule_reviews(
-            kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
+            kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
+                "properties"
+            ]["rule_code"]["enum"]
         )
         if failure == "shape":
             payload["unexpected"] = "private provider text"
@@ -1300,8 +1320,8 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
 @pytest.mark.parametrize(
     ("stage", "version_field", "previous_version"),
     [
-        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v8"),
-        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v7"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v9"),
+        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v8"),
     ],
 )
 def test_per_rule_review_version_invalidates_prior_policy_identity(
@@ -1381,21 +1401,44 @@ def test_numbered_prompt_uses_server_indexes_without_mutating_records(monkeypatc
     assert records == [{"id": "n99", "record_index": 450}, {"id": "n2"}]
 
 
-def test_provider_schema_requires_complete_strict_rule_objects():
-    schema = gate._response_schema(rule_codes=("rule_a", "rule_b"))
-    assert schema["required"] == ["rule_reviews"]
-    assert schema["additionalProperties"] is False
-    reviews = schema["properties"]["rule_reviews"]
-    assert reviews["required"] == ["rule_a", "rule_b"]
-    assert reviews["additionalProperties"] is False
-    for row in reviews["properties"].values():
-        assert set(row["required"]) == {"satisfied", "reason", "record_indexes"}
+def test_provider_schema_uses_one_strict_uniform_item_for_any_rule_count():
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    items = []
+    for count in (1, 7, 13):
+        codes = tuple(f"rule_{index}" for index in range(count))
+        schema = gate._response_schema(rule_codes=codes)
+        assert schema["required"] == ["rule_reviews"]
+        assert schema["additionalProperties"] is False
+        reviews = schema["properties"]["rule_reviews"]
+        assert reviews["type"] == "array"
+        assert reviews["minItems"] == reviews["maxItems"] == count
+        row = reviews["items"]
+        assert set(row["required"]) == {
+            "rule_code",
+            "satisfied",
+            "reason",
+            "record_indexes",
+        }
         assert row["additionalProperties"] is False
-        assert row["properties"]["satisfied"]["type"] == "boolean"
+        assert row["properties"]["rule_code"]["enum"] == list(codes)
         assert row["properties"]["reason"]["maxLength"] == gate._MAX_REASON_CHARS
         assert (
             row["properties"]["record_indexes"]["maxItems"] == gate._MAX_RECORD_INDEXES
         )
+        sanitized = _anthropic_response_schema(schema)
+        sanitized_reviews = sanitized["properties"]["rule_reviews"]
+        assert (
+            "minItems" not in sanitized_reviews and "maxItems" not in sanitized_reviews
+        )
+        sanitized_item = sanitized_reviews["items"]
+        assert sanitized_item["properties"]["rule_code"]["enum"] == list(codes)
+        assert "maxLength" not in sanitized_item["properties"]["reason"]
+        assert sanitized_item["additionalProperties"] is False
+        item_without_codes = json.loads(json.dumps(sanitized_item))
+        item_without_codes["properties"]["rule_code"].pop("enum")
+        items.append(item_without_codes)
+    assert items[0] == items[1] == items[2]
 
 
 def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkeypatch):
@@ -1434,3 +1477,72 @@ def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkey
     assert capture["result"]["rule_reviews"] == payload["rule_reviews"]
     capture["result"]["rule_reviews"]["objective_fidelity"]["record_indexes"].append(99)
     assert result["rule_reviews"]["objective_fidelity"]["record_indexes"] == [0]
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "missing",
+        "extra",
+        "duplicate",
+        "unknown",
+        "non_string",
+        "missing_code",
+        "null_row",
+    ],
+)
+def test_rule_review_array_requires_every_rule_exactly_once(malformation):
+    rules = ("domain_specificity", "objective_fidelity")
+    rows = [
+        {
+            "rule_code": code,
+            "satisfied": True,
+            "reason": "The owner matches the request.",
+            "record_indexes": [],
+        }
+        for code in rules
+    ]
+    if malformation == "missing":
+        rows.pop()
+    elif malformation == "extra":
+        rows.append(dict(rows[0]))
+    elif malformation == "duplicate":
+        rows[1]["rule_code"] = rules[0]
+    elif malformation == "unknown":
+        rows[1]["rule_code"] = "invented"
+    elif malformation == "non_string":
+        rows[1]["rule_code"] = [rules[1]]
+    elif malformation == "missing_code":
+        rows[1].pop("rule_code")
+    else:
+        rows[1] = None
+    result = gate._review_result(
+        _response({"rule_reviews": rows}),
+        schema=gate._response_schema(rule_codes=rules),
+        rule_codes=rules,
+        records=[],
+    )
+    assert result["terminal"] is True
+    assert result["approved"] is False
+    assert result["findings"] == []
+    assert "rule_reviews" not in result
+
+
+def test_previous_keyed_provider_schema_is_rejected():
+    rules = ("domain_specificity",)
+    response = StructuredLLMResponse(
+        text=json.dumps(_rule_reviews(rules)),
+        finish_reason="end_turn",
+        input_tokens=1,
+        output_tokens=1,
+        provider="test",
+        model="test",
+    )
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(rule_codes=rules),
+        rule_codes=rules,
+        records=[],
+    )
+    assert result["terminal"] is True
+    assert result["approved"] is False

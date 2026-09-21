@@ -2,7 +2,10 @@ import json
 
 import pytest
 
-from agent.architecture_rubric import staged_review_requirements
+from agent.architecture_rubric import (
+    STAGED_PRODUCTION_REQUIREMENTS,
+    staged_review_requirements,
+)
 from agent.nodes import staged_graph_gate as gate
 from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import production_proofs_for_capabilities
@@ -130,6 +133,13 @@ def test_production_contracts_allow_internal_ownership_without_extra_graph_edges
     component_requirements = staged_review_requirements("components", "production")
     assert "required internal ordering" in component_requirements["selected_depth"]
     assert "connection generation cannot change" in component_requirements["selected_depth"]
+    assert (
+        STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+        in component_requirements["selected_depth"]
+    )
+    assert STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"] not in (
+        staged_review_requirements("components", "prototype")["selected_depth"]
+    )
     assert "does not need a separate edge" in requirements["streaming_integrity"]
     assert "streaming_integrity" not in staged_review_requirements(
         "connections", "prototype"

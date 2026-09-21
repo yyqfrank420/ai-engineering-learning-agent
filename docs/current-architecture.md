@@ -49,8 +49,8 @@ This is the current runtime contract for the production-quality demo.
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
    two candidates. A connection retry cannot reopen an accepted component layer.
    Primary membership selects the main walkthrough. Reachability traverses all accepted directed
-   runtime and control contracts, including non-primary transit components. Feedback and deployment
-   edges cannot establish reachability. The server groups selected nodes by shortest distance and
+   contracts, including feedback, deployment, and non-primary transit components. The server
+   groups selected nodes by shortest distance and
    numbers the emitted stages consecutively; this walkthrough does not claim causal execution order.
    Initial and corrected connections use the same structural checks. Control behavior is reviewed
    against accepted responsibilities.
@@ -58,8 +58,10 @@ This is the current runtime contract for the production-quality demo.
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
    gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
-   Each gate returns one result per applicable rule, with a short reason and explicit candidate
-   record indexes. The server derives approval and blocking findings from those results. Missing
+   Each gate returns an array with one result per applicable rule, a short reason, and explicit
+   candidate record indexes. One shared item schema avoids expanding the provider's compiled grammar
+   for every rule. The server requires every rule exactly once and derives approval and blocking
+   findings. Missing
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
@@ -67,6 +69,10 @@ This is the current runtime contract for the production-quality demo.
    boundaries; compatible internal operations belong in component responsibilities. Internal ordering
    is checked before those responsibilities freeze. Retryable internal writes retain idempotence and
    reconciliation requirements even when the design has no external business mutations.
+   Walkthrough reachability does not establish execution or authorization. Semantic review still
+   requires actual runtime/control contracts for invocation, approval, and execution; a feedback
+   or deployment connection cannot substitute for those behaviors. This lets offline evaluation
+   appear in a walkthrough without inventing an invocation or rewriting its evidence connections.
 9. The transport atomically persists graph data and its server-only contract before emitting
    authoritative `graph_data` and `done`. `auto` edits inherit stored maturity. A legacy graph with
    no stored contract defaults to prototype. A bounded edit that selects a different maturity

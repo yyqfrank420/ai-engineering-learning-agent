@@ -59,18 +59,6 @@ def test_retained_closed_loop_primary_reachability(connection_key):
             for edge in wire["edges"]
         ],
     }
-    if connection_key == "initial_connections":
-        assert len(wire["edges"]) == 28
-        with pytest.raises(
-            generation.StagedGenerationError, match="connection_wire_unreachable"
-        ):
-            generation._parse_connection_wire(
-                json.dumps(wire), accepted_components=accepted_components, edge_limit=30
-            )
-        with pytest.raises(contract.GraphContractError, match="must be reachable"):
-            contract.project_graph_data(build)
-        return
-
     assert (
         generation._parse_connection_wire(
             json.dumps(wire), accepted_components=accepted_components, edge_limit=30
@@ -79,7 +67,9 @@ def test_retained_closed_loop_primary_reachability(connection_key):
     )
     graph = contract.project_graph_data(build)
     assert len(graph["nodes"]) == 11
-    assert len(graph["edges"]) == 25
+    assert len(graph["edges"]) == (
+        28 if connection_key == "initial_connections" else 25
+    )
     assert [step["nodes"] for step in graph["sequence"]] == [
         ["n1"],
         ["n2"],
@@ -94,6 +84,92 @@ def test_retained_closed_loop_primary_reachability(connection_key):
         contract.project_graph_data(contract.reconstruct_staged_graph_build(graph))
         == graph
     )
+
+
+def test_retained_offline_evaluation_walkthrough_preserves_authored_graph():
+    fixture = json.loads(
+        (
+            Path(__file__).parent / "fixtures/staged_walkthrough_35640918048.json"
+        ).read_text()
+    )
+    candidate, wire = fixture["candidate"], fixture["connections"]
+    accepted_components = [
+        {
+            "index": index,
+            "is_root": index == candidate["root_index"],
+            "primary_flow_member": component["primary_flow_member"],
+        }
+        for index, component in enumerate(candidate["components"])
+    ]
+    assert (
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=accepted_components, edge_limit=180
+        )
+        == wire
+    )
+    build = contract.assign_server_ids(
+        {
+            **candidate,
+            "request_id": "retained-offline-evaluation",
+            "maturity": "production",
+            "components": [
+                {
+                    **component,
+                    "model_index": index,
+                    "type": generation.NODE_TYPE_CODES[component["type"]],
+                    "group_kind": generation.GROUP_KIND_CODES[component["group_kind"]],
+                }
+                for index, component in enumerate(candidate["components"])
+            ],
+            "connections": [
+                {
+                    "source_id": str(edge["source_index"]),
+                    "target_id": str(edge["target_index"]),
+                    "label": edge["label"],
+                    "flow": generation.FLOW_CODES[edge["flow"]],
+                    "sync": generation.SYNC_CODES[edge["sync"]],
+                }
+                for edge in wire["edges"]
+            ],
+        }
+    )
+    validated = contract.validate_staged_graph_build(build)
+    assert validated["components"] == build["components"]
+    assert validated["connections"] == build["connections"]
+    assert contract.component_fingerprint(validated) == contract.component_fingerprint(
+        build
+    )
+    assert contract.connection_fingerprint(
+        validated
+    ) == contract.connection_fingerprint(build)
+
+    graph = contract.project_graph_data(validated)
+    assert len(graph["nodes"]) == 18
+    assert len(graph["edges"]) == 56
+    assert graph["edges"][42]["source"] == "n12"
+    assert graph["edges"][42]["target"] == "n13"
+    assert graph["edges"][42]["flow"] == "feedback"
+    assert graph["edges"][43]["source"] == "n13"
+    assert graph["edges"][43]["target"] == "n15"
+    assert graph["edges"][43]["flow"] == "feedback"
+    assert {node for step in graph["sequence"] for node in step["nodes"]} == {
+        component["server_id"]
+        for component in build["components"]
+        if component["primary_flow_member"]
+    }
+    reconstructed = contract.reconstruct_staged_graph_build(
+        graph, {"capabilities": candidate["capabilities"]}
+    )
+    assert reconstructed["root_index"] == candidate["root_index"] == 0
+    assert reconstructed["components"] == build["components"]
+    assert reconstructed["connections"] == build["connections"]
+    assert contract.component_fingerprint(
+        reconstructed
+    ) == contract.component_fingerprint(build)
+    assert contract.connection_fingerprint(
+        reconstructed
+    ) == contract.connection_fingerprint(build)
+    assert contract.project_graph_data(reconstructed) == graph
 
 
 def _write_set() -> dict:
@@ -428,7 +504,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v9"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v10"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -593,7 +669,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v12"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v13"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1678,12 +1754,13 @@ async def test_component_generation_receives_root_selection_before_connections(
     [
         ([True, True], [(0, 1, 400), (1, 0, 400)], True),
         ([True, True], [(1, 0, 400)], False),
-        ([True, True], [(0, 1, 402), (1, 0, 400)], False),
+        ([True, True], [(0, 1, 402), (1, 0, 400)], True),
         ([True, False, True], [(0, 1, 400), (1, 2, 400)], True),
         ([True, False, True], [(0, 1, 401), (1, 2, 400)], True),
-        ([True, False, True], [(0, 1, 402), (1, 2, 400)], False),
-        ([True, False, True], [(0, 1, 400), (1, 2, 403)], False),
+        ([True, False, True], [(0, 1, 402), (1, 2, 400)], True),
+        ([True, False, True], [(0, 1, 400), (1, 2, 403)], True),
         ([True, False, True], [(1, 0, 400), (1, 2, 400)], False),
+        ([True, True], [], False),
     ],
     ids=[
         "pull-request-response",
@@ -1694,9 +1771,10 @@ async def test_component_generation_receives_root_selection_before_connections(
         "nonprimary-feedback-transit",
         "nonprimary-deployment-transit",
         "nonprimary-reversed-transit",
+        "disconnected",
     ],
 )
-def test_pull_root_requires_outward_primary_runtime_contract(
+def test_walkthrough_requires_outward_directed_contracts(
     primary_members, edge_contracts, accepted
 ):
     roles = [
