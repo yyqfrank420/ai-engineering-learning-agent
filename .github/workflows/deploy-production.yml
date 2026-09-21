@@ -1,72 +1,50 @@
 name: Deploy production
 
+# One-time frontend release runner. This workflow exists only on the operations
+# branch; source checkout and deployment metadata are pinned to the reviewed tree.
 on:
-  workflow_run:
-    # A manual override only publishes the immutable digest after verifying the
-    # original staging artifact, commit, and tree. It is therefore an equally
-    # valid trigger for the exact-digest production gate.
-    workflows: ["Live eval required", "Live eval manual override"]
-    types: [completed]
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
-
-env:
-  PROJECT_ID: project-c170fa55-f0d5-4d83-bfe
-  REGION: europe-west2
-  SERVICE: agent-backend
-  IMAGE: europe-west2-docker.pkg.dev/project-c170fa55-f0d5-4d83-bfe/agent-backend/agent-backend
-  VERCEL_CLI_VERSION: 50.42.0
 
 concurrency:
   group: production-deployment
   cancel-in-progress: false
 
+env:
+  SOURCE_COMMIT: 6990ff9a91dd6a32c060a0834bf17ba60411ddc2
+  SOURCE_TREE: 0e3fae183411133951680ee33b240e942e19ac9f
+  VERCEL_CLI_VERSION: 50.42.0
+  EXPECTED_API_URL: https://agent-backend-qfgkz5atda-nw.a.run.app
+
 jobs:
-  prepare:
-    name: Verify approved main tree
+  frontend:
+    name: Prepare reviewed frontend candidate
     runs-on: ubuntu-latest
-    # A branch named main in a fork is not a trusted production source.
-    if: >-
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.head_repository.full_name == github.repository &&
-      github.event.workflow_run.head_branch == 'main' &&
-      (github.event.workflow_run.event == 'push' || github.event.workflow_run.event == 'workflow_dispatch')
-    outputs:
-      ai-impact: ${{ steps.impact.outputs.ai-impact }}
-      tree-sha: ${{ steps.identity.outputs.tree-sha }}
-      commit-sha: ${{ steps.identity.outputs.commit-sha }}
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
-          fetch-depth: 2
-      - id: impact
-        run: ./scripts/ci impact --base HEAD^ --head HEAD --github-output
-      - id: identity
-        run: |
-          echo "tree-sha=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
-          echo "commit-sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-
-  backend:
-    name: Migrate, smoke, and promote approved digest
-    runs-on: ubuntu-latest
-    needs: prepare
-    if: needs.prepare.outputs.ai-impact == 'true'
-    timeout-minutes: 35
+    timeout-minutes: 25
     environment: production
-    permissions:
-      contents: read
-      id-token: write
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      VITE_IS_PRODUCTION: "true"
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ needs.prepare.outputs.commit-sha }}
+          ref: 6990ff9a91dd6a32c060a0834bf17ba60411ddc2
+          persist-credentials: false
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
+      - name: Verify exact source identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$SOURCE_COMMIT"
+          test "$(git rev-parse 'HEAD^{tree}')" = "$SOURCE_TREE"
+          git diff --exit-code
+          test -n "$VERCEL_TOKEN"
+          test -n "$VERCEL_ORG_ID"
+          test -n "$VERCEL_PROJECT_ID"
 
       - uses: actions/setup-node@v4
         with:
@@ -74,137 +52,84 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
 
-      - name: Install smoke dependencies
+      - name: Install pinned Vercel CLI
+        run: npm install --global "vercel@$VERCEL_CLI_VERSION" --no-audit --no-fund
+
+      - name: Prepare candidate without assigning production domains
+        working-directory: frontend
+        shell: bash
         run: |
-          pip install -r backend/requirements.txt -r backend/requirements-eval.txt
-          python -m playwright install --with-deps chromium
-          npm ci --prefix frontend --prefer-offline --no-audit --no-fund
+          set -euo pipefail
+          npm ci --prefer-offline --no-audit --no-fund
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          node --input-type=module <<'JS'
+          import { loadEnvFile } from 'node:process';
+          loadEnvFile('.vercel/.env.production.local');
+          for (const name of ['VITE_API_URL', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY']) {
+            if (!process.env[name]?.trim()) throw new Error(`Missing required production variable: ${name}`);
+          }
+          if (process.env.VITE_API_URL !== process.env.EXPECTED_API_URL) throw new Error('Production backend URL differs from the approved backend');
+          if (process.env.VITE_EVAL_AUTH_BOOTSTRAP && process.env.VITE_EVAL_AUTH_BOOTSTRAP !== 'false') throw new Error('Evaluation authentication bootstrap must be disabled in production');
+          JS
+          vercel build --prod --token="$VERCEL_TOKEN"
+          grep -RFl --include='*.js' "$EXPECTED_API_URL" .vercel/output/static > /dev/null
+          vercel deploy --prebuilt --prod --skip-domain --yes \
+            --meta "releaseCommit=$SOURCE_COMMIT" \
+            --meta "releaseTree=$SOURCE_TREE" \
+            --meta "githubCommitSha=$SOURCE_COMMIT" \
+            --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/frontend-candidate-url.txt"
 
-      - name: Resolve versioned graph pipeline mode
+      - name: Verify deployment identity and record public evidence
+        shell: bash
         run: |
-          pipeline_mode="$(PYTHONPATH=backend python -c 'from config import Settings; print(Settings.model_fields["graph_pipeline_mode"].default)')"
-          case "$pipeline_mode" in legacy|staged) ;; *) echo "Unsupported pipeline mode." >&2; exit 1 ;; esac
-          echo "GRAPH_PIPELINE_MODE=$pipeline_mode" >> "$GITHUB_ENV"
+          set -euo pipefail
+          node --input-type=module <<'JS'
+          import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          const env = process.env;
+          const idPattern = /^dpl_[A-Za-z0-9]+$/;
+          const hostPattern = /^[a-z0-9][a-z0-9.-]*\.vercel\.app$/;
+          const candidateUrl = readFileSync(`${env.RUNNER_TEMP}/frontend-candidate-url.txt`, 'utf8').trim();
+          if (!/^https:\/\/[a-z0-9][a-z0-9.-]*\.vercel\.app$/.test(candidateUrl)) {
+            throw new Error('Deploy command did not return one Vercel deployment URL');
+          }
+          const reference = new URL(candidateUrl).hostname;
+          const endpoint = new URL(`https://api.vercel.com/v13/deployments/${encodeURIComponent(reference)}`);
+          endpoint.searchParams.set('teamId', env.VERCEL_ORG_ID);
+          endpoint.searchParams.set('withGitRepoInfo', 'true');
+          const response = await fetch(endpoint, {
+            headers: { Authorization: `Bearer ${env.VERCEL_TOKEN}` },
+            signal: AbortSignal.timeout(30000),
+          });
+          if (!response.ok) throw new Error(`Deployment verification returned HTTP ${response.status}`);
+          const deployment = await response.json();
+          if (!idPattern.test(deployment.id) || !hostPattern.test(deployment.url)) {
+            throw new Error('Deployment identity is missing or invalid');
+          }
+          if (deployment.projectId !== env.VERCEL_PROJECT_ID || deployment.target !== 'production' || deployment.readyState !== 'READY') {
+            throw new Error('Candidate must be ready and built for this production project');
+          }
+          if (deployment.meta?.releaseCommit !== env.SOURCE_COMMIT || deployment.meta?.githubCommitSha !== env.SOURCE_COMMIT || deployment.meta?.releaseTree !== env.SOURCE_TREE) {
+            throw new Error('Candidate source metadata does not match the reviewed commit and tree');
+          }
+          if (deployment.gitSource?.sha && deployment.gitSource.sha !== env.SOURCE_COMMIT) {
+            throw new Error('Candidate Git source contradicts the reviewed commit');
+          }
+          const evidence = {
+            deployment_id: deployment.id,
+            deployment_url: `https://${deployment.url}`,
+            source_commit: env.SOURCE_COMMIT,
+            source_tree: env.SOURCE_TREE,
+            run_id: env.GITHUB_RUN_ID,
+          };
+          mkdirSync('artifacts/frontend-release', { recursive: true });
+          writeFileSync('artifacts/frontend-release/deployment.json', JSON.stringify(evidence, null, 2) + '\n');
+          appendFileSync(env.GITHUB_STEP_SUMMARY, `Verified candidate: ${evidence.deployment_url}\n\nDeployment ID: ${deployment.id}\n\nSource: ${env.SOURCE_COMMIT}\n\nTree: ${env.SOURCE_TREE}\n`);
+          JS
 
-      - uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
-
-      - uses: google-github-actions/setup-gcloud@v2
-
-      - name: Resolve the exact approved digest
-        env:
-          TREE_SHA: ${{ needs.prepare.outputs.tree-sha }}
-        run: |
-          digest="$(gcloud artifacts docker images describe "$IMAGE:approved-tree-$TREE_SHA" --format='value(image_summary.digest)')"
-          if [ -z "$digest" ]; then
-            echo "No protected staging approval exists for main tree $TREE_SHA; production will not rebuild or substitute another image." >&2
-            exit 1
-          fi
-          echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
-
-      - name: Load main-only migration identity and test credentials
-        run: |
-          db_url="$(gcloud secrets versions access latest --secret=production-migration-db-url)"
-          password="$(gcloud secrets versions access latest --secret=internal-test-password)"
-          allowlist="$(gcloud secrets versions access latest --secret=internal-test-email-allowlist-raw)"
-          email="$(printf '%s\n' "$allowlist" | tr ',;' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed '/^$/d' | head -n1)"
-          echo "::add-mask::$db_url"
-          echo "::add-mask::$password"
-          echo "::add-mask::$email"
-          {
-            echo "SUPABASE_DB_URL=$db_url"
-            echo "DB_SCHEMA=public"
-            echo "EVAL_INTERNAL_PASSWORD=$password"
-            echo "EVAL_EMAIL=$email"
-          } >> "$GITHUB_ENV"
-
-      - name: Apply the approved migration set to public
-        run: bash scripts/apply_supabase_schema.sh
-
-      - id: candidate
-        name: Deploy an immutable no-traffic production candidate
-        env:
-          CANDIDATE_TAG: prod-${{ github.run_id }}
-          TREE_SHA: ${{ needs.prepare.outputs.tree-sha }}
-          COMMIT_SHA: ${{ needs.prepare.outputs.commit-sha }}
-        run: |
-          gcloud run deploy "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --image "$IMAGE@$IMAGE_DIGEST" --no-traffic --tag "$CANDIDATE_TAG" --timeout 1000s --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,OTEL_ENVIRONMENT=production,GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE --remove-env-vars EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT --quiet
-          candidate_url="$(gcloud run services describe "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --format=json | python -c 'import json,os,sys; data=json.load(sys.stdin); tag=os.environ["CANDIDATE_TAG"]; print(next((x.get("url", "") for x in data.get("status", {}).get("traffic", []) if x.get("tag") == tag), ""))')"
-          [ -n "$candidate_url" ] || exit 1
-          echo "CANDIDATE_URL=$candidate_url" >> "$GITHUB_ENV"
-          echo "candidate-tag=$CANDIDATE_TAG" >> "$GITHUB_OUTPUT"
-          mkdir -p artifacts/production-smoke
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          Path("artifacts/production-smoke/deployment.json").write_text(json.dumps({
-              "run_id": os.environ["GITHUB_RUN_ID"],
-              "commit_sha": os.environ["COMMIT_SHA"],
-              "tree_sha": os.environ["TREE_SHA"],
-              "image": os.environ["IMAGE"],
-              "digest": os.environ["IMAGE_DIGEST"],
-              "pipeline_mode": os.environ["GRAPH_PIPELINE_MODE"],
-          }, indent=2) + "\n")
-          PY
-
-      - name: Start production-candidate frontend
-        run: |
-          mkdir -p artifacts/production-smoke
-          VITE_EVAL_AUTH_BOOTSTRAP=true VITE_API_PROXY_TARGET="$CANDIDATE_URL" npm --prefix frontend run dev -- --host localhost --port 5173 --strictPort > artifacts/production-smoke/vite.log 2>&1 &
-          echo "VITE_PID=$!" >> "$GITHUB_ENV"
-          for attempt in $(seq 1 30); do
-            curl --fail --silent "$CANDIDATE_URL/api/prepare" > /dev/null && curl --fail --silent http://localhost:5173 > /dev/null && exit 0
-            sleep 5
-          done
-          exit 1
-
-      - name: Run authentication, dashboard, persistence, graph, and real-model smoke
-        env:
-          EVAL_BACKEND_URL: ${{ env.CANDIDATE_URL }}
-        run: ./scripts/ci browser --suite smoke --target http://localhost:5173 --output artifacts/production-smoke/browser-results.json
-
-      - name: Promote only the tested revision
-        env:
-          CANDIDATE_TAG: ${{ steps.candidate.outputs.candidate-tag }}
-        run: gcloud run services update-traffic "$SERVICE" --project "$PROJECT_ID" --region "$REGION" --to-tags "$CANDIDATE_TAG=100" --quiet
-
-      - name: Upload production smoke evidence
-        if: always()
+      - name: Retain verified deployment evidence
         uses: actions/upload-artifact@v4
         with:
-          name: production-smoke
-          path: artifacts/production-smoke
+          name: frontend-release-${{ github.run_id }}
+          path: artifacts/frontend-release/deployment.json
+          if-no-files-found: error
           retention-days: 30
-
-      - name: Stop local frontend
-        if: always()
-        run: '[ -z "${VITE_PID:-}" ] || kill "$VITE_PID" || true'
-
-  frontend:
-    name: Deploy frontend to Vercel
-    runs-on: ubuntu-latest
-    needs: [prepare, backend]
-    if: always() && needs.prepare.result == 'success' && (needs.backend.result == 'success' || needs.backend.result == 'skipped')
-    environment: production
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.commit-sha }}
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-          cache: npm
-          cache-dependency-path: frontend/package-lock.json
-      - name: Build and deploy the reviewed frontend
-        working-directory: frontend
-        env:
-          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
-          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-          VITE_IS_PRODUCTION: "true"
-        run: |
-          npm ci --prefer-offline --no-audit --no-fund
-          npx vercel@${VERCEL_CLI_VERSION} pull --yes --environment=production --token="${{ secrets.VERCEL_TOKEN }}"
-          npx vercel@${VERCEL_CLI_VERSION} build --prod --token="${{ secrets.VERCEL_TOKEN }}"
-          npx vercel@${VERCEL_CLI_VERSION} deploy --prebuilt --prod --token="${{ secrets.VERCEL_TOKEN }}"
