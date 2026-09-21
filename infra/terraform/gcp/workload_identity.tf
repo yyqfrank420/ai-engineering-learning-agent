@@ -12,7 +12,7 @@
 variable "github_repo" {
   description = "GitHub repo in owner/repo format. Scopes WIF to this repo only."
   type        = string
-  default     = "yyqfrank420/ai-engineering-study-agent"
+  default     = "yyqfrank420/ai-engineering-learning-agent"
 }
 
 resource "google_iam_workload_identity_pool" "github" {

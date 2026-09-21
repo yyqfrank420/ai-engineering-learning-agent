@@ -200,7 +200,7 @@ class Settings(BaseSettings):
 
     # ── Observability / analytics ────────────────────────────────────────────
     otel_enabled: bool = False
-    otel_service_name: str = "ai-engineering-study-agent"
+    otel_service_name: str = "ai-engineering-learning-agent"
     otel_service_version: str = "0.1.0"
     otel_environment: str = "development"
     # Base OTLP/HTTP endpoint, e.g. https://collector.example.com

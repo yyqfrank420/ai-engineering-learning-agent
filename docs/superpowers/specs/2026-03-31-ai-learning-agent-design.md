@@ -1,4 +1,4 @@
-# AI Engineering Study Agent — Design Spec
+# AI Engineering Learning Agent — Design Spec
 **Date:** 2026-03-31
 **Status:** Approved
 
@@ -434,7 +434,7 @@ agent/
 │
 └── docs/
     └── superpowers/specs/
-        └── 2026-03-31-ai-study-agent-design.md
+        └── 2026-03-31-ai-learning-agent-design.md
 ```
 
 ---

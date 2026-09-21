@@ -188,7 +188,7 @@ def create_app(*, load_resources: bool = True) -> FastAPI:
         print("[shutdown] Goodbye.")
 
     app = FastAPI(
-        title="AI Engineering Study Agent",
+        title="AI Engineering Learning Agent",
         version="0.1.0",
         lifespan=lifespan,
     )

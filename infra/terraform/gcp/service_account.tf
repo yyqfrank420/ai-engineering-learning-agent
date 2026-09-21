@@ -1,11 +1,11 @@
 resource "google_service_account" "backend" {
   account_id   = replace(var.service_name, "_", "-")
-  display_name = "AI Study Agent Backend"
+  display_name = "AI Learning Agent Backend"
 }
 
 resource "google_service_account" "backend_staging" {
   account_id   = replace(var.staging_service_name, "_", "-")
-  display_name = "AI Study Agent Staging Eval"
+  display_name = "AI Learning Agent Staging Eval"
 }
 
 # Legacy identity retained without WIF or project permissions during the
