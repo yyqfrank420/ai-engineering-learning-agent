@@ -1,0 +1,1055 @@
+{
+  "source_run_id": "35645459646",
+  "source_commit": "9403bb6",
+  "answer": "The design treats growth marketing as a closed optimization loop: an operator sets a **constrained objective**, the system proposes copy, targeting, and event-definition changes, executes only approved ones on ad platforms, measures results, and feeds evidence back into a reviewed release process.\n\nThe automated-writing scope is well-matched to established practice: AI writing is already common in sales, marketing, and team communication, including ad copywriting and product descriptions (Chapter 1, p.40), and AI can make user acquisition cheaper through more effective copywriting and promotional content (Chapter 1, p.52).\n\n**Engineering inference:** the hard part is not generation but the write path \u2014 external ad mutations cost money and are only partially reversible, so the architecture is organized around an approval boundary and an idempotent execution layer rather than around the model.\n\n**Step 1\u20133 (decide).** The Growth Operator Console defines objective, budgets, brand guardrails, and approval policy in the Objective & Constraint Service. Each cycle, the Campaign Optimization Orchestrator loads that scope plus the released optimization config from the Prompt & Model Registry, then validates every candidate action against constraints and receives a pass/violation verdict.\n\n**Step 4 (compose).** Three specialists produce proposals, never external writes:\n- *Copy Generation Service* fetches approved prompt/template versions from the registry, validates brand rules, and persists versioned drafts to the Creative Artifact Store.\n- *Targeting & Audience Service* reuses audience definitions with staleness and provenance checks, persisting revalidated versions, using released targeting heuristics.\n- *Event Definition Service* versions conversion-event specs and checks schema compatibility against the Outcome Event Stream contract before anything can sync to a platform.\n\n**Execution.** Only after approval does the Channel Execution Service call Ad & Analytics Platforms with a reserved idempotency key, handling COMMITTED / NOT_FOUND-retry / STILL_UNKNOWN-escalation, plus authoritative read-back for intended-vs-actual reconciliation.\n\n**Step 5\u20136 (measure).** Platform conversion and spend events \u2014 delayed, duplicated, out of order \u2014 enter Outcome Ingestion with bounded backpressure and dedup, flow through the durable replayable stream, and are attributed and written with lineage to the Outcome & Spend Store. Measurement & Attribution scores variants against the objective and returns performance plus constraint adherence to the orchestrator.\n\nThe Approval Boundary Service is the single gate between proposing and spending. It classifies each typed **exact-action** proposal by risk and cost, then:\n- **auto-approves** in-policy low-risk changes (e.g., copy swaps within brand guardrails);\n- **routes** costly or irreversible actions \u2014 budget increases, new event definitions, audience expansion beyond thresholds \u2014 to the console as pending proposals with full context, awaiting an explicit operator decision;\n- **blocks** execution until decided, so no path reaches the platforms without a recorded verdict.\n\nCrucially, compensation and rollback actions after a partial failure re-enter the *same* gate (n9 \u2192 n8 \u2192 n9), so error recovery cannot bypass policy.\n\nA second, separate boundary governs learning: release candidates go from Offline Evaluation to the Release Manager, which presents them to the operator for human release review before any registry write. Live optimization behavior changes only through that reviewed release path, not through online self-mutation.\n\nMeasured outcomes and constraint violations flow to the Feedback Curation Service, which builds versioned evaluation datasets (including hostile traces) \u2014 the rule being no model or config change without curated evidence. Offline Evaluation runs regression gates against acceptance thresholds; the Release Manager performs canary rollout, metric-gated promotion using live canary metrics from Measurement, and immediate rollback on regression. The Prompt & Model Registry is storage only; mutation occurs solely via the Release Manager.\n\nObservability & Audit records proposal provenance, approval decisions, execution/reconciliation events, and release outcomes, and runs drift and anomaly detection, alerting the operator.\n\n**Note on writes:** although no *business* mutation reaches ad platforms without approval, the system continuously writes internally \u2014 artifact versions, outcome records, audit logs, curated datasets, and registry releases are all state changes with their own lifecycle and rollback needs.\n\n**Engineering inference:** attribution quality is the weak link in the eval loop; scored results are only as trustworthy as the event definitions and attribution window, so event-definition changes should be treated as evaluation-invalidating and force a dataset version bump.\n\n- **Approval granularity vs. optimization speed.** A tight auto-approve envelope makes spend safe but slows the loop to human cadence; a wide one lets the orchestrator explore faster at real financial risk. Recommendation: start with copy-only auto-approval and expand thresholds using audited outcome history.\n- **Measurement latency vs. iteration rate.** Conversions arrive late and out of order; scoring too early rewards noise. Recommendation: hold decisions until a configured attribution maturity window, and use the stream's replay capability to re-score rather than re-decide.\n- **Reviewed releases vs. online adaptation.** Gating prompts, heuristics, and config behind canary and human review reduces regression blast radius but means the system cannot adapt mid-cycle to sudden market shifts; consider a narrowly-scoped, constraint-bounded bid-adjustment exception.\n- **External dependency.** Platform APIs are third-party and may return ambiguous mutation results; the reserve-then-read-back design contains this but leaves a STILL_UNKNOWN escalation class that needs a defined operator runbook.\n\n**Uncertainty:** the value of automated event-definition changes depends heavily on the specific platforms' tracking semantics, which the design assumes rather than establishes.\n\nThe diagram described above was created and rendered on the canvas as this turn's approved graph.",
+  "graph": {
+    "graph_type": "architecture",
+    "title": "AI Growth & Performance Marketing Optimization System",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Growth Operator Console",
+        "type": "client",
+        "technology": "Client",
+        "description": "Primary actor UI: defines objective, constraints, budgets, and approval policy; reviews pending proposals; confirms or rejects costly mutations before any external write.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n2",
+        "label": "Objective & Constraint Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Owns the constrained objective, budget caps, brand and policy guardrails; validates every proposed action against constraints before it may proceed to approval or execution.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n3",
+        "label": "Campaign Optimization Orchestrator",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Runs optimization cycles: reads measured outcomes, decides copy, targeting, and event-definition changes to maximize the objective within constraints; issues proposals, never direct external writes.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n4",
+        "label": "Copy Generation Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Writes and adjusts ad copy variants using approved prompts and templates; validates brand-rule compliance; persists versioned drafts to the artifact store before proposing them.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n5",
+        "label": "Targeting & Audience Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Proposes and adjusts audience segments, bids, and placement targeting; reuses validated audience definitions from the artifact store with invalidation on staleness.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n6",
+        "label": "Event Definition Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Owns conversion event definitions and tracking specs; versions changes, enforces schema compatibility with the outcome stream, and flags definitions needing approval before platform sync.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n7",
+        "label": "Creative Artifact Store",
+        "type": "datastore",
+        "technology": "Data store",
+        "description": "Versioned store for copy, targeting, and event artifacts; owns retrieval validation, reuse lifecycle, and invalidation so only current approved artifacts are proposed or executed.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n8",
+        "label": "Approval Boundary Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Enforces approval boundaries: classifies each proposal by risk and cost, routes human-confirmation items to the console with full context, auto-approves only in-policy low-risk changes, and blocks execution until decided",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n9",
+        "label": "Channel Execution Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Executes approved changes to ad platforms: reserve-before-send with atomic idempotency keys, retry-safe writes, reconciliation of intended vs actual platform state, and compensation or rollback on partial failure.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n10",
+        "label": "Ad & Analytics Platforms",
+        "type": "external",
+        "technology": "External system",
+        "description": "External ad networks and analytics APIs that serve campaigns, accept mutation calls, and expose outcome and spend data; owned by third parties outside this system.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n11",
+        "label": "Outcome Ingestion Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Ingests conversion and spend events from platforms and trackers; owns bounded backpressure, event-time ordering rules, replay and deduplication, late-data handling, and schema compatibility checks.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n12",
+        "label": "Outcome Event Stream",
+        "type": "queue",
+        "technology": "Message queue",
+        "description": "Durable ordered buffer decoupling ingestion from measurement; supports replay for reprocessing and consumer isolation during failures.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n13",
+        "label": "Outcome & Spend Store",
+        "type": "datastore",
+        "technology": "Data store",
+        "description": "Canonical deduplicated record of conversions, spend, and delivery metrics with lineage to source events; golden source for measurement, evaluation, and budget reconciliation.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n14",
+        "label": "Measurement & Attribution Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Evaluates outcomes against the objective: attributes conversions to variants, computes performance and constraint adherence, and publishes scored results back to the orchestrator and evaluation.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n15",
+        "label": "Feedback Curation Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Curates labeled evidence from measured outcomes (winning/losing variants, constraint violations) into versioned evaluation datasets; no model or config change without curated evidence.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n16",
+        "label": "Offline Evaluation Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Runs offline evaluation and regression gates for prompt, model, and targeting-heuristic candidates against curated datasets and acceptance thresholds before any release review.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n17",
+        "label": "Release Manager Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Executes reviewed releases of models, prompts, rankings, and live optimization config: human release review, canary rollout, metric-gated promotion, and immediate rollback on regression.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n18",
+        "label": "Prompt & Model Registry",
+        "type": "datastore",
+        "technology": "Data store",
+        "description": "Versioned registry of prompts, models, and optimization configs with evaluation history and release status; storage only, mutation occurs solely via the Release Manager.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n19",
+        "label": "Observability & Audit Service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "End-to-end audit of proposals, approvals, executions, and releases; drift and anomaly detection on outcomes and model behavior; defined failure isolation and alerting for operator review.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      }
+    ],
+    "edges": [
+      {
+        "source": "n1",
+        "target": "n2",
+        "label": "Define objective, constraints, budgets, and approval policy",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Define objective, constraints, budgets, and approval policy",
+        "flow": "control",
+        "edge_id": "applied:n1__define_objective_constraints_budgets_an_c4023c11a757767fd128c3e1__n2",
+        "relation": "define_objective_constraints_budgets_an_c4023c11a757767fd128c3e1"
+      },
+      {
+        "source": "n2",
+        "target": "n1",
+        "label": "Objective configuration confirmation and guardrail summary",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Objective configuration confirmation and guardrail summary",
+        "flow": "control",
+        "edge_id": "applied:n2__objective_configuration_confirmation_an_3c7cc551d975f8b2e91e70eb__n1",
+        "relation": "objective_configuration_confirmation_an_3c7cc551d975f8b2e91e70eb"
+      },
+      {
+        "source": "n3",
+        "target": "n2",
+        "label": "Load current objective and constraint scope for optimization cycle",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Load current objective and constraint scope for optimization cycle",
+        "flow": "control",
+        "edge_id": "applied:n3__load_current_objective_and_constraint_s_695c8b82e83c8901699d1eae__n2",
+        "relation": "load_current_objective_and_constraint_s_695c8b82e83c8901699d1eae"
+      },
+      {
+        "source": "n3",
+        "target": "n2",
+        "label": "Objective, budgets, and guardrails payload",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Objective, budgets, and guardrails payload",
+        "flow": "control",
+        "edge_id": "applied:n3__objective_budgets_and_guardrails_payloa_a23cfdc2a9eea836bdc0903b__n2",
+        "relation": "objective_budgets_and_guardrails_payloa_a23cfdc2a9eea836bdc0903b"
+      },
+      {
+        "source": "n3",
+        "target": "n2",
+        "label": "Validate proposed action against constraints before approval",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Validate proposed action against constraints before approval",
+        "flow": "control",
+        "edge_id": "applied:n3__validate_proposed_action_against_constr_53362dc55b222d08cc892830__n2",
+        "relation": "validate_proposed_action_against_constr_53362dc55b222d08cc892830"
+      },
+      {
+        "source": "n2",
+        "target": "n3",
+        "label": "Constraint validation verdict (pass or violation detail)",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Constraint validation verdict (pass or violation detail)",
+        "flow": "control",
+        "edge_id": "applied:n2__constraint_validation_verdict_pass_or_v_10cd0301c8c30946e4220e59__n3",
+        "relation": "constraint_validation_verdict_pass_or_v_10cd0301c8c30946e4220e59"
+      },
+      {
+        "source": "n3",
+        "target": "n4",
+        "label": "Request copy variants for optimization cycle",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Request copy variants for optimization cycle",
+        "flow": "runtime",
+        "edge_id": "applied:n3__request_copy_variants_for_optimization__3a7997f1e21d8f7b780dad34__n4",
+        "relation": "request_copy_variants_for_optimization__3a7997f1e21d8f7b780dad34"
+      },
+      {
+        "source": "n4",
+        "target": "n3",
+        "label": "Versioned copy draft references from artifact store",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Versioned copy draft references from artifact store",
+        "flow": "runtime",
+        "edge_id": "applied:n4__versioned_copy_draft_references_from_ar_106e7cc50399f291959c1abc__n3",
+        "relation": "versioned_copy_draft_references_from_ar_106e7cc50399f291959c1abc"
+      },
+      {
+        "source": "n4",
+        "target": "n18",
+        "label": "Fetch approved prompt and template versions",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Fetch approved prompt and template versions",
+        "flow": "runtime",
+        "edge_id": "applied:n4__fetch_approved_prompt_and_template_vers_9e591a0ba69b8924d11d5d34__n18",
+        "relation": "fetch_approved_prompt_and_template_vers_9e591a0ba69b8924d11d5d34"
+      },
+      {
+        "source": "n18",
+        "target": "n4",
+        "label": "Approved prompt/template payload with version and release status",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Approved prompt/template payload with version and release status",
+        "flow": "runtime",
+        "edge_id": "applied:n18__approved_prompt_template_payload_with_v_8b54fed8c0a1339965024b24__n4",
+        "relation": "approved_prompt_template_payload_with_v_8b54fed8c0a1339965024b24"
+      },
+      {
+        "source": "n4",
+        "target": "n7",
+        "label": "Persist brand-validated versioned copy drafts",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persist brand-validated versioned copy drafts",
+        "flow": "runtime",
+        "edge_id": "applied:n4__persist_brand_validated_versioned_copy__ee45057c35e67ca2b897f392__n7",
+        "relation": "persist_brand_validated_versioned_copy__ee45057c35e67ca2b897f392"
+      },
+      {
+        "source": "n7",
+        "target": "n4",
+        "label": "Persisted copy artifact version acknowledgment",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persisted copy artifact version acknowledgment",
+        "flow": "runtime",
+        "edge_id": "applied:n7__persisted_copy_artifact_version_acknowl_1f8ac73bae6e5436080243e9__n4",
+        "relation": "persisted_copy_artifact_version_acknowl_1f8ac73bae6e5436080243e9"
+      },
+      {
+        "source": "n3",
+        "target": "n5",
+        "label": "Request audience, bid, and placement targeting proposal",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Request audience, bid, and placement targeting proposal",
+        "flow": "runtime",
+        "edge_id": "applied:n3__request_audience_bid_and_placement_targ_f35f24653cec04e75ae9253e__n5",
+        "relation": "request_audience_bid_and_placement_targ_f35f24653cec04e75ae9253e"
+      },
+      {
+        "source": "n5",
+        "target": "n3",
+        "label": "Targeting and bid proposal response",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Targeting and bid proposal response",
+        "flow": "runtime",
+        "edge_id": "applied:n5__targeting_and_bid_proposal_response_0113c68a8dac14fcb31a8533__n3",
+        "relation": "targeting_and_bid_proposal_response_0113c68a8dac14fcb31a8533"
+      },
+      {
+        "source": "n5",
+        "target": "n7",
+        "label": "Reuse audience definitions with staleness and provenance check",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Reuse audience definitions with staleness and provenance check",
+        "flow": "runtime",
+        "edge_id": "applied:n5__reuse_audience_definitions_with_stalene_e28bcf8de2cd8c7a5b9e467c__n7",
+        "relation": "reuse_audience_definitions_with_stalene_e28bcf8de2cd8c7a5b9e467c"
+      },
+      {
+        "source": "n7",
+        "target": "n5",
+        "label": "Current approved audience artifact or stale-rejection",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Current approved audience artifact or stale-rejection",
+        "flow": "runtime",
+        "edge_id": "applied:n7__current_approved_audience_artifact_or_s_ccfe2016ae8acf54f79e57bc__n5",
+        "relation": "current_approved_audience_artifact_or_s_ccfe2016ae8acf54f79e57bc"
+      },
+      {
+        "source": "n5",
+        "target": "n7",
+        "label": "Persist revalidated or new audience artifact version",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persist revalidated or new audience artifact version",
+        "flow": "runtime",
+        "edge_id": "applied:n5__persist_revalidated_or_new_audience_art_feddcc0e2d8f83c1d0592aa7__n7",
+        "relation": "persist_revalidated_or_new_audience_art_feddcc0e2d8f83c1d0592aa7"
+      },
+      {
+        "source": "n7",
+        "target": "n5",
+        "label": "Persisted audience artifact version acknowledgment",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persisted audience artifact version acknowledgment",
+        "flow": "runtime",
+        "edge_id": "applied:n7__persisted_audience_artifact_version_ack_765a6192cdb301afdd52313f__n5",
+        "relation": "persisted_audience_artifact_version_ack_765a6192cdb301afdd52313f"
+      },
+      {
+        "source": "n5",
+        "target": "n18",
+        "label": "Load released targeting heuristics version",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Load released targeting heuristics version",
+        "flow": "runtime",
+        "edge_id": "applied:n5__load_released_targeting_heuristics_vers_f77a6a09f2ba5bb10fd71a81__n18",
+        "relation": "load_released_targeting_heuristics_vers_f77a6a09f2ba5bb10fd71a81"
+      },
+      {
+        "source": "n18",
+        "target": "n5",
+        "label": "Released targeting heuristics payload",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Released targeting heuristics payload",
+        "flow": "runtime",
+        "edge_id": "applied:n18__released_targeting_heuristics_payload_ffcfade49acae998576eb17e__n5",
+        "relation": "released_targeting_heuristics_payload_ffcfade49acae998576eb17e"
+      },
+      {
+        "source": "n3",
+        "target": "n6",
+        "label": "Request conversion event definition change proposal",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Request conversion event definition change proposal",
+        "flow": "runtime",
+        "edge_id": "applied:n3__request_conversion_event_definition_cha_f83f60a0fc3d58e1c124ceec__n6",
+        "relation": "request_conversion_event_definition_cha_f83f60a0fc3d58e1c124ceec"
+      },
+      {
+        "source": "n6",
+        "target": "n3",
+        "label": "Versioned event definition proposal with approval flag",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Versioned event definition proposal with approval flag",
+        "flow": "runtime",
+        "edge_id": "applied:n6__versioned_event_definition_proposal_wit_ba7539e7052aa4d997f584ad__n3",
+        "relation": "versioned_event_definition_proposal_wit_ba7539e7052aa4d997f584ad"
+      },
+      {
+        "source": "n6",
+        "target": "n12",
+        "label": "Schema compatibility check against outcome stream contract",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Schema compatibility check against outcome stream contract",
+        "flow": "runtime",
+        "edge_id": "applied:n6__schema_compatibility_check_against_outc_028829f3e6c04637b2cb36c4__n12",
+        "relation": "schema_compatibility_check_against_outc_028829f3e6c04637b2cb36c4"
+      },
+      {
+        "source": "n12",
+        "target": "n6",
+        "label": "Schema compatibility verdict (compatible or rejected spec)",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Schema compatibility verdict (compatible or rejected spec)",
+        "flow": "runtime",
+        "edge_id": "applied:n12__schema_compatibility_verdict_compatible_f4f1147fbd91156d02f78cbb__n6",
+        "relation": "schema_compatibility_verdict_compatible_f4f1147fbd91156d02f78cbb"
+      },
+      {
+        "source": "n6",
+        "target": "n7",
+        "label": "Persist versioned event definition and tracking spec",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persist versioned event definition and tracking spec",
+        "flow": "runtime",
+        "edge_id": "applied:n6__persist_versioned_event_definition_and__042a6bfed856bdddf8f4277b__n7",
+        "relation": "persist_versioned_event_definition_and__042a6bfed856bdddf8f4277b"
+      },
+      {
+        "source": "n7",
+        "target": "n6",
+        "label": "Persisted event spec version acknowledgment",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Persisted event spec version acknowledgment",
+        "flow": "runtime",
+        "edge_id": "applied:n7__persisted_event_spec_version_acknowledg_6a5c1efeaed3811d3e2896c2__n6",
+        "relation": "persisted_event_spec_version_acknowledg_6a5c1efeaed3811d3e2896c2"
+      },
+      {
+        "source": "n3",
+        "target": "n8",
+        "label": "Submit typed exact-action proposal for risk classification",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Submit typed exact-action proposal for risk classification",
+        "flow": "control",
+        "edge_id": "applied:n3__submit_typed_exact_action_proposal_for__e68eeaa01028e2f09fbb9d21__n8",
+        "relation": "submit_typed_exact_action_proposal_for__e68eeaa01028e2f09fbb9d21"
+      },
+      {
+        "source": "n8",
+        "target": "n3",
+        "label": "Approval decision (auto-approved, human-approved, or rejected)",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Approval decision (auto-approved, human-approved, or rejected)",
+        "flow": "control",
+        "edge_id": "applied:n8__approval_decision_auto_approved_human_a_7b730132efd0dcb02e00b1d0__n3",
+        "relation": "approval_decision_auto_approved_human_a_7b730132efd0dcb02e00b1d0"
+      },
+      {
+        "source": "n8",
+        "target": "n1",
+        "label": "Pending high-risk proposal with full context for confirmation",
+        "technology": "Control flow",
+        "sync": "async",
+        "description": "Pending high-risk proposal with full context for confirmation",
+        "flow": "control",
+        "edge_id": "applied:n8__pending_high_risk_proposal_with_full_co_5935cb08e7c0307eda1691d4__n1",
+        "relation": "pending_high_risk_proposal_with_full_co_5935cb08e7c0307eda1691d4"
+      },
+      {
+        "source": "n1",
+        "target": "n8",
+        "label": "Operator approve or reject decision on pending proposal",
+        "technology": "Control flow",
+        "sync": "async",
+        "description": "Operator approve or reject decision on pending proposal",
+        "flow": "control",
+        "edge_id": "applied:n1__operator_approve_or_reject_decision_on__79c0667d937a027058299478__n8",
+        "relation": "operator_approve_or_reject_decision_on__79c0667d937a027058299478"
+      },
+      {
+        "source": "n8",
+        "target": "n9",
+        "label": "Approved exact-action execution directive (blocks until decided)",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Approved exact-action execution directive (blocks until decided)",
+        "flow": "control",
+        "edge_id": "applied:n8__approved_exact_action_execution_directi_018644a57d25d029944466dd__n9",
+        "relation": "approved_exact_action_execution_directi_018644a57d25d029944466dd"
+      },
+      {
+        "source": "n9",
+        "target": "n10",
+        "label": "Idempotent campaign mutation with reserved operation key",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Idempotent campaign mutation with reserved operation key",
+        "flow": "runtime",
+        "edge_id": "applied:n9__idempotent_campaign_mutation_with_reser_3a22d21da2c1b570533634f2__n10",
+        "relation": "idempotent_campaign_mutation_with_reser_3a22d21da2c1b570533634f2"
+      },
+      {
+        "source": "n10",
+        "target": "n9",
+        "label": "Mutation outcome: COMMITTED success, NOT_FOUND retry, or STILL_UNKNOWN escalation",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Mutation outcome: COMMITTED success, NOT_FOUND retry, or STILL_UNKNOWN escalation",
+        "flow": "runtime",
+        "edge_id": "applied:n10__mutation_outcome_committed_success_not__a6ad661c8de626c865b4be4b__n9",
+        "relation": "mutation_outcome_committed_success_not__a6ad661c8de626c865b4be4b"
+      },
+      {
+        "source": "n9",
+        "target": "n10",
+        "label": "Authoritative read-back by operation identity after timeout",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Authoritative read-back by operation identity after timeout",
+        "flow": "runtime",
+        "edge_id": "applied:n9__authoritative_read_back_by_operation_id_774b2d806a2d79b2c08455c7__n10",
+        "relation": "authoritative_read_back_by_operation_id_774b2d806a2d79b2c08455c7"
+      },
+      {
+        "source": "n10",
+        "target": "n9",
+        "label": "Actual platform state for intended-vs-actual reconciliation",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Actual platform state for intended-vs-actual reconciliation",
+        "flow": "runtime",
+        "edge_id": "applied:n10__actual_platform_state_for_intended_vs_a_92acc7fff66e2defdf76e070__n9",
+        "relation": "actual_platform_state_for_intended_vs_a_92acc7fff66e2defdf76e070"
+      },
+      {
+        "source": "n9",
+        "target": "n8",
+        "label": "Compensation action proposal on partial failure",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Compensation action proposal on partial failure",
+        "flow": "control",
+        "edge_id": "applied:n9__compensation_action_proposal_on_partial_a086dbb1050416c004a1c686__n8",
+        "relation": "compensation_action_proposal_on_partial_a086dbb1050416c004a1c686"
+      },
+      {
+        "source": "n8",
+        "target": "n9",
+        "label": "Compensation approval decision under same policy controls",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Compensation approval decision under same policy controls",
+        "flow": "control",
+        "edge_id": "applied:n8__compensation_approval_decision_under_sa_3b9a81fdb79575b27edc73c4__n9",
+        "relation": "compensation_approval_decision_under_sa_3b9a81fdb79575b27edc73c4"
+      },
+      {
+        "source": "n9",
+        "target": "n10",
+        "label": "Compensation or rollback mutation under same idempotency controls",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Compensation or rollback mutation under same idempotency controls",
+        "flow": "runtime",
+        "edge_id": "applied:n9__compensation_or_rollback_mutation_under_25c6630a3bb11dec0d36b4b4__n10",
+        "relation": "compensation_or_rollback_mutation_under_25c6630a3bb11dec0d36b4b4"
+      },
+      {
+        "source": "n10",
+        "target": "n9",
+        "label": "Compensation mutation outcome for reconciliation",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Compensation mutation outcome for reconciliation",
+        "flow": "runtime",
+        "edge_id": "applied:n10__compensation_mutation_outcome_for_recon_8ed0d3953a5908d51196cc28__n9",
+        "relation": "compensation_mutation_outcome_for_recon_8ed0d3953a5908d51196cc28"
+      },
+      {
+        "source": "n10",
+        "target": "n11",
+        "label": "Conversion and spend event delivery with possible delays and duplicates",
+        "technology": "Runtime flow",
+        "sync": "async",
+        "description": "Conversion and spend event delivery with possible delays and duplicates",
+        "flow": "runtime",
+        "edge_id": "applied:n10__conversion_and_spend_event_delivery_wit_0eb1eeb89857f5a15787e77d__n11",
+        "relation": "conversion_and_spend_event_delivery_wit_0eb1eeb89857f5a15787e77d"
+      },
+      {
+        "source": "n11",
+        "target": "n12",
+        "label": "Validated, event-time ordered, deduplicated outcome events",
+        "technology": "Runtime flow",
+        "sync": "async",
+        "description": "Validated, event-time ordered, deduplicated outcome events",
+        "flow": "runtime",
+        "edge_id": "applied:n11__validated_event_time_ordered_deduplicat_cdb9f52e34a15363f4b05943__n12",
+        "relation": "validated_event_time_ordered_deduplicat_cdb9f52e34a15363f4b05943"
+      },
+      {
+        "source": "n12",
+        "target": "n14",
+        "label": "Replay-capable outcome event consumption with consumer isolation",
+        "technology": "Runtime flow",
+        "sync": "async",
+        "description": "Replay-capable outcome event consumption with consumer isolation",
+        "flow": "runtime",
+        "edge_id": "applied:n12__replay_capable_outcome_event_consumptio_e7909333cc929182e14828a6__n14",
+        "relation": "replay_capable_outcome_event_consumptio_e7909333cc929182e14828a6"
+      },
+      {
+        "source": "n14",
+        "target": "n13",
+        "label": "Attributed outcome write for atomic dedup with source lineage",
+        "technology": "Runtime flow",
+        "sync": "async",
+        "description": "Attributed outcome write for atomic dedup with source lineage",
+        "flow": "runtime",
+        "edge_id": "applied:n14__attributed_outcome_write_for_atomic_ded_15dbb29ff490548828eddd43__n13",
+        "relation": "attributed_outcome_write_for_atomic_ded_15dbb29ff490548828eddd43"
+      },
+      {
+        "source": "n14",
+        "target": "n13",
+        "label": "Read canonical outcomes and spend for scoring and budget reconciliation",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Read canonical outcomes and spend for scoring and budget reconciliation",
+        "flow": "runtime",
+        "edge_id": "applied:n14__read_canonical_outcomes_and_spend_for_s_ace319121ec31368231051fb__n13",
+        "relation": "read_canonical_outcomes_and_spend_for_s_ace319121ec31368231051fb"
+      },
+      {
+        "source": "n13",
+        "target": "n14",
+        "label": "Canonical deduplicated outcome and spend records",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Canonical deduplicated outcome and spend records",
+        "flow": "runtime",
+        "edge_id": "applied:n13__canonical_deduplicated_outcome_and_spen_f6023bceda35705ee76bc61b__n14",
+        "relation": "canonical_deduplicated_outcome_and_spen_f6023bceda35705ee76bc61b"
+      },
+      {
+        "source": "n14",
+        "target": "n3",
+        "label": "Scored performance results and constraint adherence",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Scored performance results and constraint adherence",
+        "flow": "feedback",
+        "edge_id": "applied:n14__scored_performance_results_and_constrai_2ed38112ff28e739883f7966__n3",
+        "relation": "scored_performance_results_and_constrai_2ed38112ff28e739883f7966"
+      },
+      {
+        "source": "n14",
+        "target": "n15",
+        "label": "Measured outcomes and violation evidence for curation",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Measured outcomes and violation evidence for curation",
+        "flow": "feedback",
+        "edge_id": "applied:n14__measured_outcomes_and_violation_evidenc_d232db362c7d7af450a677d9__n15",
+        "relation": "measured_outcomes_and_violation_evidenc_d232db362c7d7af450a677d9"
+      },
+      {
+        "source": "n15",
+        "target": "n16",
+        "label": "Curated versioned evaluation datasets including hostile traces",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Curated versioned evaluation datasets including hostile traces",
+        "flow": "feedback",
+        "edge_id": "applied:n15__curated_versioned_evaluation_datasets_i_4013a03033350fdf0408d2f4__n16",
+        "relation": "curated_versioned_evaluation_datasets_i_4013a03033350fdf0408d2f4"
+      },
+      {
+        "source": "n16",
+        "target": "n17",
+        "label": "Offline evaluation and regression gate results for release review",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Offline evaluation and regression gate results for release review",
+        "flow": "feedback",
+        "edge_id": "applied:n16__offline_evaluation_and_regression_gate__f068b6b22cc251b213292561__n17",
+        "relation": "offline_evaluation_and_regression_gate__f068b6b22cc251b213292561"
+      },
+      {
+        "source": "n17",
+        "target": "n1",
+        "label": "Release candidate presented for human release review",
+        "technology": "Control flow",
+        "sync": "async",
+        "description": "Release candidate presented for human release review",
+        "flow": "control",
+        "edge_id": "applied:n17__release_candidate_presented_for_human_r_31c1b261e89b039b07740d02__n1",
+        "relation": "release_candidate_presented_for_human_r_31c1b261e89b039b07740d02"
+      },
+      {
+        "source": "n1",
+        "target": "n17",
+        "label": "Release review decision (approve or reject candidate)",
+        "technology": "Control flow",
+        "sync": "async",
+        "description": "Release review decision (approve or reject candidate)",
+        "flow": "control",
+        "edge_id": "applied:n1__release_review_decision_approve_or_reje_13a25ba2d8e86eb168d8cf44__n17",
+        "relation": "release_review_decision_approve_or_reje_13a25ba2d8e86eb168d8cf44"
+      },
+      {
+        "source": "n17",
+        "target": "n18",
+        "label": "Reviewed immutable release write with canary rollout",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Reviewed immutable release write with canary rollout",
+        "flow": "deployment",
+        "edge_id": "applied:n17__reviewed_immutable_release_write_with_c_409caa2f5e2aebfd6c6194a1__n18",
+        "relation": "reviewed_immutable_release_write_with_c_409caa2f5e2aebfd6c6194a1"
+      },
+      {
+        "source": "n17",
+        "target": "n18",
+        "label": "Metric-gated promotion of canary to full release",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Metric-gated promotion of canary to full release",
+        "flow": "deployment",
+        "edge_id": "applied:n17__metric_gated_promotion_of_canary_to_ful_a2449197f24b1732785d7890__n18",
+        "relation": "metric_gated_promotion_of_canary_to_ful_a2449197f24b1732785d7890"
+      },
+      {
+        "source": "n17",
+        "target": "n18",
+        "label": "Immediate rollback of release on detected regression",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Immediate rollback of release on detected regression",
+        "flow": "deployment",
+        "edge_id": "applied:n17__immediate_rollback_of_release_on_detect_e4119f1d0f18bcc21f1d40df__n18",
+        "relation": "immediate_rollback_of_release_on_detect_e4119f1d0f18bcc21f1d40df"
+      },
+      {
+        "source": "n18",
+        "target": "n17",
+        "label": "Release status acknowledgment with version and evaluation history",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Release status acknowledgment with version and evaluation history",
+        "flow": "deployment",
+        "edge_id": "applied:n18__release_status_acknowledgment_with_vers_7af3f58f74f1bfa93584a7ce__n17",
+        "relation": "release_status_acknowledgment_with_vers_7af3f58f74f1bfa93584a7ce"
+      },
+      {
+        "source": "n14",
+        "target": "n17",
+        "label": "Canary performance metrics for promotion and rollback gating",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Canary performance metrics for promotion and rollback gating",
+        "flow": "feedback",
+        "edge_id": "applied:n14__canary_performance_metrics_for_promotio_310fbb3bed022c3c8198f704__n17",
+        "relation": "canary_performance_metrics_for_promotio_310fbb3bed022c3c8198f704"
+      },
+      {
+        "source": "n3",
+        "target": "n18",
+        "label": "Load current released live optimization configuration",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Load current released live optimization configuration",
+        "flow": "runtime",
+        "edge_id": "applied:n3__load_current_released_live_optimization_9fedfa68d200d11ec3e0d949__n18",
+        "relation": "load_current_released_live_optimization_9fedfa68d200d11ec3e0d949"
+      },
+      {
+        "source": "n18",
+        "target": "n3",
+        "label": "Released optimization config payload with version scope",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Released optimization config payload with version scope",
+        "flow": "runtime",
+        "edge_id": "applied:n18__released_optimization_config_payload_wi_34b7db90ce29a7e00f94da38__n3",
+        "relation": "released_optimization_config_payload_wi_34b7db90ce29a7e00f94da38"
+      },
+      {
+        "source": "n3",
+        "target": "n19",
+        "label": "Optimization decisions and proposal provenance audit",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Optimization decisions and proposal provenance audit",
+        "flow": "feedback",
+        "edge_id": "applied:n3__optimization_decisions_and_proposal_pro_7705915e5bdeb5b01ef4fae3__n19",
+        "relation": "optimization_decisions_and_proposal_pro_7705915e5bdeb5b01ef4fae3"
+      },
+      {
+        "source": "n8",
+        "target": "n19",
+        "label": "Proposal classification and approval decision audit records",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Proposal classification and approval decision audit records",
+        "flow": "feedback",
+        "edge_id": "applied:n8__proposal_classification_and_approval_de_8b89dea37509593ec3fd76ff__n19",
+        "relation": "proposal_classification_and_approval_de_8b89dea37509593ec3fd76ff"
+      },
+      {
+        "source": "n9",
+        "target": "n19",
+        "label": "Execution, reconciliation, and late-anomaly compensation audit",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Execution, reconciliation, and late-anomaly compensation audit",
+        "flow": "feedback",
+        "edge_id": "applied:n9__execution_reconciliation_and_late_anoma_75da2a1b5db13bae7dbc9868__n19",
+        "relation": "execution_reconciliation_and_late_anoma_75da2a1b5db13bae7dbc9868"
+      },
+      {
+        "source": "n17",
+        "target": "n19",
+        "label": "Release, promotion, and rollback outcome audit records",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Release, promotion, and rollback outcome audit records",
+        "flow": "feedback",
+        "edge_id": "applied:n17__release_promotion_and_rollback_outcome__e40846c655b231ba31d7c812__n19",
+        "relation": "release_promotion_and_rollback_outcome__e40846c655b231ba31d7c812"
+      },
+      {
+        "source": "n14",
+        "target": "n19",
+        "label": "Outcome and model-behavior metrics for drift and anomaly detection",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Outcome and model-behavior metrics for drift and anomaly detection",
+        "flow": "feedback",
+        "edge_id": "applied:n14__outcome_and_model_behavior_metrics_for__444c5a7f3b7fb9a60d92a716__n19",
+        "relation": "outcome_and_model_behavior_metrics_for__444c5a7f3b7fb9a60d92a716"
+      },
+      {
+        "source": "n19",
+        "target": "n1",
+        "label": "Drift, anomaly, and bounded-escalation alerts for operator review",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Drift, anomaly, and bounded-escalation alerts for operator review",
+        "flow": "feedback",
+        "edge_id": "applied:n19__drift_anomaly_and_bounded_escalation_al_c77d926d395b47a6b3242296__n1",
+        "relation": "drift_anomaly_and_bounded_escalation_al_c77d926d395b47a6b3242296"
+      }
+    ],
+    "sequence": [
+      {
+        "step": 1,
+        "nodes": [
+          "n1"
+        ],
+        "description": "Primary flow stage 1"
+      },
+      {
+        "step": 2,
+        "nodes": [
+          "n2",
+          "n8"
+        ],
+        "description": "Primary flow stage 2"
+      },
+      {
+        "step": 3,
+        "nodes": [
+          "n3",
+          "n9"
+        ],
+        "description": "Primary flow stage 3"
+      },
+      {
+        "step": 4,
+        "nodes": [
+          "n4",
+          "n5",
+          "n6",
+          "n10"
+        ],
+        "description": "Primary flow stage 4"
+      },
+      {
+        "step": 5,
+        "nodes": [
+          "n11",
+          "n12"
+        ],
+        "description": "Primary flow stage 5"
+      },
+      {
+        "step": 6,
+        "nodes": [
+          "n14"
+        ],
+        "description": "Primary flow stage 6"
+      }
+    ],
+    "groups": [
+      {
+        "id": "group_runtime_optimization_loop",
+        "label": "Runtime Optimization Loop",
+        "kind": "runtime",
+        "nodeIds": [
+          "n1",
+          "n2",
+          "n3",
+          "n4",
+          "n5",
+          "n6",
+          "n8",
+          "n9",
+          "n14"
+        ]
+      },
+      {
+        "id": "group_data_artifacts",
+        "label": "Data & Artifacts",
+        "kind": "data",
+        "nodeIds": [
+          "n7",
+          "n11",
+          "n12",
+          "n13"
+        ]
+      },
+      {
+        "id": "group_external_channels",
+        "label": "External Channels",
+        "kind": "external",
+        "nodeIds": [
+          "n10"
+        ]
+      },
+      {
+        "id": "group_learning_release_operations",
+        "label": "Learning & Release Operations",
+        "kind": "operations",
+        "nodeIds": [
+          "n15",
+          "n16",
+          "n17",
+          "n18",
+          "n19"
+        ]
+      }
+    ],
+    "design_origin": "applied",
+    "resolved_complexity": "production",
+    "assumptions": [
+      "Ad and analytics platforms expose APIs for campaign writes and outcome retrieval; the system is authorized to mutate campaigns on connected accounts.",
+      "The operator sets the objective (e.g., maximize conversions), constraints (budget caps, brand rules), and approval policy; the system optimizes within them.",
+      "Costly or irreversible mutations (budget increases, new event definitions, audience expansion beyond thresholds) require explicit human approval; low-risk copy swaps within guardrails may auto-approve.",
+      "Outcome data arrives as a continuous event stream with possible delays, duplicates, and out-of-order delivery.",
+      "Learning loop updates prompts, copy templates, targeting heuristics, and live optimization configuration through a reviewed release process, not direct online mutation.",
+      "Third-party ad platforms, attribution data sources, and end-user tracking are external systems outside this boundary."
+    ],
+    "version": "d1748f81-5a7a-4376-86a3-81c463711b9c"
+  }
+}

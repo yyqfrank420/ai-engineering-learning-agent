@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v10"
+        "staged_component_gate_v11"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -506,7 +506,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v9"
+        == "staged_connection_gate_v10"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -1320,8 +1320,8 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
 @pytest.mark.parametrize(
     ("stage", "version_field", "previous_version"),
     [
-        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v9"),
-        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v8"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v10"),
+        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v9"),
     ],
 )
 def test_per_rule_review_version_invalidates_prior_policy_identity(

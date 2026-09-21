@@ -36,10 +36,10 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "high"
-_COMPONENT_PROMPT_VERSION = "staged_components_v13"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v10"
+_COMPONENT_PROMPT_VERSION = "staged_components_v14"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v11"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
-_CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
+_CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
 _FINDING_TOKEN = re.compile(r"[a-zA-Z0-9_.:/-]{1,96}")
 _MAX_REQUEST_CHARS = 12_000
@@ -312,6 +312,67 @@ def connection_generation_schema(write_set: Mapping[str, Any]) -> dict[str, Any]
     }
 
 
+def _connection_create_response_schema(
+    canonical_schema: Mapping[str, Any],
+) -> dict[str, Any]:
+    exchanges = deepcopy(canonical_schema["properties"]["edges"])
+    exchanges["items"]["required"].append("response_label")
+    exchanges["items"]["properties"]["response_label"] = {
+        "anyOf": [
+            {"type": "string", "minLength": 1, "maxLength": CONNECTION_LABEL_MAX_CHARS},
+            {"type": "null"},
+        ]
+    }
+    return _strict_object_schema({"exchanges": exchanges})
+
+
+def _parse_connection_response(
+    text: str, *, accepted_components: Sequence[Mapping[str, Any]], edge_limit: int
+) -> dict[str, Any]:
+    """Expand full-create exchanges into canonical directed contracts."""
+    payload = _parse_json(text)
+    _require_exact_keys(payload, {"exchanges"})
+    exchanges = payload["exchanges"]
+    if not isinstance(exchanges, list) or len(exchanges) > edge_limit:
+        raise StagedGenerationError("connection_exchange_invalid")
+    edges = []
+    for exchange in exchanges:
+        _require_exact_keys(
+            exchange,
+            {
+                "source_index",
+                "target_index",
+                "label",
+                "flow",
+                "sync",
+                "response_label",
+            },
+        )
+        response_label = exchange["response_label"]
+        if response_label is not None and (
+            not isinstance(response_label, str) or not response_label.strip()
+        ):
+            raise StagedGenerationError("connection_exchange_invalid")
+        forward = {
+            key: value for key, value in exchange.items() if key != "response_label"
+        }
+        edges.append(forward)
+        if response_label is not None:
+            edges.append(
+                {
+                    **forward,
+                    "source_index": exchange["target_index"],
+                    "target_index": exchange["source_index"],
+                    "label": response_label,
+                }
+            )
+    return _parse_connection_wire(
+        _canonical_json({"edges": edges}),
+        accepted_components=accepted_components,
+        edge_limit=edge_limit,
+    )
+
+
 async def generate_component_candidate(
     *,
     request: str,
@@ -505,7 +566,7 @@ async def generate_connection_candidate(
             if delta
             else correction.schema
             if correction
-            else schema,
+            else _connection_create_response_schema(schema),
             state=state,
             attempt=attempt,
             upstream_fingerprint=upstream_fingerprint,
@@ -513,7 +574,12 @@ async def generate_connection_candidate(
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
         )
-        wire = _parse_connection_wire(
+        parse_response = (
+            _parse_connection_wire
+            if delta or correction
+            else _parse_connection_response
+        )
+        wire = parse_response(
             _canonical_json((delta or correction).assemble(response))
             if delta or correction
             else response,
@@ -826,8 +892,23 @@ def _attempt_prompt(
     else:
         if architecture_context is not None:
             raise StagedGenerationError("unexpected_architecture_context")
+        connection_format = (
+            "Propose canonical edges in the delta. Represent both directions of a synchronous "
+            "request-response as distinct edges. "
+            if edit_delta is not None or correction_delta is not None
+            else "Propose exchanges only. Author each request and its actual reply once in the "
+            "same exchange: label describes the outbound contract and response_label describes "
+            "the return contract. Expected read payloads and replies belong in response_label, "
+            "never a separate forward exchange. The server emits the forward edge and, when "
+            "response_label is nonnull, its reverse response edge with the same flow and sync. "
+            "Use response_label=null only when no return contract is needed. Pairing is independent "
+            "of sync: synchronous sync=500 and asynchronous sync=501 may each have a reply or be "
+            "one-way. Do not emit a separate response exchange. The edge_limit counts expanded "
+            "edges: each paired exchange uses two edges and each one-way exchange uses one. "
+        )
         instructions = (
-            "Propose edges only. Use source_index and target_index from accepted_components. "
+            connection_format
+            + "Use source_index and target_index from accepted_components. "
             "Accepted component types are authoritative. Accepted responsibilities, assumptions, "
             "and capabilities are authoritative. Observation-only monitoring may terminate at a "
             "durable telemetry/log sink. "
@@ -835,9 +916,7 @@ def _attempt_prompt(
             "feedback, or deployment edges, including paths through non-primary supporting "
             "components. Primary membership selects the walkthrough and does not restrict transit. "
             "Walkthrough order does not establish execution order or satisfy required runtime "
-            "and control behavior. Represent both directions of a synchronous request-response. A read, fetch, "
-            "lookup, load, or query request that expects returned data needs a distinct reverse "
-            "response edge. Route each supporting branch to a rejoin or observable outcome. Do "
+            "and control behavior. Route each supporting branch to a rejoin or observable outcome. Do "
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "
             "or duplicate source, target, and label contracts. "
             "For conditional outcomes, describe the action each outcome triggers. "
@@ -934,7 +1013,7 @@ class _EditDelta:
         }
 
 
-def _delta_object(properties: dict[str, Any]) -> dict[str, Any]:
+def _strict_object_schema(properties: dict[str, Any]) -> dict[str, Any]:
     return {
         "type": "object",
         "additionalProperties": False,
@@ -973,7 +1052,7 @@ def _edit_delta(
         if set(fields) - set(field_names):
             raise StagedGenerationError("edit_delta_field_unsupported")
         if fields:
-            updates[f"slot_{index}"] = _delta_object(
+            updates[f"slot_{index}"] = _strict_object_schema(
                 {
                     field_names[field]: record_schema["properties"][field_names[field]]
                     for field in fields
@@ -994,10 +1073,10 @@ def _edit_delta(
             "maxItems": count,
             "items": record_schema,
         },
-        "updates": _delta_object(updates),
+        "updates": _strict_object_schema(updates),
         **{field: schema["properties"][field] for field in composition_fields},
     }
-    return _EditDelta(base, record_key, retained, _delta_object(properties))
+    return _EditDelta(base, record_key, retained, _strict_object_schema(properties))
 
 
 def _semantic_correction_delta(

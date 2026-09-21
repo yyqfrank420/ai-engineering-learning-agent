@@ -65,10 +65,16 @@ This is the current runtime contract for the production-quality demo.
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   Full connection generation authors exchanges: one directed contract and an optional return
+   contract. The server expands the return with reversed endpoints. One-way interactions remain
+   one-way, and synchronous/asynchronous timing does not imply a return contract. Canonical graph
+   records, scoped edits, and record-preserving corrections continue to use directed edges.
    Shared criteria require necessary interactions across component
    boundaries; compatible internal operations belong in component responsibilities. Internal ordering
-   is checked before those responsibilities freeze. Retryable internal writes retain idempotence and
-   reconciliation requirements even when the design has no external business mutations.
+   is checked before those responsibilities freeze. Component authoring and review receive the
+   shared streaming and retry requirements, including same-key reconciliation and authorization,
+   policy, freshness, and fencing checks before execution. Retryable internal writes retain these
+   requirements even when the design has no external business mutations.
    Walkthrough reachability does not establish execution or authorization. Semantic review still
    requires actual runtime/control contracts for invocation, approval, and execution; a feedback
    or deployment connection cannot substitute for those behaviors. This lets offline evaluation

@@ -2221,6 +2221,66 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
         assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == node
 
 
+def test_judge_prompt_checks_payload_direction_and_component_ownership():
+    corpus = load_corpus()
+    system, _ = _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."})
+
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v8"
+    assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
+    assert f"release {JUDGE_PROMPT_RELEASE}" in system
+    assert "Verify graph read requests and payload returns against authoritative component ownership" in system
+    assert "actual request/response contracts" in system
+    assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
+    assert "Response prose cannot repair a contradictory graph contract" in system
+
+
+def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence():
+    import json
+    from pathlib import Path
+
+    fixture = json.loads(
+        (Path(__file__).parent / "fixtures/judge_graph_35645459646.json").read_text()
+    )
+    graph = fixture["graph"]
+    sources = _artifact_sources({
+        "turns": [{"answer": fixture["answer"], "graph": graph}],
+        "graph": graph,
+    })
+    corpus = load_corpus()
+    _, user = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
+    supplied = json.loads(user)["artifact_sources"]
+
+    # Retained evidence proves availability to the judge, not a new model verdict.
+    assert len(graph["edges"]) == 64
+    for kind in ("node", "edge"):
+        for index, record in enumerate(graph[f"{kind}s"], start=1):
+            prefix = f"turn-1-graph-{kind}-{index}-"
+            reconstructed = "".join(
+                supplied[key]
+                for key in sorted(
+                    (key for key in supplied if key.startswith(prefix)),
+                    key=lambda key: int(key.rsplit("-", 1)[1]),
+                )
+            )
+            assert json.loads(reconstructed) == record
+
+    read_request, payload, verdict = (graph["edges"][index] for index in (2, 3, 5))
+    assert (read_request["source"], read_request["target"]) == (
+        payload["source"], payload["target"]
+    )
+    assert (verdict["source"], verdict["target"]) == (
+        payload["target"], payload["source"]
+    )
+    assert payload["label"] != verdict["label"]
+    assert "".join(
+        supplied[key]
+        for key in sorted(
+            (key for key in supplied if key.startswith("turn-1-answer-")),
+            key=lambda key: int(key.rsplit("-", 1)[1]),
+        )
+    ) == fixture["answer"]
+
+
 @pytest.mark.parametrize("failure_count,expected", [(2, "manual_review"), (3, "manual_review"), (4, "fail")])
 def test_noncritical_failures_are_counted_before_borderline(failure_count, expected):
     judgment = result(*(

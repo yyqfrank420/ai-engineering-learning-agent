@@ -213,6 +213,12 @@ def _connection_wire() -> dict:
     }
 
 
+def _connection_exchanges() -> dict:
+    return {
+        "exchanges": [{**_connection_wire()["edges"][0], "response_label": "response"}]
+    }
+
+
 def _accepted_context() -> dict:
     return {
         "assumptions": ["The caller supplies an authenticated request."],
@@ -441,7 +447,7 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
     async def fake_stream(**kwargs):
         calls.append(kwargs)
         return _response(
-            _component_wire() if stage == "components" else _connection_wire()
+            _component_wire() if stage == "components" else _connection_exchanges()
         )
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
@@ -476,8 +482,9 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
         assert "shared evidence and review frame" in prompt
     else:
         assert prompt_input["architecture_context"] is None
-        assert "both directions of a synchronous request-response" in prompt
-        assert "needs a distinct reverse response edge" in prompt
+        assert "its reverse response edge with the same flow and sync" in prompt
+        assert "Pairing is independent of sync" in prompt
+        assert "edge_limit counts expanded edges" in prompt
         assert (
             "Route each supporting branch to a rejoin or observable outcome" in prompt
         )
@@ -489,7 +496,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
 
     async def fake_stream(**kwargs):
         calls.append(kwargs)
-        return _response(_connection_wire())
+        return _response(_connection_exchanges())
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
     await generation.generate_connection_candidate(
@@ -504,7 +511,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v10"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v11"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -669,7 +676,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v13"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v14"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -740,13 +747,14 @@ async def test_connection_generation_rejects_unaccepted_endpoint_before_return(
     async def fake_stream(**kwargs):
         return _response(
             {
-                "edges": [
+                "exchanges": [
                     {
                         "source_index": 0,
                         "target_index": 9,
                         "label": "bad",
                         "flow": 400,
                         "sync": 500,
+                        "response_label": "response",
                     }
                 ]
             }
@@ -813,7 +821,9 @@ async def test_connection_generation_rejects_server_invalid_edge_identity(
     monkeypatch, edges
 ):
     async def fake_stream(**_kwargs):
-        return _response({"edges": edges})
+        return _response(
+            {"exchanges": [{**edge, "response_label": "response"} for edge in edges]}
+        )
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
     with pytest.raises(
@@ -837,7 +847,7 @@ async def test_connection_generation_requires_every_primary_member_from_root(
     monkeypatch,
 ):
     async def fake_stream(**_kwargs):
-        return _response({"edges": []})
+        return _response({"exchanges": []})
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
     with pytest.raises(
@@ -1217,6 +1227,11 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
         {**base[0], "label": "dispatch", "sync": 501},
         addition,
     ]
+    assert "Propose canonical edges in the delta" in calls[0]["prompt"]
+    assert "Propose exchanges only" not in calls[0]["prompt"]
+    assert set(
+        calls[0]["schema"]["properties"]["additions"]["items"]["properties"]
+    ) == {"source_index", "target_index", "label", "flow", "sync"}
     assert "edge_2" not in calls[0]["prompt"]
     assert base == _connection_wire()["edges"]
 
@@ -2232,6 +2247,12 @@ async def test_memory_semantic_correction_retains_required_targeted_write(monkey
     result = await generation.generate_connection_candidate(**kwargs)
     assert result["wire"] == case["original_candidate"]
     assert len(result["wire"]["edges"]) == 16
+    assert "Propose canonical edges in the delta" in calls[-1]["prompt"]
+    assert "Propose exchanges only" not in calls[-1]["prompt"]
+    assert (
+        "response_label"
+        not in calls[-1]["schema"]["properties"]["additions"]["items"]["properties"]
+    )
     assert "store curated facts" in result["wire"]["edges"][7]["label"]
     assert calls[-1]["schema"]["properties"]["additions"]["maxItems"] == 4
     assert (
@@ -2423,3 +2444,205 @@ def test_component_correction_added_owner_can_change_capabilities():
     assert assembled["capabilities"]["external_effects"] is True
     assert assembled["components"][0] == original["components"][0]
     assert original["capabilities"]["external_effects"] is False
+
+
+def test_create_exchange_schema_keeps_canonical_edges_unchanged():
+    canonical = generation.connection_generation_schema(_write_set())
+    original = json.loads(json.dumps(canonical))
+    schema = generation._connection_create_response_schema(canonical)
+    assert canonical == original
+    assert schema["required"] == ["exchanges"]
+    item = schema["properties"]["exchanges"]["items"]
+    assert item["additionalProperties"] is False
+    assert set(item["required"]) == {
+        "source_index",
+        "target_index",
+        "label",
+        "flow",
+        "sync",
+        "response_label",
+    }
+    assert item["properties"]["response_label"]["anyOf"] == [
+        {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": contract.CONNECTION_LABEL_MAX_CHARS,
+        },
+        {"type": "null"},
+    ]
+
+
+@pytest.mark.parametrize("sync", [500, 501])
+@pytest.mark.parametrize(
+    "response_label", [None, "Objective, budgets, and guardrails payload"]
+)
+def test_create_exchange_expands_explicit_reply_independently_of_timing(
+    sync, response_label
+):
+    exchange = {
+        "source_index": 1,
+        "target_index": 0,
+        "label": "Load current objective and constraint scope for optimization cycle",
+        "flow": 400,
+        "sync": sync,
+        "response_label": response_label,
+    }
+    original = dict(exchange)
+    result = generation._parse_connection_response(
+        json.dumps({"exchanges": [exchange]}),
+        accepted_components=_accepted_components(),
+        edge_limit=2,
+    )
+    forward = {key: value for key, value in exchange.items() if key != "response_label"}
+    expected = [forward]
+    if response_label is not None:
+        expected.append(
+            {**forward, "source_index": 0, "target_index": 1, "label": response_label}
+        )
+    assert result == {"edges": expected}
+    assert exchange == original
+
+
+def test_create_exchange_mixed_expansion_preserves_order_and_counts_edges():
+    paired = _connection_exchanges()["exchanges"][0]
+    one_way = {**paired, "label": "enqueue audit", "sync": 501, "response_label": None}
+    text = json.dumps({"exchanges": [paired, one_way]})
+    result = generation._parse_connection_response(
+        text, accepted_components=_accepted_components(), edge_limit=3
+    )
+    assert [edge["label"] for edge in result["edges"]] == [
+        "requests",
+        "response",
+        "enqueue audit",
+    ]
+    with pytest.raises(
+        generation.StagedGenerationError, match="connection_wire_invalid"
+    ):
+        generation._parse_connection_response(
+            text, accepted_components=_accepted_components(), edge_limit=2
+        )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"response_label": ""},
+        {"response_label": "  "},
+        {"response_label": False},
+        {"response_label": 42},
+        {"response_label": []},
+        {"response_label": "x" * (contract.CONNECTION_LABEL_MAX_CHARS + 1)},
+        {"sync": True},
+        {"sync": 500.0},
+        {"sync": "500"},
+        {"sync": 999},
+        {"source_index": False},
+        {"target_index": 9},
+        {"flow": True},
+        {"flow": 999},
+    ],
+)
+def test_create_exchange_rejects_invalid_fields(change):
+    exchange = {**_connection_exchanges()["exchanges"][0], **change}
+    with pytest.raises(generation.StagedGenerationError):
+        generation._parse_connection_response(
+            json.dumps({"exchanges": [exchange]}),
+            accepted_components=_accepted_components(),
+            edge_limit=2,
+        )
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"edges": []},
+        {"exchanges": [], "edges": []},
+        {"exchanges": None},
+        {"exchanges": [None]},
+        {"exchanges": [{}]},
+        {"exchanges": [{**_connection_exchanges()["exchanges"][0], "id": "invented"}]},
+        {"exchanges": [_connection_wire()["edges"][0]]},
+    ],
+)
+def test_create_exchange_rejects_old_format_and_inexact_keys(payload):
+    with pytest.raises(generation.StagedGenerationError):
+        generation._parse_connection_response(
+            json.dumps(payload),
+            accepted_components=_accepted_components(),
+            edge_limit=2,
+        )
+
+
+def test_create_exchange_rejects_duplicate_return_contract_after_expansion():
+    paired = _connection_exchanges()["exchanges"][0]
+    duplicate = {
+        **paired,
+        "source_index": 1,
+        "target_index": 0,
+        "label": " RESPONSE ",
+        "response_label": None,
+    }
+    with pytest.raises(
+        generation.StagedGenerationError, match="connection_wire_invalid"
+    ):
+        generation._parse_connection_response(
+            json.dumps({"exchanges": [paired, duplicate]}),
+            accepted_components=_accepted_components(),
+            edge_limit=3,
+        )
+
+
+def test_create_exchange_empty_graph_uses_canonical_connectivity_policy():
+    assert generation._parse_connection_response(
+        '{"exchanges": []}',
+        accepted_components=_accepted_components(),
+        edge_limit=0,
+    ) == {"edges": []}
+
+
+@pytest.mark.asyncio
+async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_edges(
+    monkeypatch,
+):
+    calls = []
+
+    async def fake_stream(**kwargs):
+        calls.append(kwargs)
+        return _response(_connection_exchanges())
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    write_set = _write_set()
+    result = await generation.generate_connection_candidate(
+        request="Connect accepted components",
+        resolved_maturity="prototype",
+        write_set=write_set,
+        upstream_fingerprint="b" * 64,
+        accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(),
+        attempt=1,
+        prior_prompt_fingerprint="c" * 64,
+        prior_write_set_fingerprint=_fingerprint(
+            json.dumps(write_set, sort_keys=True, separators=(",", ":"))
+        ),
+        rejected_candidate=_connection_wire(),
+        structural_findings=[
+            {"code": "connection_wire_invalid", "path": "edges", "rule": "shape"}
+        ],
+    )
+    assert len(calls) == 1
+    assert set(calls[0]["response_schema"]["properties"]) == {"exchanges"}
+    assert (
+        calls[0]["telemetry"]["metadata"]["schema_version"]
+        == "staged_connections_exchanges_v1"
+    )
+    assert result["wire"] == {
+        "edges": [
+            _connection_wire()["edges"][0],
+            {
+                **_connection_wire()["edges"][0],
+                "source_index": 1,
+                "target_index": 0,
+                "label": "response",
+            },
+        ]
+    }
