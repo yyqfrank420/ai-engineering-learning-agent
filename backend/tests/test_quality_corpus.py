@@ -958,6 +958,8 @@ async def test_browser_turn_timing_counts_explanation_blocks_as_visible_content(
 
     assert 10 <= timings[0]["first_token_ms"] < 30
     assert 10 <= timings[0]["graph_output_latency_ms"] < 30
+    assert timings[0]["connected_graph_output_latency_ms"] is None
+    assert timings[0]["approved_graph_output_latency_ms"] is None
 
 
 @pytest.mark.asyncio
@@ -1564,10 +1566,38 @@ def test_browser_latency_summary_reports_nearest_rank_and_optional_gates():
     )
 
     assert report_only["metrics"] == {
-        "case_end_to_end": {"sample_count": 5, "p50_ms": 300, "p95_ms": 1000},
-        "turn_end_to_end": {"sample_count": 5, "p50_ms": 280, "p95_ms": 980},
-        "first_event": {"sample_count": 5, "p50_ms": 30, "p95_ms": 50},
-        "first_token": {"sample_count": 5, "p50_ms": 60, "p95_ms": 100},
+        "case_end_to_end": {
+            "sample_count": 5,
+            "mean_ms": 400,
+            "p50_ms": 300,
+            "p95_ms": 1000,
+        },
+        "turn_end_to_end": {
+            "sample_count": 5,
+            "mean_ms": 380,
+            "p50_ms": 280,
+            "p95_ms": 980,
+        },
+        "first_event": {
+            "sample_count": 5,
+            "mean_ms": 30,
+            "p50_ms": 30,
+            "p95_ms": 50,
+        },
+        "first_token": {
+            "sample_count": 5,
+            "mean_ms": 60,
+            "p50_ms": 60,
+            "p95_ms": 100,
+        },
+        **{
+            name: {"sample_count": 0, "mean_ms": None, "p50_ms": None, "p95_ms": None}
+            for name in (
+                "graph_output",
+                "connected_graph_output",
+                "approved_graph_output",
+            )
+        },
     }
     assert report_only["excluded_infrastructure_case_count"] == 1
     assert report_only["baseline_min_runs"] == 5
@@ -1578,6 +1608,253 @@ def test_browser_latency_summary_reports_nearest_rank_and_optional_gates():
     assert blocking["mode"] == "blocking"
     assert blocking["passed"] is False
     assert len(blocking["violations"]) == 2
+
+
+def test_graph_turn_metrics_distinguish_preview_connection_and_publication():
+    from eval.browser_runner import _graph_turn_metrics
+
+    components = {
+        "version": "components",
+        "nodes": [{"id": "entry"}, {"id": "service"}],
+        "edges": [],
+    }
+    connected = {
+        **components,
+        "version": "connected",
+        "edges": [{"source": "entry", "target": "service"}],
+    }
+    received = [
+        {"at": 160.0, "message": {"type": "graph_preview", "data": components}},
+        {"at": 210.0, "message": {"type": "graph_preview", "data": connected}},
+        {"at": 250.0, "message": {"type": "graph_data", "data": connected}},
+    ]
+
+    metrics = _graph_turn_metrics(
+        received, turn_started_at=100.0, previous_graph_versions=set()
+    )
+
+    assert metrics == {
+        "connected_graph_output_latency_ms": 110_000,
+        "approved_graph_output_latency_ms": 150_000,
+        "first_component_review_pass": None,
+        "first_connection_review_pass": None,
+    }
+
+
+@pytest.mark.parametrize("event_type", ["graph_preview", "graph_data"])
+def test_graph_turn_metrics_ignore_restored_and_unchanged_versions(event_type):
+    from eval.browser_runner import _graph_turn_metrics
+
+    graph = {
+        "version": "prior-approved",
+        "nodes": [{"id": "entry"}, {"id": "service"}],
+        "edges": [{"source": "entry", "target": "service"}],
+    }
+    metrics = _graph_turn_metrics(
+        [{"at": 160.0, "message": {"type": event_type, "data": graph}}],
+        turn_started_at=100.0,
+        previous_graph_versions={"prior-approved"},
+    )
+
+    assert metrics["connected_graph_output_latency_ms"] is None
+    assert metrics["approved_graph_output_latency_ms"] is None
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        [],
+        [{"source": "entry", "target": "missing"}],
+        [{"source": "entry", "target": "entry"}],
+    ],
+)
+def test_graph_turn_metrics_do_not_count_components_or_invalid_edges_as_connected(
+    edges,
+):
+    from eval.browser_runner import _graph_turn_metrics
+
+    graph = {"version": "components", "nodes": [{"id": "entry"}], "edges": edges}
+    metrics = _graph_turn_metrics(
+        [{"at": 160.0, "message": {"type": "graph_preview", "data": graph}}],
+        turn_started_at=100.0,
+        previous_graph_versions=set(),
+    )
+
+    assert metrics["connected_graph_output_latency_ms"] is None
+    assert metrics["approved_graph_output_latency_ms"] is None
+
+
+def test_graph_turn_metrics_retain_first_stage_review_outcome_after_correction():
+    from eval.browser_runner import _graph_turn_metrics
+
+    received = [
+        {
+            "at": 160.0 + index,
+            "message": {
+                "type": "workflow_progress",
+                "review_capture": {
+                    "stage": stage,
+                    "attempt": attempt,
+                    "result": {"approved": passed},
+                },
+            },
+        }
+        for index, (stage, attempt, passed) in enumerate(
+            [
+                ("components", 1, False),
+                ("components", 2, True),
+                ("connections", 1, True),
+            ]
+        )
+    ]
+    metrics = _graph_turn_metrics(
+        received, turn_started_at=100.0, previous_graph_versions=set()
+    )
+
+    assert metrics["first_component_review_pass"] is False
+    assert metrics["first_connection_review_pass"] is True
+    assert metrics["approved_graph_output_latency_ms"] is None
+
+
+def test_browser_latency_summary_reports_graph_means_separately_from_turn_completion():
+    from eval.browser_runner import _latency_summary
+
+    report = _latency_summary(
+        [
+            {
+                "latency_ms": 400_000,
+                "turns": [
+                    {
+                        "graph_output_latency_ms": 62_000,
+                        "connected_graph_output_latency_ms": 120_000,
+                        "approved_graph_output_latency_ms": 300_000,
+                    },
+                    {
+                        "graph_output_latency_ms": 68_000,
+                        "connected_graph_output_latency_ms": 140_000,
+                        "approved_graph_output_latency_ms": None,
+                    },
+                ],
+            },
+        ]
+    )
+
+    assert report["metrics"]["graph_output"]["mean_ms"] == 65_000
+    assert report["metrics"]["connected_graph_output"]["mean_ms"] == 130_000
+    assert report["metrics"]["approved_graph_output"] == {
+        "sample_count": 1,
+        "mean_ms": 300_000,
+        "p50_ms": 300_000,
+        "p95_ms": 300_000,
+    }
+
+
+def test_browser_first_review_summary_counts_false_and_excludes_unknown_outcomes():
+    from eval.browser_runner import _latency_summary
+
+    report = _latency_summary(
+        [
+            {
+                "turns": [
+                    {"first_component_review_pass": value}
+                    for value in [True, False, None, 1, "true"]
+                ],
+            }
+        ]
+    )
+
+    assert report["first_review"] == {
+        "components": {"reviewed_count": 2, "passed_count": 1, "pass_rate": 0.5},
+        "connections": {"reviewed_count": 0, "passed_count": 0, "pass_rate": None},
+    }
+
+
+def test_first_review_summary_retains_observations_before_infrastructure_failure():
+    from eval.browser_runner import _latency_summary
+
+    failed_attempt = {
+        "latency_ms": 400_000,
+        "failure_details": [{"kind": "infrastructure", "blocking": True}],
+        "turns": [{"first_component_review_pass": False}],
+    }
+    successful_attempt = {
+        "latency_ms": 100_000,
+        "turns": [{"first_component_review_pass": True}],
+    }
+    report = _latency_summary([failed_attempt])
+    retry_report = _latency_summary(
+        [{**successful_attempt, "attempts": [failed_attempt, successful_attempt]}]
+    )
+
+    assert report["first_review"]["components"] == {
+        "reviewed_count": 1,
+        "passed_count": 0,
+        "pass_rate": 0.0,
+    }
+    assert report["excluded_infrastructure_case_count"] == 1
+    assert report["metrics"]["case_end_to_end"]["sample_count"] == 0
+    assert retry_report["first_review"]["components"] == {
+        "reviewed_count": 2,
+        "passed_count": 1,
+        "pass_rate": 0.5,
+    }
+    assert retry_report["metrics"]["case_end_to_end"]["sample_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_browser_graph_timing_replay_does_not_count_restored_graph_on_next_turn(
+    monkeypatch,
+):
+    from eval.browser_runner import BrowserQualityError, _send_case_steps
+
+    original = load_corpus().by_id["rag-grounding"]
+    case = original.model_copy(update={"steps": [original.steps[0]] * 2})
+    components = {
+        "version": "components",
+        "nodes": [{"id": "entry"}, {"id": "service"}],
+        "edges": [],
+    }
+    graph = {
+        **components,
+        "version": "approved",
+        "edges": [{"source": "entry", "target": "service"}],
+    }
+
+    async def fake_send_step(page, sent_case, step_index, frames, *, timeout_seconds):
+        messages = (
+            [
+                (160.0, {"type": "graph_preview", "data": components}),
+                (200.0, {"type": "graph_preview", "data": graph}),
+                (250.0, {"type": "graph_data", "data": graph}),
+            ]
+            if step_index == 0
+            else [(160.0, {"type": "graph_data", "data": graph})]
+        )
+        frames.extend(
+            {"at": at, "direction": "received", "message": message}
+            for at, message in messages
+        )
+        return [message for _, message in messages]
+
+    monkeypatch.setattr("eval.browser_runner._send_step", fake_send_step)
+    monkeypatch.setattr("eval.browser_runner.time.time", lambda: 100.0)
+    timings = []
+    with pytest.raises(BrowserQualityError, match="reused graph version"):
+        await _send_case_steps(
+            None,
+            case,
+            [],
+            [],
+            timeout_seconds=390,
+            turn_timings=timings,
+        )
+
+    assert timings[0]["graph_output_latency_ms"] == 60_000
+    assert timings[0]["connected_graph_output_latency_ms"] == 100_000
+    assert timings[0]["approved_graph_output_latency_ms"] == 150_000
+    assert timings[1]["graph_output_latency_ms"] == 60_000
+    assert timings[1]["connected_graph_output_latency_ms"] is None
+    assert timings[1]["approved_graph_output_latency_ms"] is None
 
 
 def test_diagnostic_browser_suite_accepts_only_bounded_corpus_case_selection():

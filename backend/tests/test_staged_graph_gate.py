@@ -87,8 +87,8 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
             "approved": False,
             "findings": [
                 {
-                    "rule_code": "domain_specificity",
-                    "reason": "The ownership is generic.",
+                    "rule_code": "brief_coverage",
+                    "reason": "The requested workflow has no owner.",
                     "record_indexes": [0],
                 }
             ],
@@ -109,8 +109,8 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
         "terminal": False,
         "findings": [
             {
-                "rule_code": "domain_specificity",
-                "reason": "The ownership is generic.",
+                "rule_code": "brief_coverage",
+                "reason": "The requested workflow has no owner.",
                 "record_indexes": [0],
             }
         ],
@@ -121,8 +121,8 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
             gate.COMPONENT_RULE_CODES,
             [
                 {
-                    "rule_code": "domain_specificity",
-                    "reason": "The ownership is generic.",
+                    "rule_code": "brief_coverage",
+                    "reason": "The requested workflow has no owner.",
                     "record_indexes": [0],
                 }
             ],
@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v11"
+        "staged_component_gate_v12"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -407,7 +407,7 @@ def test_malformed_top_level_response_is_terminal(monkeypatch):
 @pytest.mark.parametrize("satisfied", [True, False])
 def test_rule_requires_reason_even_when_satisfied(monkeypatch, satisfied):
     payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
-    payload["rule_reviews"]["domain_specificity"] = {
+    payload["rule_reviews"]["brief_coverage"] = {
         "satisfied": satisfied,
         "reason": " ",
         "record_indexes": [],
@@ -424,7 +424,7 @@ def test_rule_requires_reason_even_when_satisfied(monkeypatch, satisfied):
     assert result["terminal"] is True
     assert result["approved"] is False
     assert result["findings"] == []
-    assert result["diagnostics"] == ["invalid review reason for domain_specificity"]
+    assert result["diagnostics"] == ["invalid review reason for brief_coverage"]
 
 
 def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
@@ -506,7 +506,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v10"
+        == "staged_connection_gate_v11"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -520,7 +520,10 @@ def test_runtime_completeness_allows_observation_only_telemetry_outcome():
         "connections",
         "Connect observations and accepted processing to measurable outcomes. Require "
         "decisions and actions only when accepted component responsibilities own them. For "
-        "observation-only designs, a durable telemetry sink is a complete outcome.",
+        "observation-only designs, a durable telemetry sink is a complete outcome. "
+        "For every requested behavior, identify the owner and its actual trigger or "
+        "change-input contract. A read, response, or incidental reachability does not "
+        "invoke an unrelated write or adjustment.",
     )
 
 
@@ -550,11 +553,9 @@ def test_production_connection_schema_preserves_hard_rules(monkeypatch):
 def test_gate_rejects_an_incomplete_rule_audit(monkeypatch, invalid_audit):
     payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
     if invalid_audit == "missing":
-        payload["rule_reviews"].pop("domain_specificity")
+        payload["rule_reviews"].pop("brief_coverage")
     elif invalid_audit == "unknown":
-        payload["rule_reviews"]["invented"] = payload["rule_reviews"][
-            "domain_specificity"
-        ]
+        payload["rule_reviews"]["invented"] = payload["rule_reviews"]["brief_coverage"]
     else:
         payload["rule_reviews"] = []
     _stub_response(monkeypatch, payload)
@@ -811,7 +812,7 @@ def test_scoped_review_preserves_blockers_outside_changed_records(
 )
 def test_malformed_rule_reviews_fail_terminally(monkeypatch, row):
     payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
-    payload["rule_reviews"]["domain_specificity"] = row
+    payload["rule_reviews"]["brief_coverage"] = row
     _stub_response(monkeypatch, payload)
     result = asyncio.run(
         gate.review_components(
@@ -829,16 +830,16 @@ def test_malformed_rule_reviews_fail_terminally(monkeypatch, row):
 
 @pytest.mark.parametrize("duplicate_at", ["top", "rule", "field"])
 def test_duplicate_json_review_keys_fail_closed(duplicate_at):
-    rules = ("domain_specificity",)
+    rules = ("brief_coverage",)
     row = '{"satisfied":true,"reason":"Owned here","record_indexes":[]}'
-    text = '{"rule_reviews":{"domain_specificity":' + row + "}}"
+    text = '{"rule_reviews":{"brief_coverage":' + row + "}}"
     if duplicate_at == "top":
         text = text[:-1] + ',"rule_reviews":{}}'
     elif duplicate_at == "rule":
         text = (
-            '{"rule_reviews":{"domain_specificity":'
+            '{"rule_reviews":{"brief_coverage":'
             + row
-            + ',"domain_specificity":'
+            + ',"brief_coverage":'
             + row
             + "}}"
         )
@@ -915,7 +916,7 @@ def test_protected_evaluation_captures_exact_review_inputs_and_result(
         else [
             {
                 "rule_code": (
-                    "domain_specificity"
+                    "brief_coverage"
                     if stage == "components"
                     else "runtime_completeness"
                 ),
@@ -1037,7 +1038,7 @@ def test_review_capture_requires_every_protected_evaluation_condition(
         ("shape", "provider response has an invalid top-level shape"),
         ("fields", "provider response has an incomplete or unknown rule review"),
         ("finding", "provider response has an incomplete or unknown rule review"),
-        ("empty_reason", "invalid review reason for domain_specificity"),
+        ("empty_reason", "invalid review reason for brief_coverage"),
     ],
 )
 def test_terminal_review_capture_retains_diagnostic_without_raw_response(
@@ -1067,7 +1068,7 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
                 "record_indexes": [],
             }
         elif failure == "empty_reason":
-            payload["rule_reviews"]["domain_specificity"]["reason"] = ""
+            payload["rule_reviews"]["brief_coverage"]["reason"] = ""
         response = _response(
             payload,
             finish_reason="max_tokens" if failure == "unfinished" else "end_turn",
@@ -1198,7 +1199,7 @@ def test_review_capture_send_failure_preserves_gate_result(
     findings = (
         []
         if approved
-        else [{"rule_code": "domain_specificity", "reason": "Missing ownership."}]
+        else [{"rule_code": "brief_coverage", "reason": "Missing ownership."}]
     )
     _stub_response(monkeypatch, {"approved": approved, "findings": findings})
 
@@ -1320,8 +1321,12 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
 @pytest.mark.parametrize(
     ("stage", "version_field", "previous_version"),
     [
-        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v10"),
-        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v9"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v11"),
+        (
+            "connections",
+            "_CONNECTION_GATE_PROMPT_VERSION",
+            "staged_connection_gate_v10",
+        ),
     ],
 )
 def test_per_rule_review_version_invalidates_prior_policy_identity(
@@ -1492,7 +1497,7 @@ def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkey
     ],
 )
 def test_rule_review_array_requires_every_rule_exactly_once(malformation):
-    rules = ("domain_specificity", "objective_fidelity")
+    rules = ("brief_coverage", "objective_fidelity")
     rows = [
         {
             "rule_code": code,
@@ -1529,7 +1534,7 @@ def test_rule_review_array_requires_every_rule_exactly_once(malformation):
 
 
 def test_previous_keyed_provider_schema_is_rejected():
-    rules = ("domain_specificity",)
+    rules = ("brief_coverage",)
     response = StructuredLLMResponse(
         text=json.dumps(_rule_reviews(rules)),
         finish_reason="end_turn",

@@ -17,6 +17,7 @@ from typing import Any
 from adapters.llm_adapter import build_telemetry
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_REVIEW_STANDARD,
     staged_review_requirements,
     TOPOLOGY_PROOF_REQUIREMENTS,
 )
@@ -24,12 +25,13 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v11"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v10"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v12"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v11"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
-    "candidate records. Do not infer hidden implementation details."
+    "candidate records. Do not infer hidden implementation details. "
+    + STAGED_REVIEW_STANDARD
 )
 # Anthropic drops maxLength from its compiled schema. Preserve actionable
 # critique for correction and bound storage without discarding the blocker.
@@ -230,7 +232,9 @@ def _prompt(
         "Return only the JSON response defined by the supplied schema.\n"
         "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
         "candidate evidence, with one short reason identifying its concrete witness or "
-        "explaining why the rule is inapplicable. When unsatisfied, identify all missing "
+        "explaining why the rule is inapplicable. Attribute mechanisms only when the "
+        "cited records state them; identify unspecified detail without claiming it exists. "
+        "When unsatisfied, identify all missing "
         "obligations for that rule in the reason. Do not return a separate approval decision. "
         "Copy the explicit record_index values into record_indexes; never infer indexes from "
         "record IDs or count the records yourself. Use [] for a global or inapplicable rule, "

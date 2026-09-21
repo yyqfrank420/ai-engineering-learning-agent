@@ -419,6 +419,53 @@ def test_format_graph_context_summarises_nodes_edges_and_sequence():
     assert "- step 1: Retriever — Search the book" in summary
 
 
+def test_graph_context_omits_duplicate_edge_descriptions_and_retains_distinct_contracts():
+    from agent.nodes.orchestrator_node import _format_graph_context
+
+    graph = {
+        "title": "Evidence retrieval",
+        "nodes": [
+            {"id": "reader", "label": "Reader"},
+            {"id": "store", "label": "Evidence store"},
+        ],
+        "edges": [
+            {
+                "source": "reader",
+                "target": "store",
+                "label": "request authorized passages",
+                "description": "request authorized passages",
+                "technology": "search API",
+                "flow": "runtime",
+                "sync": "sync",
+            },
+            {
+                "source": "store",
+                "target": "reader",
+                "label": "return passages",
+                "description": "Returns only passages within the caller's access scope",
+                "flow": "runtime",
+                "sync": "sync",
+            },
+        ],
+    }
+
+    summary = _format_graph_context(graph)
+
+    assert "- reader (Reader)" in summary
+    assert "- store (Evidence store)" in summary
+    assert (
+        "- reader -> store: request authorized passages | runtime | sync | search API\n"
+        in summary
+    )
+    assert summary.count("request authorized passages") == 1
+    assert (
+        "- store -> reader: return passages | runtime | sync | "
+        "Returns only passages within the caller's access scope"
+        in summary
+    )
+    assert graph["edges"][0]["description"] == "request authorized passages"
+
+
 def test_concept_graph_context_keeps_navigation_but_excludes_evidence_like_metadata():
     from agent.nodes.orchestrator_node import _format_graph_context
 

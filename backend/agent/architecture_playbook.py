@@ -257,10 +257,12 @@ def _prompt_json(value: dict[str, str]) -> str:
     )
 
 
-def format_evidence_bundle(bundle: dict[str, Any]) -> str:
-    checklist = "\n".join(
-        f"- {area}: {question}" for area, question in ARCHITECTURE_CHECKLIST
-    )
+def format_evidence_bundle(
+    bundle: dict[str, Any],
+    *,
+    include_checklist: bool = True,
+    include_reference_instructions: bool = True,
+) -> str:
     evidence_parts = []
     for index, item in enumerate(evidence_records(bundle), start=1):
         source_ref = f"source_{index}"
@@ -276,11 +278,17 @@ def format_evidence_bundle(bundle: dict[str, Any]) -> str:
         "\n\n".join(evidence_parts)
         or "(no direct passage or external source record; mark recommendations as assumptions)"
     )
-    return (
-        f"Stable review frame:\n{checklist}\n\n"
-        "Source records:\n"
-        f"{evidence}\n\n"
-        "For book or web evidence, evidence_ref must be the exact short source slot shown inside "
-        "square brackets, without the brackets, such as source_1. Display references and source "
-        "text are never valid evidence_ref values."
-    )
+    parts = []
+    if include_checklist:
+        checklist = "\n".join(
+            f"- {area}: {question}" for area, question in ARCHITECTURE_CHECKLIST
+        )
+        parts.append(f"Stable review frame:\n{checklist}")
+    parts.append(f"Source records:\n{evidence}")
+    if include_reference_instructions:
+        parts.append(
+            "For book or web evidence, evidence_ref must be the exact short source slot shown inside "
+            "square brackets, without the brackets, such as source_1. Display references and source "
+            "text are never valid evidence_ref values."
+        )
+    return "\n\n".join(parts)

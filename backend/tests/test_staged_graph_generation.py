@@ -511,7 +511,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v11"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v12"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -538,9 +538,11 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
         in prompt
     )
     assert (
-        "Observation-only monitoring may terminate at a durable telemetry/log sink"
+        "A durable telemetry/log sink completes observation-only responsibilities"
         in prompt
     )
+    assert "connect its trigger to the execution path" in prompt
+    assert "storing a recommendation does not execute that action" in prompt
 
 
 @pytest.mark.parametrize(
@@ -671,12 +673,12 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert result["wire"] == _component_wire()
     assert len(result["prompt_fingerprint"]) == 64
     assert calls[0]["model"] == model
-    assert calls[0]["effort"] == "high"
+    assert calls[0]["effort"] == "low"
     assert calls[0]["provider_attempt_limit"] == 1
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v14"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v15"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 

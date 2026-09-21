@@ -6,6 +6,16 @@ from typing import Any
 # Reviewer explanations must retain the repair context through generation.
 MAX_REVIEW_REASON_CHARS = 2_000
 
+STAGED_REVIEW_STANDARD = (
+    "Evaluate the requested explanation or design at its selected depth. Block a "
+    "demonstrated contradiction, a missing requested behavior, an unusable main "
+    "flow, or a violated required control. Optional implementation detail, naming "
+    "preferences, and a different valid decomposition are not blockers. State the "
+    "specific broken behavior when rejecting; omission alone does not prove a "
+    "runtime failure. Compatible internal operations may share an owner; do not "
+    "expand the graph just to illustrate each checklist item."
+)
+
 RUBRIC_CRITERIA = {
     "domain_specificity": (
         "components",
@@ -17,7 +27,7 @@ RUBRIC_CRITERIA = {
     ),
     "runtime_completeness": (
         "connections",
-        "Connect observations and accepted processing to measurable outcomes. Require decisions and actions only when accepted component responsibilities own them. For observation-only designs, a durable telemetry sink is a complete outcome.",
+        "Connect observations and accepted processing to measurable outcomes. Require decisions and actions only when accepted component responsibilities own them. For observation-only designs, a durable telemetry sink is a complete outcome. For every requested behavior, identify the owner and its actual trigger or change-input contract. A read, response, or incidental reachability does not invoke an unrelated write or adjustment.",
     ),
     "safe_action_boundary": (
         "connections",
@@ -209,7 +219,9 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     "learning_and_release": (
         "Route feedback through curated versioned evidence, including hostile traces, "
         "offline evaluation, reviewed immutable release, and canary. Keep promotion and "
-        "rollback as distinct controlled operations and record their outcomes."
+        "rollback as distinct controlled operations for every serving target receiving a "
+        "canary, and record their outcomes. A transition for one target cannot promote "
+        "or roll back another target's release."
     ),
     "audit_and_provenance": (
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
@@ -242,6 +254,9 @@ def staged_review_requirements(
     excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
+    # Naming and brevity guide presentation. Objective fidelity and brief coverage
+    # still block an incorrect subject or an unmet explicit requirement.
+    excluded.update({"domain_specificity", "succinctness"})
     requirements = {
         code: requirement
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
@@ -274,8 +289,11 @@ def staged_review_requirements(
                 " State required internal ordering, such as "
                 "reserve before send and validate before deliver, in the owning component's "
                 "responsibility; connection generation cannot change that responsibility."
-                " " + STAGED_PRODUCTION_REQUIREMENTS["state_effect_reconciliation"]
-                + " " + STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+                " For retryable writes, name the owner of durable operation identity, atomic "
+                "deduplication, and reconciliation. For continuous streams, name the owner of "
+                "bounded backpressure, ordering, replay, late data, and schema compatibility. "
+                "Keep responsibilities concise; "
+                "the connection stage specifies interaction contracts and their outcomes."
             )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (

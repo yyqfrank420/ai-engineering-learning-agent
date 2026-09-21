@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-12
+Last updated: 2026-09-21
 
 This is the current runtime contract for the production-quality demo.
 
@@ -29,13 +29,13 @@ This is the current runtime contract for the production-quality demo.
 4. LangGraph routes, restores terse follow-ups to the full design intent, and searches that canonical
    query rather than the raw fragment. Book retrieval and enabled web research run in parallel; the
    product UI enables web grounding by default while retaining an explicit book-only control. Their
-   results are combined with the stable review frame covering platform boundaries, model lifecycle,
-   data/memory, evaluation, safety, idempotent writes, latency/cost, reliability, and deployment.
+   results become bounded source records. Staged authoring and review share these records and
+   maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
 5. `GRAPH_PIPELINE_MODE=staged` is the default for applied create and edit requests.
    `legacy` remains an explicit rollback. Concept diagrams retain their existing path.
    Each request uses one graph pipeline. Steering or cancellation ends the request-scoped state
    machine before a replacement request begins.
-6. Kimi K3 at high effort produces a component wire, then a connection wire. The component wire
+6. Kimi K3 at low effort produces a component wire, then a connection wire. The component wire
    contains the root index, title, assumptions, capabilities, and each component's label, type,
    responsibility, group label, group kind, and primary-flow membership. It does not contain a
    composition layer. Scoped edits instead emit additions and permitted field updates in
@@ -65,6 +65,11 @@ This is the current runtime contract for the production-quality demo.
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   Naming and conciseness do not block staged publication. Authoring and review share a
+   materiality standard: reject broken requested behavior, contradictions, unusable main
+   flows, and violated required controls. Optional implementation detail and alternative
+   valid decompositions do not justify rejection. Correctness and explicit requirements
+   remain binding. Generation aims for the smallest coherent graph; size limits are ceilings.
    Full connection generation authors exchanges: one directed contract and an optional return
    contract. The server expands the return with reversed endpoints. One-way interactions remain
    one-way, and synchronous/asynchronous timing does not imply a return contract. Canonical graph
@@ -132,12 +137,18 @@ capture use shared transactional storage. Rate-limit identifiers are HMAC-derive
 persistence, so Cloud Run scale-out neither resets the limits nor stores raw emails/IPs in the
 limiter table.
 
-The staged path gives each active role one explicit owner. Kimi K3 high authors bounded component
+The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
 and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
 validation, maturity, and all state transitions. Opus 5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
-is nine. Renderer infrastructure failures add no model calls. Retrieval and the standing checklist
+is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
 do not add model calls.
+
+Browser diagnostics distinguish the first component map, the first connected draft, and the
+new approved graph. Restored versions do not count as new approvals. Reports include latency
+means and first-review pass counts, with failed attempts retained in the review denominator.
+The current latency experiments and their limits are recorded in
+[graph-latency-experiments.md](graph-latency-experiments.md).
 
 Text answers use one short scope and evidence contract. UI depth changes detail within the user's
 task; it does not turn a memory, summary, or explanation request into a system design. Prior assistant
