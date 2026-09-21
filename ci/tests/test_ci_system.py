@@ -759,7 +759,8 @@ def test_scheduled_eval_missing_approval_fails_closed_before_expensive_setup():
     assert "2>/dev/null || true" not in preflight
     assert (
         'if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ] '
-        '&& { [ "$EVAL_SUITE" = full ] || [ "$EVAL_SUITE" = diagnostic ]; }; then' in preflight
+        '&& { [ "$EVAL_SUITE" = full ] || [ "$EVAL_SUITE" = diagnostic ]; }; then'
+        in preflight
     )
     assert "Missing exact-tree evaluation approval:" in preflight
     assert (
@@ -793,7 +794,8 @@ def test_scheduled_eval_preserves_approval_and_manual_build_boundaries():
     assert "Missing exact-tree evaluation approval:" in workflow
     assert (
         'if [ "$GITHUB_EVENT_NAME" != workflow_dispatch ] || '
-        '{ [ "$EVAL_SUITE" != full ] && [ "$EVAL_SUITE" != diagnostic ]; }; then' in workflow
+        '{ [ "$EVAL_SUITE" != full ] && [ "$EVAL_SUITE" != diagnostic ]; }; then'
+        in workflow
     )
     assert "Scheduled evaluation did not pass." in workflow
     assert (
@@ -1075,9 +1077,7 @@ def test_scheduled_mode_selection_preserves_manual_intent_and_rejects_invalid_mo
         assert f"EVAL_PIPELINE_MODE={expected}\n" in github_env.read_text()
     assert (
         workflow.index("name: Select nightly rotation")
-        < workflow.index(
-            "name: Preflight exact-tree approval before expensive setup"
-        )
+        < workflow.index("name: Preflight exact-tree approval before expensive setup")
         < workflow.index("pip install -r backend/requirements.txt")
     )
 
@@ -1248,7 +1248,9 @@ def _calibration_workflow_python(workflow_name, step_name, *, marker="PY", index
     return dedent(blocks[index])
 
 
-@pytest.mark.parametrize("workflow_name", (*_CALIBRATION_WORKFLOWS, "semantic-review-replay.yml"))
+@pytest.mark.parametrize(
+    "workflow_name", (*_CALIBRATION_WORKFLOWS, "semantic-review-replay.yml")
+)
 @pytest.mark.parametrize(
     "change",
     [
@@ -1362,16 +1364,28 @@ def reviewed_calibration_files(tmp_path, monkeypatch):
         "corpus_version": corpus["corpus_version"],
         "release_identity": corpus["release_identity"],
         "corpus_sha256": behavior_sha,
-        "case_states": [{"id": case["id"], "state": "completed"} for case in corpus["cases"]],
+        "case_states": [
+            {"id": case["id"], "state": "completed"} for case in corpus["cases"]
+        ],
         "results": [
             {
-                "id": case["id"], "passed": True, "deterministic_failures": [],
-                "failure_details": [], "execution_state": "completed",
+                "id": case["id"],
+                "passed": True,
+                "deterministic_failures": [],
+                "failure_details": [],
+                "execution_state": "completed",
                 "turns": [
-                    {"turn": index, "prompt": step["prompt"], "answer": "Captured answer."}
+                    {
+                        "turn": index,
+                        "prompt": step["prompt"],
+                        "answer": "Captured answer.",
+                    }
                     for index, step in enumerate(case["steps"], 1)
                 ],
-                "events": [{"type": "done", "eval_turn": index} for index in range(1, len(case["steps"]) + 1)],
+                "events": [
+                    {"type": "done", "eval_turn": index}
+                    for index in range(1, len(case["steps"]) + 1)
+                ],
                 "screenshot": f"screenshots/{case['id']}.png",
                 "trace": f"traces/{case['id']}.zip",
             }
@@ -1462,7 +1476,13 @@ def test_calibration_evidence_requires_complete_reviewable_browser_capture(
         capture["results"][0].update(
             passed=False,
             deterministic_failures=["graph missing"],
-            failure_details=[{"kind": "quality", "code": "required_graph_missing", "message": "graph missing"}],
+            failure_details=[
+                {
+                    "kind": "quality",
+                    "code": "required_graph_missing",
+                    "message": "graph missing",
+                }
+            ],
         )
         if change == "infrastructure":
             capture["results"][0]["failure_details"][0]["kind"] = "infrastructure"
@@ -1545,7 +1565,9 @@ def test_calibration_revalidates_already_promoted_browser_evidence(
             exec(compile(script, "judge-calibration.yml", "exec"), {})
 
 
-@pytest.mark.parametrize("change", [None, "negative", "missing_done", "wrong_commit", "digest"])
+@pytest.mark.parametrize(
+    "change", [None, "negative", "missing_done", "wrong_commit", "digest"]
+)
 def test_full_semantic_replay_preserves_reviewable_negative_evidence(
     reviewed_calibration_files, monkeypatch, change
 ):
@@ -1560,7 +1582,9 @@ def test_full_semantic_replay_preserves_reviewable_negative_evidence(
     elif change == "missing_done":
         capture["results"][0]["events"] = []
     elif change == "wrong_commit":
-        (source / "run-context.json").write_text(json.dumps({"run_id": "123", "commit_sha": "c" * 40}))
+        (source / "run-context.json").write_text(
+            json.dumps({"run_id": "123", "commit_sha": "c" * 40})
+        )
     elif change == "digest":
         capture["corpus_sha256"] = "0" * 64
     capture_path = source / "browser-results.json"
@@ -1568,13 +1592,17 @@ def test_full_semantic_replay_preserves_reviewable_negative_evidence(
     original = capture_path.read_bytes()
     monkeypatch.setenv("GITHUB_SHA", "b" * 40)
     monkeypatch.setenv("GITHUB_ACTOR", "reviewer")
-    monkeypatch.setattr("backend.eval.quality_corpus.corpus_sha256", lambda: os.environ["CORPUS_SHA"])
+    monkeypatch.setattr(
+        "backend.eval.quality_corpus.corpus_sha256", lambda: os.environ["CORPUS_SHA"]
+    )
     script = _calibration_workflow_python(
         "semantic-review-replay.yml", "Validate deterministic scheduled source evidence"
     )
     if change in {None, "negative"}:
         exec(compile(script, "semantic-review-replay.yml", "exec"), {})
-        context = json.loads(Path("artifacts/semantic-replay/replay-context.json").read_text())
+        context = json.loads(
+            Path("artifacts/semantic-replay/replay-context.json").read_text()
+        )
         assert context["source_browser_sha256"] == hashlib.sha256(original).hexdigest()
         assert capture_path.read_bytes() == original
     else:
@@ -1582,7 +1610,9 @@ def test_full_semantic_replay_preserves_reviewable_negative_evidence(
             exec(compile(script, "semantic-review-replay.yml", "exec"), {})
 
 
-@pytest.mark.parametrize("name", ["live-eval.yml", "scheduled-eval.yml", "semantic-review-replay.yml"])
+@pytest.mark.parametrize(
+    "name", ["live-eval.yml", "scheduled-eval.yml", "semantic-review-replay.yml"]
+)
 def test_standard_evaluation_has_no_human_corpus_prerequisite(name):
     workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
     assert "CORPUS_STATUS" not in workflow
@@ -1654,7 +1684,9 @@ def test_invalid_ai_impact_cannot_skip_required_evaluation(
     assert "invalid AI-impact state" in result.stderr
 
 
-@pytest.mark.parametrize("corpus_status", ["approved", "pending_human_review", "", "invalid"])
+@pytest.mark.parametrize(
+    "corpus_status", ["approved", "pending_human_review", "", "invalid"]
+)
 def test_corpus_metadata_does_not_block_successful_automated_live_status(
     run_live_eval_status, corpus_status
 ):
@@ -1862,7 +1894,9 @@ def test_production_rollout_requires_passed_main_digest_and_smoke():
     assert "CORPUS_STATUS" not in workflow
     assert "branches: [main]" in workflow
     prepare = workflow.split("  prepare:\n", 1)[1].split("  backend:\n", 1)[0]
-    condition = " ".join(prepare.split("    if: >-\n", 1)[1].split("    outputs:", 1)[0].split())
+    condition = " ".join(
+        prepare.split("    if: >-\n", 1)[1].split("    outputs:", 1)[0].split()
+    )
     assert condition == (
         "github.event.workflow_run.conclusion == 'success' && "
         "github.event.workflow_run.head_repository.full_name == github.repository && "
@@ -1872,10 +1906,82 @@ def test_production_rollout_requires_passed_main_digest_and_smoke():
     )
     assert prepare.index("    if: >-") < prepare.index("actions/checkout@v4")
     assert "environment: production" in workflow
-    assert '$IMAGE:approved-tree-$TREE_SHA' in workflow
+    assert "$IMAGE:approved-tree-$TREE_SHA" in workflow
     assert "production will not rebuild or substitute another image" in workflow
-    assert "needs.backend.result == 'success' || needs.backend.result == 'skipped'" in workflow
+    assert (
+        "needs.backend.result == 'success' || needs.backend.result == 'skipped'"
+        in workflow
+    )
     assert workflow.index("./scripts/ci browser") < workflow.index("--to-tags")
+
+
+@pytest.mark.parametrize(
+    "lookup,expected_status,approved",
+    [
+        ("found", 0, True),
+        ("missing", 0, False),
+        ("ambiguous", 1, False),
+        ("malformed", 1, False),
+        ("error", 1, False),
+    ],
+)
+def test_live_eval_approval_lookup_matches_exact_artifact_tag_resource(
+    tmp_path, lookup, expected_status, approved
+):
+    bash_version = subprocess.run(
+        ["/bin/bash", "-c", "echo ${BASH_VERSINFO[0]}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if int(bash_version) < 4:
+        pytest.skip("The workflow uses mapfile, which requires Bash 4 or newer.")
+
+    workflow = (ROOT / ".github/workflows/live-eval.yml").read_text()
+    step = workflow.split("name: Resolve immutable digest for the approved tree\n", 1)[
+        1
+    ]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n  evaluate:", 1)[0])
+    executable = tmp_path / "gcloud"
+    executable.write_text(
+        """#!/bin/bash
+echo "$*" > "$GCLOUD_ARGS"
+case "$LOOKUP" in
+  found) echo projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+  missing) exit 0 ;;
+  ambiguous) printf '%s\n%s\n' projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+  malformed) echo projects/p/locations/europe-west2/repositories/r/packages/i/versions/not-a-digest ;;
+  error) echo PERMISSION_DENIED >&2; exit 7 ;;
+esac
+"""
+    )
+    executable.chmod(0o755)
+    output = tmp_path / "output"
+    args_file = tmp_path / "gcloud-args"
+    tree_sha = "c" * 40
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GCLOUD_ARGS": str(args_file),
+            "GITHUB_OUTPUT": str(output),
+            "IMAGE": "example/image",
+            "LOOKUP": lookup,
+            "TREE_SHA": tree_sha,
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == expected_status, result.stderr
+    assert f'tag~"/tags/approved-tree-{tree_sha}$"' in args_file.read_text()
+    output_text = output.read_text() if output.exists() else ""
+    assert ("approved=true" in output_text) is approved
+    assert ("approved=false" in output_text) is (lookup == "missing")
 
 
 @pytest.mark.parametrize("policy", [None, "report-only", "blocking"])
@@ -1896,41 +2002,60 @@ def test_live_dispatch_preserves_selected_manual_review_policy(monkeypatch, poli
     assert argv[argv.index("--manual-review-policy") + 1] == (policy or "report-only")
 
 
-@pytest.mark.parametrize("event,suite,can_build", [
-    ("workflow_dispatch", "full", True),
-    ("workflow_dispatch", "diagnostic", True),
-    ("workflow_dispatch", "nightly", False),
-    ("schedule", "nightly", False),
-    ("schedule", "full", False),
-    ("schedule", "diagnostic", False),
-])
+@pytest.mark.parametrize(
+    "event,suite,can_build",
+    [
+        ("workflow_dispatch", "full", True),
+        ("workflow_dispatch", "diagnostic", True),
+        ("workflow_dispatch", "nightly", False),
+        ("schedule", "nightly", False),
+        ("schedule", "full", False),
+        ("schedule", "diagnostic", False),
+    ],
+)
 @pytest.mark.parametrize("lookup", ["found", "missing", "error", "empty"])
 def test_scheduled_image_preflight_authorizes_only_bounded_manual_builds(
     tmp_path, event, suite, can_build, lookup
 ):
     workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text()
-    step = workflow.split("name: Preflight exact-tree approval before expensive setup\n", 1)[1]
+    step = workflow.split(
+        "name: Preflight exact-tree approval before expensive setup\n", 1
+    )[1]
     script = dedent(step.split("        run: |\n", 1)[1].split("      - uses:", 1)[0])
     executable = tmp_path / "gcloud"
-    executable.write_text('''#!/bin/bash
+    executable.write_text("""#!/bin/bash
 case "$LOOKUP" in
   found) echo sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
   missing) echo 'Image not found.' >&2; exit 1 ;;
   error) echo 'PERMISSION_DENIED' >&2; exit 7 ;;
   empty) exit 0 ;;
 esac
-''')
+""")
     executable.chmod(0o755)
     output = tmp_path / "output"
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
         cwd=ROOT,
-        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-             "GITHUB_EVENT_NAME": event, "EVAL_SUITE": suite, "LOOKUP": lookup,
-             "GITHUB_OUTPUT": str(output), "RUNNER_TEMP": str(tmp_path), "IMAGE": "example/image"},
-        capture_output=True, text=True, timeout=5, check=False,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_EVENT_NAME": event,
+            "EVAL_SUITE": suite,
+            "LOOKUP": lookup,
+            "GITHUB_OUTPUT": str(output),
+            "RUNNER_TEMP": str(tmp_path),
+            "IMAGE": "example/image",
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
     )
-    expected = 0 if lookup == "found" or (lookup == "missing" and can_build) else (7 if lookup == "error" else 1)
+    expected = (
+        0
+        if lookup == "found" or (lookup == "missing" and can_build)
+        else (7 if lookup == "error" else 1)
+    )
     assert result.returncode == expected, result.stderr
     assert "commit_sha=" in output.read_text()
     assert "tree_sha=" in output.read_text()
@@ -1941,18 +2066,24 @@ esac
         assert "lookup returned no digest" in result.stderr
 
 
-@pytest.mark.parametrize("event,suite,can_build", [
-    ("workflow_dispatch", "full", True),
-    ("workflow_dispatch", "diagnostic", True),
-    ("workflow_dispatch", "nightly", False),
-    ("schedule", "nightly", False),
-])
+@pytest.mark.parametrize(
+    "event,suite,can_build",
+    [
+        ("workflow_dispatch", "full", True),
+        ("workflow_dispatch", "diagnostic", True),
+        ("workflow_dispatch", "nightly", False),
+        ("schedule", "nightly", False),
+    ],
+)
 @pytest.mark.parametrize("existing_digest", ["", "sha256:" + "a" * 64])
 def test_scheduled_candidate_reuses_digest_or_builds_once(
     tmp_path, event, suite, can_build, existing_digest
 ):
     workflow = (ROOT / ".github/workflows/scheduled-eval.yml").read_text()
-    step = workflow.split("- name: Resolve approved digest or build an ephemeral evaluation candidate\n", 1)[1]
+    step = workflow.split(
+        "- name: Resolve approved digest or build an ephemeral evaluation candidate\n",
+        1,
+    )[1]
     script = dedent(step.split("        run: |\n", 1)[1].split("      - name:", 1)[0])
     calls = tmp_path / "calls"
     for name, body in {
@@ -1965,14 +2096,27 @@ def test_scheduled_candidate_reuses_digest_or_builds_once(
     output = tmp_path / "environment"
     result = subprocess.run(
         ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
-        env={**os.environ, "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
-             "GITHUB_EVENT_NAME": event, "EVAL_SUITE": suite,
-             "APPROVED_IMAGE_DIGEST": existing_digest, "GITHUB_ENV": str(output),
-             "IMAGE": "example/image", "GITHUB_RUN_ID": "123", "GITHUB_RUN_ATTEMPT": "2",
-             "EVALUATION_COMMIT_SHA": "c" * 40, "CALLS": str(calls)},
-        capture_output=True, text=True, timeout=5, check=False,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GITHUB_EVENT_NAME": event,
+            "EVAL_SUITE": suite,
+            "APPROVED_IMAGE_DIGEST": existing_digest,
+            "GITHUB_ENV": str(output),
+            "IMAGE": "example/image",
+            "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "2",
+            "EVALUATION_COMMIT_SHA": "c" * 40,
+            "CALLS": str(calls),
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
     )
-    assert result.returncode == (0 if existing_digest or can_build else 1), result.stderr
+    assert result.returncode == (0 if existing_digest or can_build else 1), (
+        result.stderr
+    )
     if existing_digest:
         assert not calls.exists()
         assert output.read_text() == f"IMAGE_DIGEST={existing_digest}\n"
@@ -1982,26 +2126,49 @@ def test_scheduled_candidate_reuses_digest_or_builds_once(
         assert invocations[0].startswith("docker buildx build ")
         assert "--tag example/image:evaluation-123-2 --push ." in invocations[0]
         assert f"org.opencontainers.image.revision={'c' * 40}" in invocations[0]
-        assert output.read_text() == f"EVALUATION_IMAGE_TAG=evaluation-123-2\nIMAGE_DIGEST=sha256:{'b' * 64}\n"
+        assert (
+            output.read_text()
+            == f"EVALUATION_IMAGE_TAG=evaluation-123-2\nIMAGE_DIGEST=sha256:{'b' * 64}\n"
+        )
     else:
         assert not calls.exists()
         assert not output.exists()
 
 
-@pytest.mark.parametrize("change", [
-    "pass", "manual_review", "mixed", "fail", "infrastructure",
-    "failed_case", "infrastructure_case", "unknown_case", "missing_decision",
-    "blocking_fail", "missing_blocking_status", "reordered", "missing_case",
-    "duplicate", "missing_evaluations", "wrong_suite", "wrong_kind",
-    "missing_report", "missing_provenance", "missing_subset",
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "pass",
+        "manual_review",
+        "mixed",
+        "fail",
+        "infrastructure",
+        "failed_case",
+        "infrastructure_case",
+        "unknown_case",
+        "missing_decision",
+        "blocking_fail",
+        "missing_blocking_status",
+        "reordered",
+        "missing_case",
+        "duplicate",
+        "missing_evaluations",
+        "wrong_suite",
+        "wrong_kind",
+        "missing_report",
+        "missing_provenance",
+        "missing_subset",
+    ],
+)
 def test_selective_replay_requires_exact_automated_passing_evidence(
     tmp_path, monkeypatch, change
 ):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("SELECTED_CASES_JSON", '["memory", "long-context"]')
     report = {
-        "kind": "live_gate", "suite": "diagnostic", "status": "pass",
+        "kind": "live_gate",
+        "suite": "diagnostic",
+        "status": "pass",
         "blocking_status": "pass",
         "evaluations": [
             {"id": "memory", "decision": "pass"},
@@ -2015,7 +2182,9 @@ def test_selective_replay_requires_exact_automated_passing_evidence(
             report["evaluations"][1]["decision"] = "manual_review"
     elif change in {"failed_case", "infrastructure_case", "unknown_case"}:
         report["evaluations"][0]["decision"] = {
-            "failed_case": "fail", "infrastructure_case": "infrastructure", "unknown_case": "unknown",
+            "failed_case": "fail",
+            "infrastructure_case": "infrastructure",
+            "unknown_case": "unknown",
         }[change]
     elif change == "missing_decision":
         report["evaluations"][0].pop("decision")
