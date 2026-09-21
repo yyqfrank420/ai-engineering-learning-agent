@@ -1,7 +1,7 @@
 name: Deploy production
 
-# One-time frontend release runner. This workflow exists only on the operations
-# branch; source checkout and deployment metadata are pinned to the reviewed tree.
+# One-time promotion of the candidate built by run 35658456534. The operations
+# branch retains the reviewed source pin and verifies the deployment before promotion.
 on:
   workflow_dispatch:
 
@@ -16,11 +16,11 @@ env:
   SOURCE_COMMIT: 6990ff9a91dd6a32c060a0834bf17ba60411ddc2
   SOURCE_TREE: 0e3fae183411133951680ee33b240e942e19ac9f
   VERCEL_CLI_VERSION: 50.42.0
-  EXPECTED_API_URL: https://agent-backend-qfgkz5atda-nw.a.run.app
+  CANDIDATE_ID: dpl_77sBpq7ZvT9vkrEPLstKQFkdVh9h
 
 jobs:
   frontend:
-    name: Prepare reviewed frontend candidate
+    name: Promote verified frontend candidate
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: production
@@ -28,7 +28,6 @@ jobs:
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
-      VITE_IS_PRODUCTION: "true"
     steps:
       - uses: actions/checkout@v4
         with:
@@ -55,44 +54,17 @@ jobs:
       - name: Install pinned Vercel CLI
         run: npm install --global "vercel@$VERCEL_CLI_VERSION" --no-audit --no-fund
 
-      - name: Prepare candidate without assigning production domains
-        working-directory: frontend
-        shell: bash
-        run: |
-          set -euo pipefail
-          npm ci --prefer-offline --no-audit --no-fund
-          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
-          node --input-type=module <<'JS'
-          import { loadEnvFile } from 'node:process';
-          loadEnvFile('.vercel/.env.production.local');
-          for (const name of ['VITE_API_URL', 'VITE_SUPABASE_URL', 'VITE_SUPABASE_ANON_KEY']) {
-            if (!process.env[name]?.trim()) throw new Error(`Missing required production variable: ${name}`);
-          }
-          if (process.env.VITE_API_URL !== process.env.EXPECTED_API_URL) throw new Error('Production backend URL differs from the approved backend');
-          if (process.env.VITE_EVAL_AUTH_BOOTSTRAP && process.env.VITE_EVAL_AUTH_BOOTSTRAP !== 'false') throw new Error('Evaluation authentication bootstrap must be disabled in production');
-          JS
-          vercel build --prod --token="$VERCEL_TOKEN"
-          grep -RFl --include='*.js' "$EXPECTED_API_URL" .vercel/output/static > /dev/null
-          vercel deploy --prebuilt --prod --skip-domain --yes \
-            --meta "releaseCommit=$SOURCE_COMMIT" \
-            --meta "releaseTree=$SOURCE_TREE" \
-            --meta "githubCommitSha=$SOURCE_COMMIT" \
-            --token="$VERCEL_TOKEN" > "$RUNNER_TEMP/frontend-candidate-url.txt"
-
       - name: Verify deployment identity and record public evidence
         shell: bash
         run: |
           set -euo pipefail
           node --input-type=module <<'JS'
-          import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+          import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
           const env = process.env;
           const idPattern = /^dpl_[A-Za-z0-9]+$/;
           const hostPattern = /^[a-z0-9][a-z0-9.-]*\.vercel\.app$/;
-          const candidateUrl = readFileSync(`${env.RUNNER_TEMP}/frontend-candidate-url.txt`, 'utf8').trim();
-          if (!/^https:\/\/[a-z0-9][a-z0-9.-]*\.vercel\.app$/.test(candidateUrl)) {
-            throw new Error('Deploy command did not return one Vercel deployment URL');
-          }
-          const reference = new URL(candidateUrl).hostname;
+          const reference = env.CANDIDATE_ID;
+          if (!idPattern.test(reference)) throw new Error('Promotion requires an exact deployment ID');
           const endpoint = new URL(`https://api.vercel.com/v13/deployments/${encodeURIComponent(reference)}`);
           endpoint.searchParams.set('teamId', env.VERCEL_ORG_ID);
           endpoint.searchParams.set('withGitRepoInfo', 'true');
@@ -102,7 +74,7 @@ jobs:
           });
           if (!response.ok) throw new Error(`Deployment verification returned HTTP ${response.status}`);
           const deployment = await response.json();
-          if (!idPattern.test(deployment.id) || !hostPattern.test(deployment.url)) {
+          if (deployment.id !== reference || !hostPattern.test(deployment.url)) {
             throw new Error('Deployment identity is missing or invalid');
           }
           if (deployment.projectId !== env.VERCEL_PROJECT_ID || deployment.target !== 'production' || deployment.readyState !== 'READY') {
@@ -129,7 +101,11 @@ jobs:
       - name: Retain verified deployment evidence
         uses: actions/upload-artifact@v4
         with:
-          name: frontend-release-${{ github.run_id }}
+          name: frontend-promotion-${{ github.run_id }}
           path: artifacts/frontend-release/deployment.json
           if-no-files-found: error
           retention-days: 30
+
+      - name: Promote only the verified candidate
+        working-directory: frontend
+        run: vercel promote "$CANDIDATE_ID" --yes --token="$VERCEL_TOKEN"
