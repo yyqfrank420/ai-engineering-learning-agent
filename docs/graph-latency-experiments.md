@@ -23,8 +23,8 @@ a first-pass rate, or the performance of ordinary learning questions.
 - [Kimi's reasoning-effort documentation](https://platform.kimi.ai/docs/guide/use-reasoning-effort)
   supports `low`, `high`, and `max`. The
   [K3 guide](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) recommends
-  `low` when reasoning takes too long. Our staged author explicitly uses `high`;
-  it does not accidentally fall back to the provider's `max` default.
+  `low` when reasoning takes too long. The baseline staged author explicitly used
+  `high`; it did not accidentally fall back to the provider's `max` default.
 - [OpenAI's latency guide](https://developers.openai.com/api/docs/guides/latency-optimization)
   prioritizes generated tokens and serial requests. Input trimming is usually
   a smaller speed improvement. Keep structured records compact and use code
@@ -77,11 +77,63 @@ connected candidate at 87.4 seconds, and final review at 131.6 seconds, includin
 1.4 seconds of local setup. These timings exclude browser rendering and synthesis.
 
 The second review also claimed some mechanisms that the graph did not explicitly
-state. The pending release adds concise ownership guidance for writer deduplication,
+state. Commit `9defb83` adds concise ownership guidance for writer deduplication,
 stream backpressure and ordering, an example of outcome actions, and a requirement
-that review reasons acknowledge unspecified detail. Those final prompt adjustments
-need the fresh cloud check; the local approval does not validate them.
+that review reasons acknowledge unspecified detail. The cloud check below includes
+those final prompt adjustments; the local approval does not validate them.
 
-The proposed default is low authoring effort with the existing reviewer model,
+The new default is low authoring effort with the existing reviewer model,
 review effort, schemas, and correction limits. These two screening trials do not
 establish a high first-pass rate. Their combined estimated cost was $0.300663.
+
+## Cloud browser results
+
+Run `35654002226` tested commit `9defb83` on staging. Cloud CI passed all 11
+canonical groups on the same source tree. Both browser cases passed deterministic
+and final semantic evaluation. Persisted graphs exactly matched emitted graphs;
+rendered node IDs, edge identities, and versions matched both.
+
+| Case | Component map | Connected draft | Saved approved graph | First component / connection review |
+| --- | ---: | ---: | ---: | --- |
+| Educational agent with tools and memory | 34.5s | 65.8s | 140.4s | Pass / fail |
+| Production marketing system | 35.1s | 84.9s | 143.0s | Pass / pass |
+| Mean, two cases | 34.8s | 75.3s | 141.7s | 2/2 / 1/2 |
+
+The educational case needed one connection correction. It used 35.6 seconds for
+generation and review of that correction. There were no provider or browser
+retries. The run made 13 application calls and two final judge calls, with complete
+usage and an estimated total cost of $0.578664. The production case finished its
+turn in 143.4 seconds, compared with 381.1 seconds in the earlier single-case
+baseline. This is an uncontrolled comparison across changed prompts and effort.
+
+Independent inspection found no demonstrated missing requested behavior in the
+new production graph. It contains adjustment inputs for copy, targeting and event
+definitions, approval revalidation, executable compensation, and separate canary,
+promotion and rollback contracts for its serving target. It has 13 components and
+51 connections, compared with 20 and 83 in the baseline.
+
+The prototype rejection followed a depth-independent rule requiring approval,
+audit and recovery for external mutation. The candidate had generic tool labels,
+a true external-effects flag, and guardrail-checked dispatch, but no concrete
+external mutation was identified. The follow-up changes only the staged prototype
+rule: preserve explicit requested controls; require authorization and failure
+handling for concrete mutations; allow existing guardrail ownership for generic
+educational tools. Production and legacy requirements remain unchanged. This
+follow-up was not part of the two-case browser run.
+
+A single review-only replay of the unchanged original prototype candidate passed
+all four connection rules under the corrected policy. Its original request,
+evidence and nine connection records were preserved. The reviewer cited existing
+guardrail-checked dispatch and the result or blocked-call response. The call took
+14.6 seconds and cost an estimated $0.022046 with complete usage and no retry.
+This checks the known rejection; it is not a fresh generation or a browser result.
+
+The connected graph is complete structurally but remains a provisional preview.
+Durable publication waits for semantic review, explanation, and atomic persistence
+of the messages, graph, and contract. Explanation took 20.8 and 33.2 seconds in these
+cases. Publishing earlier would require changes to cancellation, replay, and
+persistence semantics; this experiment retains those invariants.
+
+The measured connected-draft average is near the product target. A 1/2 connection
+first-pass result does not meet the desired high pass rate, and two cases cannot
+establish a production average. Keep the original rejection in reported results.

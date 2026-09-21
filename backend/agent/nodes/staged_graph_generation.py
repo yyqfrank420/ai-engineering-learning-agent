@@ -38,7 +38,7 @@ from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v15"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v12"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v13"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")

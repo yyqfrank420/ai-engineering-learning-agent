@@ -65,6 +65,10 @@ This is the current runtime contract for the production-quality demo.
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   Prototype action review preserves explicitly requested controls and requires authorization
+   and failure handling for concrete external mutations. Generic educational tools do not
+   require a separate approval, audit, or rollback workflow. An existing component may own
+   the guardrail. Production action controls remain unchanged.
    Naming and conciseness do not block staged publication. Authoring and review share a
    materiality standard: reject broken requested behavior, contradictions, unusable main
    flows, and violated required controls. Optional implementation detail and alternative

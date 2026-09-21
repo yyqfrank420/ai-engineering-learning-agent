@@ -131,6 +131,55 @@ def test_staged_presentation_policy_preserves_graph_correctness_rules(maturity):
     } <= set(requirements)
 
 
+def test_prototype_action_policy_preserves_required_controls_without_extra_stages():
+    criterion = staged_review_requirements("connections", "prototype")[
+        "safe_action_boundary"
+    ]
+
+    for obligation in (
+        "Preserve every explicitly requested approval, audit, recovery, or other action control",
+        "concrete declared external mutation",
+        "appropriate authorization before the action",
+        "visible failure or denial handling",
+        "An existing owner may apply a lightweight guardrail before dispatch",
+        "Generic educational tool or environment labels, code execution, or an external_effects flag alone",
+        "Read-only tool calls and internal memory operations do not require a new approval stage unless explicitly requested",
+        "Identify the concrete mutation or requested control when rejecting",
+    ):
+        assert obligation in criterion
+
+
+def test_production_and_legacy_action_policy_retain_exact_controls():
+    criterion = (
+        "Put policy, exact-action approval, audit, and recovery controls on external mutations."
+    )
+
+    assert RUBRIC_CRITERIA["safe_action_boundary"][1] == criterion
+    assert staged_review_requirements("connections", "production")[
+        "safe_action_boundary"
+    ] == criterion
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_prototype_action_policy_invalidates_only_prototype_connection_review(
+    monkeypatch, maturity
+):
+    current_identity = gate.review_identity("connections", maturity)
+
+    def previous_requirements(stage, depth, guarantees=()):
+        requirements = staged_review_requirements(stage, depth, guarantees)
+        if stage == "connections":
+            requirements["safe_action_boundary"] = RUBRIC_CRITERIA[
+                "safe_action_boundary"
+            ][1]
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+
+    previous_identity = gate.review_identity("connections", maturity)
+    assert (previous_identity != current_identity) == (maturity == "prototype")
+
+
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
 def test_capability_clarification_invalidates_prior_review_identity(
     monkeypatch, maturity
@@ -277,6 +326,9 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
     assert generated_input["request"] == request
     assert generated_input["accepted_context"] == context.prompt_value()
     assert generated_input["acceptance_criteria"] == reviewed_criteria
+    assert reviewed_criteria["safe_action_boundary"] == staged_review_requirements(
+        "connections", maturity, guarantees
+    )["safe_action_boundary"]
     criterion = reviewed_criteria["gate_preserving_reuse"]
     assert (
         "required by the request, accepted responsibilities, or applicable maturity"
