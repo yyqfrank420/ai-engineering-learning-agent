@@ -37,7 +37,7 @@ from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "high"
 _COMPONENT_PROMPT_VERSION = "staged_components_v12"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v8"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v9"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_wire_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -839,6 +839,8 @@ def _attempt_prompt(
             "response edge. Route each supporting branch to a rejoin or observable outcome. Do "
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "
             "or duplicate source, target, and label contracts. "
+            "For conditional outcomes, describe the action each outcome triggers. "
+            "Compatible outcomes may share one response contract on an existing edge. "
             "Do not emit nodes, components, composition, IDs, technology, layout, "
             f"publication, or permissions. Use these integer codes: {codebook}."
         )

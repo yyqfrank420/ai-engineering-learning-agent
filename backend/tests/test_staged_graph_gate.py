@@ -28,16 +28,41 @@ def _response(payload, *, finish_reason="end_turn"):
     )
 
 
+def _rule_reviews(rules, findings=()):
+    reviews = {
+        code: {
+            "satisfied": True,
+            "reason": "The supplied evidence satisfies this rule.",
+            "record_indexes": [],
+        }
+        for code in rules
+    }
+    for finding in findings:
+        reviews[finding["rule_code"]] = {
+            "satisfied": False,
+            "reason": finding["reason"],
+            "record_indexes": finding.get("record_indexes", []),
+        }
+    return {"rule_reviews": reviews}
+
+
 def _stub_response(monkeypatch, payload):
     calls = []
 
     async def fake_stream(**kwargs):
         calls.append(kwargs)
-        completed = dict(payload)
-        completed.setdefault(
-            "checked_rules",
-            kwargs["response_schema"]["properties"]["checked_rules"]["items"]["enum"],
-        )
+        if "rule_reviews" in payload:
+            completed = payload
+        else:
+            rules = kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
+            completed = _rule_reviews(rules, payload["findings"])
+            completed.update(
+                {
+                    key: value
+                    for key, value in payload.items()
+                    if key not in {"approved", "findings", "checked_rules"}
+                }
+            )
         return _response(completed)
 
     monkeypatch.setattr(gate, "stream_structured_llm", fake_stream)
@@ -82,6 +107,16 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
         "diagnostics": [],
         "review_identity": gate.review_identity("components", "prototype"),
         "checked_rules": list(gate.COMPONENT_RULE_CODES),
+        "rule_reviews": _rule_reviews(
+            gate.COMPONENT_RULE_CODES,
+            [
+                {
+                    "rule_code": "domain_specificity",
+                    "reason": "The ownership is generic.",
+                    "record_indexes": [0],
+                }
+            ],
+        )["rule_reviews"],
     }
     assert records == [{"id": "a"}, {"id": "b"}]
     assert len(calls) == 1
@@ -116,7 +151,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v8"
+        "staged_component_gate_v9"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -337,7 +372,9 @@ def test_unknown_rule_cannot_silently_approve(monkeypatch):
     assert result["approved"] is False
     assert result["terminal"] is True
     assert result["findings"] == []
-    assert result["diagnostics"] == ["unknown finding rule at row 0"]
+    assert result["diagnostics"] == [
+        "provider response has an incomplete or unknown rule review"
+    ]
 
 
 def test_malformed_top_level_response_is_terminal(monkeypatch):
@@ -357,33 +394,27 @@ def test_malformed_top_level_response_is_terminal(monkeypatch):
     assert result["findings"] == []
 
 
-@pytest.mark.parametrize("stage", ["components", "connections"])
-def test_rejection_without_findings_is_terminal(monkeypatch, stage):
-    _stub_response(monkeypatch, {"approved": False, "findings": []})
-
-    if stage == "components":
-        result = asyncio.run(
-            gate.review_components(
-                user_request="Design a service.",
-                evidence_bundle={},
-                resolved_maturity="prototype",
-                candidate_records=[{"id": "a"}],
-            )
+@pytest.mark.parametrize("satisfied", [True, False])
+def test_rule_requires_reason_even_when_satisfied(monkeypatch, satisfied):
+    payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
+    payload["rule_reviews"]["domain_specificity"] = {
+        "satisfied": satisfied,
+        "reason": " ",
+        "record_indexes": [],
+    }
+    _stub_response(monkeypatch, payload)
+    result = asyncio.run(
+        gate.review_components(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[],
         )
-    else:
-        result = asyncio.run(
-            gate.review_connections(
-                user_request="Design a service.",
-                evidence_bundle={},
-                resolved_maturity="prototype",
-                candidate_records=[{"source": "a", "target": "b"}],
-            )
-        )
-
-    assert result["approved"] is False
+    )
     assert result["terminal"] is True
+    assert result["approved"] is False
     assert result["findings"] == []
-    assert result["diagnostics"] == ["provider rejected without blocking findings"]
+    assert result["diagnostics"] == ["invalid review reason for domain_specificity"]
 
 
 def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
@@ -400,7 +431,7 @@ def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["findings"]["items"]["properties"]["rule_code"]["enum"]
+    codes = schema["properties"]["rule_reviews"]["required"]
     assert result["approved"] is True
     assert "production_proofs" not in schema["properties"]
     assert "topology_enforced_guarantees" not in codes
@@ -423,7 +454,7 @@ def test_connection_schema_keeps_runtime_completeness(monkeypatch, maturity):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["findings"]["items"]["properties"]["rule_code"]["enum"]
+    codes = schema["properties"]["rule_reviews"]["required"]
 
     assert result["approved"] is True
     assert "runtime_completeness" in codes
@@ -461,7 +492,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v7"
+        == "staged_connection_gate_v8"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -492,48 +523,37 @@ def test_production_connection_schema_preserves_hard_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["findings"]["items"]["properties"]["rule_code"]["enum"]
+    codes = schema["properties"]["rule_reviews"]["required"]
 
     assert result["approved"] is True
     assert "logical_flow" in codes
     assert "branch_completion" in codes
 
 
-@pytest.mark.parametrize(
-    "invalid_audit", ["missing", "duplicate", "unknown", "invalid"]
-)
+@pytest.mark.parametrize("invalid_audit", ["missing", "unknown", "not_object"])
 def test_gate_rejects_an_incomplete_rule_audit(monkeypatch, invalid_audit):
-    rules = list(gate.COMPONENT_RULE_CODES)
+    payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
     if invalid_audit == "missing":
-        rules.pop()
-    elif invalid_audit == "duplicate":
-        rules[-1] = rules[0]
+        payload["rule_reviews"].pop("domain_specificity")
     elif invalid_audit == "unknown":
-        rules[-1] = "invented"
+        payload["rule_reviews"]["invented"] = payload["rule_reviews"][
+            "domain_specificity"
+        ]
     else:
-        rules[-1] = None
-
-    async def fake_stream(**_kwargs):
-        return _response(
-            {
-                "approved": True,
-                "checked_rules": rules,
-                "findings": [],
-            }
-        )
-
-    monkeypatch.setattr(gate, "stream_structured_llm", fake_stream)
+        payload["rule_reviews"] = []
+    _stub_response(monkeypatch, payload)
     result = asyncio.run(
         gate.review_components(
-            user_request="Design a service.",
+            user_request="Review",
             evidence_bundle={},
             resolved_maturity="prototype",
             candidate_records=[],
         )
     )
-
     assert result["terminal"] is True
-    assert result["diagnostics"] == ["provider response has invalid top-level fields"]
+    assert result["diagnostics"] == [
+        "provider response has an incomplete or unknown rule review"
+    ]
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -555,7 +575,7 @@ def test_successful_review_retains_identity_and_complete_rule_audit(monkeypatch,
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
     assert (
         result["checked_rules"]
-        == calls[0]["response_schema"]["properties"]["checked_rules"]["items"]["enum"]
+        == calls[0]["response_schema"]["properties"]["rule_reviews"]["required"]
     )
     assert len(result["review_identity"]) == 64
 
@@ -592,7 +612,7 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
 
         monkeypatch.setattr(gate, "staged_review_requirements", revised_requirements)
     else:
-        monkeypatch.setattr(gate, "_MAX_FINDINGS", gate._MAX_FINDINGS + 1)
+        monkeypatch.setattr(gate, "_MAX_RECORD_INDEXES", gate._MAX_RECORD_INDEXES + 1)
 
     assert gate.review_identity(stage, "production") != baseline
 
@@ -686,7 +706,10 @@ def test_edit_review_scope_preserves_baseline_context_and_full_candidate(
     )
     assert result["approved"] is True
     assert evidence["review_scope"] == scope
-    assert reviewed_records == records
+    assert reviewed_records == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
     assert "original title and assumptions" in prompt
     assert "Finding indexes refer to the full current candidate records" in prompt
     if trusted is True:
@@ -751,84 +774,87 @@ def test_scoped_review_preserves_blockers_outside_changed_records(
     assert result["findings"][0]["record_indexes"] == [2]
 
 
-@pytest.mark.parametrize("approved", [True, False])
 @pytest.mark.parametrize(
-    "finding",
+    "row",
     [
         None,
         [],
-        {"rule_code": "domain_specificity"},
-        {"rule_code": [], "reason": "Malformed rule."},
-        {"rule_code": "domain_specificity", "reason": " "},
-        {"rule_code": "domain_specificity", "reason": None},
-        {"rule_code": "domain_specificity", "reason": "Invalid.", "score": 1},
+        {},
+        {"satisfied": True, "reason": "Missing indexes"},
+        {"satisfied": 1, "reason": "Invalid boolean", "record_indexes": []},
+        {"satisfied": "false", "reason": "Invalid boolean", "record_indexes": []},
+        {"satisfied": False, "reason": None, "record_indexes": []},
+        {"satisfied": True, "reason": "Valid", "record_indexes": [], "score": 1},
         *[
-            {
-                "rule_code": "domain_specificity",
-                "reason": "Invalid indexes.",
-                "record_indexes": indexes,
-            }
-            for indexes in (None, "0", [1], [True], [-1], [0] * 33)
+            {"satisfied": False, "reason": "Bad index", "record_indexes": indexes}
+            for indexes in (None, "0", [1], [True], [-1], [0.0], [0] * 33)
         ],
     ],
 )
-def test_malformed_findings_fail_terminally(monkeypatch, approved, finding):
-    _stub_response(monkeypatch, {"approved": approved, "findings": [finding]})
-
+def test_malformed_rule_reviews_fail_terminally(monkeypatch, row):
+    payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
+    payload["rule_reviews"]["domain_specificity"] = row
+    _stub_response(monkeypatch, payload)
     result = asyncio.run(
         gate.review_components(
-            user_request="Design a service.",
+            user_request="Review",
             evidence_bundle={},
             resolved_maturity="prototype",
             candidate_records=[{"id": "a"}],
         )
     )
-
     assert result["approved"] is False
     assert result["terminal"] is True
-    assert result["diagnostics"]
-    assert result["review_identity"] == gate.review_identity("components", "prototype")
+    assert result["findings"] == []
+    assert "rule_reviews" not in result
 
 
-def test_findings_beyond_limit_cannot_be_dropped(monkeypatch):
-    finding = {"rule_code": "domain_specificity", "reason": "A blocking defect."}
-    _stub_response(
-        monkeypatch,
-        {"approved": True, "findings": [finding] * (gate._MAX_FINDINGS + 1)},
-    )
-
-    result = asyncio.run(
-        gate.review_components(
-            user_request="Design a service.",
-            evidence_bundle={},
-            resolved_maturity="prototype",
-            candidate_records=[],
+@pytest.mark.parametrize("duplicate_at", ["top", "rule", "field"])
+def test_duplicate_json_review_keys_fail_closed(duplicate_at):
+    rules = ("domain_specificity",)
+    row = '{"satisfied":true,"reason":"Owned here","record_indexes":[]}'
+    text = '{"rule_reviews":{"domain_specificity":' + row + "}}"
+    if duplicate_at == "top":
+        text = text[:-1] + ',"rule_reviews":{}}'
+    elif duplicate_at == "rule":
+        text = (
+            '{"rule_reviews":{"domain_specificity":'
+            + row
+            + ',"domain_specificity":'
+            + row
+            + "}}"
         )
+    else:
+        text = text.replace('"satisfied":true', '"satisfied":false,"satisfied":true')
+    response = _response({})
+    response = StructuredLLMResponse(
+        text=text,
+        finish_reason=response.finish_reason,
+        input_tokens=1,
+        output_tokens=1,
+        provider="test",
+        model="test",
     )
-
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(rule_codes=rules),
+        rule_codes=rules,
+        records=[],
+    )
     assert result["terminal"] is True
-    assert result["diagnostics"] == ["findings exceed the response limit"]
+    assert result["diagnostics"] == ["provider response is not valid JSON"]
 
 
-def test_non_string_checked_rule_fails_terminally(monkeypatch):
-    rules = list(gate.COMPONENT_RULE_CODES)
-    rules[0] = []
-    _stub_response(
-        monkeypatch,
-        {"approved": True, "findings": [], "checked_rules": rules},
+def test_old_approval_response_is_not_a_supported_provider_shape():
+    rules = gate.COMPONENT_RULE_CODES
+    result = gate._review_result(
+        _response({"approved": True, "checked_rules": list(rules), "findings": []}),
+        schema=gate._response_schema(rule_codes=rules),
+        rule_codes=rules,
+        records=[],
     )
-
-    result = asyncio.run(
-        gate.review_components(
-            user_request="Design a service.",
-            evidence_bundle={},
-            resolved_maturity="prototype",
-            candidate_records=[],
-        )
-    )
-
     assert result["terminal"] is True
-    assert result["diagnostics"] == ["provider response has invalid top-level fields"]
+    assert result["diagnostics"] == ["provider response has an invalid top-level shape"]
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -956,7 +982,10 @@ def test_review_capture_requires_every_protected_evaluation_condition(
 ):
     monkeypatch.setattr(gate.settings, "evaluation_run_id", run_id)
     monkeypatch.setattr(gate.settings, "internal_test_email_allowlist_raw", allowlist)
-    _stub_response(monkeypatch, {"approved": not terminal, "findings": []})
+    _stub_response(
+        monkeypatch,
+        {"rule_reviews": {}} if terminal else {"approved": True, "findings": []},
+    )
     events = []
 
     async def send(event):
@@ -988,9 +1017,9 @@ def test_review_capture_requires_every_protected_evaluation_condition(
         ("unfinished", "provider response did not complete"),
         ("json", "provider response is not valid JSON"),
         ("shape", "provider response has an invalid top-level shape"),
-        ("fields", "provider response has invalid top-level fields"),
-        ("finding", "unknown finding rule at row 0"),
-        ("empty_rejection", "provider rejected without blocking findings"),
+        ("fields", "provider response has an incomplete or unknown rule review"),
+        ("finding", "provider response has an incomplete or unknown rule review"),
+        ("empty_reason", "invalid review reason for domain_specificity"),
     ],
 )
 def test_terminal_review_capture_retains_diagnostic_without_raw_response(
@@ -1004,21 +1033,21 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
     async def fake_stream(**kwargs):
         if failure == "provider":
             raise RuntimeError("private provider error")
-        payload = {
-            "approved": True,
-            "checked_rules": kwargs["response_schema"]["properties"]["checked_rules"][
-                "items"
-            ]["enum"],
-            "findings": [],
-        }
+        payload = _rule_reviews(
+            kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
+        )
         if failure == "shape":
             payload["unexpected"] = "private provider text"
         elif failure == "fields":
-            payload["checked_rules"] = []
+            payload["rule_reviews"] = {}
         elif failure == "finding":
-            payload["findings"] = [{"rule_code": "unknown", "reason": "Invalid."}]
-        elif failure == "empty_rejection":
-            payload["approved"] = False
+            payload["rule_reviews"]["unknown"] = {
+                "satisfied": False,
+                "reason": "Invalid.",
+                "record_indexes": [],
+            }
+        elif failure == "empty_reason":
+            payload["rule_reviews"]["domain_specificity"]["reason"] = ""
         response = _response(
             payload,
             finish_reason="max_tokens" if failure == "unfinished" else "end_turn",
@@ -1134,7 +1163,7 @@ def test_reason_storage_bound_preserves_rejection_with_explicit_diagnostic(
     assert result["terminal"] is False
     assert len(result["findings"][0]["reason"]) == gate._MAX_REASON_CHARS
     assert result["diagnostics"][0] == (
-        f"finding reason at row 0 truncated to {gate._MAX_REASON_CHARS} characters"
+        f"review reason for mece_scope truncated to {gate._MAX_REASON_CHARS} characters"
     )
 
 
@@ -1181,15 +1210,17 @@ def test_malformed_review_cannot_recover_from_unvalidated_findings(failure):
     guarantees = ["audit_and_provenance"]
     rules = gate._rules_for_connections("production", guarantees)
     schema = gate._response_schema(rule_codes=rules)
-    payload = {
-        "approved": False,
-        "checked_rules": list(rules),
-        "findings": [{"rule_code": "branch_completion", "reason": "Missing outcome."}],
-    }
+    payload = _rule_reviews(
+        rules, [{"rule_code": "branch_completion", "reason": "Missing outcome."}]
+    )
     if failure == "shape":
         payload["unexpected"] = True
     elif failure == "findings":
-        payload["findings"].append({"rule_code": "invented", "reason": "Invalid."})
+        payload["rule_reviews"]["invented"] = {
+            "satisfied": False,
+            "reason": "Invalid.",
+            "record_indexes": [],
+        }
     result = gate._review_result(
         _response(
             payload,
@@ -1235,7 +1266,7 @@ def test_production_obligations_reject_through_indexed_findings(
     assert guarantee in result["checked_rules"]
     assert "proofs" not in result
     schema = calls[0]["response_schema"]
-    assert set(schema["properties"]) == {"approved", "checked_rules", "findings"}
+    assert set(schema["properties"]) == {"rule_reviews"}
     prompt = calls[0]["messages"][0]["content"]
     requirements = json.loads(
         prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
@@ -1262,24 +1293,144 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
     assert set(result["checked_rules"]) == set(
         gate._rules_for_connections("production", guarantees)
     )
-    assert set(calls[0]["response_schema"]["required"]) == {
-        "approved",
-        "checked_rules",
-        "findings",
-    }
+    assert set(calls[0]["response_schema"]["required"]) == {"rule_reviews"}
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
     ("stage", "version_field", "previous_version"),
     [
-        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v7"),
-        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v6"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v8"),
+        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v7"),
     ],
 )
-def test_simplified_review_version_invalidates_prior_policy_identity(
+def test_per_rule_review_version_invalidates_prior_policy_identity(
     monkeypatch, stage, version_field, previous_version
 ):
     current_identity = gate.review_identity(stage, "production")
     monkeypatch.setattr(gate, version_field, previous_version)
     assert gate.review_identity(stage, "production") != current_identity
+
+
+def test_rule_reviews_derive_ordered_failures_and_retain_passing_evidence():
+    rules = ("runtime_completeness", "edge_semantics", "safe_action_boundary")
+    payload = {
+        "rule_reviews": {
+            "safe_action_boundary": {
+                "satisfied": False,
+                "reason": "Approval and recovery outcomes are missing.",
+                "record_indexes": [1, 0],
+            },
+            "edge_semantics": {
+                "satisfied": True,
+                "reason": "Request and response have distinct directed contracts.",
+                "record_indexes": [0, 1],
+            },
+            "runtime_completeness": {
+                "satisfied": False,
+                "reason": "No durable outcome is connected.",
+                "record_indexes": [],
+            },
+        }
+    }
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(rule_codes=rules),
+        rule_codes=rules,
+        records=[{"id": "request"}, {"id": "response"}],
+    )
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert result["checked_rules"] == list(rules)
+    assert result["findings"] == [
+        {
+            "rule_code": "runtime_completeness",
+            "reason": "No durable outcome is connected.",
+        },
+        {
+            "rule_code": "safe_action_boundary",
+            "reason": "Approval and recovery outcomes are missing.",
+            "record_indexes": [1, 0],
+        },
+    ]
+    assert result["rule_reviews"] == payload["rule_reviews"]
+    assert list(result["rule_reviews"]) == list(rules)
+
+
+def test_numbered_prompt_uses_server_indexes_without_mutating_records(monkeypatch):
+    records = [{"id": "n99", "record_index": 450}, {"id": "n2"}]
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    asyncio.run(
+        gate.review_components(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=records,
+        )
+    )
+    prompt = calls[0]["messages"][0]["content"]
+    numbered = json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    )
+    assert numbered == [
+        {"record_index": 0, "record": {"id": "n99", "record_index": 450}},
+        {"record_index": 1, "record": {"id": "n2"}},
+    ]
+    assert "Copy the explicit record_index values" in prompt
+    assert "cannot be localized within 32 records" in prompt
+    assert records == [{"id": "n99", "record_index": 450}, {"id": "n2"}]
+
+
+def test_provider_schema_requires_complete_strict_rule_objects():
+    schema = gate._response_schema(rule_codes=("rule_a", "rule_b"))
+    assert schema["required"] == ["rule_reviews"]
+    assert schema["additionalProperties"] is False
+    reviews = schema["properties"]["rule_reviews"]
+    assert reviews["required"] == ["rule_a", "rule_b"]
+    assert reviews["additionalProperties"] is False
+    for row in reviews["properties"].values():
+        assert set(row["required"]) == {"satisfied", "reason", "record_indexes"}
+        assert row["additionalProperties"] is False
+        assert row["properties"]["satisfied"]["type"] == "boolean"
+        assert row["properties"]["reason"]["maxLength"] == gate._MAX_REASON_CHARS
+        assert (
+            row["properties"]["record_indexes"]["maxItems"] == gate._MAX_RECORD_INDEXES
+        )
+
+
+def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkeypatch):
+    monkeypatch.setattr(gate.settings, "evaluation_run_id", "rule-review-eval")
+    monkeypatch.setattr(
+        gate.settings, "internal_test_email_allowlist_raw", "internal@example.com"
+    )
+    payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
+    payload["rule_reviews"]["objective_fidelity"] = {
+        "satisfied": True,
+        "reason": "Record 0 owns the requested workflow.",
+        "record_indexes": [0],
+    }
+    _stub_response(monkeypatch, payload)
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    records = [{"id": "workflow"}]
+    result = asyncio.run(
+        gate.review_components(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=records,
+            telemetry_context={
+                "user_email": "internal@example.com",
+                "is_production": False,
+                "send": send,
+            },
+        )
+    )
+    capture = events[0]["review_capture"]
+    assert capture["candidate_records"] == records
+    assert capture["result"]["rule_reviews"] == payload["rule_reviews"]
+    capture["result"]["rule_reviews"]["objective_fidelity"]["record_indexes"].append(99)
+    assert result["rule_reviews"]["objective_fidelity"]["record_indexes"] == [0]

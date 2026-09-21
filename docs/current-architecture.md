@@ -58,8 +58,12 @@ This is the current runtime contract for the production-quality demo.
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
    gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
-   Both gates return only approval, checked rules, and typed findings. Model-authored proof tables
-   and route witnesses are removed. Shared criteria require necessary interactions across component
+   Each gate returns one result per applicable rule, with a short reason and explicit candidate
+   record indexes. The server derives approval and blocking findings from those results. Missing
+   rules or malformed results fail validation. Protected evaluation captures retain the reasons,
+   including passing checks. Candidate records carry server-assigned indexes in review prompts;
+   reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   Shared criteria require necessary interactions across component
    boundaries; compatible internal operations belong in component responsibilities. Internal ordering
    is checked before those responsibilities freeze. Retryable internal writes retain idempotence and
    reconciliation requirements even when the design has no external business mutations.

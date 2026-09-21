@@ -50,6 +50,7 @@
             "backend/tests/test_staged_graph_contract.py",
             "backend/tests/test_staged_graph_generation.py",
             "backend/tests/test_staged_graph_gate.py",
+            "backend/tests/test_staged_review_regression.py",
             "backend/tests/test_staged_capability_policy.py",
             "backend/tests/test_staged_clarification.py",
             "backend/tests/test_graph_identity.py",
