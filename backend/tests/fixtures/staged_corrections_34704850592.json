@@ -1,0 +1,664 @@
+{
+  "source_run_id": "34704850592",
+  "source_commit": "370aabd520145b239cf5728a29a6b9a4b331b167",
+  "node_followup": {
+    "request": "Draw an AI agent architecture with tools and memory, then suggest useful questions for the first component.",
+    "stage": "connections",
+    "accepted_components": {
+      "title": "AI Agent with Tools and Memory (Prototype)",
+      "assumptions": [
+        "Educational prototype of a task-solving AI agent: a user submits a task and the agent plans and executes steps to answer it.",
+        "Tools include read-oriented retrieval (search, document fetch) and at least one action API, so the agent can mutate an external system through the tool executor.",
+        "Memory is split into short-range task context and a curated long-range fact store; both are read and written at runtime.",
+        "No feedback-driven update of models, prompts, rankings, or live configuration; memory writes do not retrain or retune the planner.",
+        "Prototype scope: single-tenant, no production hardening, no human confirmation gate, no deployment topology."
+      ],
+      "root_index": 0,
+      "capabilities": {
+        "external_effects": true,
+        "retrieval_or_reuse": true,
+        "learning_or_release": false
+      },
+      "components": [
+        {
+          "label": "User Task Client",
+          "type": 100,
+          "responsibility": "Lets a user submit a task and view the agent's plan progress and final answer.",
+          "group_label": "Runtime",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Agent Planner",
+          "type": 101,
+          "responsibility": "AI planner that analyzes the task, picks the next step or tool, reflects on results, and composes the final answer.",
+          "group_label": "Runtime",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Tool Executor",
+          "type": 101,
+          "responsibility": "Invokes planner-selected tools with arguments, enforces basic guardrails, and returns tool results to the planner.",
+          "group_label": "Runtime",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "External Tools and APIs",
+          "type": 106,
+          "responsibility": "Environment the agent acts on: search, document fetch, and action APIs that can read or mutate external systems.",
+          "group_label": "External",
+          "group_kind": 604,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Short-Term Task Memory",
+          "type": 102,
+          "responsibility": "Holds the current task context, intermediate steps, and tool results within the context window budget.",
+          "group_label": "Data",
+          "group_kind": 601,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Long-Term Fact Memory",
+          "type": 102,
+          "responsibility": "Stores curated durable facts and prior outcomes the planner retrieves and reuses across tasks.",
+          "group_label": "Data",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Run Trace Log",
+          "type": 102,
+          "responsibility": "Records plans, tool calls, and outcomes so prototype runs can be inspected and debugged.",
+          "group_label": "Operations",
+          "group_kind": 602,
+          "primary_flow_member": false
+        }
+      ]
+    },
+    "original_candidate": {
+      "edges": [
+        {
+          "source_index": 0,
+          "target_index": 1,
+          "label": "submit task for planning",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 1,
+          "target_index": 0,
+          "label": "task progress and final answer",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 1,
+          "target_index": 4,
+          "label": "load current task context",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 4,
+          "target_index": 1,
+          "label": "current task context returned",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 1,
+          "target_index": 4,
+          "label": "store intermediate steps and tool results",
+          "flow": 400,
+          "sync": 501
+        },
+        {
+          "source_index": 1,
+          "target_index": 5,
+          "label": "retrieve relevant durable facts",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 5,
+          "target_index": 1,
+          "label": "relevant durable facts returned",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 1,
+          "target_index": 5,
+          "label": "store curated facts and task outcome",
+          "flow": 400,
+          "sync": 501
+        },
+        {
+          "source_index": 1,
+          "target_index": 2,
+          "label": "next tool step with exact action scope",
+          "flow": 401,
+          "sync": 500
+        },
+        {
+          "source_index": 2,
+          "target_index": 1,
+          "label": "tool result returned",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 2,
+          "target_index": 3,
+          "label": "search or document fetch request",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 3,
+          "target_index": 2,
+          "label": "retrieved search or document data",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 2,
+          "target_index": 3,
+          "label": "guardrailed exact-action mutation request",
+          "flow": 401,
+          "sync": 500
+        },
+        {
+          "source_index": 3,
+          "target_index": 2,
+          "label": "mutation outcome and recovery status",
+          "flow": 400,
+          "sync": 500
+        },
+        {
+          "source_index": 1,
+          "target_index": 6,
+          "label": "record plan and reflection events",
+          "flow": 400,
+          "sync": 501
+        },
+        {
+          "source_index": 2,
+          "target_index": 6,
+          "label": "audit guardrail decision and tool outcome",
+          "flow": 401,
+          "sync": 501
+        }
+      ]
+    },
+    "first_review": {
+      "approved": false,
+      "checked_rules": [
+        "runtime_completeness",
+        "safe_action_boundary",
+        "edge_semantics",
+        "gate_preserving_reuse"
+      ],
+      "findings": [
+        {
+          "rule_code": "gate_preserving_reuse",
+          "reason": "Long-Term Fact Memory (n6) is retrieved and reused across tasks by the planner, but the 'store curated facts and task outcome' edge writes directly from the planner to n6 with no gate, review, or acceptance step in the candidate records. Labeling the write 'curated' does not substitute for an explicit accepted post-gate artifact path or an identity/version-scoped route back through a gate before reuse.",
+          "record_indexes": [
+            7
+          ]
+        }
+      ]
+    },
+    "bad_corrected_candidate": {
+      "edges": [
+        {
+          "flow": 400,
+          "label": "submit task for planning",
+          "source_index": 0,
+          "sync": 500,
+          "target_index": 1
+        },
+        {
+          "flow": 400,
+          "label": "task progress and final answer",
+          "source_index": 1,
+          "sync": 500,
+          "target_index": 0
+        },
+        {
+          "flow": 400,
+          "label": "load current task context",
+          "source_index": 1,
+          "sync": 500,
+          "target_index": 4
+        },
+        {
+          "flow": 400,
+          "label": "current task context returned",
+          "source_index": 4,
+          "sync": 500,
+          "target_index": 1
+        },
+        {
+          "flow": 400,
+          "label": "store intermediate steps and tool results",
+          "source_index": 1,
+          "sync": 501,
+          "target_index": 4
+        },
+        {
+          "flow": 400,
+          "label": "retrieve relevant durable facts",
+          "source_index": 1,
+          "sync": 500,
+          "target_index": 5
+        },
+        {
+          "flow": 400,
+          "label": "relevant durable facts returned",
+          "source_index": 5,
+          "sync": 500,
+          "target_index": 1
+        },
+        {
+          "flow": 401,
+          "label": "next tool step with exact action scope",
+          "source_index": 1,
+          "sync": 500,
+          "target_index": 2
+        },
+        {
+          "flow": 400,
+          "label": "tool result returned",
+          "source_index": 2,
+          "sync": 500,
+          "target_index": 1
+        },
+        {
+          "flow": 400,
+          "label": "search or document fetch request",
+          "source_index": 2,
+          "sync": 500,
+          "target_index": 3
+        },
+        {
+          "flow": 400,
+          "label": "retrieved search or document data",
+          "source_index": 3,
+          "sync": 500,
+          "target_index": 2
+        },
+        {
+          "flow": 401,
+          "label": "guardrailed exact-action mutation request",
+          "source_index": 2,
+          "sync": 500,
+          "target_index": 3
+        },
+        {
+          "flow": 400,
+          "label": "mutation outcome and recovery status",
+          "source_index": 3,
+          "sync": 500,
+          "target_index": 2
+        },
+        {
+          "flow": 400,
+          "label": "record plan and reflection events",
+          "source_index": 1,
+          "sync": 501,
+          "target_index": 6
+        },
+        {
+          "flow": 401,
+          "label": "audit guardrail decision and tool outcome",
+          "source_index": 2,
+          "sync": 501,
+          "target_index": 6
+        }
+      ]
+    },
+    "final_review": {
+      "approved": false,
+      "checked_rules": [
+        "runtime_completeness",
+        "safe_action_boundary",
+        "edge_semantics",
+        "gate_preserving_reuse"
+      ],
+      "findings": [
+        {
+          "rule_code": "runtime_completeness",
+          "reason": "Assumptions declare that long-term fact memory (n6) is both read and written at runtime, but the candidate edges only show retrieval from n6 (n2->n6, n6->n2); there is no edge that writes curated facts or outcomes back into n6. The declared curation/reuse capability therefore has no connected outcome path.",
+          "record_indexes": [
+            5,
+            6
+          ]
+        }
+      ]
+    },
+    "targeted_record_indexes": [
+      7
+    ]
+  },
+  "applied_domain": {
+    "request": "Design a growth and performance marketing AI system that evaluates outcomes, writes and adjusts copy, targeting and event definitions, and maximises a constrained objective. Show approval boundaries.",
+    "stage": "components",
+    "original_candidate": {
+      "title": "Constrained Growth Marketing AI Components",
+      "assumptions": [
+        "Ad, email, web personalization, and product analytics systems expose APIs for telemetry reads and approved writes; no vendor choice is made here.",
+        "The marketer supplies objective, constraints, budget ceilings, brand rules, and protected-audience exclusions through the console.",
+        "Costly mutations such as budget increases, new audiences, event-schema changes, or external publication require explicit human approval.",
+        "Outcome feedback may update prompts, rankings, policies, or live configuration only through curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback.",
+        "Raw user data is not used directly for training; reusable artifacts require validation, lifecycle management, lineage, and invalidation.",
+        "Internal retries are retry-safe: reserve before send, atomically deduplicate, validate before deliver, reconcile actual state, and compensate partial failures."
+      ],
+      "root_index": 0,
+      "capabilities": {
+        "external_effects": true,
+        "retrieval_or_reuse": true,
+        "learning_or_release": true
+      },
+      "components": [
+        {
+          "label": "Growth Operations Console",
+          "type": 100,
+          "responsibility": "Marketer initiates objective, constraints, budget/brand limits, and exclusions; reviews ranked recommendations and approves or rejects costly external changes.",
+          "group_label": "Human decision entry",
+          "group_kind": 603,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Campaign Orchestrator",
+          "type": 101,
+          "responsibility": "Runs optimization cycles from console intent; enforces reserve-before-send, validate-before-deliver, approval-before-publish, retry deduplication, and stop conditions.",
+          "group_label": "Runtime control plane",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Objective Constraint Policy Service",
+          "type": 107,
+          "responsibility": "Codifies KPI, constrained objective, spend ceilings, pacing, brand/legal rules, privacy exclusions; returns allow, deny, or require-approval before any mutation.",
+          "group_label": "Runtime control plane",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Experiment Decision Service",
+          "type": 108,
+          "responsibility": "Selects next copy, targeting, and event-definition actions to maximize the constrained objective; emits reservations, expected value, risk, and rollback hints.",
+          "group_label": "Runtime control plane",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Generative Copy Studio",
+          "type": 101,
+          "responsibility": "Drafts and adjusts channel-specific copy variants inside brand and policy bounds; reuses only validated approved prompts, claims, templates, and offers.",
+          "group_label": "Optimization authoring",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Targeting Event Definition Manager",
+          "type": 101,
+          "responsibility": "Proposes audience, bid, placement, and conversion-event definition changes; validates schemas, conflicts, privacy exclusions, and measurement impact before delivery.",
+          "group_label": "Optimization authoring",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Approval Boundary Service",
+          "type": 107,
+          "responsibility": "Owns human confirmation for costly or external mutations; records decision rights, evidence shown, expiry, approver outcome, and required compensation path.",
+          "group_label": "Runtime control plane",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Activation Executor",
+          "type": 101,
+          "responsibility": "Applies only approved changes to downstream marketing endpoints with idempotent retries, atomic deduplication, ordered reserve/send, reconciliation, and compensating reversal.",
+          "group_label": "External write boundary",
+          "group_kind": 600,
+          "primary_flow_member": true
+        },
+        {
+          "label": "External Marketing Platforms",
+          "type": 106,
+          "responsibility": "External ad, email, web personalization, and analytics systems that receive approved mutations and return spend, delivery, and conversion outcomes.",
+          "group_label": "Owned outside boundary",
+          "group_kind": 604,
+          "primary_flow_member": true
+        },
+        {
+          "label": "Outcome Telemetry Ingestor",
+          "type": 101,
+          "responsibility": "Independently pulls platform and product outcome feeds; handles late, duplicate, and out-of-order events without driving optimization unless validated.",
+          "group_label": "Outcome evidence",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Golden Marketing Datastore",
+          "type": 102,
+          "responsibility": "Canonical raw store for impressions, clicks, spend, conversions, creative, audience, and event snapshots with ownership, lineage, retention, and privacy tags.",
+          "group_label": "Outcome evidence",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Metric Evaluation Attribution Service",
+          "type": 101,
+          "responsibility": "Validates and reconciles outcomes to experiments and decisions; computes objective progress, guardrail breaches, drift, and invalidated artifact signals.",
+          "group_label": "Outcome evidence",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Artifact Prompt Registry",
+          "type": 102,
+          "responsibility": "Versions prompts, templates, claims, audiences, rankings, and event definitions; manages reuse lifecycle, validation status, deprecation, and invalidation.",
+          "group_label": "Reusable optimization assets",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Context Feature Store",
+          "type": 102,
+          "responsibility": "Serves short-range campaign context and curated long-range facts with references to authoritative systems of record; never overrides policy constraints.",
+          "group_label": "Reusable optimization assets",
+          "group_kind": 601,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Offline Evaluation Release Gate",
+          "type": 107,
+          "responsibility": "Curates evidence, runs offline and regression evaluation, requires reviewed release, then owns canary, promotion, rollback for models, prompts, rankings, and live config.",
+          "group_label": "Learning and release operations",
+          "group_kind": 602,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Reconciliation Audit Service",
+          "type": 101,
+          "responsibility": "Compares intended reservations and approved writes against actual external state; detects partial failure, triggers compensation, and preserves audit trail.",
+          "group_label": "External write boundary",
+          "group_kind": 602,
+          "primary_flow_member": false
+        },
+        {
+          "label": "Observability Runbook Service",
+          "type": 101,
+          "responsibility": "Tracks end-to-end latency, spend, failure isolation, races, drift alerts, SLOs, and graceful degradation; links incidents to release and rollback runbooks.",
+          "group_label": "Learning and release operations",
+          "group_kind": 602,
+          "primary_flow_member": false
+        }
+      ]
+    },
+    "first_review": {
+      "approved": false,
+      "checked_rules": [
+        "domain_specificity",
+        "objective_fidelity",
+        "selected_depth",
+        "succinctness",
+        "mece_scope",
+        "brief_coverage",
+        "capability_classification"
+      ],
+      "findings": [
+        {
+          "rule_code": "selected_depth",
+          "reason": "retrieval_or_reuse requires validation ownership by an executable component, but the only component that performs 'validation status' management for reused prompts/templates/claims/audiences is the Artifact Prompt Registry, which is a datastore; a datastore cannot execute evaluation or validation per the criteria, and no other component is described as validating reused artifacts before reuse (Generative Copy Studio only consumes 'validated' artifacts without owning the validation step).",
+          "record_indexes": [
+            4,
+            12
+          ]
+        },
+        {
+          "rule_code": "mece_scope",
+          "reason": "Reconciliation and compensation for external writes are owned by two separate components without a clear single owner: Activation Executor claims 'reconciliation, and compensating reversal' while Reconciliation Audit Service separately claims 'detects partial failure, triggers compensation' and reconciliation against actual external state, duplicating the same material responsibility.",
+          "record_indexes": [
+            7,
+            15
+          ]
+        }
+      ]
+    },
+    "bad_corrected_candidate": {
+      "title": "Constrained Growth Marketing AI Components",
+      "assumptions": [
+        "Ad, email, web personalization, and product analytics systems expose APIs for telemetry reads and approved writes; no vendor choice is made here.",
+        "The marketer supplies objective, constraints, budget ceilings, brand rules, and protected-audience exclusions through the console.",
+        "Costly mutations such as budget increases, new audiences, event-schema changes, or external publication require explicit human approval.",
+        "Outcome feedback may update prompts, rankings, policies, or live configuration only through curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback.",
+        "Raw user data is not used directly for training; reusable artifacts require validation, lifecycle management, lineage, and invalidation.",
+        "Internal retries are retry-safe: reserve before send, atomically deduplicate, validate before deliver, reconcile actual state, and compensate partial failures."
+      ],
+      "root_index": 0,
+      "capabilities": {
+        "external_effects": true,
+        "learning_or_release": true,
+        "retrieval_or_reuse": true
+      },
+      "components": [
+        {
+          "group_kind": 603,
+          "group_label": "Human decision entry",
+          "label": "Growth Operations Console",
+          "primary_flow_member": true,
+          "responsibility": "Marketer initiates objective, constraints, budget/brand limits, and exclusions; reviews ranked recommendations and approves or rejects costly external changes.",
+          "type": 100
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Runtime control plane",
+          "label": "Campaign Orchestrator",
+          "primary_flow_member": true,
+          "responsibility": "Runs optimization cycles from console intent; enforces reserve-before-send, validate-before-deliver, approval-before-publish, retry deduplication, and stop conditions.",
+          "type": 101
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Runtime control plane",
+          "label": "Objective Constraint Policy Service",
+          "primary_flow_member": true,
+          "responsibility": "Codifies KPI, constrained objective, spend ceilings, pacing, brand/legal rules, privacy exclusions; returns allow, deny, or require-approval before any mutation.",
+          "type": 107
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Runtime control plane",
+          "label": "Experiment Decision Service",
+          "primary_flow_member": true,
+          "responsibility": "Selects next copy, targeting, and event-definition actions to maximize the constrained objective; emits reservations, expected value, risk, and rollback hints.",
+          "type": 108
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Optimization authoring",
+          "label": "Generative Copy Studio",
+          "primary_flow_member": true,
+          "responsibility": "Drafts and adjusts channel-specific copy inside brand and policy bounds; validates version, approval status, and freshness of reused prompts, claims, templates, and offers before delivery.",
+          "type": 101
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Optimization authoring",
+          "label": "Targeting Event Definition Manager",
+          "primary_flow_member": true,
+          "responsibility": "Proposes audience, bid, placement, and conversion-event definition changes; validates schemas, conflicts, privacy exclusions, and measurement impact before delivery.",
+          "type": 101
+        },
+        {
+          "group_kind": 600,
+          "group_label": "Runtime control plane",
+          "label": "Approval Boundary Service",
+          "primary_flow_member": true,
+          "responsibility": "Owns human confirmation for costly or external mutations; records decision rights, evidence shown, expiry, approver outcome, and required compensation path.",
+          "type": 107
+        },
+        {
+          "group_kind": 600,
+          "group_label": "External write boundary",
+          "label": "Activation Executor",
+          "primary_flow_member": true,
+          "responsibility": "Applies only approved changes to downstream marketing endpoints with idempotent retries, atomic deduplication, and ordered reserve/send; solely owns reconciliation of intended versus actual external state, partial-failur",
+          "type": 101
+        }
+      ]
+    },
+    "final_review": {
+      "approved": false,
+      "checked_rules": [
+        "domain_specificity",
+        "objective_fidelity",
+        "selected_depth",
+        "succinctness",
+        "mece_scope",
+        "brief_coverage",
+        "capability_classification"
+      ],
+      "findings": [
+        {
+          "rule_code": "brief_coverage",
+          "reason": "The request explicitly asks the system to 'evaluate outcomes,' but no candidate component owns outcome evaluation/measurement of campaign results; Experiment Decision Service only selects next actions and Objective Constraint Policy Service only enforces limits, leaving outcome evaluation without an owner.",
+          "record_indexes": [
+            2,
+            3
+          ]
+        },
+        {
+          "rule_code": "selected_depth",
+          "reason": "learning_or_release is declared true and assumptions state outcome feedback may update prompts, rankings, policies, or live configuration only through curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback, but no record names an owner performing curated-evidence collection, offline evaluation, canary rollout, promotion, or rollback for prompts/policies/rankings; existing components (Objective Constraint Policy Service, Experiment Decision Service, Approval Boundary Service) cover policy enforcement and human approval of mutations but not the model/prompt/config release lifecycle.",
+          "record_indexes": [
+            2,
+            3,
+            6
+          ]
+        },
+        {
+          "rule_code": "capability_classification",
+          "reason": "The learning_or_release flag is unsupported: no component's responsibility shows it changing a model, prompt, ranking, or live configuration based on feedback with the required curated-evidence/offline-eval/canary/promotion/rollback lifecycle; Generative Copy Studio and Targeting Event Definition Manager only validate and deliver content/definitions, they do not own the release lifecycle for feedback-driven configuration changes.",
+          "record_indexes": [
+            4,
+            5
+          ]
+        }
+      ]
+    },
+    "targeted_record_indexes": [
+      4,
+      7,
+      12,
+      15
+    ]
+  }
+}

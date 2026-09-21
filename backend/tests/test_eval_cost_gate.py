@@ -1,3 +1,5 @@
+import pytest
+
 from eval.cost_gate import (
     CostPolicy,
     account_application_cost,
@@ -57,6 +59,7 @@ def test_application_cost_is_attributed_by_attempt_thread_and_operation():
         "output_tokens": 160,
         "queue_wait_ms": 35,
         "estimated_usd": 0.0098,
+        "known_subtotal_usd": 0.0098,
     }
     graph = accounting["cases"][0]
     assert graph["input_tokens"] == 1_500
@@ -88,6 +91,7 @@ def test_application_cost_prices_anthropic_cache_writes_and_reads():
         "output_tokens": 100,
         "queue_wait_ms": 0,
         "estimated_usd": 0.01425,
+        "known_subtotal_usd": 0.01425,
     }
 
 
@@ -229,8 +233,10 @@ def test_accepted_attempt_with_incomplete_usage_is_unknown():
         ],
     )
 
-    assert accounting["status"] == "infrastructure"
-    assert "incomplete usage after provider acceptance" in accounting["reason"]
+    assert accounting["status"] == "incomplete"
+    assert "incomplete usage" in accounting["reason"]
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
     assert accounting["cases"][0]["input_tokens"] == 100
     assert accounting["cases"][0]["estimated_usd"] is None
 
@@ -327,3 +333,99 @@ def test_blocking_cost_breach_is_visible_in_junit_and_summary(
     assert "Cost policy: `over_budget` (blocking)" in summary_text
     assert "Application cost: `$1.250000`" in summary_text
     assert _exit_code_for_statuses({"fail", "infrastructure"}, "blocking") == 1
+
+
+@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("mode", ["report-only", "blocking"])
+@pytest.mark.parametrize("limit", [0.0001, 100.0])
+def test_recovered_timeout_preserves_known_subtotal_but_total_remains_unknown(
+    accepted, mode, limit
+):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{
+            "thread_id": "thread",
+            "operation": "orchestrator_route",
+            "status": "success",
+            "attempts": [
+                {
+                    "model": "claude-opus-5", "status": "error",
+                    "accepted": accepted, "usage_complete": False,
+                    "error_type": "APITimeoutError", "input_tokens": 100,
+                },
+                {
+                    "model": "claude-opus-5", "status": "success",
+                    "accepted": True, "usage_complete": True,
+                    "input_tokens": 1_000, "output_tokens": 100,
+                },
+            ],
+        }],
+    )
+
+    assert accounting["status"] == "incomplete"
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["total"]["known_subtotal_usd"] == 0.008
+    assert accounting["total"]["estimated_usd"] is None
+    assert accounting["cases"][0]["estimated_usd"] is None
+    operation = accounting["cases"][0]["operations"][0]
+    assert operation["estimated_usd"] is None
+    assert operation["provider_attempts"] == 2
+    policy = evaluate_cost_policy(accounting, CostPolicy(
+        mode=mode, suite_limit_usd=limit, case_limit_usd=limit,
+    ))
+    assert policy["status"] == "incomplete"
+    assert policy["blocking_status"] == ("pass" if mode == "report-only" else "fail")
+
+
+def test_incomplete_attempt_count_includes_recovered_zero_usage_timeouts():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{
+            "thread_id": "thread", "operation": "orchestrator_route", "status": "success",
+            "attempts": [
+                {"model": "claude-opus-5", "status": "error", "usage_complete": False, "accepted": False},
+                {"model": "claude-opus-5", "status": "error", "usage_complete": False, "accepted": False},
+                {"model": "claude-opus-5", "status": "success", "usage_complete": True, "input_tokens": 100},
+            ],
+        }],
+    )
+    assert accounting["incomplete_attempt_count"] == 2
+    assert accounting["total"]["known_subtotal_usd"] == 0.0005
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_flat_usage_completeness_is_preserved(complete):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{
+            "thread_id": "thread", "operation": "synthesis", "model": "claude-opus-5",
+            "input_tokens": 100, "usage_complete": complete,
+        }],
+    )
+    assert accounting["usage_complete"] is complete
+    assert accounting["incomplete_attempt_count"] == (0 if complete else 1)
+    assert accounting["status"] == ("pass" if complete else "incomplete")
+    assert accounting["total"]["estimated_usd"] == (0.0005 if complete else None)
+    assert accounting["total"]["known_subtotal_usd"] == 0.0005
+
+
+@pytest.mark.parametrize("mode", ["report-only", "blocking"])
+@pytest.mark.parametrize("invalid", ["negative", "unpriced", "malformed"])
+def test_incomplete_usage_does_not_hide_malformed_accounting(mode, invalid):
+    attempt = {"model": "claude-opus-5", "usage_complete": False, "input_tokens": 100}
+    if invalid == "unpriced":
+        attempt["model"] = "unpriced-model"
+    else:
+        attempt["input_tokens"] = -1 if invalid == "negative" else "invalid"
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{"thread_id": "thread", "operation": "synthesis", "attempts": [attempt]}],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
+    policy = evaluate_cost_policy(accounting, CostPolicy(mode=mode))
+    assert policy["status"] == "infrastructure"
+    assert policy["blocking_status"] == "fail"
