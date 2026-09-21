@@ -1,6 +1,20 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
+
+# Reviewer explanations must retain the repair context through generation.
+MAX_REVIEW_REASON_CHARS = 2_000
+
+STAGED_REVIEW_STANDARD = (
+    "Evaluate the requested explanation or design at its selected depth. Block a "
+    "demonstrated contradiction, a missing requested behavior, an unusable main "
+    "flow, or a violated required control. Optional implementation detail, naming "
+    "preferences, and a different valid decomposition are not blockers. State the "
+    "specific broken behavior when rejecting; omission alone does not prove a "
+    "runtime failure. Compatible internal operations may share an owner; do not "
+    "expand the graph just to illustrate each checklist item."
+)
 
 RUBRIC_CRITERIA = {
     "domain_specificity": (
@@ -9,11 +23,11 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Make the requested goal and constraints visible in component responsibilities.",
+        "Depict the requested subject system and make its runtime goal and constraints visible in component responsibilities. Establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. An explicit educational subject establishes the system to explain. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Primary membership selects components for the main walkthrough. Every primary member must be naturally reachable outward from that root using directed runtime, control, feedback, or deployment contracts, which may pass through non-primary supporting components. Walkthrough order does not establish causal execution order or satisfy required runtime and control behavior. Keep independent ingress and supporting components in the design; mark them non-primary when they do not belong in the walkthrough. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
-        "Connect observations, processing or decisions, applicable actions, and measurable outcomes.",
+        "Connect observations and accepted processing to measurable outcomes. Require decisions and actions only when accepted component responsibilities own them. For observation-only designs, a durable telemetry sink is a complete outcome. For every requested behavior, identify the owner and its actual trigger or change-input contract. A read, response, or incidental reachability does not invoke an unrelated write or adjustment.",
     ),
     "safe_action_boundary": (
         "connections",
@@ -21,7 +35,7 @@ RUBRIC_CRITERIA = {
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible.",
+        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload.",
     ),
     "assumption_hygiene": (
         "composition",
@@ -37,7 +51,7 @@ RUBRIC_CRITERIA = {
     ),
     "logical_flow": (
         "connections",
-        "Start the primary operational path at its real trigger and follow directed contracts to an observable outcome.",
+        "Start the primary operational path at its real trigger and follow directed contracts to an observable outcome. Require the runtime and control paths needed for invocation, authorization, and execution; walkthrough reachability alone does not establish those paths.",
     ),
     "succinctness": (
         "components",
@@ -45,7 +59,7 @@ RUBRIC_CRITERIA = {
     ),
     "mece_scope": (
         "components",
-        "Give each material responsibility one clear owner, remove needless duplicates, and exclude diagram-authoring mechanics from the designed runtime.",
+        "Give each material responsibility one clear owner, remove needless duplicates, and exclude mechanics used to author this response unless explicitly requested as runtime features of the subject system.",
     ),
     "authored_composition": (
         "composition",
@@ -53,7 +67,7 @@ RUBRIC_CRITERIA = {
     ),
     "brief_coverage": (
         "components",
-        "Give every requested responsibility a component owner.",
+        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities.",
     ),
     "branch_completion": (
         "connections",
@@ -61,11 +75,11 @@ RUBRIC_CRITERIA = {
     ),
     "independent_risk_coverage": (
         "components",
-        "Give each material challenger risk a named responsibility owner.",
+        "Give each material independently reviewed risk a named responsibility owner.",
     ),
     "gate_preserving_reuse": (
         "connections",
-        "Store only accepted post-gate artifacts, or route cache, replay, retry, and shortcut paths back through the required gate with identity and version scope.",
+        "Preserve validation, authorization, policy, and approval gates required by the request, accepted responsibilities, or applicable maturity criteria. Cache, memory, replay, retry, and shortcut paths cannot bypass those gates: store accepted post-gate artifacts or rejoin the required gate with its identity and version scope. Prototype memory or reuse alone does not require a new approval or version gate.",
     ),
     "topology_enforced_guarantees": (
         "connections",
@@ -118,6 +132,45 @@ RUBRIC_CODE_OWNERS = {
     code: owner for code, (owner, _requirement) in RUBRIC_CRITERIA.items()
 }
 
+# Screenshot readability is useful reviewer guidance, but it has no typed,
+# server-checkable closure rule. Keep its wire code stable without allowing a
+# subjective preference to withhold an otherwise valid graph.
+ADVISORY_RUBRIC_CODES = frozenset({"novice_clarity"})
+PROTOTYPE_ADVISORY_RUBRIC_CODES = frozenset(
+    {
+        "logical_flow",
+        "authored_composition",
+        "branch_completion",
+    }
+)
+
+
+def advisory_rubric_codes(resolved_depth: str) -> frozenset[str]:
+    """Return criteria that cannot withhold a graph at the selected UI depth."""
+    if resolved_depth == "production":
+        return ADVISORY_RUBRIC_CODES
+    return ADVISORY_RUBRIC_CODES | PROTOTYPE_ADVISORY_RUBRIC_CODES
+
+
+COMPOSITION_REPAIR_PROFILES = {
+    "assumption_hygiene": ("assumptions",),
+}
+
+
+def required_composition_repair_fields(criteria: list[str]) -> list[str]:
+    """Return server-owned composition authority required by hard criteria."""
+    required = {
+        field
+        for criterion in criteria
+        for field in COMPOSITION_REPAIR_PROFILES.get(criterion, ())
+    }
+    return [
+        field
+        for field in ("title", "groups", "sequence", "assumptions")
+        if field in required
+    ]
+
+
 TOPOLOGY_PROOF_REQUIREMENTS = {
     "state_effect_reconciliation": (
         "Show a directed witness from durable operation reservation through execution and authoritative read-back to every reconciliation outcome."
@@ -137,11 +190,158 @@ TOPOLOGY_PROOF_REQUIREMENTS = {
 }
 
 
+# Legacy review still uses the proof protocol above. Staged review checks each
+# production obligation once, selected by the accepted system's capabilities.
+STAGED_PRODUCTION_REQUIREMENTS = {
+    "authorization_and_compensation": (
+        "For external mutations, connect authoritative observation, a typed exact-action "
+        "proposal, policy and approval, execution, and the authoritative target. Compensation must "
+        "use the same policy, approval, execution, reconciliation, and audit controls."
+    ),
+    "state_effect_reconciliation": (
+        "For retryable writes, including internal durable mutations, reserve a stable "
+        "operation identity durably before the effect. Revalidate applicable authorization, "
+        "policy, freshness, and fencing before execution. Converge "
+        "alternative delivery paths and deduplicate atomically at the writer. Reconcile "
+        "timeout-after-commit by authoritative read-back using that identity: COMMITTED "
+        "records success, NOT_FOUND permits same-key retry under valid authorization, and "
+        "STILL_UNKNOWN has a bounded escalation. Correlate late anomalies with bounded "
+        "compensation. A response contract may describe these outcomes together."
+    ),
+    "retrieval_and_reuse_trust": (
+        "Treat retrieved bytes as untrusted. Validate material claim entailment before "
+        "delivery or reuse. Failed factual retrieval or rejected/stale artifacts must end "
+        "in clarification, abstention, or a bounded validated retry. Scope reuse by access "
+        "identity, version, and provenance, including model/prompt/index release when "
+        "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
+        "these controls."
+    ),
+    "learning_and_release": (
+        "Route feedback through curated versioned evidence, including hostile traces, "
+        "offline evaluation, reviewed immutable release, and canary. Keep promotion and "
+        "rollback as distinct controlled operations for every serving target receiving a "
+        "canary, and record their outcomes. A transition for one target cannot promote "
+        "or roll back another target's release."
+    ),
+    "audit_and_provenance": (
+        "Give lifecycle state one authoritative owner; caches and projections cannot own "
+        "it. Validate model-proposed actions deterministically. Retain provenance and "
+        "correlated audit evidence for material inputs, decisions, actions, and terminal "
+        "outcomes."
+    ),
+    "streaming_integrity": (
+        "For continuous streams, name ownership of bounded backpressure, ordering or "
+        "event-time rules, replay and deduplication, late-data handling, and schema "
+        "compatibility. Component responsibilities or channel contracts may specify "
+        "these properties; each property does not need a separate edge."
+    ),
+}
+
+
+def staged_review_requirements(
+    stage: str,
+    maturity: str,
+    required_production_guarantees: Sequence[str] = (),
+) -> dict[str, str]:
+    """Give staged generation and review the same applicable acceptance criteria."""
+    if stage not in {"components", "connections"}:
+        raise ValueError("stage must be components or connections")
+    if maturity not in {"prototype", "production"}:
+        raise ValueError("maturity must be prototype or production")
+    # Wire rule order is versioned; the production extension begins at index 16.
+    excluded = set(advisory_rubric_codes(maturity))
+    # The staged production rules below replace overlapping legacy checks.
+    excluded.update(RUBRIC_CODES[16:])
+    # Staged construction has no independently reviewed upstream risk artifact.
+    excluded.add("independent_risk_coverage")
+    # Naming and brevity guide presentation. Objective fidelity and brief coverage
+    # still block an incorrect subject or an unmet explicit requirement.
+    excluded.update({"domain_specificity", "succinctness"})
+    requirements = {
+        code: requirement
+        for code, (owner, requirement) in RUBRIC_CRITERIA.items()
+        if owner == stage and code not in excluded
+    }
+    if stage == "components":
+        requirements["capability_classification"] = (
+            "Classify capabilities from the candidate responsibilities and assumptions: "
+            "external_effects means it can mutate an external system; retrieval_or_reuse "
+            "means it retrieves or reuses stored artifacts; learning_or_release means "
+            "feedback can change a model, prompt, ranking, or live configuration. "
+            "Check each flag independently against named component responsibilities "
+            "and assumptions, and report every unsupported flag in the same review. "
+            "Internal dataset curation or publication and a passive downstream consumer "
+            "alone do not imply external_effects or learning_or_release. Require an "
+            "owner in this system for the external write or the feedback-driven change "
+            "to a model, prompt, ranking, or live configuration, respectively."
+        )
+        if maturity == "production":
+            requirements["selected_depth"] += (
+                " Before freezing the component set, require named executable ownership "
+                "for production obligations applicable to declared responsibilities and "
+                "capabilities: external_effects requires controlled execution, reconciliation, "
+                "and compensation; retrieval_or_reuse requires validation, reuse lifecycle "
+                "management, and invalidation; learning_or_release requires curated evidence, "
+                "offline evaluation, reviewed release, canary, promotion, and rollback. "
+                "Existing components may own compatible operations; do not require a separate "
+                "component for every checklist step. A datastore, registry, or audit label, "
+                "or an assumption alone, cannot execute evaluation, release, or control."
+                " State required internal ordering, such as "
+                "reserve before send and validate before deliver, in the owning component's "
+                "responsibility; connection generation cannot change that responsibility."
+                " For retryable writes, name the owner of durable operation identity, atomic "
+                "deduplication, and reconciliation. For continuous streams, name the owner of "
+                "bounded backpressure, ordering, replay, late data, and schema compatibility. "
+                "Keep responsibilities concise; "
+                "the connection stage specifies interaction contracts and their outcomes."
+            )
+    elif maturity == "production":
+        requirements["topology_enforced_guarantees"] = (
+            "Show necessary directed contracts between components, including controls "
+            "that must precede cross-boundary actions. Compatible internal operations "
+            "may stay with one executable owner whose responsibility states the behavior. "
+            "A typed response may contain success and rejection outcomes. A title or "
+            "assumption cannot substitute for an owner or a required interaction."
+        )
+        requirements.update(
+            (code, STAGED_PRODUCTION_REQUIREMENTS[code])
+            for code in (
+                "streaming_integrity",
+                "state_effect_reconciliation",
+            )
+        )
+        for guarantee in required_production_guarantees:
+            if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
+                raise ValueError(f"unknown production guarantee: {guarantee!r}")
+            requirements[guarantee] = STAGED_PRODUCTION_REQUIREMENTS[guarantee]
+    else:
+        requirements["safe_action_boundary"] = (
+            "Preserve every explicitly requested approval, audit, recovery, or other "
+            "action control. For a concrete declared external mutation, require "
+            "appropriate authorization before the action and visible failure or denial "
+            "handling. An existing owner may apply a lightweight guardrail before "
+            "dispatch; a separate approval stage is not required unless explicitly "
+            "requested. Generic educational "
+            "tool or environment labels, code execution, or an external_effects flag "
+            "alone do not require distinct approval, audit, or rollback mechanisms. "
+            "Read-only tool calls and internal memory operations do not require a new "
+            "approval stage unless explicitly requested. Identify the concrete mutation "
+            "or requested control when rejecting a candidate."
+        )
+    return requirements
+
+
 def repair_requirements(
     contract: dict[str, Any],
     topology_proofs: list[dict[str, Any]],
 ) -> list[dict[str, str]]:
     """Return compact acceptance criteria for only the failed review items."""
+    component_layer = (contract.get("layers") or {}).get("components")
+    component_operations = (
+        component_layer.get("existing_node_operations")
+        if isinstance(component_layer, dict)
+        else None
+    )
     findings = {
         str(finding)
         for layer in (contract.get("layers") or {}).values()
@@ -149,7 +349,20 @@ def repair_requirements(
         for finding in (layer.get("blocking_findings") or [])
     }
     requirements = [
-        {"criterion": code, "owner_layer": owner, "requirement": requirement}
+        {
+            "criterion": code,
+            "owner_layer": owner,
+            "requirement": " ".join(
+                part
+                for part in (
+                    requirement,
+                    _format_repair_node_operations(component_operations)
+                    if owner == "components"
+                    else "",
+                )
+                if part
+            ),
+        }
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
         if f"Repair {code.replace('_', ' ')} in the {owner} layer." in findings
     ]
@@ -162,7 +375,7 @@ def repair_requirements(
                 for part in (
                     TOPOLOGY_PROOF_REQUIREMENTS[guarantee],
                     _format_repair_obligations(proof.get("repair_obligations")),
-                    _format_repair_edges(proof.get("repair_edge_selectors")),
+                    _format_repair_edge_operations(proof.get("repair_edge_operations")),
                 )
                 if part
             ),
@@ -197,21 +410,45 @@ def _format_repair_obligations(value: Any) -> str:
     )
 
 
-def _format_repair_edges(value: Any) -> str:
+def _format_repair_node_operations(value: Any) -> str:
     if not isinstance(value, list):
         return ""
-    selectors = [
-        selector
-        for selector in value
-        if isinstance(selector, dict)
-        and all(
-            isinstance(selector.get(field), str) and selector[field].strip()
-            for field in ("source", "target", "label")
-        )
-    ]
-    if not selectors:
+    operations = [operation for operation in value if isinstance(operation, dict)]
+    if not operations:
         return ""
-    return "Required existing-edge repairs: " + "; ".join(
-        f"{selector['source']} -> {selector['target']}: {selector['label']}"
-        for selector in selectors
+    return "Required existing-node updates: " + "; ".join(
+        f"update {operation.get('node_id', '?')}: "
+        + ", ".join(
+            f"{field}={item!s}"
+            for field, item in sorted((operation.get("set") or {}).items())
+        )
+        for operation in operations
     )
+
+
+def _format_repair_edge_operations(value: Any) -> str:
+    if not isinstance(value, list):
+        return ""
+    operations = [operation for operation in value if isinstance(operation, dict)]
+    if not operations:
+        return ""
+    return "Required existing-edge operations: " + "; ".join(
+        _format_repair_edge_operation(operation) for operation in operations
+    )
+
+
+def _format_repair_edge_operation(operation: dict[str, Any]) -> str:
+    selector = operation.get("edge_selector") or {}
+    identity = (
+        f"{selector.get('source', '?')} -> {selector.get('target', '?')}: "
+        f"{selector.get('label', '?')}"
+    )
+    kind = operation.get("kind")
+    if kind == "update":
+        return f"update {identity} to {str((operation.get('set') or {}).get('label') or '')}"
+    if kind == "replace":
+        replacements = _format_repair_obligations(
+            operation.get("replacement_obligations")
+        ).removeprefix("Required additions: ")
+        return f"replace {identity} with {replacements}"
+    return f"remove {identity}"
