@@ -1,0 +1,1297 @@
+{
+  "source": {
+    "run_id": "35636149205",
+    "run_attempt": 2,
+    "case_id": "applied-domain",
+    "commit_sha": "2ea10e877fd0694241529ddc4e56c6f534edbfc2",
+    "capture": "browser-results.json workflow_progress.review_capture"
+  },
+  "request": "Design a growth and performance marketing AI system that evaluates outcomes, writes and adjusts copy, targeting and event definitions, and maximises a constrained objective. Show approval boundaries.",
+  "accepted_components": [
+    {
+      "id": "n1",
+      "label": "Marketer Console",
+      "type": "client",
+      "responsibility": "Marketer UI to state objective and constraints, review AI proposals and diffs, and give explicit approval for any external campaign change."
+    },
+    {
+      "id": "n2",
+      "label": "Campaign Brief Service",
+      "type": "service",
+      "responsibility": "Captures objective, KPIs, budget/CPA caps, brand rules, and scope; produces the versioned campaign brief that drives all generation and optimization."
+    },
+    {
+      "id": "n3",
+      "label": "Objective Optimizer",
+      "type": "decision",
+      "responsibility": "Proposes copy, targeting, and event changes that maximize the objective within declared constraints; ranks proposals using performance evidence and guardrail status."
+    },
+    {
+      "id": "n4",
+      "label": "Budget & Constraint Service",
+      "type": "control",
+      "responsibility": "Enforces spend, CPA, and policy ceilings; rejects or trims optimizer proposals that would breach constraints before they reach approval."
+    },
+    {
+      "id": "n5",
+      "label": "Copy Generation Service",
+      "type": "service",
+      "responsibility": "Generates and adjusts ad copy variants from the brief, reusing validated templates; tags each variant with prompt/model version for traceability."
+    },
+    {
+      "id": "n6",
+      "label": "Targeting & Audience Service",
+      "type": "service",
+      "responsibility": "Defines and adjusts audience segments and targeting parameters aligned to the brief and observed segment performance."
+    },
+    {
+      "id": "n7",
+      "label": "Event Definition Service",
+      "type": "service",
+      "responsibility": "Defines and maintains conversion/tracking event schemas so optimization signals are consistent; versions event definitions before use."
+    },
+    {
+      "id": "n8",
+      "label": "Policy & Brand Guardrails Service",
+      "type": "control",
+      "responsibility": "Validates every proposed copy, targeting, and event change against brand, legal, and platform policy; validation must pass before approval and before publish."
+    },
+    {
+      "id": "n9",
+      "label": "Approval Workflow Service",
+      "type": "control",
+      "responsibility": "Dedicated human confirmation gate for costly mutations; records approver, diff, and decision; no external write proceeds without an approved change record."
+    },
+    {
+      "id": "n10",
+      "label": "Publishing Gateway",
+      "type": "gateway",
+      "responsibility": "Executes approved external writes to ad platforms: reserve before send, idempotent dedup on retry, reconciliation of platform state, and compensation/rollback on failure."
+    },
+    {
+      "id": "n11",
+      "label": "Ad Platforms",
+      "type": "external",
+      "responsibility": "External ad networks that serve campaigns, apply targeting/event definitions, and return delivery and spend results."
+    },
+    {
+      "id": "n12",
+      "label": "Outcome Ingestion Service",
+      "type": "service",
+      "responsibility": "Pulls delivery, spend, and conversion outcomes from ad platforms and analytics; normalizes and timestamps them for evaluation."
+    },
+    {
+      "id": "n13",
+      "label": "Performance Evaluation Service",
+      "type": "service",
+      "responsibility": "Curates outcome evidence; runs offline and online evaluation against acceptance thresholds and regression gates for copy, targeting, models, and prompts."
+    },
+    {
+      "id": "n14",
+      "label": "Experiment & Release Service",
+      "type": "service",
+      "responsibility": "Manages reviewed release of model, prompt, and config changes: canary, promotion on passed gates, and rollback on regression; feeds measured results back to evaluation."
+    },
+    {
+      "id": "n15",
+      "label": "Performance Analytics Store",
+      "type": "datastore",
+      "responsibility": "System of record for outcomes, experiments, and campaign versions with lineage from proposal to published result."
+    },
+    {
+      "id": "n16",
+      "label": "Asset & Template Library",
+      "type": "datastore",
+      "responsibility": "Stores validated reusable copy and creative templates with reuse lifecycle management and invalidation on performance or brand regression."
+    },
+    {
+      "id": "n17",
+      "label": "Model & Prompt Registry",
+      "type": "datastore",
+      "responsibility": "Versions models and prompts used by generation and optimization; serves only versions promoted by the release process."
+    },
+    {
+      "id": "n18",
+      "label": "Audit Log",
+      "type": "datastore",
+      "responsibility": "Immutable record of briefs, proposals, guardrail decisions, approvals, publishes, and rollbacks for accountability and audit."
+    }
+  ],
+  "candidate_context": {
+    "title": "Growth & Performance Marketing AI System",
+    "assumptions": [
+      "Business domain: growth/performance marketing team running paid acquisition campaigns on external ad platforms.",
+      "Goal: maximize a constrained objective (e.g., conversions at capped CPA/budget) by AI-assisted copy, targeting, and event-definition iteration with human approval before external changes.",
+      "Ad platforms expose APIs for campaign reads and writes; conversion events stream back via analytics/attribution pipelines.",
+      "Human marketers approve all external mutations; AI proposals never auto-publish.",
+      "Model and prompt updates follow offline evaluation, reviewed release, canary, promotion, and rollback.",
+      "Reusable copy/templates require validation and lifecycle management with invalidation on performance or brand regression."
+    ],
+    "root_index": 0,
+    "capabilities": {
+      "external_effects": true,
+      "learning_or_release": true,
+      "retrieval_or_reuse": true
+    }
+  },
+  "initial_candidate": [
+    {
+      "source": "n1",
+      "target": "n2",
+      "label": "Submit objective, constraints, brand rules, and approval scope",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n1",
+      "label": "Return versioned brief confirmation and scope summary",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n18",
+      "label": "Persist brief lineage and version as authoritative lifecycle owner",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n2",
+      "target": "n3",
+      "label": "Provide versioned campaign brief as optimization input",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n2",
+      "label": "Acknowledge brief version and unresolved constraint questions",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n17",
+      "label": "Fetch promoted optimizer model and prompt version for ranking",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n3",
+      "label": "Return release-scoped optimizer version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n5",
+      "label": "Request copy variants for brief version and objective",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n16",
+      "label": "Fetch reusable templates scoped by identity, version, provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n16",
+      "target": "n5",
+      "label": "Return validated templates; bytes remain untrusted until checks",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n17",
+      "label": "Fetch promoted model and prompt version for generation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n5",
+      "label": "Return release-scoped model/prompt version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n8",
+      "label": "Validate generated copy and retrieved-template entailment",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n5",
+      "label": "Return guardrail verdict: approved, trimmed, or rejected copy",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n3",
+      "label": "Return post-gate copy variants with model/prompt/template lineage",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n18",
+      "label": "Record copy-generation provenance and rejected variants",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n5",
+      "target": "n2",
+      "label": "Request clarification when templates or evidence fail validation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n5",
+      "label": "Return clarified brief scope or bounded retry authorization",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n6",
+      "label": "Request targeting and audience changes for brief version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n17",
+      "label": "Fetch promoted ranking/segment model version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n6",
+      "label": "Return release-scoped targeting model version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n8",
+      "label": "Validate audience and targeting changes against policy",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n6",
+      "label": "Return guardrail verdict for targeting proposal",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n3",
+      "label": "Return post-gate targeting proposal with segment evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n18",
+      "label": "Record targeting proposal provenance and rejections",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n6",
+      "target": "n2",
+      "label": "Request clarification or bounded retry for stale segment evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n6",
+      "label": "Return clarified audience scope or bounded retry decision",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n7",
+      "label": "Request conversion/event definition changes for measurement plan",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n8",
+      "label": "Validate versioned event schemas before optimization use",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n7",
+      "label": "Return guardrail verdict for event definition proposal",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n3",
+      "label": "Return post-gate event schema version and compatibility status",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n18",
+      "label": "Record event-definition version lineage and validation outcome",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n7",
+      "target": "n2",
+      "label": "Request clarification for incompatible or rejected event schema",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n7",
+      "label": "Return clarified measurement scope or bounded retry decision",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n4",
+      "label": "Submit consolidated proposal for spend, CPA, and ceiling check",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n3",
+      "label": "Return accept, trim, or reject decision with constraint rationale",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n18",
+      "label": "Record budget and policy-ceiling decision provenance",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n3",
+      "target": "n8",
+      "label": "Final pre-approval validation of exact consolidated change set",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n3",
+      "label": "Return final validation verdict scoped to proposal version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n18",
+      "label": "Record ranked proposals, evidence used, and terminal rejections",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n3",
+      "target": "n9",
+      "label": "Submit typed exact-action proposal after budget and guardrail gates",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n3",
+      "label": "Return approval-gate receipt or routing rejection",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n1",
+      "label": "Present exact diff, risks, constraints, and rollback plan for approval",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n1",
+      "target": "n9",
+      "label": "Return explicit approve or reject decision with approver identity",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n18",
+      "label": "Record approver, diff, decision, and proposal version immutably",
+      "flow": "control",
+      "sync": "async"
+    },
+    {
+      "source": "n9",
+      "target": "n10",
+      "label": "Release approved change record with stable operation identity",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n9",
+      "label": "Return publish-gate receipt and fencing token status",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n8",
+      "label": "Revalidate policy, freshness, authorization, and fencing before send",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n10",
+      "label": "Return pre-publish pass/fail for same identity and version scope",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Execute reserved external campaign write with idempotency key",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return accepted, rejected, timeout-after-commit, or platform error",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Read back authoritative platform state by operation identity",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return COMMITTED, NOT_FOUND, or STILL_UNKNOWN reconciliation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n18",
+      "label": "Record reserve, dedup, publish, reconciliation, and terminal outcome",
+      "flow": "control",
+      "sync": "async"
+    },
+    {
+      "source": "n10",
+      "target": "n9",
+      "label": "Escalate STILL_UNKNOWN bounded or request compensation decision",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n10",
+      "label": "Approve bounded compensation using same policy and audit controls",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Execute approved compensating or rollback write under same identity scope",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return compensation commit or reconciliation status",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n12",
+      "target": "n11",
+      "label": "Pull delivery, spend, and conversion outcomes for published versions",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n12",
+      "label": "Return timestamped platform and analytics outcome batches",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n12",
+      "target": "n15",
+      "label": "Write normalized outcomes to analytics store with source lineage",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n12",
+      "target": "n13",
+      "label": "Send normalized outcome evidence for curation and evaluation",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n15",
+      "label": "Curate versioned evaluation evidence including hostile traces",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n15",
+      "label": "Query outcomes, experiments, and campaign-version lineage",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n15",
+      "target": "n13",
+      "label": "Return authoritative lineage and evaluation datasets",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n15",
+      "label": "Query proposal-to-result lineage for ranking evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n15",
+      "target": "n3",
+      "label": "Return authoritative performance lineage; cache is non-authoritative",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n13",
+      "target": "n3",
+      "label": "Return performance evidence, guardrail status, and regression signals",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n16",
+      "label": "Signal template invalidation on performance or brand regression",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n16",
+      "target": "n13",
+      "label": "Emit template invalidation and revalidation outcome",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n14",
+      "label": "Submit offline/online evaluation and gate results for release review",
+      "flow": "feedback",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n13",
+      "label": "Return release decision and canary measurement plan",
+      "flow": "feedback",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n17",
+      "label": "Promote reviewed immutable model/prompt/config release after passed gates",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n14",
+      "label": "Return promoted release version and immutable artifact references",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n17",
+      "label": "Rollback regressed release as distinct controlled operation",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n14",
+      "label": "Return rollback outcome and active version after rollback",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n13",
+      "label": "Feed canary, promotion, and rollback measured results to evaluation",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n14",
+      "target": "n18",
+      "label": "Record release review, canary, promotion, and rollback outcomes",
+      "flow": "deployment",
+      "sync": "async"
+    }
+  ],
+  "first_review": {
+    "approved": false,
+    "terminal": false,
+    "findings": [
+      {
+        "rule_code": "streaming_integrity",
+        "reason": "Assumptions declare conversion events stream back via analytics/attribution pipelines, but no component or edge names ownership of bounded backpressure, ordering/event-time rules, replay/deduplication, late-data handling, or schema compatibility for that continuous stream; Outcome Ingestion Service (n12) is described only as a periodic pull/normalize step with no such properties assigned.",
+        "record_indexes": [
+          59,
+          60,
+          61
+        ]
+      }
+    ],
+    "diagnostics": [],
+    "checked_rules": [
+      "runtime_completeness",
+      "safe_action_boundary",
+      "edge_semantics",
+      "logical_flow",
+      "branch_completion",
+      "gate_preserving_reuse",
+      "topology_enforced_guarantees",
+      "streaming_integrity",
+      "state_effect_reconciliation",
+      "audit_and_provenance",
+      "authorization_and_compensation",
+      "learning_and_release",
+      "retrieval_and_reuse_trust"
+    ],
+    "review_identity": "5c9ae82905ce7fac680313da186583c2f5708e605176a4d1e3e3b6046b0fa6d4"
+  },
+  "corrected_candidate": [
+    {
+      "source": "n1",
+      "target": "n2",
+      "label": "Submit objective, constraints, brand rules, and approval scope",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n1",
+      "label": "Return versioned brief confirmation and scope summary",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n18",
+      "label": "Persist brief lineage and version as authoritative lifecycle owner",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n2",
+      "target": "n3",
+      "label": "Provide versioned campaign brief as optimization input",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n2",
+      "label": "Acknowledge brief version and unresolved constraint questions",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n17",
+      "label": "Fetch promoted optimizer model and prompt version for ranking",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n3",
+      "label": "Return release-scoped optimizer version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n5",
+      "label": "Request copy variants for brief version and objective",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n16",
+      "label": "Fetch reusable templates scoped by identity, version, provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n16",
+      "target": "n5",
+      "label": "Return validated templates; bytes remain untrusted until checks",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n17",
+      "label": "Fetch promoted model and prompt version for generation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n5",
+      "label": "Return release-scoped model/prompt version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n8",
+      "label": "Validate generated copy and retrieved-template entailment",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n5",
+      "label": "Return guardrail verdict: approved, trimmed, or rejected copy",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n3",
+      "label": "Return post-gate copy variants with model/prompt/template lineage",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n18",
+      "label": "Record copy-generation provenance and rejected variants",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n5",
+      "target": "n2",
+      "label": "Request clarification when templates or evidence fail validation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n5",
+      "label": "Return clarified brief scope or bounded retry authorization",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n6",
+      "label": "Request targeting and audience changes for brief version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n17",
+      "label": "Fetch promoted ranking/segment model version and provenance",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n6",
+      "label": "Return release-scoped targeting model version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n8",
+      "label": "Validate audience and targeting changes against policy",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n6",
+      "label": "Return guardrail verdict for targeting proposal",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n3",
+      "label": "Return post-gate targeting proposal with segment evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n18",
+      "label": "Record targeting proposal provenance and rejections",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n6",
+      "target": "n2",
+      "label": "Request clarification or bounded retry for stale segment evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n6",
+      "label": "Return clarified audience scope or bounded retry decision",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n7",
+      "label": "Request conversion/event definition changes for measurement plan",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n8",
+      "label": "Validate versioned event schemas before optimization use",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n7",
+      "label": "Return guardrail verdict for event definition proposal",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n3",
+      "label": "Return post-gate event schema version and compatibility status",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n18",
+      "label": "Record event-definition version lineage and validation outcome",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n7",
+      "target": "n2",
+      "label": "Request clarification for incompatible or rejected event schema",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n7",
+      "label": "Return clarified measurement scope or bounded retry decision",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n4",
+      "label": "Submit consolidated proposal for spend, CPA, and ceiling check",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n3",
+      "label": "Return accept, trim, or reject decision with constraint rationale",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n18",
+      "label": "Record budget and policy-ceiling decision provenance",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n3",
+      "target": "n8",
+      "label": "Final pre-approval validation of exact consolidated change set",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n3",
+      "label": "Return final validation verdict scoped to proposal version",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n18",
+      "label": "Record ranked proposals, evidence used, and terminal rejections",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n3",
+      "target": "n9",
+      "label": "Submit typed exact-action proposal after budget and guardrail gates",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n3",
+      "label": "Return approval-gate receipt or routing rejection",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n1",
+      "label": "Present exact diff, risks, constraints, and rollback plan for approval",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n1",
+      "target": "n9",
+      "label": "Return explicit approve or reject decision with approver identity",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n18",
+      "label": "Record approver, diff, decision, and proposal version immutably",
+      "flow": "control",
+      "sync": "async"
+    },
+    {
+      "source": "n9",
+      "target": "n10",
+      "label": "Release approved change record with stable operation identity",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n9",
+      "label": "Return publish-gate receipt and fencing token status",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n8",
+      "label": "Revalidate policy, freshness, authorization, and fencing before send",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n8",
+      "target": "n10",
+      "label": "Return pre-publish pass/fail for same identity and version scope",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Execute reserved external campaign write with idempotency key",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return accepted, rejected, timeout-after-commit, or platform error",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Read back authoritative platform state by operation identity",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return COMMITTED, NOT_FOUND, or STILL_UNKNOWN reconciliation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n18",
+      "label": "Record reserve, dedup, publish, reconciliation, and terminal outcome",
+      "flow": "control",
+      "sync": "async"
+    },
+    {
+      "source": "n10",
+      "target": "n9",
+      "label": "Escalate STILL_UNKNOWN bounded or request compensation decision",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n9",
+      "target": "n10",
+      "label": "Approve bounded compensation using same policy and audit controls",
+      "flow": "control",
+      "sync": "sync"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Execute approved compensating or rollback write under same identity scope",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Return compensation commit or reconciliation status",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n12",
+      "target": "n11",
+      "label": "Pull delivery, spend, and conversion outcomes for published versions",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n11",
+      "target": "n12",
+      "label": "Return stream/batch outcomes; ingestion owns bounded backpressure and event-time rules",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n12",
+      "target": "n15",
+      "label": "Ingestion writes outcomes: replay and deduplication, late-data handling, schema compatibility",
+      "flow": "runtime",
+      "sync": "async"
+    },
+    {
+      "source": "n12",
+      "target": "n13",
+      "label": "Send normalized evidence with schema version and event-time watermark for evaluation",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n15",
+      "label": "Curate versioned evaluation evidence including hostile traces",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n15",
+      "label": "Query outcomes, experiments, and campaign-version lineage",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n15",
+      "target": "n13",
+      "label": "Return authoritative lineage and evaluation datasets",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n15",
+      "label": "Query proposal-to-result lineage for ranking evidence",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n15",
+      "target": "n3",
+      "label": "Return authoritative performance lineage; cache is non-authoritative",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n13",
+      "target": "n3",
+      "label": "Return performance evidence, guardrail status, and regression signals",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n16",
+      "label": "Signal template invalidation on performance or brand regression",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n16",
+      "target": "n13",
+      "label": "Emit template invalidation and revalidation outcome",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n13",
+      "target": "n14",
+      "label": "Submit offline/online evaluation and gate results for release review",
+      "flow": "feedback",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n13",
+      "label": "Return release decision and canary measurement plan",
+      "flow": "feedback",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n17",
+      "label": "Promote reviewed immutable model/prompt/config release after passed gates",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n14",
+      "label": "Return promoted release version and immutable artifact references",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n17",
+      "label": "Rollback regressed release as distinct controlled operation",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n17",
+      "target": "n14",
+      "label": "Return rollback outcome and active version after rollback",
+      "flow": "deployment",
+      "sync": "sync"
+    },
+    {
+      "source": "n14",
+      "target": "n13",
+      "label": "Feed canary, promotion, and rollback measured results to evaluation",
+      "flow": "feedback",
+      "sync": "async"
+    },
+    {
+      "source": "n14",
+      "target": "n18",
+      "label": "Record release review, canary, promotion, and rollback outcomes",
+      "flow": "deployment",
+      "sync": "async"
+    }
+  ],
+  "second_review": {
+    "approved": false,
+    "terminal": false,
+    "findings": [
+      {
+        "rule_code": "state_effect_reconciliation",
+        "reason": "Reconciliation after timeout-after-commit shows COMMITTED recording and STILL_UNKNOWN bounded escalation, but no edge or contract expresses the required NOT_FOUND path permitting same-key retry under valid authorization; the retry branch for NOT_FOUND is absent from the publishing gateway's reconciliation flow.",
+        "record_indexes": [
+          55,
+          56,
+          58
+        ]
+      }
+    ],
+    "diagnostics": [],
+    "checked_rules": [
+      "runtime_completeness",
+      "safe_action_boundary",
+      "edge_semantics",
+      "logical_flow",
+      "branch_completion",
+      "gate_preserving_reuse",
+      "topology_enforced_guarantees",
+      "streaming_integrity",
+      "state_effect_reconciliation",
+      "audit_and_provenance",
+      "authorization_and_compensation",
+      "learning_and_release",
+      "retrieval_and_reuse_trust"
+    ],
+    "review_identity": "5c9ae82905ce7fac680313da186583c2f5708e605176a4d1e3e3b6046b0fa6d4"
+  }
+}
