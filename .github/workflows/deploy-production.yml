@@ -108,4 +108,4 @@ jobs:
 
       - name: Promote only the verified candidate
         working-directory: frontend
-        run: vercel promote "$CANDIDATE_ID" --yes --token="$VERCEL_TOKEN"
+        run: vercel promote "$CANDIDATE_ID" --scope="$VERCEL_ORG_ID" --yes --token="$VERCEL_TOKEN"
