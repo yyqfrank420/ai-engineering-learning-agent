@@ -36,6 +36,8 @@ This is the current runtime contract for the production-quality demo.
    failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
    of relevance or factual support; synthesis must cite supported findings or state the evidence
    limitation. Internal evaluation captures the retained URLs' query and backend provenance.
+   Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
+   formatting is stated or its quantitative claim omitted, without silently repairing a number.
    The optional route classifier uses one low-effort provider attempt, at most 1,024 output
    tokens, and a 10-second deadline. Provider unavailability falls back to the search path
    with the same history, research setting, and graph controls. Explicit graph requests and
@@ -106,6 +108,8 @@ This is the current runtime contract for the production-quality demo.
    committed/rejected response alone does not establish that behavior. Explicitly requested
    guarantees and declared unsafe retries remain blocking. Compensation uses the same controls
    as normal actions; existing validation and approval contracts must explicitly cover it.
+   Its producer must invoke those controls directly or through a declared delegation; another
+   producer's validation path does not establish that coverage.
    Review reasons quote the control contracts and cover every applicable producer or path.
    Capability flags select system-level review criteria. Individual retrieval obligations apply
    to their declared artifact and consumer path. Outcome-data reads do not impose a factual

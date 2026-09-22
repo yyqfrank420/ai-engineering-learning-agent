@@ -48,7 +48,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v20"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v21"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v3"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -62,6 +62,9 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         'uncited "Engineering inference" or',
         "no book attribution or citation",
         "Never invent or alter",
+        "For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied",
+        "If source text is ambiguous or damaged, omit its quantitative claim or state the ambiguity",
+        "do not silently repair number or range formatting",
         "Answer adjacent applications directly",
     ):
         assert boundary in _SYNTHESIS_SYSTEM
@@ -77,6 +80,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
     assert "evidence_refs must always be an array" in _BLOCK_OUTPUT_CONTRACT
     assert "This fast path receives no retrieved book evidence" in _QUICK_SYNTHESIS_SYSTEM
     assert "do not produce chapter/page citations" in _QUICK_SYNTHESIS_SYSTEM
+    assert "For sourced claims" not in _QUICK_SYNTHESIS_SYSTEM
 
 
 def test_shared_prompt_guard_keeps_quoted_untrusted_text_as_data():
@@ -1168,6 +1172,8 @@ async def test_research_obligation_is_system_owned_and_preserves_evidence_limits
     assert len(calls) == 1
     system = calls[0]["system"]
     message = calls[0]["messages"][-1]["content"]
+    assert "For sourced claims, preserve numeric values" in system
+    assert "do not silently repair number or range formatting" in system
     if research_context:
         assert research_context in message
         assert research_context not in system

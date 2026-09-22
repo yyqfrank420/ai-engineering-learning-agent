@@ -26,7 +26,7 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v15"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v18"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v19"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
