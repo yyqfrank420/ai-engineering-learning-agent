@@ -25,8 +25,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v12"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v12"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v15"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v15"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -234,6 +234,10 @@ def _prompt(
         "candidate evidence, with one short reason identifying its concrete witness or "
         "explaining why the rule is inapplicable. Attribute mechanisms only when the "
         "cited records state them; identify unspecified detail without claiming it exists. "
+        "For required controls, quote the relevant responsibility or connection contract "
+        "in the reason. Do not invent an unstated control or fallback. When a requirement "
+        "covers several producers or paths, assess each applicable path; a witness covering "
+        "only a subset cannot satisfy it. "
         "When unsatisfied, identify all missing "
         "obligations for that rule in the reason. Do not return a separate approval decision. "
         "Copy the explicit record_index values into record_indexes; never infer indexes from "

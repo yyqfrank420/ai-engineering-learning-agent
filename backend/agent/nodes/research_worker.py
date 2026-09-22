@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # Max characters for title and body in each bullet to keep prompts lean
 _TITLE_MAX = 80
-_BODY_MAX = 120
+_BODY_MAX = 600
 _TOPIC_MAX = 160
 
 _DESIGN_SCAFFOLD = re.compile(
@@ -123,7 +123,7 @@ def _source_urls(context: str) -> list[str]:
 
 
 def _build_queries(topic: str) -> list[str]:
-    """Research both the proposed technology and the function it must serve.
+    """Preserve the requested topic before researching its domain function.
 
     Terse design prompts otherwise produce three near-duplicate architecture
     searches. Removing only generic solution scaffolding gives the architect
@@ -133,7 +133,7 @@ def _build_queries(topic: str) -> list[str]:
     current_year = datetime.now(timezone.utc).year
     domain_topic = _domain_topic(topic)
     return [
-        f"{topic} reference architecture reliability security",
+        topic,
         f"{domain_topic} operating model workflow decision points KPIs",
         f"{domain_topic} best practices failure modes {current_year}",
     ]

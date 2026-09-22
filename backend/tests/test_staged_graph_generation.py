@@ -511,7 +511,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v13"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v16"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert prompt_input["accepted_components"] == [
@@ -678,7 +678,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v15"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v19"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1880,8 +1880,14 @@ def test_walkthrough_requires_outward_directed_contracts(
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_component_executable_ownership_is_shared_and_production_only(maturity):
-    from agent.architecture_rubric import RUBRIC_CRITERIA, staged_review_requirements
+def test_component_acceptance_is_shared_with_production_only_downstream_guidance(
+    maturity,
+):
+    from agent.architecture_rubric import (
+        RUBRIC_CRITERIA,
+        STAGED_PRODUCTION_REQUIREMENTS,
+        staged_review_requirements,
+    )
     from agent.nodes import staged_graph_gate as gate
 
     request = "Design document automation with feedback-driven prompt releases."
@@ -1908,7 +1914,8 @@ def test_component_executable_ownership_is_shared_and_production_only(maturity):
         candidate_records=[],
         required_production_guarantees=(),
     )
-    generated = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    generated_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    generated = generated_input["acceptance_criteria"]
     reviewed = json.loads(
         review_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
@@ -1919,40 +1926,43 @@ def test_component_executable_ownership_is_shared_and_production_only(maturity):
     feasibility_rule = "At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here."
     assert feasibility_rule in generated["objective_fidelity"]
     assert feasibility_rule in reviewed["objective_fidelity"]
-    base_depth = RUBRIC_CRITERIA["selected_depth"][1]
-    selected_depth = generated["selected_depth"]
+    assert "selected_depth" not in generated
+    assert RUBRIC_CRITERIA["selected_depth"] == (
+        "components",
+        "Match component ownership and operational detail to the selected UI depth "
+        "without importing deeper criteria.",
+    )
+    assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= generated.keys()
     if maturity == "prototype":
-        assert selected_depth == base_depth
+        assert "downstream_controls" not in generated_input
     else:
-        assert selected_depth.startswith(base_depth)
-        assert (
-            "Before freezing the component set, require named executable ownership"
-            in selected_depth
+        controls = generated_input["downstream_controls"]
+        assert controls == STAGED_PRODUCTION_REQUIREMENTS
+        assert set(controls).isdisjoint(generated)
+        assert all(
+            control not in " ".join(generated.values()) for control in controls.values()
         )
-        assert (
-            "applicable to declared responsibilities and capabilities" in selected_depth
+        guarantees = contract.production_proofs_for_capabilities(
+            {
+                "external_effects": True,
+                "retrieval_or_reuse": True,
+                "learning_or_release": True,
+            },
+            maturity="production",
         )
-        assert (
-            "external_effects requires controlled execution, reconciliation, and compensation"
-            in selected_depth
+        final_requirements = staged_review_requirements(
+            "connections", "production", guarantees
         )
+        assert {code: final_requirements[code] for code in controls} == controls
+        assert "downstream_controls" not in review_prompt
         assert (
-            "retrieval_or_reuse requires validation, reuse lifecycle management, and invalidation"
-            in selected_depth
-        )
+            "Do not add external effects, retrieval, learning, or streaming solely "
+            "to satisfy unrelated guidance"
+        ) in prompt
         assert (
-            "learning_or_release requires curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback"
-            in selected_depth
-        )
-        assert "Existing components may own compatible operations" in selected_depth
-        assert (
-            "do not require a separate component for every checklist step"
-            in selected_depth
-        )
-        assert (
-            "A datastore, registry, or audit label, or an assumption alone, cannot execute evaluation, release, or control"
-            in selected_depth
-        )
+            "Connection generation supplies the detailed control contracts and failure "
+            "outcomes; it cannot change these component responsibilities"
+        ) in prompt
 
 
 def test_declared_human_authorization_supports_primary_recovery_path():
@@ -2109,6 +2119,7 @@ def _retained_correction(case):
 
 
 def _semantic_findings(case):
+    # Keep historical captures intact while replaying rules still used by staged review.
     return [
         {
             "code": finding["rule_code"],
@@ -2117,6 +2128,7 @@ def _semantic_findings(case):
             **{key: value for key, value in finding.items() if key != "rule_code"},
         }
         for finding in case["first_review"]["findings"]
+        if finding["rule_code"] != "selected_depth"
     ]
 
 
@@ -2146,8 +2158,9 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     delta = _marketing_delta(case)
     response = _delta_response(delta)
     assert set(response) == {"additions", "updates", "capabilities"}
-    assert set(response["updates"]) == {"slot_4", "slot_7", "slot_12", "slot_15"}
-    for index in case["targeted_record_indexes"]:
+    assert set(response["updates"]) == {"slot_7", "slot_15"}
+    targeted_indexes = {7, 15}
+    for index in targeted_indexes:
         response["updates"][f"slot_{index}"]["responsibility"] = (
             f"Corrected ownership for component {index}."
         )
@@ -2182,8 +2195,8 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     wire_response = {"candidate": response, "clarification_questions": []}
     result = await generation.generate_component_candidate(**kwargs)
     assert len(result["wire"]["components"]) == 17
-    unchanged = set(range(17)) - set(case["targeted_record_indexes"])
-    assert len(unchanged) == 13
+    unchanged = set(range(17)) - targeted_indexes
+    assert len(unchanged) == 15
     for index in unchanged:
         assert (
             result["wire"]["components"][index]
@@ -2274,10 +2287,11 @@ def test_semantic_correction_rejects_invalid_targets(indexes):
         _marketing_delta(case, findings)
 
 
-def test_semantic_correction_rejects_unknown_rule():
+@pytest.mark.parametrize("rule_code", ["invented_rule", "selected_depth"])
+def test_semantic_correction_rejects_unknown_or_retired_rule(rule_code):
     case = _retained_correction("applied_domain")
     findings = _semantic_findings(case)
-    findings[0]["code"] = "invented_rule"
+    findings[0]["code"] = rule_code
     with pytest.raises(
         generation.StagedGenerationError, match="invalid_correction_findings"
     ):
@@ -2302,9 +2316,9 @@ def test_semantic_correction_rejects_authority_expansion(mutation):
     if mutation == "unknown_slot":
         response["updates"]["slot_0"] = case["original_candidate"]["components"][0]
     elif mutation == "unknown_field":
-        response["updates"]["slot_4"]["invented"] = True
+        response["updates"]["slot_7"]["invented"] = True
     elif mutation == "missing_slot":
-        response["updates"].pop("slot_4")
+        response["updates"].pop("slot_7")
     elif mutation == "removal":
         response["removals"] = [7]
     elif mutation == "metadata":

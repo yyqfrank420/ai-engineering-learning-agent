@@ -209,9 +209,15 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "compensation. A response contract may describe these outcomes together."
     ),
     "retrieval_and_reuse_trust": (
-        "Treat retrieved bytes as untrusted. Validate material claim entailment before "
-        "delivery or reuse. Failed factual retrieval or rejected/stale artifacts must end "
-        "in clarification, abstention, or a bounded validated retry. Scope reuse by access "
+        "Treat retrieved bytes as untrusted. Validate material factual claim entailment "
+        "before delivery or reuse. Failed required factual retrieval must end in "
+        "clarification, abstention, or a bounded validated retry. Discard rejected/stale "
+        "artifacts. When the candidate explicitly makes example or creative reuse optional, "
+        "a missing or rejected result may lead to fresh generation through the same "
+        "validation and approval controls. Do not infer optionality or allow unsupported "
+        "facts to replace missing evidence. State this outcome in the owning responsibility "
+        "or response contract; a separate fallback component or edge is unnecessary. "
+        "Scope reuse by access "
         "identity, version, and provenance, including model/prompt/index release when "
         "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
         "these controls."
@@ -225,12 +231,22 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     ),
     "audit_and_provenance": (
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
-        "it. Validate model-proposed actions deterministically. Retain provenance and "
+        "it. For every producer of model-proposed actions, identify the executable owner "
+        "that deterministically validates those proposals' structure and allowed constraints "
+        "before approval or execution. A shared validator may cover multiple producers when "
+        "their responsibilities or contracts establish that coverage. Validation of one "
+        "producer does not establish validation of another. Typed proposals and human "
+        "approval alone do not establish deterministic validation. Retain provenance and "
         "correlated audit evidence for material inputs, decisions, actions, and terminal "
         "outcomes."
     ),
     "streaming_integrity": (
-        "For continuous streams, name ownership of bounded backpressure, ordering or "
+        "Apply when the request or candidate contracts declare continuous or unbounded "
+        "delivery. Determine applicability from declared delivery behavior and completion "
+        "boundaries. Near-real-time timing, asynchronous transport, generic event ingestion, "
+        "or the word 'stream' alone does not establish continuous streaming. Cite the "
+        "behavior that makes these controls necessary. For such streams, name ownership "
+        "of bounded backpressure, ordering or "
         "event-time rules, replay and deduplication, late-data handling, and schema "
         "compatibility. Component responsibilities or channel contracts may specify "
         "these properties; each property does not need a separate edge."
@@ -254,9 +270,9 @@ def staged_review_requirements(
     excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
-    # Naming and brevity guide presentation. Objective fidelity and brief coverage
-    # still block an incorrect subject or an unmet explicit requirement.
-    excluded.update({"domain_specificity", "succinctness"})
+    # Detail depth guides generation. The completed graph review owns production
+    # controls; component review checks scope, ownership, and feasibility.
+    excluded.update({"domain_specificity", "succinctness", "selected_depth"})
     requirements = {
         code: requirement
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
@@ -275,26 +291,6 @@ def staged_review_requirements(
             "owner in this system for the external write or the feedback-driven change "
             "to a model, prompt, ranking, or live configuration, respectively."
         )
-        if maturity == "production":
-            requirements["selected_depth"] += (
-                " Before freezing the component set, require named executable ownership "
-                "for production obligations applicable to declared responsibilities and "
-                "capabilities: external_effects requires controlled execution, reconciliation, "
-                "and compensation; retrieval_or_reuse requires validation, reuse lifecycle "
-                "management, and invalidation; learning_or_release requires curated evidence, "
-                "offline evaluation, reviewed release, canary, promotion, and rollback. "
-                "Existing components may own compatible operations; do not require a separate "
-                "component for every checklist step. A datastore, registry, or audit label, "
-                "or an assumption alone, cannot execute evaluation, release, or control."
-                " State required internal ordering, such as "
-                "reserve before send and validate before deliver, in the owning component's "
-                "responsibility; connection generation cannot change that responsibility."
-                " For retryable writes, name the owner of durable operation identity, atomic "
-                "deduplication, and reconciliation. For continuous streams, name the owner of "
-                "bounded backpressure, ordering, replay, late data, and schema compatibility. "
-                "Keep responsibilities concise; "
-                "the connection stage specifies interaction contracts and their outcomes."
-            )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (
             "Show necessary directed contracts between components, including controls "

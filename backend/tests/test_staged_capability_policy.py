@@ -90,7 +90,9 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     assert generated_criteria["capability_classification"] != (
         _PREVIOUS_CAPABILITY_CRITERION
     )
-    assert {"domain_specificity", "succinctness"}.isdisjoint(generated_criteria)
+    assert {"domain_specificity", "succinctness", "selected_depth"}.isdisjoint(
+        generated_criteria
+    )
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= set(
         generated_criteria
     )
@@ -98,7 +100,7 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
         "enum"
     ]
-    assert {"domain_specificity", "succinctness"}.isdisjoint(codes)
+    assert {"domain_specificity", "succinctness", "selected_depth"}.isdisjoint(codes)
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -150,14 +152,13 @@ def test_prototype_action_policy_preserves_required_controls_without_extra_stage
 
 
 def test_production_and_legacy_action_policy_retain_exact_controls():
-    criterion = (
-        "Put policy, exact-action approval, audit, and recovery controls on external mutations."
-    )
+    criterion = "Put policy, exact-action approval, audit, and recovery controls on external mutations."
 
     assert RUBRIC_CRITERIA["safe_action_boundary"][1] == criterion
-    assert staged_review_requirements("connections", "production")[
-        "safe_action_boundary"
-    ] == criterion
+    assert (
+        staged_review_requirements("connections", "production")["safe_action_boundary"]
+        == criterion
+    )
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -229,34 +230,40 @@ def test_production_contracts_allow_internal_ownership_without_extra_graph_edges
     assert "required interaction" in requirements["topology_enforced_guarantees"]
     assert "state_order_integrity" not in requirements
     component_requirements = staged_review_requirements("components", "production")
-    assert "required internal ordering" in component_requirements["selected_depth"]
-    assert (
-        "connection generation cannot change"
-        in component_requirements["selected_depth"]
-    )
+    assert set(STAGED_PRODUCTION_REQUIREMENTS).isdisjoint(component_requirements)
     for code in ("streaming_integrity", "state_effect_reconciliation"):
-        assert (
-            STAGED_PRODUCTION_REQUIREMENTS[code]
-            not in component_requirements["selected_depth"]
-        )
         assert requirements[code] == STAGED_PRODUCTION_REQUIREMENTS[code]
-    for ownership in (
-        "durable operation identity",
-        "reconciliation",
-        "late data",
-        "schema compatibility",
-    ):
-        assert ownership in component_requirements["selected_depth"]
-        assert (
-            ownership
-            not in staged_review_requirements("components", "prototype")[
-                "selected_depth"
-            ]
-        )
     assert "does not need a separate edge" in requirements["streaming_integrity"]
     assert "streaming_integrity" not in staged_review_requirements(
         "connections", "prototype"
     )
+
+
+def test_streaming_controls_require_declared_continuous_or_unbounded_delivery():
+    requirements = staged_review_requirements("connections", "production")
+    streaming = requirements["streaming_integrity"]
+
+    assert (
+        "request or candidate contracts declare continuous or unbounded delivery"
+        in streaming
+    )
+    assert (
+        "Determine applicability from declared delivery behavior and completion boundaries"
+        in streaming
+    )
+    assert (
+        "Near-real-time timing, asynchronous transport, generic event ingestion, "
+        "or the word 'stream' alone does not establish continuous streaming"
+    ) in streaming
+    assert "Cite the behavior that makes these controls necessary" in streaming
+    for control in (
+        "bounded backpressure",
+        "ordering or event-time rules",
+        "replay and deduplication",
+        "late-data handling",
+        "schema compatibility",
+    ):
+        assert control in streaming
 
 
 def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
@@ -276,6 +283,51 @@ def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
         "fencing before execution",
     ):
         assert obligation in reconciliation
+
+
+def test_reuse_control_details_remain_in_connection_review():
+    components = staged_review_requirements("components", "production")
+    connections = staged_review_requirements(
+        "connections", "production", ("retrieval_and_reuse_trust",)
+    )
+    assert "retrieval_and_reuse_trust" not in components
+    trust = connections["retrieval_and_reuse_trust"]
+    for obligation in (
+        "name invalidation and revalidation ownership",
+        "Discard rejected/stale artifacts",
+        "Failed required factual retrieval must end in clarification, abstention, "
+        "or a bounded validated retry",
+        "identity, version, and provenance",
+        "Shortcuts cannot bypass these controls",
+    ):
+        assert obligation in trust
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_component_depth_removal_invalidates_only_component_approval(
+    monkeypatch,
+    maturity,
+):
+    guarantees = (
+        ("audit_and_provenance", "retrieval_and_reuse_trust")
+        if maturity == "production"
+        else ()
+    )
+    component_identity = gate.review_identity("components", maturity)
+    connection_identity = gate.review_identity("connections", maturity, guarantees)
+
+    def previous_depth_requirements(stage, depth, required=()):
+        requirements = staged_review_requirements(stage, depth, required)
+        if stage == "components":
+            requirements["selected_depth"] = RUBRIC_CRITERIA["selected_depth"][1]
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_depth_requirements)
+
+    assert gate.review_identity("components", maturity) != component_identity
+    assert (
+        gate.review_identity("connections", maturity, guarantees) == connection_identity
+    )
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -326,9 +378,12 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
     assert generated_input["request"] == request
     assert generated_input["accepted_context"] == context.prompt_value()
     assert generated_input["acceptance_criteria"] == reviewed_criteria
-    assert reviewed_criteria["safe_action_boundary"] == staged_review_requirements(
-        "connections", maturity, guarantees
-    )["safe_action_boundary"]
+    assert (
+        reviewed_criteria["safe_action_boundary"]
+        == staged_review_requirements("connections", maturity, guarantees)[
+            "safe_action_boundary"
+        ]
+    )
     criterion = reviewed_criteria["gate_preserving_reuse"]
     assert (
         "required by the request, accepted responsibilities, or applicable maturity"
@@ -348,8 +403,34 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
             "entailment",
             "identity, version, and provenance",
             "invalidation",
+            "Failed required factual retrieval",
+            "Discard rejected/stale artifacts",
+            "candidate explicitly makes example or creative reuse optional",
+            "fresh generation through the same validation and approval controls",
+            "Do not infer optionality or allow unsupported facts",
         ):
             assert obligation in trust
+
+
+@pytest.mark.parametrize(
+    "rule_code",
+    ["audit_and_provenance", "retrieval_and_reuse_trust", "streaming_integrity"],
+)
+def test_production_control_change_invalidates_saved_connection_approval(
+    monkeypatch, rule_code
+):
+    guarantees = () if rule_code == "streaming_integrity" else (rule_code,)
+    current = gate.review_identity("connections", "production", guarantees)
+
+    def changed_requirements(stage, depth, required=()):
+        requirements = staged_review_requirements(stage, depth, required)
+        if rule_code in requirements:
+            requirements[rule_code] = "Previous control requirement"
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", changed_requirements)
+
+    assert gate.review_identity("connections", "production", guarantees) != current
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])

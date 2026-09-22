@@ -69,7 +69,7 @@ This is the current runtime contract for the production-quality demo.
    and failure handling for concrete external mutations. Generic educational tools do not
    require a separate approval, audit, or rollback workflow. An existing component may own
    the guardrail. Production action controls remain unchanged.
-   Naming and conciseness do not block staged publication. Authoring and review share a
+   Naming, conciseness, and component detail depth do not block staged publication. Authoring and review share a
    materiality standard: reject broken requested behavior, contradictions, unusable main
    flows, and violated required controls. Optional implementation detail and alternative
    valid decompositions do not justify rejection. Correctness and explicit requirements
@@ -79,11 +79,15 @@ This is the current runtime contract for the production-quality demo.
    one-way, and synchronous/asynchronous timing does not imply a return contract. Canonical graph
    records, scoped edits, and record-preserving corrections continue to use directed edges.
    Shared criteria require necessary interactions across component
-   boundaries; compatible internal operations belong in component responsibilities. Internal ordering
-   is checked before those responsibilities freeze. Component authoring and review receive the
-   shared streaming and retry requirements, including same-key reconciliation and authorization,
-   policy, freshness, and fencing checks before execution. Retryable internal writes retain these
-   requirements even when the design has no external business mutations.
+   boundaries; compatible internal operations belong in component responsibilities. Production
+   component authoring receives the canonical final controls as conditional guidance for choosing
+   executable owners. Component review checks scope, ownership, feasibility, and capability flags.
+   The completed connection review checks ordering, failure outcomes, streaming, and retry controls,
+   including same-key reconciliation and authorization, policy, freshness, and fencing before
+   execution. Streaming controls require declared continuous or unbounded behavior; near-real-time
+   timing, asynchronous transport, and the word "stream" alone do not establish it. Retryable internal
+   writes retain their controls even when the design has no external business mutations. Review
+   reasons quote the control contracts and cover every applicable producer or path.
    Walkthrough reachability does not establish execution or authorization. Semantic review still
    requires actual runtime/control contracts for invocation, approval, and execution; a feedback
    or deployment connection cannot substitute for those behaviors. This lets offline evaluation
