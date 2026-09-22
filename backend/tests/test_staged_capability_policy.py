@@ -313,6 +313,53 @@ def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
         assert obligation in reconciliation
 
 
+def test_reconciliation_scope_requires_evidence_for_each_write():
+    criterion = staged_review_requirements("connections", "production")[
+        "state_effect_reconciliation"
+    ]
+
+    assert criterion == STAGED_PRODUCTION_REQUIREMENTS["state_effect_reconciliation"]
+    for scope in (
+        "Assess each write separately",
+        "Identify the retry, redelivery, competing delivery, or uncertain-commit recovery",
+        "declared by the request or candidate before requiring its reconciliation protocol",
+        "A durable datastore or a committed/rejected response alone does not establish that behavior",
+        "an explicitly requested guarantee or a declared unsafe retry remains blocking",
+    ):
+        assert scope in criterion
+    for control in (
+        "including internal durable mutations",
+        "reserve a stable operation identity durably before the effect",
+        "Revalidate applicable authorization, policy, freshness, and fencing before execution",
+        "deduplicate atomically at the writer",
+        "COMMITTED records success",
+        "NOT_FOUND permits same-key retry under valid authorization",
+        "STILL_UNKNOWN has a bounded escalation",
+        "Correlate late anomalies with bounded compensation",
+    ):
+        assert control in criterion
+
+
+def test_shared_compensation_contracts_preserve_the_complete_control_path():
+    criterion = staged_review_requirements(
+        "connections", "production", ("authorization_and_compensation",)
+    )["authorization_and_compensation"]
+
+    assert criterion == STAGED_PRODUCTION_REQUIREMENTS["authorization_and_compensation"]
+    assert (
+        "Compensation must use the same policy, approval, execution, reconciliation, "
+        "and audit controls"
+    ) in criterion
+    assert (
+        "Cover compensation explicitly in the existing validation and approval "
+        "invocation and response contracts"
+    ) in criterion
+    assert (
+        "Shared controls suffice when those contracts cover both normal and "
+        "compensation actions; duplicate control paths are unnecessary"
+    ) in criterion
+
+
 def test_reuse_control_details_remain_in_connection_review():
     components = staged_review_requirements("components", "production")
     connections = staged_review_requirements(
@@ -447,7 +494,12 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
 
 @pytest.mark.parametrize(
     "rule_code",
-    ["audit_and_provenance", "retrieval_and_reuse_trust"],
+    [
+        "audit_and_provenance",
+        "retrieval_and_reuse_trust",
+        "state_effect_reconciliation",
+        "authorization_and_compensation",
+    ],
 )
 def test_production_control_change_invalidates_saved_connection_approval(
     monkeypatch, rule_code
