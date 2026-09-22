@@ -82,10 +82,12 @@ This is the current runtime contract for the production-quality demo.
    boundaries; compatible internal operations belong in component responsibilities. Production
    component authoring receives the canonical final controls as conditional guidance for choosing
    executable owners. Component review checks scope, ownership, feasibility, and capability flags.
-   The completed connection review checks ordering, failure outcomes, streaming, and retry controls,
+   The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
-   execution. Streaming controls require declared continuous or unbounded behavior; near-real-time
-   timing, asynchronous transport, and the word "stream" alone do not establish it. Retryable internal
+   execution. Streaming transport mechanics guide authoring rather than independently blocking a
+   diagram. Explicit requested behavior and contradictory delivery contracts still block publication.
+   Harmless extra returns or duplicate descriptions are advisory; missing required payloads and
+   paths that bypass required controls remain blockers. Retryable internal
    writes retain their controls even when the design has no external business mutations. Review
    reasons quote the control contracts and cover every applicable producer or path.
    Walkthrough reachability does not establish execution or authorization. Semantic review still
@@ -172,7 +174,10 @@ still makes five calls without correction; prompt simplification does not establ
 
 Semantic corrections to a new design use the existing delta assembler. The server retains
 every candidate record in order and permits updates to the review's indexed records plus
-bounded additions. An indexless finding permits updates across the candidate. Capabilities
+bounded additions. Cited records can be witnesses to a missing path without needing changes.
+Each semantic correction slot accepts `null` to retain the original record verbatim, or a
+complete authorized update. Explicit user edits keep their non-null field contracts.
+An indexless finding permits updates across the candidate. Capabilities
 describe the complete corrected design; other component metadata stays fixed unless the
 finding concerns it or is global. Corrections cannot omit
 records or remove a required connection. Structural failures still use the original repair
