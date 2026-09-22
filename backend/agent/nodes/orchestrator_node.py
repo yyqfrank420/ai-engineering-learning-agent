@@ -14,9 +14,10 @@
 
 import copy
 import json
+import logging
 import re
 
-from adapters.llm_adapter import build_telemetry
+from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from config import settings
 
 from agent.architecture_playbook import without_evidence_references
@@ -37,7 +38,8 @@ from agent.stream_utils import stream_llm
 
 _SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v20"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v3"
-_ROUTER_PROMPT_VERSION = "intent_router_v2"
+_ROUTER_PROMPT_VERSION = "intent_router_v3"
+logger = logging.getLogger(__name__)
 _ROUTER_SYSTEM = """<role>
 You are the router for an AI study assistant specialised in the book "AI Engineering" by Chip Huyen.
 </role>
@@ -250,26 +252,37 @@ async def orchestrator_route(state: AgentState) -> AgentState:
         }
     ]
 
-    route_token = await stream_llm(
-        model=settings.orchestrator_model,
-        system=_ROUTER_SYSTEM,
-        messages=messages,
-        temperature=settings.router_temperature,
-        top_p=settings.router_top_p,
-        top_k=settings.router_top_k,
-        telemetry=build_telemetry(
-            "orchestrator_route",
-            user_id=state.get("user_id"),
-            thread_id=state.get("session_id"),
-            is_production=state.get("is_production"),
-            metadata={
-                "request_id": state.get("request_id"),
-                "client_request_id": state.get("client_request_id"),
-                "prompt_version": _ROUTER_PROMPT_VERSION,
-            },
-        ),
-        send=send,
-    )
+    try:
+        route_token = await stream_llm(
+            model=settings.orchestrator_model,
+            system=_ROUTER_SYSTEM,
+            messages=messages,
+            temperature=settings.router_temperature,
+            top_p=settings.router_top_p,
+            top_k=settings.router_top_k,
+            effort="low",
+            max_output_tokens=1024,
+            timeout_seconds=10,
+            provider_attempt_limit=1,
+            allow_fallback=False,
+            telemetry=build_telemetry(
+                "orchestrator_route",
+                user_id=state.get("user_id"),
+                thread_id=state.get("session_id"),
+                is_production=state.get("is_production"),
+                metadata={
+                    "request_id": state.get("request_id"),
+                    "client_request_id": state.get("client_request_id"),
+                    "prompt_version": _ROUTER_PROMPT_VERSION,
+                },
+            ),
+            send=send,
+        )
+    except Exception as exc:
+        if not is_provider_unavailable_error(exc):
+            raise
+        logger.warning("Router unavailable; using search: %s", type(exc).__name__)
+        return {**state, "route": "search"}
 
     token = route_token.strip().upper()
     if token == "DESIGN" and state.get("graph_mode", "auto") != "off":

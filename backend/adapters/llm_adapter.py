@@ -299,6 +299,27 @@ def _get_anthropic_stream_semaphore() -> asyncio.Semaphore | None:
     return _anthropic_stream_semaphore
 
 
+def is_provider_unavailable_error(exc: Exception) -> bool:
+    """Identify transport and availability failures without masking invalid requests."""
+    import anthropic
+    import openai
+
+    if isinstance(
+        exc, (TimeoutError, anthropic.APIConnectionError, openai.APIConnectionError)
+    ):
+        return True
+    if not isinstance(exc, (anthropic.APIStatusError, openai.APIStatusError)):
+        return False
+    if exc.status_code in {408, 429} or 500 <= exc.status_code < 600:
+        return True
+    # Anthropic can report overload inside an already-open HTTP 200 event stream.
+    if isinstance(exc, anthropic.APIStatusError) and exc.status_code == 200:
+        body = exc.body
+        error = body.get("error", body) if isinstance(body, dict) else None
+        return isinstance(error, dict) and error.get("type") == "overloaded_error"
+    return False
+
+
 def _is_non_retryable_anthropic_error(exc: Exception) -> bool:
     if type(exc).__name__ in _NON_RETRYABLE_ANTHROPIC_ERRORS:
         return True

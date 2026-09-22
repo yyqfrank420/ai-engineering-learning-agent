@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 This is the current runtime contract for the production-quality demo.
 
@@ -31,6 +31,13 @@ This is the current runtime contract for the production-quality demo.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
+   The optional route classifier uses one low-effort provider attempt, at most 1,024 output
+   tokens, and a 10-second deadline. Provider unavailability falls back to the search path
+   with the same history, research setting, and graph controls. Explicit graph requests and
+   recognized memory follow-ups keep their deterministic routes. During a classifier outage,
+   an otherwise unrecognized design clarification may answer with history instead of rebuilding
+   the earlier design. Authentication, request validation, evaluation quotas, and programming
+   errors remain visible failures. Answer generation keeps its own retry and fallback policy.
 5. `GRAPH_PIPELINE_MODE=staged` is the default for applied create and edit requests.
    `legacy` remains an explicit rollback. Concept diagrams retain their existing path.
    Each request uses one graph pipeline. Steering or cancellation ends the request-scoped state
