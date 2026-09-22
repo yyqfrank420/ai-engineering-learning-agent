@@ -71,6 +71,138 @@ body {
 /* ── Text selection ───────────────────────────────────────────────────────── */
 ::selection { background: rgba(167, 139, 250, 0.2); }
 
+/* The sidebar stays mounted while closed; keep its controls out of tab order. */
+.thread-sidebar--closed {
+  visibility: hidden;
+}
+
+.thread-sidebar button[aria-label^="Delete chat"]:focus-visible {
+  opacity: 1 !important;
+}
+
+.title-bar__product,
+.title-bar__book,
+.title-bar__identity > button {
+  flex-shrink: 0;
+}
+
+.title-bar__product {
+  white-space: nowrap;
+}
+
+.title-bar__status span {
+  color: var(--text-secondary) !important;
+}
+
+/* Components use inline styles. These overrides are scoped to chat chrome. */
+.title-bar button:focus-visible,
+.thread-sidebar button:focus-visible,
+.split-pane__conversation :is(button, textarea, a, [role="radio"], [role="switch"]):focus-visible {
+  outline: 2px solid var(--accent-violet) !important;
+  outline-offset: 2px;
+}
+
+.split-pane__conversation textarea {
+  min-width: 0;
+}
+
+.split-pane__conversation [data-testid^="message-"] {
+  width: 100%;
+  max-width: 56rem;
+  margin-inline: auto;
+}
+
+.split-pane__conversation [data-testid^="message-"] > div {
+  min-width: 0;
+  max-width: min(90%, 72ch) !important;
+  overflow-wrap: anywhere;
+  color: #c9d1d9 !important;
+}
+
+.split-pane__conversation [data-testid^="message-"] a {
+  text-decoration: underline !important;
+  text-underline-offset: 3px;
+}
+
+.split-pane__conversation [data-testid^="message-"] table {
+  overflow-wrap: normal;
+}
+
+/* Anchor the options panel inside the conversation, including narrow panes. */
+.split-pane__conversation div:has(> div > div > [role="radiogroup"][aria-label="complexity"]) {
+  right: 1rem;
+}
+
+.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) {
+  max-width: 100%;
+  background: var(--bg-panel) !important;
+}
+
+.split-pane__conversation div:has(> [role="radiogroup"]) {
+  flex-direction: column;
+  align-items: stretch !important;
+  gap: 6px !important;
+}
+
+.split-pane__conversation div:has(> [role="radiogroup"]) > span,
+.split-pane__conversation div:has(> [role="switch"]) > div > :is(span, div),
+.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) > div:not(:has([role])) {
+  color: #a6b0bc !important;
+  font-size: 0.7rem !important;
+}
+
+.split-pane__conversation [role="radiogroup"] > span {
+  flex: 1;
+}
+
+.split-pane__conversation [role="radio"] {
+  min-height: 32px;
+  display: grid;
+  place-items: center;
+  font-size: 0.75rem !important;
+}
+
+.split-pane__conversation [role="radio"][aria-checked="false"] {
+  color: #a6b0bc !important;
+}
+
+.split-pane__conversation [role="radio"]:focus-visible {
+  outline-offset: -2px;
+}
+
+/* AuthScreen has no class hook; the email field identifies its fixed overlay. */
+#root > div > div:has(input[autocomplete="email"]) {
+  overflow-y: auto;
+  align-items: safe center !important;
+}
+
+#root > div > div:has(input[autocomplete="email"]) > div {
+  flex-shrink: 0;
+}
+
+/* The blurred signed-out preview must not receive keyboard focus. */
+#root > div > div:has(input[autocomplete="email"]) ~ div {
+  visibility: hidden;
+}
+
+#root > div > div:has(input[autocomplete="email"]) button:disabled {
+  opacity: 0.45 !important;
+  cursor: not-allowed !important;
+}
+
+#root > div > div:has(input[autocomplete="email"]) > div > p {
+  color: var(--text-secondary) !important;
+  overflow-wrap: anywhere;
+}
+
+@media (pointer: coarse) {
+  .thread-sidebar button[aria-label^="Delete chat"] {
+    opacity: 1 !important;
+    width: 32px !important;
+    height: 32px !important;
+  }
+}
+
 /* ── Focus ring (keyboard nav) ────────────────────────────────────────────── */
 :focus-visible {
   outline: 2px solid rgba(167, 139, 250, 0.4);
@@ -130,6 +262,20 @@ body {
 }
 
 @media (max-width: 520px) {
+  .split-pane__conversation textarea,
+  input[autocomplete="email"] {
+    font-size: 1rem !important;
+  }
+
+  .split-pane__conversation textarea,
+  .split-pane__conversation button[aria-label="Message options"],
+  .split-pane__conversation button[aria-label="Send message"],
+  .split-pane__conversation button[aria-label="Prepare backend"],
+  .split-pane__conversation button[aria-label="Steer response"],
+  .split-pane__conversation button[aria-label="Stop generation"] {
+    min-height: 44px !important;
+  }
+
   .title-bar__product {
     font-size: 0.82rem !important;
   }
