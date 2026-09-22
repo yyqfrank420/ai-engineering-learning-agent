@@ -278,6 +278,19 @@ def staged_review_requirements(
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
         if owner == stage and code not in excluded
     }
+    if stage == "connections":
+        requirements["edge_semantics"] = (
+            "Require contracts compatible with their source, recipient, payload, and "
+            "declared behavior. Block a missing required input or answer return, a "
+            "contradictory direction, or a path that bypasses a required control. Follow "
+            "the complete declared path: an orchestrator may invoke work directly or "
+            "delegate invocation and receive the result through another component. "
+            "An unrelated verdict or acknowledgment cannot replace required data. "
+            "A redundant intermediate return or duplicate description is advisory unless "
+            "it changes execution or violates a required control; identify that concrete "
+            "failure when rejecting. Feedback and deployment contracts cannot substitute "
+            "for required runtime or control interactions."
+        )
     if stage == "components":
         requirements["capability_classification"] = (
             "Classify capabilities from the candidate responsibilities and assumptions: "
@@ -299,13 +312,11 @@ def staged_review_requirements(
             "A typed response may contain success and rejection outcomes. A title or "
             "assumption cannot substitute for an owner or a required interaction."
         )
-        requirements.update(
-            (code, STAGED_PRODUCTION_REQUIREMENTS[code])
-            for code in (
-                "streaming_integrity",
-                "state_effect_reconciliation",
-            )
-        )
+        # Transport mechanics guide authoring. Explicit requested behavior and
+        # contradictions remain covered by runtime completeness and edge semantics.
+        requirements["state_effect_reconciliation"] = STAGED_PRODUCTION_REQUIREMENTS[
+            "state_effect_reconciliation"
+        ]
         for guarantee in required_production_guarantees:
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
                 raise ValueError(f"unknown production guarantee: {guarantee!r}")

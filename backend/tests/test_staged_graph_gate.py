@@ -280,9 +280,8 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         accepted_context=context if stage == "connections" else None,
         architecture_context="Evidence frame." if stage == "components" else None,
     )
-    generated_criteria = json.loads(generated_prompt.split("\nINPUT\n", 1)[1])[
-        "acceptance_criteria"
-    ]
+    generated_input = json.loads(generated_prompt.split("\nINPUT\n", 1)[1])
+    generated_criteria = generated_input["acceptance_criteria"]
     rules = (
         gate.COMPONENT_RULE_CODES
         if stage == "components"
@@ -305,6 +304,22 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
     assert set(guarantees) <= set(rules)
     assert "independent_risk_coverage" not in generated_criteria
     assert "selected_depth" not in generated_criteria
+    assert "streaming_integrity" not in generated_criteria
+    schema = gate._response_schema(rule_codes=tuple(rules))
+    assert (
+        "streaming_integrity"
+        not in schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
+            "enum"
+        ]
+    )
+    if maturity == "production":
+        guidance_key = (
+            "downstream_controls" if stage == "components" else "authoring_guidance"
+        )
+        assert (
+            generated_input[guidance_key]["streaming_integrity"]
+            == (STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"])
+        )
     if stage == "components":
         assert (
             "Depict the requested subject system"
@@ -348,6 +363,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         ):
             assert "concrete declared external mutation" in requirement
             assert "Preserve every explicitly requested" in requirement
+        elif stage == "connections" and code == "edge_semantics":
+            assert "Block a missing required input or answer return" in requirement
+            assert "a path that bypasses a required control" in requirement
+            assert "duplicate description is advisory unless" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -508,7 +527,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v15"
+        == "staged_connection_gate_v16"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -1327,7 +1346,7 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
         (
             "connections",
             "_CONNECTION_GATE_PROMPT_VERSION",
-            "staged_connection_gate_v10",
+            "staged_connection_gate_v15",
         ),
     ],
 )
