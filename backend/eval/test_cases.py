@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # File: backend/eval/test_cases.py
-# Purpose: Labeled test cases for the AI Engineering study agent.
+# Purpose: Labeled test cases for the AI Engineering learning agent.
 #          Each case specifies conversation turns and expected observable outcomes.
 #
 #          Categories:

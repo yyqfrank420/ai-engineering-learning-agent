@@ -272,7 +272,8 @@ def test_pr_live_eval_is_globally_serial_with_optional_manual_review():
     assert "needs.resolve-approved-tree.outputs.approved == 'false'" in workflow
     assert "needs.resolve-approved-tree.outputs.approved }}" in workflow
     assert 'gcloud artifacts docker tags list "$IMAGE"' in workflow
-    assert '--filter="tag=\\"$approval_tag\\""' in workflow
+    assert 'approval_tag="approved-tree-$TREE_SHA"' in workflow
+    assert '--filter="tag~\\"/tags/$approval_tag$\\""' in workflow
     assert 'if [ -z "$matches" ]; then' in workflow
     assert 'if [ "${#versions[@]}" -ne 1 ]; then' in workflow
     assert '[[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]' in workflow

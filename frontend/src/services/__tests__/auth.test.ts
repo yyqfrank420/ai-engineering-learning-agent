@@ -64,7 +64,7 @@ beforeEach(() => {
   // actually navigating (jsdom doesn't support full navigation)
   vi.spyOn(window, 'location', 'get').mockReturnValue({
     ...window.location,
-    origin: 'https://ai-engineering-study-agent.vercel.app',
+    origin: 'https://ai-engineering-learning-agent.frankyang.studio',
     assign: vi.fn(),
   } as unknown as Location);
 });
@@ -83,7 +83,7 @@ describe('signInWithGoogle', () => {
     expect(mockSignInWithOAuth).toHaveBeenCalledOnce();
     expect(mockSignInWithOAuth).toHaveBeenCalledWith({
       provider: 'google',
-      options: { redirectTo: 'https://ai-engineering-study-agent.vercel.app' },
+      options: { redirectTo: 'https://ai-engineering-learning-agent.frankyang.studio' },
     });
   });
 

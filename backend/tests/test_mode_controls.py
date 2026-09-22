@@ -710,13 +710,49 @@ class TestFormatResults:
         from agent.nodes.research_worker import _format_results
 
         long_title = "X" * 200
-        long_body = "Y" * 200
+        long_body = "Y" * 800
         raw = [self._make_result("https://example.com", long_title, long_body)]
         result = _format_results(raw, noise_domains=[])
         # Ellipsis markers should appear
         assert "…" in result
         # Bullet should be a single line
         assert result.count("\n") == 0
+
+    def test_preserves_source_qualification_after_introductory_text(self):
+        from agent.nodes.research_worker import _format_results
+
+        introduction = (
+            "This guide compares agents and fixed workflows for production AI products, "
+            "including their evaluation requirements and operational constraints. "
+        )
+        qualification = (
+            "Agents can adapt their tool sequence, but that flexibility increases "
+            "latency and makes per-request costs less predictable."
+        )
+        url = "https://example.com/agents?version=2&section=tradeoffs"
+        raw = [
+            self._make_result(url, "Architecture comparison", introduction + qualification)
+        ]
+
+        result = _format_results(raw, noise_domains=[])
+
+        assert len(introduction) > 120
+        assert qualification in result
+        assert f"<{url}>" in result
+        assert not result.endswith("…")
+
+    @pytest.mark.parametrize("body_length", [599, 600, 601])
+    def test_body_budget_marks_only_truncated_sources(self, body_length):
+        from agent.nodes.research_worker import _format_results, _source_urls
+
+        url = "https://example.com/source?q=agents&year=2026"
+        raw = [self._make_result(url, "Source", "x" * body_length)]
+
+        result = _format_results(raw, noise_domains=[])
+        body = result.split(">: ", 1)[1]
+
+        assert body == "x" * min(body_length, 600) + ("…" if body_length > 600 else "")
+        assert _source_urls(result) == [url]
 
     def test_bullet_format_has_domain_title_body(self):
         from agent.nodes.research_worker import _format_results
@@ -784,7 +820,7 @@ class TestResearchWorkerResilience:
         def raise_on_search(queries, results_per_query):
             raise RuntimeError("DDG unavailable")
 
-        monkeypatch.setattr(rw, "_run_ddg_searches", raise_on_search)
+        monkeypatch.setattr(rw, "_run_ddgs_searches", raise_on_search)
 
         state = self._make_state()
         result = asyncio.new_event_loop().run_until_complete(
@@ -802,7 +838,7 @@ class TestResearchWorkerResilience:
         """A worker_status event is always sent, even before the search runs."""
         import agent.nodes.research_worker as rw
 
-        monkeypatch.setattr(rw, "_run_ddg_searches", lambda *_: [])
+        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: [])
 
         state = self._make_state()
         asyncio.new_event_loop().run_until_complete(rw.research_worker_node(state))
@@ -817,7 +853,7 @@ class TestResearchWorkerResilience:
         """Empty search results produce an empty research_context."""
         import agent.nodes.research_worker as rw
 
-        monkeypatch.setattr(rw, "_run_ddg_searches", lambda *_: [])
+        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: [])
 
         state = self._make_state()
         result = asyncio.new_event_loop().run_until_complete(
@@ -832,7 +868,7 @@ class TestResearchWorkerResilience:
 
         monkeypatch.setattr(
             rw,
-            "_run_ddg_searches",
+            "_run_ddgs_searches",
             lambda _queries, _limit: [
                 {
                     "href": "https://example.com/report",
@@ -847,6 +883,7 @@ class TestResearchWorkerResilience:
 
         assert result["research_status"] == "ready"
         assert state["_events"][-1]["sources"] == ["https://example.com/report"]
+        assert state["_events"][-1]["status"] == "Web search results available."
 
     def test_success_emits_bounded_research_evidence_for_allowlisted_internal_identity(
         self, monkeypatch
@@ -861,12 +898,14 @@ class TestResearchWorkerResilience:
         )
         monkeypatch.setattr(
             rw,
-            "_run_ddg_searches",
+            "_run_ddgs_searches",
             lambda _queries, _limit: [
                 {
                     "href": "https://example.com/report",
                     "title": "Report",
                     "body": "Current external evidence",
+                    "query": "RAG pipeline architecture",
+                    "backend": "brave",
                 }
             ],
         )
@@ -881,6 +920,11 @@ class TestResearchWorkerResilience:
             "results": [
                 "- Report — <https://example.com/report>: Current external evidence"
             ],
+            "source_provenance": [{
+                "url": "https://example.com/report",
+                "query": "RAG pipeline architecture",
+                "backend": "brave",
+            }],
         }
 
     def test_success_does_not_emit_research_evidence_for_non_allowlisted_identity(
@@ -893,7 +937,7 @@ class TestResearchWorkerResilience:
         )
         monkeypatch.setattr(
             rw,
-            "_run_ddg_searches",
+            "_run_ddgs_searches",
             lambda _queries, _limit: [
                 {
                     "href": "https://example.com/report",
@@ -927,7 +971,7 @@ class TestResearchWorkerResilience:
 
         queries = rw._build_queries("RAG pipeline")
 
-        assert queries[0] == "RAG pipeline reference architecture reliability security"
+        assert queries[0] == "RAG pipeline"
         assert queries[1] == "RAG operating model workflow decision points KPIs"
         assert queries[2] == "RAG best practices failure modes 2032"
 
@@ -938,14 +982,70 @@ class TestResearchWorkerResilience:
 
         queries = rw._build_queries("growth marketing multi-agent system")
 
-        assert queries[0].startswith(
-            "growth marketing multi-agent system reference architecture"
-        )
+        assert queries[0] == "growth marketing multi-agent system"
         assert (
             queries[1]
             == "growth marketing operating model workflow decision points KPIs"
         )
         assert queries[2].startswith("growth marketing best practices failure modes ")
+
+    def test_first_query_preserves_comparison_intent_without_expanding_scope(self):
+        from agent.nodes.research_worker import _build_queries
+
+        topic = (
+            "Research current practical trade-offs between agents and fixed workflows "
+            "for production AI products."
+        )
+
+        queries = _build_queries(topic)
+
+        assert queries == [topic]
+
+    @pytest.mark.parametrize("limit, expected_limit", [(1, 3), (2, 6), (4, 6)])
+    def test_single_topic_search_reuses_bounded_total_result_budget(
+        self, monkeypatch, limit, expected_limit
+    ):
+        import agent.nodes.research_worker as rw
+
+        calls = []
+        monkeypatch.setattr(rw.settings, "research_results_per_query", limit)
+        monkeypatch.setattr(
+            rw, "_run_ddgs_searches",
+            lambda queries, count: calls.append((queries, count)) or [],
+        )
+        topic = "Compare agents and fixed workflows for production AI products."
+        asyncio.run(rw.research_worker_node({**self._make_state(), "user_message": topic}))
+
+        assert calls == [([topic], expected_limit)]
+
+    def test_research_capture_keeps_query_provenance_only_for_retained_urls(self, monkeypatch):
+        import agent.nodes.research_worker as rw
+
+        monkeypatch.setattr(rw.settings, "internal_test_email_allowlist_raw", "eval@example.com")
+        monkeypatch.setattr(rw.settings, "research_noise_domains", ["noise.example"])
+        raw = [
+            {"href": f"https://example.com/{index}", "title": "Report", "body": "Snippet",
+             "query": f"query {index}", "backend": "brave"}
+            for index in range(8)
+        ]
+        raw = [
+            {**raw[0], "href": "https://noise.example/report"},
+            {**raw[0], "href": "javascript:invalid"},
+            *raw,
+            raw[0],
+            {**raw[0], "query": "another query"},
+        ]
+        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: raw)
+        state = {**self._make_state(), "user_email": "eval@example.com"}
+
+        asyncio.run(rw.research_worker_node(state))
+
+        evidence = state["_events"][-1]
+        assert len(evidence["results"]) == 6
+        assert evidence["source_provenance"] == [
+            {"url": f"https://example.com/{index}", "query": f"query {index}", "backend": "brave"}
+            for index in range(6)
+        ] + [{"url": "https://example.com/0", "query": "another query", "backend": "brave"}]
 
     def test_worker_researches_restored_design_query_for_terse_followup(
         self, monkeypatch
@@ -955,7 +1055,7 @@ class TestResearchWorkerResilience:
         captured_queries = []
         monkeypatch.setattr(
             rw,
-            "_run_ddg_searches",
+            "_run_ddgs_searches",
             lambda queries, _limit: captured_queries.extend(queries) or [],
         )
         state = {
@@ -966,9 +1066,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        assert captured_queries[0].startswith(
-            "growth marketing multi-agent system expand this reference architecture"
-        )
+        assert captured_queries[0] == "growth marketing multi-agent system expand this"
 
     def test_topic_truncation_preserves_word_boundaries(self):
         from agent.nodes.research_worker import _normalise_topic
@@ -978,10 +1076,10 @@ class TestResearchWorkerResilience:
         assert len(topic) <= 160
         assert topic.endswith("word")
 
-    def test_run_ddg_searches_continues_after_single_query_failure(self, monkeypatch):
+    def test_run_ddgs_searches_continues_after_single_query_failure(self, monkeypatch):
         import sys
         import types
-        from agent.nodes.research_worker import _run_ddg_searches
+        from agent.nodes.research_worker import _run_ddgs_searches
 
         calls = []
 
@@ -995,8 +1093,8 @@ class TestResearchWorkerResilience:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def text(self, query, max_results):
-                calls.append((query, max_results))
+            def text(self, query, max_results, *, backend, safesearch):
+                calls.append((query, max_results, backend, safesearch))
                 if query == "bad":
                     raise RuntimeError("search failed")
                 return [
@@ -1009,18 +1107,19 @@ class TestResearchWorkerResilience:
 
         monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
 
-        assert _run_ddg_searches(["good", "bad", "later"], 2) == [
-            {"href": "https://example.com/good", "title": "good", "body": "body"},
-            {"href": "https://example.com/later", "title": "later", "body": "body"},
+        assert _run_ddgs_searches(["good", "bad", "later"], 2) == [
+            {"href": "https://example.com/good", "title": "good", "body": "body", "query": "good", "backend": "brave"},
+            {"href": "https://example.com/later", "title": "later", "body": "body", "query": "later", "backend": "brave"},
         ]
-        assert calls == [("good", 2), ("bad", 2), ("later", 2)]
+        assert calls == [(query, 2, "brave", "on") for query in ["good", "bad", "later"]]
 
-    def test_run_ddg_searches_retries_one_empty_provider_session(self, monkeypatch):
+    def test_run_ddgs_searches_retries_one_empty_provider_session(self, monkeypatch):
         import sys
         import types
-        from agent.nodes.research_worker import _run_ddg_searches
+        from agent.nodes.research_worker import _run_ddgs_searches
 
         sessions = []
+        calls = []
 
         class _DDGS:
             def __init__(self, timeout):
@@ -1032,7 +1131,8 @@ class TestResearchWorkerResilience:
             def __exit__(self, exc_type, exc, tb):
                 return False
 
-            def text(self, query, max_results):
+            def text(self, query, max_results, *, backend, safesearch):
+                calls.append((query, max_results, backend, safesearch))
                 if len(sessions) == 1:
                     return []
                 return [
@@ -1048,10 +1148,13 @@ class TestResearchWorkerResilience:
             "agent.nodes.research_worker.time.sleep", lambda _seconds: None
         )
 
-        results = _run_ddg_searches(["first", "second"], 2)
+        results = _run_ddgs_searches(["first", "second"], 2)
 
         assert len(sessions) == 2
         assert results[0]["href"] == "https://example.com/recovered"
+        assert results[0]["query"] == "first"
+        assert results[0]["backend"] == "brave"
+        assert calls == [(query, 2, "brave", "on") for query in ["first", "second", "first"]]
 
 
 @pytest.mark.parametrize(

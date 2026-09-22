@@ -525,7 +525,7 @@ async def test_live_evaluation_rejects_success_without_telemetry(
     assert report["status"] == "infrastructure"
     assert report["evaluations"][0]["decision"] == "infrastructure"
     assert "no application model-call telemetry" in report["reason"]
-    assert report["evaluations"][0]["reason"] == report["reason"]
+    assert report["reason"] == f"{case.id}: {report['evaluations'][0]['reason']}"
     assert report["budget"]["judge_calls"] == 0
 
 
@@ -1820,8 +1820,16 @@ def test_report_only_manual_review_is_visible_but_not_a_junit_failure(tmp_path):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("mode,expected_exit", [("report-only", 0), ("blocking", 1)])
+@pytest.mark.parametrize(
+    "quality_failure",
+    [
+        None,
+        "required answer missing",
+        pytest.param("required\nanswer missing " * 20, id="long-quality-reason"),
+    ],
+)
 async def test_recovered_timeout_cost_stays_unknown_through_live_report(
-    monkeypatch, tmp_path, mode, expected_exit
+    monkeypatch, tmp_path, mode, expected_exit, quality_failure
 ):
     capture = {
         "results": [{"id": "memory", "thread_id": "thread", "answer": "Answer.",
@@ -1837,6 +1845,9 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
             ],
         }],
     }
+    if quality_failure:
+        capture["results"][0]["deterministic_failures"] = [quality_failure]
+        capture["results"][0]["failure_details"] = [{"kind": "quality"}]
     manifest = live_runner._manifest()
     manifest["live"]["cost_policy"] = {"mode": mode}
     monkeypatch.setattr(live_runner, "_manifest", lambda: manifest)
@@ -1849,8 +1860,22 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
 
     report, exit_code = await evaluate(args)
 
-    assert exit_code == expected_exit
-    assert report["evaluations"][0]["decision"] == "pass"
+    assert exit_code == (1 if quality_failure else expected_exit)
+    evaluation = report["evaluations"][0]
+    assert evaluation["decision"] == ("fail" if quality_failure else "pass")
+    if quality_failure:
+        assert "required answer missing" in report["reason"]
+        if len(evaluation["reason"]) <= 240:
+            assert report["reason"] == f"memory: {evaluation['reason']}"
+        else:
+            assert report["reason"].startswith("memory: ")
+            assert report["reason"].endswith("...")
+            assert len(report["reason"]) <= len("memory: ") + 240
+            assert "\n" not in report["reason"]
+    elif mode == "blocking":
+        assert report["reason"] == report["cost_accounting"]["policy"]["reason"]
+    else:
+        assert report["reason"] is None
     assert report["estimated_cost"]["application_usd"] is None
     assert report["cost_accounting"]["policy"]["status"] == "incomplete"
     assert report["cost_accounting"]["application"]["total"]["known_subtotal_usd"] == 0.0003
@@ -1966,6 +1991,7 @@ async def test_calibration_grades_complete_product_failures_without_overriding_t
     evaluation = report["evaluations"][0]
     assert evaluation["decision"] == "fail"
     assert evaluation["deterministic_failures"] == ["graph missing"]
+    assert report["reason"] == f"{evaluation['id']}: {evaluation['reason']}"
     assert len(evaluation["judgments"]) == int(replay)
     assert len(calls) == (len(capture["results"]) if replay else 0)
     assert report["cost_accounting"]["application"]["status"] == "infrastructure"
@@ -2348,6 +2374,10 @@ async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
     assert report["status"] == expected_status
     assert report["corpus_approval"] == "pending_human_review"
     assert len(calls) == judge_calls
+    if outcome == "cost_block":
+        assert report["reason"] == "test policy"
+    else:
+        assert report["reason"] == f"memory: {report['evaluations'][0]['reason']}"
     if outcome in {"borderline", "explicit_blocking", "cost_block"}:
         assert report["evaluations"][0]["decision"] == "manual_review"
     if outcome == "borderline":

@@ -1,4 +1,4 @@
-# Project Learnings — AI Engineering Study Agent
+# Project Learnings — AI Engineering Learning Agent
 
 **Project:** AI-powered study assistant for Chip Huyen's *AI Engineering* (O'Reilly).
 **Stack:** FastAPI · React/D3 · FAISS · Supabase · Cloud Run · Vercel · Terraform · GitHub Actions.
