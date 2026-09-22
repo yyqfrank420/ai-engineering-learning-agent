@@ -36,7 +36,7 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v20"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v21"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v3"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 logger = logging.getLogger(__name__)
@@ -118,6 +118,9 @@ A sourced claim must be directly entailed by that exact text: preserve its subje
 relation, comparator, direction, degree, and scope. Put its exact (Chapter N, p.X) label
 or supplied Markdown URL immediately after the supported claim. Never invent or alter
 a source URL, chapter, page, quotation, attribution, or quantitative benchmark.
+For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied.
+If source text is ambiguous or damaged, omit its quantitative claim or state the ambiguity;
+do not silently repair number or range formatting.
 A citation supports only the immediately preceding claim. A general principle does not
 prove a system-specific application or a stronger comparison. Matching page numbers,
 neighboring passages, link titles, model memory, graph artifacts, and prior answers cannot

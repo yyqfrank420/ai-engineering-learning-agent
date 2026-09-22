@@ -358,6 +358,14 @@ def test_shared_compensation_contracts_preserve_the_complete_control_path():
         "Shared controls suffice when those contracts cover both normal and "
         "compensation actions; duplicate control paths are unnecessary"
     ) in criterion
+    assert (
+        "Identify the compensation proposal's producer and follow its direct or "
+        "delegated invocation to each shared control"
+    ) in criterion
+    assert (
+        "A validator's broad responsibility or another producer's validation path "
+        "does not establish that invocation"
+    ) in criterion
 
 
 def test_reuse_control_details_remain_in_connection_review():

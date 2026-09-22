@@ -199,7 +199,10 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "use the same policy, approval, execution, reconciliation, and audit controls. "
         "Cover compensation explicitly in the existing validation and approval invocation "
         "and response contracts. Shared controls suffice when those contracts cover both "
-        "normal and compensation actions; duplicate control paths are unnecessary."
+        "normal and compensation actions; duplicate control paths are unnecessary. "
+        "Identify the compensation proposal's producer and follow its direct or delegated "
+        "invocation to each shared control. A validator's broad responsibility or another "
+        "producer's validation path does not establish that invocation."
     ),
     "state_effect_reconciliation": (
         "Assess each write separately. Identify the retry, redelivery, competing delivery, "
