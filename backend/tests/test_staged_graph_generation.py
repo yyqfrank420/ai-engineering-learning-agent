@@ -491,7 +491,12 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
 
 
 @pytest.mark.asyncio
-async def test_connection_prompt_carries_authoritative_accepted_context(monkeypatch):
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+async def test_connection_prompt_carries_authoritative_accepted_context(
+    monkeypatch, maturity
+):
+    from agent.architecture_rubric import STAGED_PRODUCTION_REQUIREMENTS
+
     calls = []
 
     async def fake_stream(**kwargs):
@@ -501,7 +506,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
     await generation.generate_connection_candidate(
         request="Connect accepted components",
-        resolved_maturity="prototype",
+        resolved_maturity=maturity,
         write_set=_write_set(),
         upstream_fingerprint="b" * 64,
         accepted_components=_accepted_components(),
@@ -511,9 +516,17 @@ async def test_connection_prompt_carries_authoritative_accepted_context(monkeypa
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v13"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v20"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
+    assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
+    if maturity == "production":
+        assert prompt_input["authoring_guidance"] == {
+            "streaming_integrity": STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+        }
+        assert "applicable design guidance, not blocking acceptance criteria" in prompt
+    else:
+        assert "authoring_guidance" not in prompt_input
     assert prompt_input["accepted_components"] == [
         {
             "index": 0,
@@ -647,7 +660,7 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_seconds", [None, 129.875])
 @pytest.mark.parametrize("model", ["kimi-k3", "configured-builder-model"])
-async def test_component_generation_uses_configured_model_high_one_attempt_and_safe_telemetry(
+async def test_component_generation_uses_configured_model_low_one_attempt_and_safe_telemetry(
     monkeypatch,
     timeout_seconds,
     model,
@@ -678,7 +691,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v15"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v23"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1287,12 +1300,29 @@ def test_component_delta_removal_reindexes_root_without_reordering_retained_reco
     assert len(base["components"]) == 2
 
 
+def test_scoped_component_edit_rejects_null_update_and_keeps_original_schema_identity():
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(editable_node_fields={"n1": ["label"]}),
+        generation.component_generation_schema(_write_set()),
+    )
+    response = delta.extract(delta.base)
+    assert response["updates"]["slot_0"] == {"label": "Request gateway"}
+    assert generation._generation_schema_version("components", delta.schema) == (
+        "staged_components_delta_v1"
+    )
+    response["updates"]["slot_0"] = None
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps(response))
+
+
 @pytest.mark.parametrize(
     "change",
     [
         {"updates": {"slot_1": {"label": "unauthorized"}}},
         {"updates": {"slot_0": {"label": "dispatch", "flow": 401}}},
         {"updates": {}},
+        {"updates": {"slot_0": None}},
         {"additions": _connection_wire()["edges"]},
     ],
 )
@@ -1880,8 +1910,14 @@ def test_walkthrough_requires_outward_directed_contracts(
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_component_executable_ownership_is_shared_and_production_only(maturity):
-    from agent.architecture_rubric import RUBRIC_CRITERIA, staged_review_requirements
+def test_component_acceptance_is_shared_with_production_only_downstream_guidance(
+    maturity,
+):
+    from agent.architecture_rubric import (
+        RUBRIC_CRITERIA,
+        STAGED_PRODUCTION_REQUIREMENTS,
+        staged_review_requirements,
+    )
     from agent.nodes import staged_graph_gate as gate
 
     request = "Design document automation with feedback-driven prompt releases."
@@ -1908,7 +1944,8 @@ def test_component_executable_ownership_is_shared_and_production_only(maturity):
         candidate_records=[],
         required_production_guarantees=(),
     )
-    generated = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    generated_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    generated = generated_input["acceptance_criteria"]
     reviewed = json.loads(
         review_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
@@ -1919,40 +1956,52 @@ def test_component_executable_ownership_is_shared_and_production_only(maturity):
     feasibility_rule = "At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here."
     assert feasibility_rule in generated["objective_fidelity"]
     assert feasibility_rule in reviewed["objective_fidelity"]
-    base_depth = RUBRIC_CRITERIA["selected_depth"][1]
-    selected_depth = generated["selected_depth"]
+    assert "selected_depth" not in generated
+    assert RUBRIC_CRITERIA["selected_depth"] == (
+        "components",
+        "Match component ownership and operational detail to the selected UI depth "
+        "without importing deeper criteria.",
+    )
+    assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= generated.keys()
     if maturity == "prototype":
-        assert selected_depth == base_depth
+        assert "downstream_controls" not in generated_input
     else:
-        assert selected_depth.startswith(base_depth)
-        assert (
-            "Before freezing the component set, require named executable ownership"
-            in selected_depth
+        controls = generated_input["downstream_controls"]
+        assert controls == STAGED_PRODUCTION_REQUIREMENTS
+        assert set(controls).isdisjoint(generated)
+        assert all(
+            control not in " ".join(generated.values()) for control in controls.values()
         )
-        assert (
-            "applicable to declared responsibilities and capabilities" in selected_depth
+        guarantees = contract.production_proofs_for_capabilities(
+            {
+                "external_effects": True,
+                "retrieval_or_reuse": True,
+                "learning_or_release": True,
+            },
+            maturity="production",
         )
-        assert (
-            "external_effects requires controlled execution, reconciliation, and compensation"
-            in selected_depth
+        final_requirements = staged_review_requirements(
+            "connections", "production", guarantees
         )
+        assert "streaming_integrity" not in final_requirements
+        assert {
+            code: final_requirements[code]
+            for code in controls
+            if code != "streaming_integrity"
+        } == {
+            code: guidance
+            for code, guidance in controls.items()
+            if code != "streaming_integrity"
+        }
+        assert "downstream_controls" not in review_prompt
         assert (
-            "retrieval_or_reuse requires validation, reuse lifecycle management, and invalidation"
-            in selected_depth
-        )
+            "Do not add external effects, retrieval, learning, or streaming solely "
+            "to satisfy unrelated guidance"
+        ) in prompt
         assert (
-            "learning_or_release requires curated evidence, offline evaluation, reviewed release, canary, promotion, and rollback"
-            in selected_depth
-        )
-        assert "Existing components may own compatible operations" in selected_depth
-        assert (
-            "do not require a separate component for every checklist step"
-            in selected_depth
-        )
-        assert (
-            "A datastore, registry, or audit label, or an assumption alone, cannot execute evaluation, release, or control"
-            in selected_depth
-        )
+            "Connection generation supplies the detailed control contracts and failure "
+            "outcomes; it cannot change these component responsibilities"
+        ) in prompt
 
 
 def test_declared_human_authorization_supports_primary_recovery_path():
@@ -2109,6 +2158,7 @@ def _retained_correction(case):
 
 
 def _semantic_findings(case):
+    # Keep historical captures intact while replaying rules still used by staged review.
     return [
         {
             "code": finding["rule_code"],
@@ -2117,6 +2167,7 @@ def _semantic_findings(case):
             **{key: value for key, value in finding.items() if key != "rule_code"},
         }
         for finding in case["first_review"]["findings"]
+        if finding["rule_code"] != "selected_depth"
     ]
 
 
@@ -2138,6 +2189,84 @@ def _delta_response(delta):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("change_request", [False, True])
+async def test_connection_correction_adds_missing_controls_without_rewriting_witnesses(
+    monkeypatch, change_request
+):
+    request = _connection_wire()["edges"][0]
+    response = {
+        **request,
+        "source_index": request["target_index"],
+        "target_index": request["source_index"],
+        "label": "Return execution outcome",
+    }
+    original = {"edges": [request, response]}
+    original_snapshot = json.loads(json.dumps(original))
+    write_set = generation.create_write_set(component_limit=4, edge_limit=4)
+    findings = [
+        {
+            "code": "safe_action_boundary",
+            "path": "connections",
+            "rule": "semantic_gate",
+            "record_indexes": [0, 1],
+            "reason": "A compensating action has no contract.",
+        }
+    ]
+    delta = generation._semantic_correction_delta(
+        stage="connections",
+        maturity="prototype",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=original,
+        findings=findings,
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=_accepted_components(),
+        accepted_context=generation._accepted_context(_accepted_context()),
+    )
+    payload = delta.extract(original)
+    assert payload["updates"] == {"slot_0": None, "slot_1": None}
+    update_schema = delta.schema["properties"]["updates"]
+    assert update_schema["required"] == ["slot_0", "slot_1"]
+    for slot in update_schema["properties"].values():
+        assert slot["anyOf"][1] == {"type": "null"}
+        assert set(slot["anyOf"][0]["required"]) == set(request)
+        assert slot["anyOf"][0]["additionalProperties"] is False
+    payload["additions"] = [
+        {**request, "label": "Apply approved compensation"},
+        {**response, "label": "Return compensation outcome"},
+    ]
+    if change_request:
+        payload["updates"]["slot_0"] = {**request, "label": "Apply approved action"}
+
+    async def generate(**kwargs):
+        assert kwargs["schema"] == delta.schema
+        return json.dumps(payload)
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    result = await generation.generate_connection_candidate(
+        request="Preserve the action and add controlled compensation.",
+        resolved_maturity="prototype",
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(),
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        gate_findings=findings,
+        rejected_candidate=original,
+    )
+    assert result["wire"]["edges"] == [
+        payload["updates"]["slot_0"] or request,
+        response,
+        *payload["additions"],
+    ]
+    assert delta.extract(result["wire"]) == payload
+    assert original == original_snapshot
+    assert delta.base == original
+
+
+@pytest.mark.asyncio
 async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_replacement(
     monkeypatch,
 ):
@@ -2146,11 +2275,13 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     delta = _marketing_delta(case)
     response = _delta_response(delta)
     assert set(response) == {"additions", "updates", "capabilities"}
-    assert set(response["updates"]) == {"slot_4", "slot_7", "slot_12", "slot_15"}
-    for index in case["targeted_record_indexes"]:
-        response["updates"][f"slot_{index}"]["responsibility"] = (
-            f"Corrected ownership for component {index}."
-        )
+    assert set(response["updates"]) == {"slot_7", "slot_15"}
+    targeted_indexes = {7, 15}
+    for index in targeted_indexes:
+        response["updates"][f"slot_{index}"] = {
+            **case["original_candidate"]["components"][index],
+            "responsibility": f"Corrected ownership for component {index}.",
+        }
     calls = []
     wire_response = {
         "candidate": case["bad_corrected_candidate"],
@@ -2182,8 +2313,8 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     wire_response = {"candidate": response, "clarification_questions": []}
     result = await generation.generate_component_candidate(**kwargs)
     assert len(result["wire"]["components"]) == 17
-    unchanged = set(range(17)) - set(case["targeted_record_indexes"])
-    assert len(unchanged) == 13
+    unchanged = set(range(17)) - targeted_indexes
+    assert len(unchanged) == 15
     for index in unchanged:
         assert (
             result["wire"]["components"][index]
@@ -2193,12 +2324,17 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
         assert result["wire"][field] == case["original_candidate"][field]
     assert case == original
     metadata = calls[-1]["telemetry"]["metadata"]
-    assert metadata["schema_version"] == "staged_components_correction_response_v1"
+    assert metadata["schema_version"] == "staged_components_correction_response_v2"
     prompt = calls[-1]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n")[1])
     assert prompt_input["base"] is None
     assert prompt_input["rejected_candidate"] == case["original_candidate"]
     assert "never return a full replacement or remove records" in prompt
+    assert "Cited record indexes define repair scope, not mandatory rewrites" in prompt
+    assert (
+        "witness records may remain null when additions resolve a missing control"
+        in prompt
+    )
 
 
 @pytest.mark.asyncio
@@ -2259,7 +2395,7 @@ async def test_memory_semantic_correction_retains_required_targeted_write(monkey
     assert calls[-1]["schema"]["properties"]["additions"]["maxItems"] == 4
     assert (
         generation._generation_schema_version("connections", calls[-1]["schema"])
-        == "staged_connections_delta_v1"
+        == "staged_connections_delta_v2"
     )
 
 
@@ -2274,10 +2410,11 @@ def test_semantic_correction_rejects_invalid_targets(indexes):
         _marketing_delta(case, findings)
 
 
-def test_semantic_correction_rejects_unknown_rule():
+@pytest.mark.parametrize("rule_code", ["invented_rule", "selected_depth"])
+def test_semantic_correction_rejects_unknown_or_retired_rule(rule_code):
     case = _retained_correction("applied_domain")
     findings = _semantic_findings(case)
-    findings[0]["code"] = "invented_rule"
+    findings[0]["code"] = rule_code
     with pytest.raises(
         generation.StagedGenerationError, match="invalid_correction_findings"
     ):
@@ -2288,7 +2425,9 @@ def test_semantic_correction_rejects_unknown_rule():
     "mutation",
     [
         "unknown_slot",
+        "unknown_null_slot",
         "unknown_field",
+        "partial_update",
         "missing_slot",
         "removal",
         "metadata",
@@ -2301,10 +2440,17 @@ def test_semantic_correction_rejects_authority_expansion(mutation):
     response = _delta_response(delta)
     if mutation == "unknown_slot":
         response["updates"]["slot_0"] = case["original_candidate"]["components"][0]
+    elif mutation == "unknown_null_slot":
+        response["updates"]["slot_0"] = None
     elif mutation == "unknown_field":
-        response["updates"]["slot_4"]["invented"] = True
+        response["updates"]["slot_7"] = {
+            **case["original_candidate"]["components"][7],
+            "invented": True,
+        }
     elif mutation == "missing_slot":
-        response["updates"].pop("slot_4")
+        response["updates"].pop("slot_7")
+    elif mutation == "partial_update":
+        response["updates"]["slot_7"] = {"label": "Incomplete replacement"}
     elif mutation == "removal":
         response["removals"] = [7]
     elif mutation == "metadata":
@@ -2432,6 +2578,7 @@ def test_component_correction_added_owner_can_change_capabilities():
         schema=generation.component_generation_schema(write_set),
     )
     response = _delta_response(delta)
+    assert response["updates"] == {"slot_0": None}
     response["additions"] = [
         {
             **original["components"][0],

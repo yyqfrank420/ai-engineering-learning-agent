@@ -18,6 +18,7 @@ from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_PRODUCTION_REQUIREMENTS,
     STAGED_REVIEW_STANDARD,
     staged_review_requirements,
 )
@@ -37,8 +38,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v15"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v13"
+_COMPONENT_PROMPT_VERSION = "staged_components_v23"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v20"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -596,11 +597,14 @@ async def generate_connection_candidate(
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
     properties = schema["properties"]
     if "additions" in properties:
-        return f"staged_{stage}_delta_v1"
+        nullable_updates = any(
+            "anyOf" in slot for slot in properties["updates"]["properties"].values()
+        )
+        return f"staged_{stage}_delta_v{2 if nullable_updates else 1}"
     if stage == "components":
         candidate_properties = properties["candidate"]["anyOf"][0]["properties"]
         if "additions" in candidate_properties:
-            return "staged_components_correction_response_v1"
+            return "staged_components_correction_response_v2"
         return _COMPONENT_SCHEMA_VERSION
     return _CONNECTION_SCHEMA_VERSION
 
@@ -760,6 +764,12 @@ def _attempt_prompt(
         "findings": findings if attempt == 1 else None,
         "prior_prompt_fingerprint": prior_prompt_fingerprint if attempt == 1 else None,
     }
+    if stage == "components" and maturity == "production":
+        prompt_input["downstream_controls"] = STAGED_PRODUCTION_REQUIREMENTS
+    if stage == "connections" and maturity == "production":
+        prompt_input["authoring_guidance"] = {
+            "streaming_integrity": STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
+        }
     if edit_delta is not None:
         prompt_input["edit_slots"] = edit_delta.schema["properties"]
         prompt_input["connection_addition_plan"] = _bounded_json(
@@ -848,8 +858,11 @@ def _attempt_prompt(
     if correction_delta is not None:
         edit_rule = (
             " The rejected_candidate is preserved by the server. Return only the "
-            "correction delta defined by correction_slots: additions, updates to every listed "
-            "slot, and explicitly exposed metadata fields. slot_N refers to original record "
+            "correction delta defined by correction_slots: additions, every listed update "
+            "slot, and explicitly exposed metadata fields. Cited record indexes define repair "
+            "scope, not mandatory rewrites. Use null to preserve a slot's original record; "
+            "witness records may remain null when additions resolve a missing control. "
+            "For a changed slot, supply the complete authorized object. slot_N refers to original record "
             "index N. The server retains all original records in order; never return a full "
             "replacement or remove records. Preserve unrelated values within editable records. "
             "Append only additions needed for the findings, within the schema capacity. "
@@ -875,6 +888,16 @@ def _attempt_prompt(
             "turning every checklist question into a component. "
             f"Use these integer codes: {codebook}."
         )
+        if maturity == "production":
+            instructions += (
+                " The downstream_controls are guidance for the completed graph. Choose "
+                "executable owners capable of fulfilling the controls applicable to the "
+                "requested behavior and declared capabilities. Do not add external effects, "
+                "retrieval, learning, or streaming solely to satisfy unrelated guidance. "
+                "Keep compatible work in existing components. Connection generation supplies "
+                "the detailed control contracts and failure outcomes; it cannot change "
+                "these component responsibilities."
+            )
         if edit_delta is None:
             instructions += (
                 " Return exactly one outcome: candidate containing the schema-defined object with "
@@ -929,6 +952,12 @@ def _attempt_prompt(
             "Do not emit nodes, components, composition, IDs, technology, layout, "
             f"publication, or permissions. Use these integer codes: {codebook}."
         )
+        if maturity == "production":
+            instructions += (
+                " The authoring_guidance describes applicable design guidance, not blocking "
+                "acceptance criteria. Apply streaming guidance only to declared continuous "
+                "or unbounded delivery; do not infer it from timing or transport labels."
+            )
     prompt = (
         instructions
         + maturity_rule
@@ -963,6 +992,7 @@ class _EditDelta:
     record_key: str
     retained_indexes: tuple[int, ...]
     schema: dict[str, Any]
+    nullable_updates: bool = False
 
     def assemble(self, text: str) -> dict[str, Any]:
         delta = _parse_json(text)
@@ -983,10 +1013,15 @@ class _EditDelta:
             record = deepcopy(self.base[self.record_key][index])
             slot = f"slot_{index}"
             if slot in update_fields:
-                _require_exact_keys(
-                    delta["updates"][slot], set(update_fields[slot]["properties"])
-                )
-                record.update(delta["updates"][slot])
+                update = delta["updates"][slot]
+                if update is not None or not self.nullable_updates:
+                    slot_schema = (
+                        update_fields[slot]["anyOf"][0]
+                        if self.nullable_updates
+                        else update_fields[slot]
+                    )
+                    _require_exact_keys(update, set(slot_schema["properties"]))
+                    record.update(update)
             records.append(record)
         return {
             **deepcopy(self.base),
@@ -1007,6 +1042,27 @@ class _EditDelta:
         """Project a rejected assembled candidate back to its authorized delta."""
         properties = self.schema["properties"]
         records = wire[self.record_key]
+        updates = {}
+        for position, index in enumerate(self.retained_indexes):
+            slot = f"slot_{index}"
+            slot_schema = properties["updates"]["properties"].get(slot)
+            if slot_schema is None:
+                continue
+            fields = (
+                slot_schema["anyOf"][0]["properties"]
+                if self.nullable_updates
+                else slot_schema["properties"]
+            )
+            update = {field: records[position][field] for field in fields}
+            updates[slot] = (
+                None
+                if self.nullable_updates
+                and all(
+                    value == self.base[self.record_key][index][field]
+                    for field, value in update.items()
+                )
+                else update
+            )
         return {
             **{
                 key: wire[key]
@@ -1014,16 +1070,7 @@ class _EditDelta:
                 if key not in {"updates", "additions"}
             },
             "additions": records[len(self.retained_indexes) :],
-            "updates": {
-                f"slot_{index}": {
-                    field: records[position][field]
-                    for field in properties["updates"]["properties"][f"slot_{index}"][
-                        "properties"
-                    ]
-                }
-                for position, index in enumerate(self.retained_indexes)
-                if f"slot_{index}" in properties["updates"]["properties"]
-            },
+            "updates": updates,
         }
 
 
@@ -1046,6 +1093,7 @@ def _edit_delta(
     field_names: Mapping[str, str],
     schema: Mapping[str, Any],
     composition_fields: Sequence[str] = (),
+    nullable_updates: bool = False,
 ) -> _EditDelta:
     removable = set(permissions.get(f"removable_{kind}_ids", []))
     fields_by_id = permissions.get(f"editable_{kind}_fields", {})
@@ -1072,6 +1120,10 @@ def _edit_delta(
                     for field in fields
                 }
             )
+            if nullable_updates:
+                updates[f"slot_{index}"] = {
+                    "anyOf": [updates[f"slot_{index}"], {"type": "null"}]
+                }
     count = permissions.get(f"allowed_new_{kind}_count", 0)
     minimum = permissions.get(f"minimum_new_{kind}_count", count)
     if (
@@ -1090,7 +1142,9 @@ def _edit_delta(
         "updates": _strict_object_schema(updates),
         **{field: schema["properties"][field] for field in composition_fields},
     }
-    return _EditDelta(base, record_key, retained, _strict_object_schema(properties))
+    return _EditDelta(
+        base, record_key, retained, _strict_object_schema(properties), nullable_updates
+    )
 
 
 def _semantic_correction_delta(
@@ -1185,6 +1239,7 @@ def _semantic_correction_delta(
         field_names={field: field for field in fields},
         schema=schema,
         composition_fields=sorted(metadata) if stage == "components" else (),
+        nullable_updates=True,
     )
 
 

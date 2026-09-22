@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-21
+Last updated: 2026-09-22
 
 This is the current runtime contract for the production-quality demo.
 
@@ -31,6 +31,20 @@ This is the current runtime contract for the production-quality demo.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
+   Web research selects Brave explicitly through DDGS with safe search. Ordinary research keeps
+   the original topic in one query; applied design requests also search the domain workflow and
+   failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
+   of relevance or factual support; synthesis must cite supported findings or state the evidence
+   limitation. Internal evaluation captures the retained URLs' query and backend provenance.
+   Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
+   formatting is stated or its quantitative claim omitted, without silently repairing a number.
+   The optional route classifier uses one low-effort provider attempt, at most 1,024 output
+   tokens, and a 10-second deadline. Provider unavailability falls back to the search path
+   with the same history, research setting, and graph controls. Explicit graph requests and
+   recognized memory follow-ups keep their deterministic routes. During a classifier outage,
+   an otherwise unrecognized design clarification may answer with history instead of rebuilding
+   the earlier design. Authentication, request validation, evaluation quotas, and programming
+   errors remain visible failures. Answer generation keeps its own retry and fallback policy.
 5. `GRAPH_PIPELINE_MODE=staged` is the default for applied create and edit requests.
    `legacy` remains an explicit rollback. Concept diagrams retain their existing path.
    Each request uses one graph pipeline. Steering or cancellation ends the request-scoped state
@@ -69,7 +83,7 @@ This is the current runtime contract for the production-quality demo.
    and failure handling for concrete external mutations. Generic educational tools do not
    require a separate approval, audit, or rollback workflow. An existing component may own
    the guardrail. Production action controls remain unchanged.
-   Naming and conciseness do not block staged publication. Authoring and review share a
+   Naming, conciseness, and component detail depth do not block staged publication. Authoring and review share a
    materiality standard: reject broken requested behavior, contradictions, unusable main
    flows, and violated required controls. Optional implementation detail and alternative
    valid decompositions do not justify rejection. Correctness and explicit requirements
@@ -79,11 +93,28 @@ This is the current runtime contract for the production-quality demo.
    one-way, and synchronous/asynchronous timing does not imply a return contract. Canonical graph
    records, scoped edits, and record-preserving corrections continue to use directed edges.
    Shared criteria require necessary interactions across component
-   boundaries; compatible internal operations belong in component responsibilities. Internal ordering
-   is checked before those responsibilities freeze. Component authoring and review receive the
-   shared streaming and retry requirements, including same-key reconciliation and authorization,
-   policy, freshness, and fencing checks before execution. Retryable internal writes retain these
-   requirements even when the design has no external business mutations.
+   boundaries; compatible internal operations belong in component responsibilities. Production
+   component authoring receives the canonical final controls as conditional guidance for choosing
+   executable owners. Component review checks scope, ownership, feasibility, and capability flags.
+   The completed connection review checks ordering, failure outcomes, and retry controls,
+   including same-key reconciliation and authorization, policy, freshness, and fencing before
+   execution. Streaming transport mechanics guide authoring rather than independently blocking a
+   diagram. Explicit requested behavior and contradictory delivery contracts still block publication.
+   Harmless extra returns or duplicate descriptions are advisory; missing required payloads and
+   paths that bypass required controls remain blockers. Retryable internal
+   writes retain their controls even when the design has no external business mutations. Review
+   identifies the retry, redelivery, competing delivery, or uncertain-commit behavior declared
+   for the specific write before requiring its reconciliation protocol. A datastore or a
+   committed/rejected response alone does not establish that behavior. Explicitly requested
+   guarantees and declared unsafe retries remain blocking. Compensation uses the same controls
+   as normal actions; existing validation and approval contracts must explicitly cover it.
+   Its producer must invoke those controls directly or through a declared delegation; another
+   producer's validation path does not establish that coverage.
+   Review reasons quote the control contracts and cover every applicable producer or path.
+   Capability flags select system-level review criteria. Individual retrieval obligations apply
+   to their declared artifact and consumer path. Outcome-data reads do not impose a factual
+   retrieval dependency on an unrelated creative generator. Material factual claims still need
+   entailment validation for both internal and external evidence.
    Walkthrough reachability does not establish execution or authorization. Semantic review still
    requires actual runtime/control contracts for invocation, approval, and execution; a feedback
    or deployment connection cannot substitute for those behaviors. This lets offline evaluation
@@ -97,7 +128,10 @@ This is the current runtime contract for the production-quality demo.
    still match. Changed maturity, capabilities, assumptions, title, or root require full review.
    Both gates still inspect current records against their applicable semantic requirements.
    Reviewer identities bind prompt content, model settings, rubric definitions, and response schema.
-   Scoped projection preserves authored edge presentation and sequence descriptions. Authorized node
+   Scoped projection preserves authored edge presentation and sequence descriptions. Component
+   labels are reviewed by the staged component gate; edit admission does not reapply the legacy
+   generic-label heuristic to those accepted records. Exact edit authority and structural checks
+   remain mandatory. Authorized node
    deletion removes only that node's sequence memberships and incident edges, then renumbers steps.
    Only an explicit graph rebuild can authorize restaging at another depth. Scoped edits preserve
    locked assumptions and prior composition records. Capability changes are reviewed against the
@@ -168,7 +202,10 @@ still makes five calls without correction; prompt simplification does not establ
 
 Semantic corrections to a new design use the existing delta assembler. The server retains
 every candidate record in order and permits updates to the review's indexed records plus
-bounded additions. An indexless finding permits updates across the candidate. Capabilities
+bounded additions. Cited records can be witnesses to a missing path without needing changes.
+Each semantic correction slot accepts `null` to retain the original record verbatim, or a
+complete authorized update. Explicit user edits keep their non-null field contracts.
+An indexless finding permits updates across the candidate. Capabilities
 describe the complete corrected design; other component metadata stays fixed unless the
 finding concerns it or is global. Corrections cannot omit
 records or remove a required connection. Structural failures still use the original repair
@@ -218,5 +255,5 @@ The distinction is orchestration versus concurrency, not framework versus no fra
 - frontend transport: `frontend/src/services/agentTransport.ts`
 - frontend stream state: `frontend/src/hooks/useAgentStream.ts`
 
-The older spec in `docs/superpowers/specs/2026-03-31-ai-study-agent-design.md` is design history,
+The older spec in `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is design history,
 not the current runtime contract.

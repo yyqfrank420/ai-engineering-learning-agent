@@ -1878,6 +1878,75 @@ def test_production_rollout_requires_passed_main_digest_and_smoke():
     assert workflow.index("./scripts/ci browser") < workflow.index("--to-tags")
 
 
+@pytest.mark.parametrize(
+    "lookup,expected_status,approved",
+    [
+        ("found", 0, True),
+        ("missing", 0, False),
+        ("ambiguous", 1, False),
+        ("malformed", 1, False),
+        ("error", 1, False),
+    ],
+)
+def test_live_eval_approval_lookup_matches_exact_artifact_tag_resource(
+    tmp_path, lookup, expected_status, approved
+):
+    bash_version = subprocess.run(
+        ["/bin/bash", "-c", "echo ${BASH_VERSINFO[0]}"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    if int(bash_version) < 4:
+        pytest.skip("The workflow uses mapfile, which requires Bash 4 or newer.")
+
+    workflow = (ROOT / ".github/workflows/live-eval.yml").read_text()
+    step = workflow.split(
+        "name: Resolve immutable digest for the approved tree\n", 1
+    )[1]
+    script = dedent(step.split("        run: |\n", 1)[1].split("\n  evaluate:", 1)[0])
+    executable = tmp_path / "gcloud"
+    executable.write_text(
+        '''#!/bin/bash
+echo "$*" > "$GCLOUD_ARGS"
+case "$LOOKUP" in
+  found) echo projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ;;
+  missing) exit 0 ;;
+  ambiguous) printf '%s\n%s\n' projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa projects/p/locations/europe-west2/repositories/r/packages/i/versions/sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb ;;
+  malformed) echo projects/p/locations/europe-west2/repositories/r/packages/i/versions/not-a-digest ;;
+  error) echo PERMISSION_DENIED >&2; exit 7 ;;
+esac
+'''
+    )
+    executable.chmod(0o755)
+    output = tmp_path / "output"
+    args_file = tmp_path / "gcloud-args"
+    tree_sha = "c" * 40
+    result = subprocess.run(
+        ["/bin/bash", "--noprofile", "--norc", "-e", "-o", "pipefail", "-c", script],
+        cwd=ROOT,
+        env={
+            **os.environ,
+            "PATH": f"{tmp_path}{os.pathsep}{os.environ['PATH']}",
+            "GCLOUD_ARGS": str(args_file),
+            "GITHUB_OUTPUT": str(output),
+            "IMAGE": "example/image",
+            "LOOKUP": lookup,
+            "TREE_SHA": tree_sha,
+        },
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+
+    assert result.returncode == expected_status, result.stderr
+    assert f'tag~"/tags/approved-tree-{tree_sha}$"' in args_file.read_text()
+    output_text = output.read_text() if output.exists() else ""
+    assert ("approved=true" in output_text) is approved
+    assert ("approved=false" in output_text) is (lookup == "missing")
+
+
 @pytest.mark.parametrize("policy", [None, "report-only", "blocking"])
 def test_live_dispatch_preserves_selected_manual_review_policy(monkeypatch, policy):
     from scripts.ci_runner import _dispatch_eval, build_parser

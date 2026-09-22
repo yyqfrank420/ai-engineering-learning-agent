@@ -1,4 +1,4 @@
-# Build Plan — AI Engineering Study Agent
+# Build Plan — AI Engineering Learning Agent
 
 Last updated: 2026-07-18
 
@@ -156,7 +156,7 @@ Previous: ~$0.10/query with `thinking_budget_tokens=5000` on synthesis + `rag_to
 ---
 
 ## Reference
-Full design spec: `docs/superpowers/specs/2026-03-31-ai-study-agent-design.md`
+Full design spec: `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md`
 Supabase schema: `docs/supabase/schema.sql`
 Cloud Run deploy plan: `docs/cloud-run-cost-first.md`
 Prepare UX refactor: `docs/prepare-flow-refactor.md`

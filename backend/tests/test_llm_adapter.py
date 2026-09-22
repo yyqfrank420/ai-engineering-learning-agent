@@ -46,6 +46,110 @@ async def _collect(async_iterable):
     return [event async for event in async_iterable]
 
 
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+@pytest.mark.parametrize(
+    "status,expected",
+    [
+        (200, False), (400, False), (401, False), (403, False), (404, False),
+        (408, True), (422, False), (429, True), (500, True), (529, True), (599, True),
+    ],
+)
+def test_provider_availability_classifies_only_transient_sdk_statuses(
+    provider, status, expected
+):
+    import importlib
+    import httpx
+
+    from adapters.llm_adapter import is_provider_unavailable_error
+
+    sdk = importlib.import_module(provider)
+    error = sdk.APIStatusError(
+        "provider response",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://provider.example/messages")
+        ),
+        body=None,
+    )
+
+    assert is_provider_unavailable_error(error) is expected
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai"])
+@pytest.mark.parametrize("kind", ["APIConnectionError", "APITimeoutError"])
+def test_provider_availability_includes_sdk_connection_errors(provider, kind):
+    import importlib
+    import httpx
+
+    from adapters.llm_adapter import is_provider_unavailable_error
+
+    sdk = importlib.import_module(provider)
+    error = getattr(sdk, kind)(
+        request=httpx.Request("POST", "https://provider.example/messages")
+    )
+
+    assert is_provider_unavailable_error(error)
+
+
+@pytest.mark.parametrize("status,expected", [(200, True), (400, False), (401, False)])
+@pytest.mark.parametrize("nested", [False, True])
+def test_provider_availability_accepts_anthropic_stream_overload(
+    status, expected, nested
+):
+    import anthropic
+    import httpx
+
+    from adapters.llm_adapter import is_provider_unavailable_error
+
+    payload = {"type": "overloaded_error"}
+    error = anthropic.APIStatusError(
+        "overload",
+        response=httpx.Response(
+            status, request=httpx.Request("POST", "https://provider.example/messages")
+        ),
+        body={"error": payload} if nested else payload,
+    )
+
+    assert is_provider_unavailable_error(error) is expected
+
+
+def test_provider_availability_rejects_unrecognized_stream_errors():
+    import anthropic
+    import httpx
+    import openai
+
+    from adapters.llm_adapter import is_provider_unavailable_error
+
+    response = httpx.Response(
+        200, request=httpx.Request("POST", "https://provider.example/messages")
+    )
+    for sdk, body in (
+        (anthropic, {"error": {"type": "invalid_request_error"}}),
+        (anthropic, {"error": "overloaded_error"}),
+        (openai, {"error": {"type": "overloaded_error"}}),
+    ):
+        error = sdk.APIStatusError("stream failure", response=response, body=body)
+        assert not is_provider_unavailable_error(error)
+
+
+def test_provider_availability_does_not_mask_local_faults_or_budget_errors():
+    from adapters.llm_adapter import (
+        EvaluationProviderAttemptLimitExceeded,
+        is_provider_unavailable_error,
+    )
+
+    assert is_provider_unavailable_error(TimeoutError())
+    local_error = RuntimeError("not a provider failure")
+    local_error.status_code = 503
+    for error in (
+        ValueError("invalid input"),
+        TypeError("programming fault"),
+        RuntimeError("failure"),
+        EvaluationProviderAttemptLimitExceeded("budget exhausted"),
+        local_error,
+    ):
+        assert not is_provider_unavailable_error(error)
+
+
 def test_build_telemetry_includes_optional_fields():
     from adapters.llm_adapter import build_telemetry
 

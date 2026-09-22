@@ -1,4 +1,4 @@
-# AI Engineering Study Agent
+# AI Engineering Learning Agent
 
 Production-oriented, graph-guided study companion for *AI Engineering* by Chip Huyen.
 
@@ -26,7 +26,7 @@ creation and edits use `GRAPH_PIPELINE_MODE=staged` by default:
 
 1. route the request
 2. restore terse follow-ups to the canonical design intent, then retrieve book evidence and optional current web context
-3. use Kimi K3 at high effort to propose component responsibilities, assumptions, and capabilities
+3. use Kimi K3 at low effort to propose component responsibilities, assumptions, and capabilities
 4. assign IDs, validate and render a reversible component preview, then run the Sonnet medium component gate
 5. generate connections against the accepted components, validate the full candidate and its browser render, then run the Sonnet medium connection gate
 6. allow one correction per stage; semantic corrections to new designs return targeted updates and bounded additions while the server retains existing records; a connection correction keeps the accepted components fixed
@@ -77,7 +77,7 @@ Relevant docs:
 - **Graph layout persistence** (2026-04-05): Pan/zoom + node positions saved per graph, restored on session reload. Debounced 400ms frontend cache → `PUT /api/threads/{id}/graph`.
 - **Cold-start UX contract**: Explicit `Prepare` button shows real server milestones and unlocks Send only after the retrieval index is ready.
 - **Three-way routing**: SIMPLE (Opus 5 high effort) / MEMORY (session history) / SEARCH (RAG + architecture workflow).
-- **Explicit design roles**: Kimi K3 high generates staged components and connections, Sonnet 5 medium reviews each stage, Opus 5 low writes the applied-design walkthrough, and Sonnet 5 high owns the protected semantic judge.
+- **Explicit design roles**: Kimi K3 low generates staged components and connections, Sonnet 5 medium reviews each stage, Opus 5 low writes the applied-design walkthrough, and Sonnet 5 high owns the protected semantic judge.
 - **D3 architecture diagram**: Interactive graph with step-by-step walkthrough and node detail enrichment.
 - **Protected live evaluation**: Browser journeys, deterministic graph contracts, and reviewed semantic rubrics run against isolated no-traffic Cloud Run revisions.
 - **Bounded graph publication**: Each stage permits at most two candidates. Both semantic gates and browser render checks must pass before publication. Scoped edits preserve graph identity and locked records; rejected edits retain the approved graph instead of creating a replacement.
@@ -163,4 +163,4 @@ Maintained by [Frank Yang](https://github.com/yyqfrank420).
 
 ## Notes
 
-- `docs/superpowers/specs/2026-03-31-ai-study-agent-design.md` is a historical design snapshot, not the current source of truth.
+- `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is a historical design snapshot, not the current source of truth.

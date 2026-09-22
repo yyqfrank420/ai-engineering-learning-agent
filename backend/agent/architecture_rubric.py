@@ -196,10 +196,21 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     "authorization_and_compensation": (
         "For external mutations, connect authoritative observation, a typed exact-action "
         "proposal, policy and approval, execution, and the authoritative target. Compensation must "
-        "use the same policy, approval, execution, reconciliation, and audit controls."
+        "use the same policy, approval, execution, reconciliation, and audit controls. "
+        "Cover compensation explicitly in the existing validation and approval invocation "
+        "and response contracts. Shared controls suffice when those contracts cover both "
+        "normal and compensation actions; duplicate control paths are unnecessary. "
+        "Identify the compensation proposal's producer and follow its direct or delegated "
+        "invocation to each shared control. A validator's broad responsibility or another "
+        "producer's validation path does not establish that invocation."
     ),
     "state_effect_reconciliation": (
-        "For retryable writes, including internal durable mutations, reserve a stable "
+        "Assess each write separately. Identify the retry, redelivery, competing delivery, "
+        "or uncertain-commit recovery declared by the request or candidate before requiring "
+        "its reconciliation protocol. A durable datastore or a committed/rejected response "
+        "alone does not establish that behavior. Unspecified operational detail is advisory; "
+        "an explicitly requested guarantee or a declared unsafe retry remains blocking. "
+        "For applicable retryable writes, including internal durable mutations, reserve a stable "
         "operation identity durably before the effect. Revalidate applicable authorization, "
         "policy, freshness, and fencing before execution. Converge "
         "alternative delivery paths and deduplicate atomically at the writer. Reconcile "
@@ -209,9 +220,22 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "compensation. A response contract may describe these outcomes together."
     ),
     "retrieval_and_reuse_trust": (
-        "Treat retrieved bytes as untrusted. Validate material claim entailment before "
-        "delivery or reuse. Failed factual retrieval or rejected/stale artifacts must end "
-        "in clarification, abstention, or a bounded validated retry. Scope reuse by access "
+        "Apply each obligation to the declared retrieval or reuse path, its artifact, "
+        "and its consumer. A system-level retrieval_or_reuse capability does not mean "
+        "every generator performs factual retrieval. Identify the material factual claim "
+        "or required factual-retrieval dependency before rejecting missing entailment "
+        "validation or retrieval-failure handling; apply this equally to internal and "
+        "external sources. Outcome-data reads and reuse for evaluation do not establish "
+        "a factual-retrieval dependency for an unrelated creative generator. "
+        "Treat retrieved bytes as untrusted. Validate material factual claim entailment "
+        "before delivery or reuse. Failed required factual retrieval must end in "
+        "clarification, abstention, or a bounded validated retry. Discard rejected/stale "
+        "artifacts. When the candidate explicitly makes example or creative reuse optional, "
+        "a missing or rejected result may lead to fresh generation through the same "
+        "validation and approval controls. Do not infer optionality or allow unsupported "
+        "facts to replace missing evidence. State this outcome in the owning responsibility "
+        "or response contract; a separate fallback component or edge is unnecessary. "
+        "Scope reuse by access "
         "identity, version, and provenance, including model/prompt/index release when "
         "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
         "these controls."
@@ -225,12 +249,22 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     ),
     "audit_and_provenance": (
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
-        "it. Validate model-proposed actions deterministically. Retain provenance and "
+        "it. For every producer of model-proposed actions, identify the executable owner "
+        "that deterministically validates those proposals' structure and allowed constraints "
+        "before approval or execution. A shared validator may cover multiple producers when "
+        "their responsibilities or contracts establish that coverage. Validation of one "
+        "producer does not establish validation of another. Typed proposals and human "
+        "approval alone do not establish deterministic validation. Retain provenance and "
         "correlated audit evidence for material inputs, decisions, actions, and terminal "
         "outcomes."
     ),
     "streaming_integrity": (
-        "For continuous streams, name ownership of bounded backpressure, ordering or "
+        "Apply when the request or candidate contracts declare continuous or unbounded "
+        "delivery. Determine applicability from declared delivery behavior and completion "
+        "boundaries. Near-real-time timing, asynchronous transport, generic event ingestion, "
+        "or the word 'stream' alone does not establish continuous streaming. Cite the "
+        "behavior that makes these controls necessary. For such streams, name ownership "
+        "of bounded backpressure, ordering or "
         "event-time rules, replay and deduplication, late-data handling, and schema "
         "compatibility. Component responsibilities or channel contracts may specify "
         "these properties; each property does not need a separate edge."
@@ -254,14 +288,27 @@ def staged_review_requirements(
     excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
-    # Naming and brevity guide presentation. Objective fidelity and brief coverage
-    # still block an incorrect subject or an unmet explicit requirement.
-    excluded.update({"domain_specificity", "succinctness"})
+    # Detail depth guides generation. The completed graph review owns production
+    # controls; component review checks scope, ownership, and feasibility.
+    excluded.update({"domain_specificity", "succinctness", "selected_depth"})
     requirements = {
         code: requirement
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
         if owner == stage and code not in excluded
     }
+    if stage == "connections":
+        requirements["edge_semantics"] = (
+            "Require contracts compatible with their source, recipient, payload, and "
+            "declared behavior. Block a missing required input or answer return, a "
+            "contradictory direction, or a path that bypasses a required control. Follow "
+            "the complete declared path: an orchestrator may invoke work directly or "
+            "delegate invocation and receive the result through another component. "
+            "An unrelated verdict or acknowledgment cannot replace required data. "
+            "A redundant intermediate return or duplicate description is advisory unless "
+            "it changes execution or violates a required control; identify that concrete "
+            "failure when rejecting. Feedback and deployment contracts cannot substitute "
+            "for required runtime or control interactions."
+        )
     if stage == "components":
         requirements["capability_classification"] = (
             "Classify capabilities from the candidate responsibilities and assumptions: "
@@ -275,26 +322,6 @@ def staged_review_requirements(
             "owner in this system for the external write or the feedback-driven change "
             "to a model, prompt, ranking, or live configuration, respectively."
         )
-        if maturity == "production":
-            requirements["selected_depth"] += (
-                " Before freezing the component set, require named executable ownership "
-                "for production obligations applicable to declared responsibilities and "
-                "capabilities: external_effects requires controlled execution, reconciliation, "
-                "and compensation; retrieval_or_reuse requires validation, reuse lifecycle "
-                "management, and invalidation; learning_or_release requires curated evidence, "
-                "offline evaluation, reviewed release, canary, promotion, and rollback. "
-                "Existing components may own compatible operations; do not require a separate "
-                "component for every checklist step. A datastore, registry, or audit label, "
-                "or an assumption alone, cannot execute evaluation, release, or control."
-                " State required internal ordering, such as "
-                "reserve before send and validate before deliver, in the owning component's "
-                "responsibility; connection generation cannot change that responsibility."
-                " For retryable writes, name the owner of durable operation identity, atomic "
-                "deduplication, and reconciliation. For continuous streams, name the owner of "
-                "bounded backpressure, ordering, replay, late data, and schema compatibility. "
-                "Keep responsibilities concise; "
-                "the connection stage specifies interaction contracts and their outcomes."
-            )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (
             "Show necessary directed contracts between components, including controls "
@@ -303,13 +330,11 @@ def staged_review_requirements(
             "A typed response may contain success and rejection outcomes. A title or "
             "assumption cannot substitute for an owner or a required interaction."
         )
-        requirements.update(
-            (code, STAGED_PRODUCTION_REQUIREMENTS[code])
-            for code in (
-                "streaming_integrity",
-                "state_effect_reconciliation",
-            )
-        )
+        # Transport mechanics guide authoring. Explicit requested behavior and
+        # contradictions remain covered by runtime completeness and edge semantics.
+        requirements["state_effect_reconciliation"] = STAGED_PRODUCTION_REQUIREMENTS[
+            "state_effect_reconciliation"
+        ]
         for guarantee in required_production_guarantees:
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
                 raise ValueError(f"unknown production guarantee: {guarantee!r}")

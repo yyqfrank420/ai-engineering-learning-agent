@@ -5,14 +5,37 @@
 #          storing long-lived JSON keys in GitHub Secrets.
 # Language: HCL (Terraform)
 # Connects to: github.com (OIDC token issuer), environment-scoped deploy identities
-# Inputs:  github_repo variable
+# Inputs:  GitHub owner and repository names plus their immutable IDs
 # Outputs: wif_provider_name (via outputs.tf)
 # ─────────────────────────────────────────────────────────────────────────────
 
-variable "github_repo" {
-  description = "GitHub repo in owner/repo format. Scopes WIF to this repo only."
+variable "github_owner" {
+  description = "GitHub repository owner name."
   type        = string
-  default     = "yyqfrank420/ai-engineering-study-agent"
+  default     = "yyqfrank420"
+}
+
+variable "github_repo_name" {
+  description = "GitHub repository name."
+  type        = string
+  default     = "ai-engineering-learning-agent"
+}
+
+variable "github_owner_id" {
+  description = "Immutable GitHub repository-owner ID used in OIDC subject claims."
+  type        = string
+  default     = "208153095"
+}
+
+variable "github_repo_id" {
+  description = "Immutable GitHub repository ID used in OIDC subject claims."
+  type        = string
+  default     = "1200397882"
+}
+
+locals {
+  github_repo                = "${var.github_owner}/${var.github_repo_name}"
+  github_oidc_subject_prefix = "repo:${var.github_owner}@${var.github_owner_id}/${var.github_repo_name}@${var.github_repo_id}"
 }
 
 resource "google_iam_workload_identity_pool" "github" {
@@ -43,26 +66,27 @@ resource "google_iam_workload_identity_pool_provider" "github" {
 
   # Hard-scope: only OIDC tokens from this exact repo can use this provider.
   # Prevents other repos (including forks) from impersonating the CI SA.
-  attribute_condition = "assertion.repository == '${var.github_repo}'"
+  attribute_condition = "assertion.repository == '${local.github_repo}'"
 }
 
-# GitHub includes the protected Environment in the OIDC subject. Binding exact
-# subjects prevents a staging-eval job from ever impersonating production.
+# GitHub includes immutable owner and repository IDs after a repository rename,
+# followed by the protected Environment. Binding exact subjects prevents a
+# staging-eval job from ever impersonating production.
 resource "google_service_account_iam_member" "staging_ci_wif_binding" {
   service_account_id = google_service_account.github_actions_staging.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repo}:environment:staging-eval"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/${local.github_oidc_subject_prefix}:environment:staging-eval"
 }
 
 resource "google_service_account_iam_member" "production_ci_wif_binding" {
   service_account_id = google_service_account.github_actions_production.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/repo:${var.github_repo}:environment:production"
+  member             = "principal://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/subject/${local.github_oidc_subject_prefix}:environment:production"
 }
 
 resource "google_service_account_iam_member" "legacy_ci_wif_binding" {
   count              = var.retain_legacy_ci_access ? 1 : 0
   service_account_id = google_service_account.ci.name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${var.github_repo}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github.name}/attribute.repository/${local.github_repo}"
 }
