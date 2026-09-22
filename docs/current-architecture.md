@@ -101,7 +101,12 @@ This is the current runtime contract for the production-quality demo.
    Harmless extra returns or duplicate descriptions are advisory; missing required payloads and
    paths that bypass required controls remain blockers. Retryable internal
    writes retain their controls even when the design has no external business mutations. Review
-   reasons quote the control contracts and cover every applicable producer or path.
+   identifies the retry, redelivery, competing delivery, or uncertain-commit behavior declared
+   for the specific write before requiring its reconciliation protocol. A datastore or a
+   committed/rejected response alone does not establish that behavior. Explicitly requested
+   guarantees and declared unsafe retries remain blocking. Compensation uses the same controls
+   as normal actions; existing validation and approval contracts must explicitly cover it.
+   Review reasons quote the control contracts and cover every applicable producer or path.
    Capability flags select system-level review criteria. Individual retrieval obligations apply
    to their declared artifact and consumer path. Outcome-data reads do not impose a factual
    retrieval dependency on an unrelated creative generator. Material factual claims still need

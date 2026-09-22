@@ -196,10 +196,18 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     "authorization_and_compensation": (
         "For external mutations, connect authoritative observation, a typed exact-action "
         "proposal, policy and approval, execution, and the authoritative target. Compensation must "
-        "use the same policy, approval, execution, reconciliation, and audit controls."
+        "use the same policy, approval, execution, reconciliation, and audit controls. "
+        "Cover compensation explicitly in the existing validation and approval invocation "
+        "and response contracts. Shared controls suffice when those contracts cover both "
+        "normal and compensation actions; duplicate control paths are unnecessary."
     ),
     "state_effect_reconciliation": (
-        "For retryable writes, including internal durable mutations, reserve a stable "
+        "Assess each write separately. Identify the retry, redelivery, competing delivery, "
+        "or uncertain-commit recovery declared by the request or candidate before requiring "
+        "its reconciliation protocol. A durable datastore or a committed/rejected response "
+        "alone does not establish that behavior. Unspecified operational detail is advisory; "
+        "an explicitly requested guarantee or a declared unsafe retry remains blocking. "
+        "For applicable retryable writes, including internal durable mutations, reserve a stable "
         "operation identity durably before the effect. Revalidate applicable authorization, "
         "policy, freshness, and fencing before execution. Converge "
         "alternative delivery paths and deduplicate atomically at the writer. Reconcile "
