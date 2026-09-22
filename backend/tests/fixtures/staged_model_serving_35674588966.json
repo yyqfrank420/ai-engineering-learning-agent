@@ -1,0 +1,195 @@
+{
+  "graph_type": "architecture",
+  "title": "Prototype model-serving stack with Serving Monitor",
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "Client Application",
+      "type": "client",
+      "technology": "Client",
+      "description": "Sends user inference requests to the model-serving stack and displays the generated responses to the user.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n2",
+      "label": "Model API",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Accepts inference requests, invokes the backing model to generate responses, and returns the results to the caller.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n3",
+      "label": "Foundation Model",
+      "type": "external",
+      "technology": "External system",
+      "description": "Generates output for each inference request; may be a third-party hosted API or a self-hosted model.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n4",
+      "label": "Serving Monitor",
+      "type": "control",
+      "technology": "Control component",
+      "description": "Collects per-request latency and token-usage metrics from the Model API so operators can observe serving health and cost.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n5",
+      "label": "Metrics Store",
+      "type": "datastore",
+      "technology": "Data store",
+      "description": "Persists the latency and usage metrics captured by the Serving Monitor for later inspection.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    }
+  ],
+  "edges": [
+    {
+      "source": "n1",
+      "target": "n2",
+      "label": "Submit user inference request with prompt to the Model API",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Submit user inference request with prompt to the Model API",
+      "flow": "runtime",
+      "edge_id": "applied:n1__submit_user_inference_request_with_prom_969c7be6de405bde8deeff08__n2",
+      "relation": "submit_user_inference_request_with_prom_969c7be6de405bde8deeff08"
+    },
+    {
+      "source": "n2",
+      "target": "n1",
+      "label": "Return generated response for the client to display to the user",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Return generated response for the client to display to the user",
+      "flow": "runtime",
+      "edge_id": "applied:n2__return_generated_response_for_the_clien_fb27043e73c7ac5ede497b04__n1",
+      "relation": "return_generated_response_for_the_clien_fb27043e73c7ac5ede497b04"
+    },
+    {
+      "source": "n2",
+      "target": "n3",
+      "label": "Invoke backing foundation model with the inference request",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Invoke backing foundation model with the inference request",
+      "flow": "runtime",
+      "edge_id": "applied:n2__invoke_backing_foundation_model_with_th_2966636bd0102e73b76402ce__n3",
+      "relation": "invoke_backing_foundation_model_with_th_2966636bd0102e73b76402ce"
+    },
+    {
+      "source": "n3",
+      "target": "n2",
+      "label": "Return generated model output for the caller",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Return generated model output for the caller",
+      "flow": "runtime",
+      "edge_id": "applied:n3__return_generated_model_output_for_the_c_9b4d529f7d47e5d9f49b2ce3__n2",
+      "relation": "return_generated_model_output_for_the_c_9b4d529f7d47e5d9f49b2ce3"
+    },
+    {
+      "source": "n2",
+      "target": "n4",
+      "label": "Emit per-request latency and token-usage metrics to the Serving Monitor",
+      "technology": "Control flow",
+      "sync": "async",
+      "description": "Emit per-request latency and token-usage metrics to the Serving Monitor",
+      "flow": "control",
+      "edge_id": "applied:n2__emit_per_request_latency_and_token_usag_bf44fc92fe8ab5f8c99b2513__n4",
+      "relation": "emit_per_request_latency_and_token_usag_bf44fc92fe8ab5f8c99b2513"
+    },
+    {
+      "source": "n4",
+      "target": "n5",
+      "label": "Persist captured latency and usage metrics for later operator inspection",
+      "technology": "Feedback flow",
+      "sync": "async",
+      "description": "Persist captured latency and usage metrics for later operator inspection",
+      "flow": "feedback",
+      "edge_id": "applied:n4__persist_captured_latency_and_usage_metr_1c1fb38662e029b51dfd00c0__n5",
+      "relation": "persist_captured_latency_and_usage_metr_1c1fb38662e029b51dfd00c0"
+    }
+  ],
+  "sequence": [
+    {
+      "step": 1,
+      "nodes": [
+        "n1"
+      ],
+      "description": "Primary flow stage 1"
+    },
+    {
+      "step": 2,
+      "nodes": [
+        "n2"
+      ],
+      "description": "Primary flow stage 2"
+    },
+    {
+      "step": 3,
+      "nodes": [
+        "n3",
+        "n4"
+      ],
+      "description": "Primary flow stage 3"
+    }
+  ],
+  "groups": [
+    {
+      "id": "group_runtime",
+      "label": "Runtime",
+      "kind": "runtime",
+      "nodeIds": [
+        "n1",
+        "n2"
+      ]
+    },
+    {
+      "id": "group_external",
+      "label": "External",
+      "kind": "external",
+      "nodeIds": [
+        "n3"
+      ]
+    },
+    {
+      "id": "group_operations",
+      "label": "Operations",
+      "kind": "operations",
+      "nodeIds": [
+        "n4",
+        "n5"
+      ]
+    }
+  ],
+  "design_origin": "applied",
+  "resolved_complexity": "prototype",
+  "assumptions": [
+    "The system serves inference requests from client applications through a single model API backed by a self-hosted or third-party foundation model.",
+    "The Serving Monitor records latency and token-usage metrics per request for prototype-level observability.",
+    "No guardrails, caching, routing, or feedback loops are included at prototype maturity.",
+    "User authentication, billing, and rate limiting are out of scope for the prototype."
+  ],
+  "version": "36d62763-5cb6-4c81-b54c-ef110cf38e52"
+}

@@ -321,6 +321,11 @@ def test_reuse_control_details_remain_in_connection_review():
     assert "retrieval_and_reuse_trust" not in components
     trust = connections["retrieval_and_reuse_trust"]
     for obligation in (
+        "Apply each obligation to the declared retrieval or reuse path, its artifact, and its consumer",
+        "A system-level retrieval_or_reuse capability does not mean every generator performs factual retrieval",
+        "Identify the material factual claim or required factual-retrieval dependency",
+        "apply this equally to internal and external sources",
+        "Outcome-data reads and reuse for evaluation do not establish a factual-retrieval dependency for an unrelated creative generator",
         "name invalidation and revalidation ownership",
         "Discard rejected/stale artifacts",
         "Failed required factual retrieval must end in clarification, abstention, "
