@@ -205,8 +205,11 @@ async def test_orchestrator_route_includes_current_graph_context(monkeypatch):
         top_k=None,
         telemetry=None,
         send=None,
+        **policy,
     ):
         captured["messages"] = messages
+        captured["policy"] = policy
+        captured["telemetry"] = telemetry
         return "SIMPLE"
 
     monkeypatch.setattr(orchestrator, "stream_llm", fake_stream_llm)
@@ -230,6 +233,14 @@ async def test_orchestrator_route_includes_current_graph_context(monkeypatch):
     result = await orchestrator.orchestrator_route(state)
 
     assert result["route"] == "simple"
+    assert captured["policy"] == {
+        "effort": "low",
+        "max_output_tokens": 1024,
+        "timeout_seconds": 10,
+        "provider_attempt_limit": 1,
+        "allow_fallback": False,
+    }
+    assert captured["telemetry"]["metadata"]["prompt_version"] == "intent_router_v3"
     assert "Current graph:" in captured["messages"][0]["content"]
     assert (
         "RAG pipeline — nodes: [Retriever, Generator]"
@@ -272,6 +283,104 @@ async def test_orchestrator_route_maps_router_tokens(
     )
 
     assert result["route"] == expected_route
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["timeout", "connection", "overload", "rate_limit"])
+async def test_router_unavailability_preserves_state_and_uses_search(
+    monkeypatch, caplog, failure
+):
+    import anthropic
+    import httpx
+    import openai
+
+    import agent.nodes.orchestrator_node as orchestrator
+    from agent.pipeline_steps import should_run_graph_worker
+
+    request = httpx.Request("POST", "https://provider.example/messages")
+    errors = {
+        "timeout": TimeoutError("private provider message"),
+        "connection": anthropic.APIConnectionError(request=request),
+        "overload": anthropic.APIStatusError(
+            "private provider message",
+            response=httpx.Response(200, request=request),
+            body={"error": {"type": "overloaded_error"}},
+        ),
+        "rate_limit": openai.RateLimitError(
+            "private provider message",
+            response=httpx.Response(429, request=request),
+            body=None,
+        ),
+    }
+    calls = []
+
+    async def unavailable(**kwargs):
+        calls.append(kwargs)
+        raise errors[failure]
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", unavailable)
+    state = {
+        "send": send,
+        "history": [{"role": "user", "content": "Use plain English."}],
+        "user_message": "Compare RAG and fine-tuning.",
+        "research_enabled": True,
+        "graph_mode": "off",
+        "graph_data": {"version": "existing", "nodes": []},
+    }
+
+    result = await orchestrator.orchestrator_route(state)
+
+    assert result == {**state, "route": "search"}
+    assert result["history"] is state["history"]
+    assert result["graph_data"] is state["graph_data"]
+    assert not should_run_graph_worker(result, result["graph_data"])
+    assert len(calls) == 1
+    assert type(errors[failure]).__name__ in caplog.text
+    assert "private provider message" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancelled", "budget", "value", "type", "auth"])
+async def test_router_propagates_failures_outside_provider_availability(
+    monkeypatch, failure
+):
+    import anthropic
+    import httpx
+
+    import agent.nodes.orchestrator_node as orchestrator
+    from adapters.llm_adapter import EvaluationProviderAttemptLimitExceeded
+
+    errors = {
+        "cancelled": asyncio.CancelledError(),
+        "budget": EvaluationProviderAttemptLimitExceeded("budget exhausted"),
+        "value": ValueError("invalid configuration"),
+        "type": TypeError("programming fault"),
+        "auth": anthropic.AuthenticationError(
+            "invalid credential",
+            response=httpx.Response(
+                401, request=httpx.Request("POST", "https://provider.example/messages")
+            ),
+            body=None,
+        ),
+    }
+
+    async def fail(**_kwargs):
+        raise errors[failure]
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_llm", fail)
+
+    with pytest.raises(type(errors[failure])) as caught:
+        await orchestrator.orchestrator_route(
+            {"send": send, "history": [], "user_message": "What is RLHF?"}
+        )
+
+    assert caught.value is errors[failure]
 
 
 @pytest.mark.asyncio
