@@ -18,6 +18,7 @@ from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_PRODUCTION_REQUIREMENTS,
     STAGED_REVIEW_STANDARD,
     staged_review_requirements,
 )
@@ -37,8 +38,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v15"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v13"
+_COMPONENT_PROMPT_VERSION = "staged_components_v19"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v16"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -760,6 +761,8 @@ def _attempt_prompt(
         "findings": findings if attempt == 1 else None,
         "prior_prompt_fingerprint": prior_prompt_fingerprint if attempt == 1 else None,
     }
+    if stage == "components" and maturity == "production":
+        prompt_input["downstream_controls"] = STAGED_PRODUCTION_REQUIREMENTS
     if edit_delta is not None:
         prompt_input["edit_slots"] = edit_delta.schema["properties"]
         prompt_input["connection_addition_plan"] = _bounded_json(
@@ -875,6 +878,16 @@ def _attempt_prompt(
             "turning every checklist question into a component. "
             f"Use these integer codes: {codebook}."
         )
+        if maturity == "production":
+            instructions += (
+                " The downstream_controls are guidance for the completed graph. Choose "
+                "executable owners capable of fulfilling the controls applicable to the "
+                "requested behavior and declared capabilities. Do not add external effects, "
+                "retrieval, learning, or streaming solely to satisfy unrelated guidance. "
+                "Keep compatible work in existing components. Connection generation supplies "
+                "the detailed control contracts and failure outcomes; it cannot change "
+                "these component responsibilities."
+            )
         if edit_delta is None:
             instructions += (
                 " Return exactly one outcome: candidate containing the schema-defined object with "

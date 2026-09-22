@@ -710,13 +710,49 @@ class TestFormatResults:
         from agent.nodes.research_worker import _format_results
 
         long_title = "X" * 200
-        long_body = "Y" * 200
+        long_body = "Y" * 800
         raw = [self._make_result("https://example.com", long_title, long_body)]
         result = _format_results(raw, noise_domains=[])
         # Ellipsis markers should appear
         assert "…" in result
         # Bullet should be a single line
         assert result.count("\n") == 0
+
+    def test_preserves_source_qualification_after_introductory_text(self):
+        from agent.nodes.research_worker import _format_results
+
+        introduction = (
+            "This guide compares agents and fixed workflows for production AI products, "
+            "including their evaluation requirements and operational constraints. "
+        )
+        qualification = (
+            "Agents can adapt their tool sequence, but that flexibility increases "
+            "latency and makes per-request costs less predictable."
+        )
+        url = "https://example.com/agents?version=2&section=tradeoffs"
+        raw = [
+            self._make_result(url, "Architecture comparison", introduction + qualification)
+        ]
+
+        result = _format_results(raw, noise_domains=[])
+
+        assert len(introduction) > 120
+        assert qualification in result
+        assert f"<{url}>" in result
+        assert not result.endswith("…")
+
+    @pytest.mark.parametrize("body_length", [599, 600, 601])
+    def test_body_budget_marks_only_truncated_sources(self, body_length):
+        from agent.nodes.research_worker import _format_results, _source_urls
+
+        url = "https://example.com/source?q=agents&year=2026"
+        raw = [self._make_result(url, "Source", "x" * body_length)]
+
+        result = _format_results(raw, noise_domains=[])
+        body = result.split(">: ", 1)[1]
+
+        assert body == "x" * min(body_length, 600) + ("…" if body_length > 600 else "")
+        assert _source_urls(result) == [url]
 
     def test_bullet_format_has_domain_title_body(self):
         from agent.nodes.research_worker import _format_results
@@ -927,7 +963,7 @@ class TestResearchWorkerResilience:
 
         queries = rw._build_queries("RAG pipeline")
 
-        assert queries[0] == "RAG pipeline reference architecture reliability security"
+        assert queries[0] == "RAG pipeline"
         assert queries[1] == "RAG operating model workflow decision points KPIs"
         assert queries[2] == "RAG best practices failure modes 2032"
 
@@ -938,14 +974,25 @@ class TestResearchWorkerResilience:
 
         queries = rw._build_queries("growth marketing multi-agent system")
 
-        assert queries[0].startswith(
-            "growth marketing multi-agent system reference architecture"
-        )
+        assert queries[0] == "growth marketing multi-agent system"
         assert (
             queries[1]
             == "growth marketing operating model workflow decision points KPIs"
         )
         assert queries[2].startswith("growth marketing best practices failure modes ")
+
+    def test_first_query_preserves_comparison_intent_without_expanding_scope(self):
+        from agent.nodes.research_worker import _build_queries
+
+        topic = (
+            "Research current practical trade-offs between agents and fixed workflows "
+            "for production AI products."
+        )
+
+        queries = _build_queries(topic)
+
+        assert queries[0] == topic
+        assert len(queries) == 3
 
     def test_worker_researches_restored_design_query_for_terse_followup(
         self, monkeypatch
@@ -966,9 +1013,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        assert captured_queries[0].startswith(
-            "growth marketing multi-agent system expand this reference architecture"
-        )
+        assert captured_queries[0] == "growth marketing multi-agent system expand this"
 
     def test_topic_truncation_preserves_word_boundaries(self):
         from agent.nodes.research_worker import _normalise_topic

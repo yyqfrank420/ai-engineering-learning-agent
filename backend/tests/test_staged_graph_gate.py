@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v12"
+        "staged_component_gate_v15"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -304,6 +304,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
     assert set(generated_criteria) == set(rules)
     assert set(guarantees) <= set(rules)
     assert "independent_risk_coverage" not in generated_criteria
+    assert "selected_depth" not in generated_criteria
     if stage == "components":
         assert (
             "Depict the requested subject system"
@@ -340,12 +341,6 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             and code in STAGED_PRODUCTION_REQUIREMENTS
         ):
             assert requirement == STAGED_PRODUCTION_REQUIREMENTS[code]
-        elif (
-            code == "selected_depth"
-            and stage == "components"
-            and maturity == "production"
-        ):
-            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
         elif (
             stage == "connections"
             and maturity == "prototype"
@@ -513,7 +508,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v12"
+        == "staged_connection_gate_v15"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
