@@ -10,6 +10,7 @@ import pytest
 
 from agent import staged_graph_workflow as workflow
 from agent.graph_identity import applied_edge_metadata
+from agent.nodes import graph_worker
 from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import (
     assign_server_ids,
@@ -2385,10 +2386,14 @@ async def test_production_scoped_expansion_keeps_prior_records_and_uses_exact_au
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("run_id", ["32300653373", "34653111423"])
+@pytest.mark.parametrize(
+    ("run_id", "added_edge_count"),
+    [("32300653373", 1), ("34653111423", 1), ("35674588966", 1), ("35674588966", 2)],
+)
 async def test_retained_model_serving_graph_expands_monitoring_without_prior_record_drift(
     monkeypatch,
     run_id,
+    added_edge_count,
 ):
     from eval.browser_runner import _graph_expansion_failure
 
@@ -2401,12 +2406,15 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
     original = copy.deepcopy(previous_graph)
     node_count = len(original["nodes"])
     edge_count = len(original["edges"])
-    anchor = original["nodes"][-1]
+    latest_capture = run_id == "35674588966"
+    anchor_index = 3 if latest_capture else node_count - 1
+    anchor = original["nodes"][anchor_index]
+    added_label = "Metrics Dashboard" if latest_capture else "Alert Triage Service"
     group = next(
         group for group in original["groups"] if anchor["id"] in group["nodeIds"]
     )
     request = (
-        "Expand the monitoring component while preserving the original graph topic "
+        f"Expand the {anchor['label']} component while preserving the original graph topic "
         "and existing components. Add exactly one directly connected responsibility."
     )
     provider_stages = []
@@ -2426,9 +2434,13 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
                 {
                     "additions": [
                         {
-                            "label": "Alert Triage Service",
-                            "type": 101,
-                            "responsibility": "Evaluates monitoring alerts and prioritizes issues for operator review.",
+                            "label": added_label,
+                            "type": 107 if latest_capture else 101,
+                            "responsibility": (
+                                "Queries the Serving Monitor's collected metrics and renders latency and token-usage views so operators can inspect prototype serving behavior."
+                                if latest_capture
+                                else "Evaluates monitoring alerts and prioritizes issues for operator review."
+                            ),
                             "group_label": group["label"],
                             "group_kind": 602,
                             "primary_flow_member": False,
@@ -2437,25 +2449,33 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
                     "updates": {},
                     "capabilities": {
                         "external_effects": False,
-                        "retrieval_or_reuse": run_id == "34653111423",
+                        "retrieval_or_reuse": run_id != "32300653373",
                         "learning_or_release": False,
                     },
                 }
             )
-        return json.dumps(
+        additions = [
             {
-                "additions": [
-                    {
-                        "source_index": node_count - 1,
-                        "target_index": node_count,
-                        "label": "dispatch monitoring alerts for triage",
-                        "flow": 402,
-                        "sync": 501,
-                    }
-                ],
-                "updates": {},
+                "source_index": anchor_index,
+                "target_index": node_count,
+                "label": "Return collected metrics"
+                if latest_capture
+                else "dispatch monitoring alerts for triage",
+                "flow": 401 if latest_capture else 402,
+                "sync": 501,
             }
-        )
+        ]
+        if added_edge_count == 2:
+            additions.append(
+                {
+                    "source_index": node_count,
+                    "target_index": anchor_index,
+                    "label": "Query collected metrics",
+                    "flow": 401,
+                    "sync": 500,
+                }
+            )
+        return json.dumps({"additions": additions, "updates": {}})
 
     async def review_components(**kwargs):
         component_reviews.append(copy.deepcopy(kwargs))
@@ -2492,22 +2512,26 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
     assert provider_stages == ["components", "connections"]
     assert len(component_reviews) == len(connection_reviews) == 1
     assert len(component_reviews[0]["candidate_records"]) == node_count + 1
-    assert len(connection_reviews[0]["candidate_records"]) == edge_count + 1
+    assert (
+        len(connection_reviews[0]["candidate_records"]) == edge_count + added_edge_count
+    )
     assert component_reviews[0]["resolved_maturity"] == "prototype"
     assert connection_reviews[0]["resolved_maturity"] == "prototype"
     current_graph = result["graph_data"]
     assert (
         _graph_expansion_failure(
-            original, current_graph, anchor_label_contains="Monitoring"
+            original, current_graph, anchor_label_contains=anchor["label"]
         )
         is None
     )
     assert current_graph["nodes"][:node_count] == original["nodes"]
     assert current_graph["edges"][:edge_count] == original["edges"]
-    assert current_graph["nodes"][-1]["label"] == "Alert Triage Service"
-    assert current_graph["edges"][-1]["source"] == anchor["id"]
-    assert current_graph["edges"][-1]["target"] == current_graph["nodes"][-1]["id"]
-    assert current_graph["edges"][-1]["sync"] == "async"
+    assert current_graph["nodes"][-1]["label"] == added_label
+    assert current_graph["edges"][edge_count]["source"] == anchor["id"]
+    assert (
+        current_graph["edges"][edge_count]["target"] == current_graph["nodes"][-1]["id"]
+    )
+    assert current_graph["edges"][edge_count]["sync"] == "async"
     for field in ("title", "assumptions", "sequence", "resolved_complexity"):
         assert current_graph[field] == original[field]
     assert current_graph["groups"] == [
@@ -2522,7 +2546,37 @@ async def test_retained_model_serving_graph_expands_monitoring_without_prior_rec
         }
         for group in original["groups"]
     ]
+    assert current_graph["version"] != original["version"]
     assert previous_graph == original
+
+    if latest_capture:
+        repair_contract, permissions = workflow.staged_edit_scope(
+            request, original, resolved_complexity="prototype"
+        )
+        forbidden_candidate = copy.deepcopy(current_graph)
+        forbidden_candidate["nodes"][2]["label"] = "Unrequested model replacement"
+        with pytest.raises(ValueError, match="changed locked node: n3"):
+            workflow.admit_staged_graph_edit(
+                original,
+                forbidden_candidate,
+                resolved_complexity="prototype",
+                repair_contract=repair_contract,
+                mutation_permissions=permissions,
+            )
+        patch = graph_worker._staged_candidate_patch(original, current_graph)
+        with pytest.raises(ValueError, match="generic concept labels"):
+            graph_worker._apply_applied_graph_patch(
+                original,
+                patch,
+                safety_max_nodes=20,
+                resolved_complexity="prototype",
+                repair_contract=repair_contract,
+                mutation_permissions=permissions,
+            )
+        with pytest.raises(ValueError, match="generic concept labels"):
+            graph_worker._normalise_applied_graph(
+                original, safety_max_nodes=20, resolved_complexity="prototype"
+            )
 
 
 @pytest.mark.asyncio

@@ -1,13 +1,13 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # File: backend/agent/nodes/research_worker.py
-# Purpose: Phase 1a research worker — queries DuckDuckGo for real-world context
+# Purpose: Phase 1a research worker — queries Brave through DDGS for real-world context
 #          on the user's topic and returns a formatted bullet list.
 #
 #          Runs in parallel with rag_worker. Its output (research_context) is
 #          injected into the graph_worker and orchestrator_synthesise prompts
 #          to ground responses in current real-world practice.
 #
-#          DuckDuckGo is queried synchronously inside asyncio.to_thread() to
+#          DDGS is queried synchronously inside asyncio.to_thread() to
 #          avoid blocking the event loop. An unavailable provider degrades to
 #          book evidence with an explicit status instead of being presented as
 #          successful current research.
@@ -24,6 +24,7 @@ import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
+from agent.complexity import is_applied_system_design_request
 from agent.state import AgentState
 from config import settings
 
@@ -34,6 +35,8 @@ logger = logging.getLogger(__name__)
 _TITLE_MAX = 80
 _BODY_MAX = 600
 _TOPIC_MAX = 160
+_SEARCH_BACKEND = "brave"
+_SEARCH_SAFESEARCH = "on"
 
 _DESIGN_SCAFFOLD = re.compile(
     r"\b(?:multi[- ]agent|agentic|ai[- ]powered|artificial intelligence|ai|"
@@ -44,7 +47,7 @@ _DESIGN_SCAFFOLD = re.compile(
 
 async def research_worker_node(state: AgentState) -> AgentState:
     """
-    Run three DuckDuckGo searches in a background thread and format results
+    Search the requested topic in a background thread and format results
     as a compact bullet list for downstream workers.
 
     Returns state with research_context and research_status set. On failure,
@@ -55,12 +58,18 @@ async def research_worker_node(state: AgentState) -> AgentState:
 
     topic = _normalise_topic(state.get("design_query") or state["user_message"])
     queries = _build_queries(topic)
+    # Keep the existing three-query result budget when one topic query suffices.
+    result_limit = (
+        min(6, settings.research_results_per_query * 3)
+        if len(queries) == 1
+        else settings.research_results_per_query
+    )
 
     try:
         raw = await asyncio.to_thread(
-            _run_ddg_searches,
+            _run_ddgs_searches,
             queries,
-            settings.research_results_per_query,
+            result_limit,
         )
     except Exception as exc:
         logger.warning("Web research failed: %s", type(exc).__name__)
@@ -69,20 +78,30 @@ async def research_worker_node(state: AgentState) -> AgentState:
 
     context = _format_results(raw, settings.research_noise_domains)
     if not context:
-        logger.warning("Web research returned no citable sources")
+        logger.warning("Web research returned no source snippets")
         await _send_unavailable(send)
         return {**state, "research_context": "", "research_status": "unavailable"}
+    sources = _source_urls(context)
     await send({
         "type": "worker_status",
         "worker": "research",
-        "status": "Web evidence ready — citable sources found.",
-        "sources": _source_urls(context),
+        "status": "Web search results available.",
+        "sources": sources,
     })
     if _may_emit_eval_evidence(state):
+        provenance = []
+        for item in raw:
+            url = str(item.get("href") or item.get("url", "")).strip()
+            query, backend = item.get("query"), item.get("backend")
+            if url in sources and isinstance(query, str) and isinstance(backend, str):
+                source = {"url": url, "query": query, "backend": backend}
+                if source not in provenance:
+                    provenance.append(source)
         await send({
             "type": "research_evidence",
             "query": topic,
             "results": context.splitlines(),
+            "source_provenance": provenance,
         })
     return {**state, "research_context": context, "research_status": "ready"}
 
@@ -130,6 +149,8 @@ def _build_queries(topic: str) -> list[str]:
     evidence about the domain's real workflow, decisions, measures, and failure
     modes without asking another model to expand the query.
     """
+    if not is_applied_system_design_request(topic):
+        return [topic]
     current_year = datetime.now(timezone.utc).year
     domain_topic = _domain_topic(topic)
     return [
@@ -146,11 +167,11 @@ def _domain_topic(topic: str) -> str:
     return stripped if len(stripped) >= 3 else topic
 
 
-def _run_ddg_searches(queries: list[str], results_per_query: int) -> list[dict]:
+def _run_ddgs_searches(queries: list[str], results_per_query: int) -> list[dict]:
     """
-    Synchronous DuckDuckGo search across all queries.
+    Synchronous Brave search through DDGS across all queries.
     Called inside asyncio.to_thread — must be thread-safe.
-    Returns a flat list of raw result dicts (title, href, body).
+    Returns result dicts with their originating query and backend.
     """
     from ddgs import DDGS  # imported lazily — only if research is enabled
 
@@ -158,11 +179,16 @@ def _run_ddg_searches(queries: list[str], results_per_query: int) -> list[dict]:
     with DDGS(timeout=4) as ddg:
         for query in queries:
             try:
-                hits = list(ddg.text(query, max_results=results_per_query))
-                results.extend(hits)
+                hits = ddg.text(
+                    query, max_results=results_per_query,
+                    backend=_SEARCH_BACKEND, safesearch=_SEARCH_SAFESEARCH,
+                )
+                results.extend(
+                    {**hit, "query": query, "backend": _SEARCH_BACKEND} for hit in hits
+                )
             except Exception:
                 # One failed query shouldn't abort the rest
-                logger.debug("DuckDuckGo query failed", exc_info=True)
+                logger.debug("Brave query failed", exc_info=True)
                 continue
     if results or not queries:
         return results
@@ -172,9 +198,15 @@ def _run_ddg_searches(queries: list[str], results_per_query: int) -> list[dict]:
     time.sleep(0.2)
     try:
         with DDGS(timeout=4) as ddg:
-            results.extend(ddg.text(queries[0], max_results=results_per_query))
+            hits = ddg.text(
+                queries[0], max_results=results_per_query,
+                backend=_SEARCH_BACKEND, safesearch=_SEARCH_SAFESEARCH,
+            )
+            results.extend(
+                {**hit, "query": queries[0], "backend": _SEARCH_BACKEND} for hit in hits
+            )
     except Exception:
-        logger.debug("DuckDuckGo bounded retry failed", exc_info=True)
+        logger.debug("Brave bounded retry failed", exc_info=True)
     return results
 
 

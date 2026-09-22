@@ -516,7 +516,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v17"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v18"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -660,7 +660,7 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_seconds", [None, 129.875])
 @pytest.mark.parametrize("model", ["kimi-k3", "configured-builder-model"])
-async def test_component_generation_uses_configured_model_high_one_attempt_and_safe_telemetry(
+async def test_component_generation_uses_configured_model_low_one_attempt_and_safe_telemetry(
     monkeypatch,
     timeout_seconds,
     model,
@@ -691,7 +691,7 @@ async def test_component_generation_uses_configured_model_high_one_attempt_and_s
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v20"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v21"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 

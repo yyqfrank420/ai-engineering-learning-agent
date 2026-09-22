@@ -31,6 +31,11 @@ This is the current runtime contract for the production-quality demo.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
+   Web research selects Brave explicitly through DDGS with safe search. Ordinary research keeps
+   the original topic in one query; applied design requests also search the domain workflow and
+   failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
+   of relevance or factual support; synthesis must cite supported findings or state the evidence
+   limitation. Internal evaluation captures the retained URLs' query and backend provenance.
    The optional route classifier uses one low-effort provider attempt, at most 1,024 output
    tokens, and a 10-second deadline. Provider unavailability falls back to the search path
    with the same history, research setting, and graph controls. Explicit graph requests and
@@ -97,6 +102,10 @@ This is the current runtime contract for the production-quality demo.
    paths that bypass required controls remain blockers. Retryable internal
    writes retain their controls even when the design has no external business mutations. Review
    reasons quote the control contracts and cover every applicable producer or path.
+   Capability flags select system-level review criteria. Individual retrieval obligations apply
+   to their declared artifact and consumer path. Outcome-data reads do not impose a factual
+   retrieval dependency on an unrelated creative generator. Material factual claims still need
+   entailment validation for both internal and external evidence.
    Walkthrough reachability does not establish execution or authorization. Semantic review still
    requires actual runtime/control contracts for invocation, approval, and execution; a feedback
    or deployment connection cannot substitute for those behaviors. This lets offline evaluation
@@ -110,7 +119,10 @@ This is the current runtime contract for the production-quality demo.
    still match. Changed maturity, capabilities, assumptions, title, or root require full review.
    Both gates still inspect current records against their applicable semantic requirements.
    Reviewer identities bind prompt content, model settings, rubric definitions, and response schema.
-   Scoped projection preserves authored edge presentation and sequence descriptions. Authorized node
+   Scoped projection preserves authored edge presentation and sequence descriptions. Component
+   labels are reviewed by the staged component gate; edit admission does not reapply the legacy
+   generic-label heuristic to those accepted records. Exact edit authority and structural checks
+   remain mandatory. Authorized node
    deletion removes only that node's sequence memberships and incident edges, then renumbers steps.
    Only an explicit graph rebuild can authorize restaging at another depth. Scoped edits preserve
    locked assumptions and prior composition records. Capability changes are reviewed against the

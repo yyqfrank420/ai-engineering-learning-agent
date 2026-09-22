@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import re
+from textwrap import shorten
 from typing import Any, Literal
 
 from agent.architecture_rubric import (
@@ -1014,6 +1015,24 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     # also unavailable, so telemetry health never hides a product regression.
     semantic_exit_code = _exit_code_for_statuses(statuses, "blocking")
     exit_code = _exit_code_for_statuses(statuses, manual_review_policy)
+    status = {0: "pass", 1: "fail", 2: "infrastructure", 3: "manual_review"}[
+        semantic_exit_code
+    ]
+    outcome_cases = [
+        item for item in evaluations if item["decision"] == status and status != "pass"
+    ]
+    reason = None
+    if outcome_cases:
+        reason = "; ".join(
+            f"{item['id']}: {shorten(item['reason'], width=240, placeholder='...')}"
+            for item in outcome_cases[:8]
+        )
+        if len(outcome_cases) > 8:
+            reason += f"; {len(outcome_cases) - 8} more cases (see evaluations)"
+    elif not args.capture_replay and (
+        telemetry_failure or cost_policy["blocking_status"] == "fail"
+    ):
+        reason = telemetry_failure or cost_policy["reason"]
     judge_cost = account_judge_cost(evaluations)
     source_application_cost = application_cost["total"]["estimated_usd"]
     report = {
@@ -1027,23 +1046,10 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "corpus_approval": corpus.approval.status,
         "release_identity": corpus.release_identity,
         "created_at": datetime.now(UTC).isoformat(),
-        "status": (
-            "pass"
-            if semantic_exit_code == 0
-            else "fail"
-            if semantic_exit_code == 1
-            else "infrastructure"
-            if semantic_exit_code == 2
-            else "manual_review"
-        ),
+        "status": status,
         "manual_review_policy": manual_review_policy,
         "blocking_status": "pass" if exit_code == 0 else "fail",
-        "reason": (
-            "Source capture accounting: "
-            + (telemetry_failure or cost_policy["reason"] or "complete")
-            if args.capture_replay
-            else telemetry_failure or cost_policy["reason"]
-        ),
+        "reason": reason,
         "budget": {
             "application_calls": budget.application_calls,
             "source_application_calls": source_application_calls,

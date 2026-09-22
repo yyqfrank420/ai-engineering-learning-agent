@@ -3019,6 +3019,7 @@ def _apply_applied_graph_patch(
     resolved_complexity: str,
     repair_contract: dict[str, Any] | None = None,
     mutation_permissions: dict[str, Any] | None = None,
+    validate_generic_labels: bool = True,
 ) -> GraphData:
     # Models commonly preserve an optional patch key with JSON null to mean
     # "unchanged". New records receive the same deterministic presentation
@@ -3064,6 +3065,7 @@ def _apply_applied_graph_patch(
         safety_max_nodes=safety_max_nodes,
         resolved_complexity=resolved_complexity,
         context="incremental_patch",
+        validate_generic_labels=validate_generic_labels,
         trusted_existing_node_ids=frozenset(
             node["id"] for node in existing_graph.get("nodes") or []
         )
@@ -3162,6 +3164,8 @@ def admit_staged_graph_edit(
         resolved_complexity=resolved_complexity,
         repair_contract=repair_contract,
         mutation_permissions=mutation_permissions,
+        # Component semantics were accepted by the staged component review.
+        validate_generic_labels=False,
     )
 
 
@@ -3597,6 +3601,7 @@ def _normalise_applied_graph_candidate(
     resolved_complexity: str,
     context: str,
     trusted_existing_node_ids: frozenset[str] = frozenset(),
+    validate_generic_labels: bool = True,
 ) -> GraphData:
     candidate = _canonicalise_node_technologies(payload, context=context)
     candidate = _canonicalise_graph_edge_labels(candidate, context=context)
@@ -3605,6 +3610,7 @@ def _normalise_applied_graph_candidate(
         safety_max_nodes=safety_max_nodes,
         resolved_complexity=resolved_complexity,
         trusted_existing_node_ids=trusted_existing_node_ids,
+        validate_generic_labels=validate_generic_labels,
     )
 
 
@@ -3614,6 +3620,7 @@ def _normalise_applied_graph(
     safety_max_nodes: int,
     resolved_complexity: str,
     trusted_existing_node_ids: frozenset[str] = frozenset(),
+    validate_generic_labels: bool = True,
 ) -> GraphData:
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list):
@@ -3666,10 +3673,9 @@ def _normalise_applied_graph(
             }
         )
 
-    generic_count = sum(
+    if validate_generic_labels and any(
         node["label"].strip().lower() in _GENERIC_LABELS for node in nodes
-    )
-    if generic_count:
+    ):
         raise ValueError("graph regressed to generic concept labels")
     if any(
         _is_forbidden_book_metadata_technology(node["technology"]) for node in nodes

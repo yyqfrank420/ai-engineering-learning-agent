@@ -209,6 +209,13 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "compensation. A response contract may describe these outcomes together."
     ),
     "retrieval_and_reuse_trust": (
+        "Apply each obligation to the declared retrieval or reuse path, its artifact, "
+        "and its consumer. A system-level retrieval_or_reuse capability does not mean "
+        "every generator performs factual retrieval. Identify the material factual claim "
+        "or required factual-retrieval dependency before rejecting missing entailment "
+        "validation or retrieval-failure handling; apply this equally to internal and "
+        "external sources. Outcome-data reads and reuse for evaluation do not establish "
+        "a factual-retrieval dependency for an unrelated creative generator. "
         "Treat retrieved bytes as untrusted. Validate material factual claim entailment "
         "before delivery or reuse. Failed required factual retrieval must end in "
         "clarification, abstention, or a bounded validated retry. Discard rejected/stale "
