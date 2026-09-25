@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 
 from adapters.database_adapter import (
@@ -23,7 +24,7 @@ from storage.errors import ThreadMessageLimitExceeded
 
 logger = logging.getLogger(__name__)
 
-# Draft IDs stay addressable for open tabs and in-flight turns, but are not history.
+# Retained draft IDs stay addressable, but empty drafts are not saved history.
 # SQL interpolation below inserts only this fixed predicate; user values stay bound.
 _HAS_CONTENT_SQL = """(graph_data IS NOT NULL OR EXISTS (
     SELECT 1 FROM chat_messages
@@ -73,7 +74,18 @@ def delete_thread(user_id: str, thread_id: str) -> None:
 
 
 def create_thread(user_id: str, title: str = "New chat") -> dict:
+    now_epoch = time.time()
     with _connect() as conn:
+        if settings.use_postgres:
+            profile = conn.execute(
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                (user_id,),
+            ).fetchone()
+            if profile is None:
+                raise ValueError("Profile does not exist")
+        else:
+            conn.execute("BEGIN IMMEDIATE")
+
         thread_id = str(uuid.uuid4())
         conn.execute(
             _adapt_query(
@@ -95,6 +107,41 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
             (thread_id, user_id),
         ).fetchone()
         thread = dict(row) if row else None
+
+        # Blank drafts have a separate bound from saved history. A chat lease
+        # protects a first turn until it either commits or stops.
+        idle_drafts = conn.execute(
+            _adapt_query(
+                """
+                SELECT id FROM chat_threads
+                WHERE user_id = ? AND id <> ? AND NOT {}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM active_streams
+                    WHERE active_streams.user_id = chat_threads.user_id
+                      AND active_streams.stream_type =
+                          'chat-thread:scope:' || CAST(chat_threads.id AS TEXT)
+                      AND active_streams.expires_at_epoch >= ?
+                  )
+                ORDER BY created_at DESC, id DESC
+                """.format(_HAS_CONTENT_SQL)  # nosec B608
+            ),
+            (user_id, thread_id, now_epoch),
+        ).fetchall()
+        for draft in idle_drafts[settings.max_threads_per_user - 1 :]:
+            conn.execute(
+                _adapt_query(
+                    """
+                    DELETE FROM chat_threads
+                    WHERE id = ? AND user_id = ? AND graph_data IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM chat_messages
+                        WHERE chat_messages.thread_id = chat_threads.id
+                          AND chat_messages.user_id = chat_threads.user_id
+                      )
+                    """
+                ),
+                (draft["id"], user_id),
+            )
 
     if thread and thread.get("graph_data"):
         try:

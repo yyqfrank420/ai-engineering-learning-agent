@@ -229,13 +229,15 @@ async def chat_websocket(websocket: WebSocket) -> None:
             )
             await websocket.send_json({"type": "done"})
             return
+        thread = thread_store.get_thread(user_id, body.thread_id)
+        if thread is None:
+            await _send_error(websocket, "Thread not found")
+            await websocket.send_json({"type": "done"})
+            return
         # A competing instance may have committed after the early replay check.
         if await replay_completed_turn():
             return
 
-        if thread is None:  # Defensive: preflight already rejects this branch.
-            await _send_error(websocket, "Thread not found")
-            return
         rag_tools, graph_tools, node_detail_tools = _make_agent_tools(websocket)
         history = message_store.get_history(
             user_id, body.thread_id, limit=settings.max_messages_per_thread

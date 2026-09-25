@@ -20,7 +20,7 @@ from main import create_app
 from storage import runtime_state_store
 from storage.message_store import get_history
 from storage.profile_store import upsert_profile
-from storage.thread_store import create_thread, persist_turn
+from storage.thread_store import create_thread, delete_thread, persist_turn
 
 
 def _png(width: int = 1440, height: int = 960) -> bytes:
@@ -788,6 +788,37 @@ def test_websocket_rejects_invalid_start_protocol(
                 "type": "error",
                 "content": expected_error,
             }
+
+
+def test_websocket_rechecks_draft_after_lease_admission(temp_data_dir, monkeypatch):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    acquire = runtime_state_store.try_acquire_active_stream
+
+    def admission_after_eviction(user_id, stream_type, **kwargs):
+        if stream_type == "chat-thread":
+            delete_thread(user_id, thread["id"])
+        return acquire(user_id, stream_type, **kwargs)
+
+    async def fail_if_called(*_args, **_kwargs):
+        pytest.fail("model work started for a pruned draft")
+
+    monkeypatch.setattr(
+        runtime_state_store, "try_acquire_active_stream", admission_after_eviction
+    )
+    monkeypatch.setattr(chat_websocket, "run_agent", fail_if_called)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json() == {"type": "ready"}
+            socket.send_json(
+                {"type": "start", "thread_id": thread["id"], "content": "Explain agents"}
+            )
+            assert socket.receive_json() == {
+                "type": "error", "content": "Thread not found"
+            }
+            assert socket.receive_json() == {"type": "done"}
 
 
 @pytest.mark.parametrize(

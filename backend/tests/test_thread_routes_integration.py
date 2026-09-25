@@ -1,11 +1,16 @@
-from adapters.database_adapter import init_db
+from unittest.mock import AsyncMock
+
+import api.sse_handler as sse_handler
+from adapters.database_adapter import fetchone, init_db
 from adapters.supabase_auth_adapter import get_current_user
 from config import settings
 from fastapi.testclient import TestClient
 from main import create_app
+from storage import runtime_state_store
 from storage.profile_store import upsert_profile
 from storage.thread_store import (
     create_thread,
+    delete_thread,
     get_graph,
     get_thread,
     list_threads,
@@ -129,6 +134,54 @@ def test_latest_thread_endpoint_creates_thread_when_none_exists(temp_data_dir):
     assert response.json()["messages"] == []
     assert list_threads("user-1") == []
     assert get_thread("user-1", response.json()["thread"]["id"]) is not None
+
+
+def test_repeated_new_and_latest_requests_keep_draft_pool_bounded(temp_data_dir, monkeypatch):
+    _setup_user()
+    monkeypatch.setattr(settings, "max_threads_per_user", 3)
+    with TestClient(_app()) as client:
+        returned_ids = [
+            client.post("/api/threads", json={}).json()["thread"]["id"]
+            for _ in range(5)
+        ]
+        returned_ids.extend(
+            client.get("/api/threads/latest").json()["thread"]["id"]
+            for _ in range(5)
+        )
+
+    assert len(set(returned_ids)) == 10
+    assert get_thread("user-1", returned_ids[-1]) is not None
+    assert fetchone(
+        "SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ?", ("user-1",)
+    )["n"] == 3
+
+
+def test_sse_rechecks_draft_after_lease_admission(temp_data_dir, monkeypatch):
+    _setup_user()
+    thread = create_thread("user-1")
+    app = _app()
+    app.state.vectorstore = object()
+    app.state.parent_docs = [{"page_content": "agent design"}]
+    acquire = runtime_state_store.try_acquire_active_stream
+    agent = AsyncMock()
+    monkeypatch.setattr(sse_handler, "run_agent", agent)
+
+    def admission_after_eviction(user_id, stream_type, **kwargs):
+        if stream_type == "chat-thread":
+            delete_thread(user_id, thread["id"])
+        return acquire(user_id, stream_type, **kwargs)
+
+    monkeypatch.setattr(
+        runtime_state_store, "try_acquire_active_stream", admission_after_eviction
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/chat", json={"thread_id": thread["id"], "content": "Explain agents"}
+        )
+
+    assert response.status_code == 200
+    assert '"content": "Thread not found"' in response.text
+    agent.assert_not_awaited()
 
 
 def test_history_omits_old_and_new_empty_chats_but_keeps_messages_and_diagrams(temp_data_dir):

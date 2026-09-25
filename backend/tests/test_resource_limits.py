@@ -16,8 +16,8 @@ from threading import Barrier
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from adapters.database_adapter import init_db
-from storage import message_store, thread_store
+from adapters.database_adapter import fetchone, init_db
+from storage import message_store, runtime_state_store, thread_store
 from storage.errors import ThreadMessageLimitExceeded
 from storage.profile_store import upsert_profile
 
@@ -50,7 +50,7 @@ def test_completed_threads_keep_saved_history_within_limit(temp_data_dir, monkey
     assert len(remaining) == 5, f"Expected 5 threads, got {len(remaining)}"
 
 
-def test_empty_drafts_never_evict_saved_chats(temp_data_dir, monkeypatch):
+def test_empty_drafts_have_separate_bound_without_evicting_saved_chats(temp_data_dir, monkeypatch):
     init_db()
     from config import settings
     monkeypatch.setattr(settings, "max_threads_per_user", 3)
@@ -65,8 +65,64 @@ def test_empty_drafts_never_evict_saved_chats(temp_data_dir, monkeypatch):
     assert remaining_ids == {first["id"]}
     assert thread_store.count_threads(user_id) == 1
     assert thread_store.get_latest_thread(user_id)["id"] == first["id"]
-    # Another open tab can still submit into its draft.
-    assert all(thread_store.get_thread(user_id, draft["id"]) for draft in drafts)
+    retained_drafts = {
+        draft["id"] for draft in drafts if thread_store.get_thread(user_id, draft["id"])
+    }
+    assert len(retained_drafts) == 3
+    assert drafts[-1]["id"] in retained_drafts
+
+
+def test_draft_retention_preserves_saved_graph_other_user_and_active_lease(
+    temp_data_dir, monkeypatch
+):
+    init_db()
+    from config import settings
+    from adapters.database_adapter import execute
+
+    monkeypatch.setattr(settings, "max_threads_per_user", 1)
+    monkeypatch.setattr(thread_store.time, "time", lambda: 100.0)
+    user_id = make_user()
+    other_user_id = make_user("other")
+    saved = thread_store.create_thread(user_id)
+    message_store.append(user_id, saved["id"], "user", "Keep my question")
+    graph_only = thread_store.create_thread(user_id)
+    execute(
+        "UPDATE chat_threads SET graph_data = ? WHERE id = ?",
+        ('{"version":"saved-graph"}', graph_only["id"]),
+    )
+    other_draft = thread_store.create_thread(other_user_id)
+    protected = thread_store.create_thread(user_id)
+    lease = runtime_state_store.try_acquire_active_stream(
+        user_id, "chat-thread", limit=1, ttl_s=10, scope_id=protected["id"]
+    )
+    newest = thread_store.create_thread(user_id)
+
+    assert lease is not None
+    assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, protected, newest))
+    assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
+
+    monkeypatch.setattr(thread_store.time, "time", lambda: 200.0)
+    latest = thread_store.create_thread(user_id)
+    assert thread_store.get_thread(user_id, protected["id"]) is None
+    assert thread_store.get_thread(user_id, newest["id"]) is None
+    assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, latest))
+    assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
+    runtime_state_store.release_active_stream(lease)
+
+
+def test_concurrent_draft_creation_keeps_one_bounded_pool(temp_data_dir, monkeypatch):
+    init_db()
+    from config import settings
+
+    monkeypatch.setattr(settings, "max_threads_per_user", 3)
+    user_id = make_user()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        created = list(executor.map(lambda _: thread_store.create_thread(user_id), range(12)))
+
+    assert len({thread["id"] for thread in created}) == 12
+    assert fetchone(
+        "SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ?", (user_id,)
+    )["n"] == 3
 
 
 def test_thread_eviction_cascades_messages(temp_data_dir, monkeypatch):

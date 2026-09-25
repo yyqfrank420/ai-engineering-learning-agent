@@ -24,13 +24,19 @@ This is the current runtime contract for the production-quality demo.
 ## Chat history
 
 Empty drafts do not appear in history, count toward the saved-chat limit, or become
-the latest saved chat. A message or stored graph makes a thread visible. Draft IDs
-remain addressable so an open tab or in-flight first turn can still use its thread.
+the latest saved chat. A message or stored graph makes a thread visible. Retained
+draft IDs remain addressable. An active first-turn lease prevents draft eviction.
 The sidebar refreshes after generation finishes and ignores stale history responses.
 
 Opening a blank composer never evicts a saved conversation. The existing history
 cap is applied in the completed-turn transaction. Concurrent completions serialize
 on the user's profile row in Postgres and SQLite's write lock locally.
+Idle empty drafts have a separate cap of `max_threads_per_user`. Creating a draft keeps
+its new ID and removes the oldest unleased empty drafts above that cap. A thread-scoped
+chat lease protects an in-flight turn from cleanup. An older idle tab can lose its
+draft after enough newer drafts are opened; its next request reports that the thread
+is missing before generation starts. Draft admission, stream leases, and completed
+turns take the same per-user lock in Postgres and SQLite's write lock locally.
 
 ## Request and Steering Flow
 
