@@ -1338,6 +1338,70 @@ def test_judge_payload_preserves_each_turn_graph_identity():
     ]
 
 
+@pytest.mark.parametrize(
+    "render_identity,expected_keys",
+    [
+        ({}, set()),
+        (
+            {
+                "rendered_graph_version": None,
+                "rendered_node_ids": None,
+                "rendered_edge_identities": None,
+            },
+            set(),
+        ),
+        (
+            {"rendered_node_ids": [], "rendered_edge_identities": []},
+            {"rendered_node_ids", "rendered_edge_identities"},
+        ),
+        (
+            {
+                "rendered_graph_version": "graph-1",
+                "rendered_node_ids": ["service"],
+                "rendered_edge_identities": [
+                    {"source": "client", "target": "service", "label": "Request"}
+                ],
+            },
+            {
+                "rendered_graph_version",
+                "rendered_node_ids",
+                "rendered_edge_identities",
+            },
+        ),
+    ],
+)
+def test_judge_payload_keeps_missing_render_identity_distinct_from_empty(
+    render_identity, expected_keys
+):
+    payload = _judge_payload(
+        {
+            "turns": [
+                {
+                    "answer": "Architecture.",
+                    "graph": {
+                        "version": "graph-1",
+                        "nodes": [{"id": "service", "label": "Service"}],
+                        "edges": [],
+                    },
+                    **render_identity,
+                }
+            ]
+        }
+    )
+
+    turn = payload["turns"][0]
+    assert turn["graph"]["nodes"] == [{"id": "service", "label": "Service"}]
+    render_keys = {
+        "rendered_graph_version",
+        "rendered_node_ids",
+        "rendered_edge_identities",
+    }
+    assert render_keys.intersection(turn) == expected_keys
+    assert all(turn[key] == render_identity[key] for key in expected_keys)
+    sources = _artifact_sources(payload)
+    assert ("turn-1-render-1" in sources) == bool(expected_keys)
+
+
 def test_judge_payload_bounds_and_preserves_retrieval_evidence():
     payload = _judge_payload(
         {
@@ -2423,7 +2487,7 @@ def test_judge_prompt_checks_payload_direction_and_component_ownership():
     corpus = load_corpus()
     system, _ = _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."})
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v8"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v9"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
@@ -2446,7 +2510,14 @@ def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence
     })
     corpus = load_corpus()
     _, user = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
-    supplied = json.loads(user)["artifact_sources"]
+    payload = json.loads(user)
+    assert list(payload) == ["case", "rubrics", "artifact_sources"]
+    supplied = payload["artifact_sources"]
+    assert list(supplied) == list(sources)
+    source_keys = list(supplied)
+    assert source_keys.index("turn-1-graph-edge-2-1") < source_keys.index(
+        "turn-1-graph-edge-10-1"
+    )
 
     # Retained evidence proves availability to the judge, not a new model verdict.
     assert len(graph["edges"]) == 64
