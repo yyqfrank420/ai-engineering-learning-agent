@@ -467,6 +467,56 @@ async def test_multi_turn_case_stops_after_unexpected_timeout_error(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("quality_error", [False, True])
+async def test_turn_graph_evidence_keeps_graph_inspection_failure_kind(
+    monkeypatch, quality_error
+):
+    from unittest.mock import AsyncMock
+
+    from playwright.async_api import Error as PlaywrightError
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["graph-expansion"]
+    graph = {"version": "graph-v1", "nodes": [], "edges": []}
+    inspection_error = (
+        browser_runner.BrowserQualityError(
+            "graph_render_readiness_timeout", "graph version remained stale"
+        )
+        if quality_error
+        else PlaywrightError("graph handle was disposed")
+    )
+
+    async def send_step(_page, _case, _step_index, _frames, *, timeout_seconds):
+        del timeout_seconds
+        return [{"type": "graph_data", "data": graph}, {"type": "done"}]
+
+    monkeypatch.setattr(browser_runner, "_send_step", send_step)
+    monkeypatch.setattr(
+        browser_runner,
+        "_required_graph_turn_render_failure",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        browser_runner, "_graph_dom_state", AsyncMock(side_effect=inspection_error)
+    )
+    error_type = (
+        browser_runner.BrowserQualityError
+        if quality_error
+        else browser_runner.BrowserInfrastructureError
+    )
+    with pytest.raises(error_type) as raised:
+        await browser_runner._send_case_steps(
+            object(), case, [], [], timeout_seconds=10, turn_graphs=[]
+        )
+    assert raised.value.code == (
+        "graph_render_readiness_timeout"
+        if quality_error
+        else "graph_dom_inspection_failed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_required_graph_notice_stops_before_a_later_graph(monkeypatch):
     from eval.browser_runner import BrowserQualityError, _send_case_steps
 
@@ -604,56 +654,92 @@ async def test_graph_dom_state_uses_supported_wait_for_function_signature():
     from eval.browser_runner import _graph_dom_state
 
     calls: list[dict[str, object]] = []
+    live_version = "graph-1"
 
-    class FakeLocator:
-        def __init__(self, kind: str):
-            self.kind = kind
+    class FakeHandle:
+        async def json_value(self):
+            return {
+                "version": "graph-1",
+                "node_ids": ["source", "target"],
+                "connections": [
+                    {
+                        "source": "source",
+                        "target": "target",
+                        "label": "flows",
+                        "count": "1",
+                        "members": '[{"source":"source","target":"target","label":"flows"}]',
+                    }
+                ],
+            }
 
-        async def evaluate_all(self, script):
-            del script
-            if self.kind == "nodes":
-                return ["source", "target"]
-            return [
-                {
-                    "source": "source",
-                    "target": "target",
-                    "label": "flows",
-                    "count": "1",
-                    "members": '[{"source":"source","target":"target","label":"flows"}]',
-                }
-            ]
-
-        async def get_attribute(self, _name):
-            raise AssertionError("graph canvas attribute is read from container")
-
-    class FakeCanvas:
-        def locator(self, selector):
-            if selector == "g.node":
-                return FakeLocator("nodes")
-            if selector == "path.edge-vis":
-                return FakeLocator("edges")
-            raise AssertionError(selector)
-
-        async def get_attribute(self, _name):
-            return "graph-1"
+        async def dispose(self):
+            calls.append({"disposed": True})
 
     class FakePage:
         def locator(self, selector):
-            assert selector == '[data-testid="graph-canvas"]'
-            return FakeCanvas()
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
 
         async def wait_for_function(self, *_args, **kwargs):
+            nonlocal live_version
             calls.append({"args_count": len(_args), "kwargs": dict(kwargs)})
             assert "arg" not in kwargs
+            assert "graph-1" in _args[0]
+            assert "canvases.length !== 1" in _args[0]
+            assert "querySelectorAll('g.node')" in _args[0]
+            assert "querySelectorAll('path.edge-vis')" in _args[0]
+            live_version = ""  # The canvas redraws before json_value is called.
+            return FakeHandle()
 
     graph = {"version": "graph-1"}
 
     result = await _graph_dom_state(FakePage(), graph)
 
     assert result["version"] == "graph-1"
+    assert live_version == ""
+    assert result["node_ids"] == ["source", "target"]
+    assert result["edges"] == [
+        {"source": "source", "target": "target", "label": "flows"}
+    ]
     assert calls == [
         {"args_count": 1, "kwargs": {"timeout": 10000}},
+        {"disposed": True},
     ]
+
+
+@pytest.mark.asyncio
+async def test_graph_dom_state_rejects_stale_version_after_bounded_wait():
+    from eval.browser_runner import BrowserQualityError, _graph_dom_state
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    class Page:
+        async def wait_for_function(self, script, *, timeout):
+            assert 'const expectedVersion = "current-version"' in script
+            assert "version !== expectedVersion" in script
+            assert timeout == 10_000
+            raise PlaywrightTimeoutError("graph version remained stale")
+
+        def locator(self, selector):
+            raise AssertionError(f"stale snapshot must not read the DOM: {selector}")
+
+    with pytest.raises(BrowserQualityError) as raised:
+        await _graph_dom_state(Page(), {"version": "current-version"})
+    assert raised.value.code == "graph_render_readiness_timeout"
+
+
+@pytest.mark.asyncio
+async def test_graph_dom_state_rejects_duplicate_canvases():
+    from eval.browser_runner import BrowserQualityError, _graph_dom_state
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    class Page:
+        async def wait_for_function(self, script, *, timeout):
+            assert "canvases.length !== 1" in script
+            assert timeout == 10_000
+            raise PlaywrightTimeoutError("duplicate graph canvases never became unique")
+
+    with pytest.raises(BrowserQualityError) as raised:
+        await _graph_dom_state(Page(), {"version": "graph-1"})
+    assert raised.value.code == "graph_render_readiness_timeout"
 
 
 @pytest.mark.asyncio
@@ -683,27 +769,33 @@ async def test_required_graph_turn_render_failure_ignores_graph_candidate_events
 
 
 @pytest.mark.asyncio
-async def test_required_graph_turn_must_render_before_the_next_turn(monkeypatch):
+@pytest.mark.parametrize("readiness_timeout", [False, True])
+async def test_required_graph_turn_must_render_before_the_next_turn(
+    monkeypatch, readiness_timeout
+):
     from eval.browser_runner import BrowserQualityError, _send_case_steps
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
     case = load_corpus().by_id["graph-expansion"]
     step_order: list[int] = []
 
-    class IdentityLocator:
-        async def evaluate_all(self, _script):
-            return []
+    class Handle:
+        async def json_value(self):
+            return {"version": "graph-0", "node_ids": [], "connections": []}
 
-    class Canvas:
-        def locator(self, _selector):
-            return IdentityLocator()
-
-        async def get_attribute(self, _name):
-            return "stale-version"
+        async def dispose(self):
+            return None
 
     class Page:
         def locator(self, selector):
-            assert selector == '[data-testid="graph-canvas"]'
-            return Canvas()
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
+
+        async def wait_for_function(self, script, *, timeout):
+            assert '"graph-0"' in script
+            assert timeout == 10_000
+            if readiness_timeout:
+                raise PlaywrightTimeoutError("graph version remained stale")
+            return Handle()
 
     async def fake_send_step(page, sent_case, step_index, frames, *, timeout_seconds):
         del page, sent_case, frames, timeout_seconds
@@ -726,8 +818,91 @@ async def test_required_graph_turn_must_render_before_the_next_turn(monkeypatch)
     with pytest.raises(BrowserQualityError) as raised:
         await _send_case_steps(Page(), case, [], [], timeout_seconds=390)
 
-    assert raised.value.code == "required_graph_turn_render_mismatch"
+    assert raised.value.code == (
+        "graph_render_readiness_timeout"
+        if readiness_timeout
+        else "required_graph_turn_render_mismatch"
+    )
     assert step_order == [0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quality_error", [False, True])
+async def test_final_graph_inspection_keeps_typed_failure_kind(
+    tmp_path, monkeypatch, quality_error
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from playwright.async_api import Error as PlaywrightError
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["graph-expansion"]
+    graph = {"version": "graph-v1", "nodes": [], "edges": []}
+    page = Mock()
+    page.goto = AsyncMock()
+    page.get_by_role.return_value.is_visible = AsyncMock(return_value=False)
+    page.screenshot = AsyncMock()
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(return_value=page),
+        close=AsyncMock(),
+    )
+    browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
+    inspection_error = (
+        browser_runner.BrowserQualityError(
+            "graph_render_readiness_timeout", "graph version remained stale"
+        )
+        if quality_error
+        else PlaywrightError("graph inspection transport failed")
+    )
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "test-token"}),
+    )
+    monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
+    monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
+    monkeypatch.setattr(
+        browser_runner, "_graph_dom_state", AsyncMock(side_effect=inspection_error)
+    )
+    monkeypatch.setattr(
+        browser_runner,
+        "_node_followup_interaction_failure_details",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
+
+    async def send_steps(_page, _case, _frames, events, **_kwargs):
+        events.extend([{"type": "graph_data", "data": graph}, {"type": "done"}])
+
+    monkeypatch.setattr(browser_runner, "_send_case_steps", send_steps)
+    result = await browser_runner._run_browser_attempt(
+        browser,
+        SimpleNamespace(
+            target="http://frontend",
+            backend_target="http://backend",
+            email="eval@example.com",
+            internal_password="test-password",
+        ),
+        case,
+        artifact_dir=tmp_path,
+        screenshot_dir=tmp_path,
+        trace_dir=tmp_path,
+        turn_timeout_seconds=10,
+        attempt_number=1,
+    )
+
+    assert [(item["kind"], item["code"]) for item in result["failure_details"]] == [
+        (
+            ("quality", "graph_render_readiness_timeout")
+            if quality_error
+            else ("infrastructure", "graph_dom_inspection_failed")
+        )
+    ]
+    assert result["passed"] is False
 
 
 @pytest.mark.asyncio
@@ -875,20 +1050,25 @@ async def test_required_graph_turn_accepts_bundled_directed_edges():
         },
     ]
 
-    class Canvas:
-        def locator(self, selector):
-            class Records:
-                async def evaluate_all(self, _script):
-                    return ["a", "b", "c"] if selector == "g.node" else connections
+    class Handle:
+        async def json_value(self):
+            return {
+                "version": "graph-v2",
+                "node_ids": ["a", "b", "c"],
+                "connections": connections,
+            }
 
-            return Records()
-
-        async def get_attribute(self, _name):
-            return "graph-v2"
+        async def dispose(self):
+            return None
 
     class Page:
-        def locator(self, _selector):
-            return Canvas()
+        def locator(self, selector):
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
+
+        async def wait_for_function(self, script, *, timeout):
+            assert '"graph-v2"' in script
+            assert timeout == 10_000
+            return Handle()
 
     page = Page()
     events = [{"type": "graph_data", "data": graph}]
