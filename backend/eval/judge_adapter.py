@@ -45,6 +45,8 @@ _RETRYABLE_JUDGE_ERRORS = (
     AnthropicAPITimeoutError,
     AnthropicRateLimitError,
 )
+# High-effort judgments return complete non-streaming responses; the suite deadline still caps the run.
+_JUDGE_ATTEMPT_TIMEOUT_SECONDS = 120
 
 
 class _RawEvidenceCitation(BaseModel):
@@ -451,15 +453,30 @@ async def judge_with_transport_retry(
             if on_attempt:
                 on_attempt()
             return await asyncio.wait_for(
-                judge.judge(corpus, case, evidence), timeout=60
+                judge.judge(corpus, case, evidence),
+                timeout=_JUDGE_ATTEMPT_TIMEOUT_SECONDS,
             )
         except _RETRYABLE_JUDGE_ERRORS as exc:
             last_error = exc
             if attempt == 0:
                 await asyncio.sleep(1)
+    # Provider exceptions may include request details; report only a fixed class and status.
+    error_type = type(last_error)
+    error_class = (
+        error_type.__name__
+        if error_type in _RETRYABLE_JUDGE_ERRORS
+        else "RetryableJudgeError"
+    )
+    status_code = getattr(last_error, "status_code", None)
+    http_status = (
+        f", HTTP {status_code}"
+        if type(status_code) is int and 100 <= status_code <= 599
+        else ""
+    )
     raise RuntimeError(
-        "judge provider remained unavailable after one bounded retry"
-    ) from last_error
+        "judge provider remained unavailable after one bounded retry: "
+        f"{error_class}{http_status}"
+    )
 
 
 def estimated_judge_cost_usd(result: JudgeResult) -> float:

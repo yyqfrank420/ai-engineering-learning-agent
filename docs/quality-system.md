@@ -172,7 +172,12 @@ headroom. The Playwright turn waits at most 970 seconds so it can capture the ty
 and Cloud Run accepts a request for at most 1000
 seconds. The browser-suite timeout scales with the number of turns and the two-wide
 graph lane, with a 60-minute hard ceiling. Semantic judging is capped at 20 minutes
-for PR/smoke/diagnostic suites and 60 minutes for full suites. The outer GitHub jobs
+for PR/smoke/diagnostic suites and 60 minutes for full suites. Each semantic judge
+request has a 120-second deadline and at most one transport retry. This request
+deadline shares the suite's existing wall-clock and provider-attempt budgets;
+it does not extend either limit. Exhausted retries record a safe exception class
+and HTTP status when available, without provider messages or request data.
+The outer GitHub jobs
 allow 90 minutes for the PR gate and 150 minutes for scheduled evaluation, including
 installation, deployment, judging, artifact upload, and cleanup; the former 15/30
 minute limits no longer apply.
@@ -233,7 +238,7 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v7`, Anthropic, and `claude-sonnet-5` are the versioned judge
+`semantic-rubric-judge-v8`, Anthropic, and `claude-sonnet-5` are the versioned judge
 selection. Reports record the active provider, model, and prompt release.
 
 `corpus_sha256()` hashes prompts, rubrics, UI modes, and deterministic expectations.
