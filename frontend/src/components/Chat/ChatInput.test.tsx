@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ChatInput } from './ChatInput';
@@ -16,7 +16,7 @@ const defaultProps = {
   prepareProgress: null,
   isGenerating: false,
   complexity: 'auto' as const,
-  graphMode: 'auto' as const,
+  graphMode: 'on' as const,
   researchEnabled: false,
   onComplexityChange: vi.fn(),
   onGraphModeChange: vi.fn(),
@@ -36,6 +36,87 @@ function renderInput(threadId: string | null, overrides = {}) {
 }
 
 describe('ChatInput', () => {
+  it.each(['Generate a diagram', 'Answer only'] as const)('asks before sending an ambiguous request and honors %s', async choice => {
+    const onSend = vi.fn();
+    renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'AI trading bot?' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
+    await screen.findByRole('dialog', { name: 'Include a diagram?' });
+    expect((input as HTMLTextAreaElement).value).toBe('AI trading bot?');
+    fireEvent.click(screen.getByRole('button', { name: choice }));
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('AI trading bot?', choice === 'Answer only' ? 'off' : 'on');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it('sends explicit requests directly and uses answer-only for explicit opt-outs', async () => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValueOnce('send').mockResolvedValueOnce('answer');
+    renderInput('thread-1', { onSend, checkSubmission });
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Draw a diagram of RAG' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('Draw a diagram of RAG'));
+    fireEvent.change(input, { target: { value: 'Explain RAG. No diagram.' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledWith('Explain RAG. No diagram.', 'off'));
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('preserves the draft on Escape and asks safely when the intent check fails', async () => {
+    const onSend = vi.fn();
+    renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockRejectedValue(new Error('offline')) });
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'RAG?' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect((input as HTMLTextAreaElement).value).toBe('RAG?');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it('ignores an intent result after the draft changes', async () => {
+    let resolve!: (action: 'send') => void;
+    const onSend = vi.fn();
+    renderInput('thread-1', { onSend, checkSubmission: () => new Promise<'send'>(done => { resolve = done; }) });
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Old request' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.change(input, { target: { value: 'New request' } });
+    await act(async () => resolve('send'));
+    expect(onSend).not.toHaveBeenCalled();
+    expect((input as HTMLTextAreaElement).value).toBe('New request');
+  });
+
+  it.each(['disabled', 'sendDisabled'] as const)('keeps a pending draft when %s starts during intent checking', async blockedProp => {
+    let resolve!: (action: 'send') => void;
+    const onSend = vi.fn();
+    const checkSubmission = () => new Promise<'send'>(done => { resolve = done; });
+    const view = renderInput('thread-1', { onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Keep my question' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    view.rerender(<ChatInput {...defaultProps} onSend={onSend} checkSubmission={checkSubmission} {...{ [blockedProp]: true }} />);
+    await act(async () => resolve('send'));
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe('Keep my question');
+    expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('does not send after the composer unmounts during an intent check', async () => {
+    let resolve!: (action: 'send') => void;
+    const onSend = vi.fn();
+    const view = renderInput('thread-1', { onSend, checkSubmission: () => new Promise<'send'>(done => { resolve = done; }) });
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Pending question' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    view.unmount();
+    await act(async () => resolve('send'));
+    expect(onSend).not.toHaveBeenCalled();
+  });
   it('preserves the draft when bootstrapping from no thread to the first active thread', () => {
     const view = renderInput(null);
     const input = screen.getByPlaceholderText('Ask a question…');
@@ -142,10 +223,10 @@ describe('ChatInput', () => {
   it('keeps the composer active and submits steering while generating', () => {
     const onSend = vi.fn();
     renderInput('thread-1', { isGenerating: true, onSend });
-    const input = screen.getByPlaceholderText('Steer the active response…');
+    const input = screen.getByPlaceholderText('Add a follow-up…');
 
     fireEvent.change(input, { target: { value: 'focus on the approval boundary' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Steer response' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
 
     expect(onSend).toHaveBeenCalledWith('focus on the approval boundary');
     expect((input as HTMLTextAreaElement).value).toBe('');
@@ -214,6 +295,7 @@ describe('ChatInput', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Message options' }));
     fireEvent.click(screen.getByText('prod'));
+    expect(screen.getAllByText('auto')).toHaveLength(1);
     fireEvent.click(screen.getByText('on'));
     fireEvent.click(screen.getByRole('switch', { name: 'research' }));
 

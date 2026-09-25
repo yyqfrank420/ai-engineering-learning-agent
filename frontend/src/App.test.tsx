@@ -120,7 +120,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
     onClearSelectionReference,
     showPrepare,
   }: {
-    onSend: (content: string) => void;
+    onSend: (content: string, diagramChoice?: 'on' | 'off') => void;
     onStop: () => void;
     onPrepare: () => void;
     onComplexityChange: (value: 'production') => void;
@@ -133,6 +133,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
   }) => (
     <div>
       <button onClick={() => onSend('User question')}>Send message</button>
+      <button onClick={() => onSend('AI trading bot?', 'on')}>Confirm diagram</button>
       <button onClick={onStop}>Stop generation</button>
       {showPrepare && <button onClick={onPrepare}>Prepare backend</button>}
       <button onClick={() => onComplexityChange('production')}>Use production</button>
@@ -146,12 +147,15 @@ vi.mock('./components/Chat/ChatInput', () => ({
 }));
 
 vi.mock('./components/GraphCanvas', () => ({
-  GraphCanvas: ({ graphData, isPreview, onNodeClick, onTellMeMore, onExpandGraph }: {
+  GraphCanvas: ({ graphData, isPreview, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
     graphData: GraphData | null;
     isPreview?: boolean;
     onNodeClick: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onTellMeMore: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onExpandGraph: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
+    onSaveGraphEdit?: (edit: { nodes: Array<{ id: string; label: string }> }) => Promise<void>;
+    onEditDraftChange?: (dirty: boolean) => void;
+    editingDisabled?: boolean;
   }) => {
     const node = {
       id: 'retrieval',
@@ -165,9 +169,13 @@ vi.mock('./components/GraphCanvas', () => ({
       <section data-testid="graph-canvas">
         <span data-testid="rendered-graph-title">{graphData?.title ?? ''}</span>
         <span data-testid="rendered-graph-preview">{isPreview ? 'yes' : 'no'}</span>
+        <span data-testid="graph-edit-disabled">{String(editingDisabled)}</span>
         <button onClick={() => onNodeClick(node)}>Choose node</button>
         <button onClick={() => onTellMeMore(node)}>Tell me more</button>
         <button onClick={() => onExpandGraph(node)}>Expand graph</button>
+        <button onClick={() => onEditDraftChange?.(true)}>Start graph edit</button>
+        <button onClick={() => onEditDraftChange?.(false)}>Cancel graph edit</button>
+        <button onClick={() => void onSaveGraphEdit?.({ nodes: [{ id: 'retrieval', label: 'Edited retrieval' }] })}>Save graph edit</button>
       </section>
     );
   },
@@ -247,12 +255,21 @@ const threadState = {
 };
 
 const agentState = {
+  visibleMessages: [
+    { id: 'm1', role: 'user' as const, content: 'Question' },
+    { id: 'm2', role: 'assistant' as const, content: 'Grounded answer' },
+  ],
+  answerPending: false,
+  diagramRequested: false,
+  acknowledgeGraphRendered: vi.fn(),
   messages: [
     { id: 'm1', role: 'user' as const, content: 'Question' },
     { id: 'm2', role: 'assistant' as const, content: 'Grounded answer' },
   ],
   graphData: graph,
-  graphPreview: null,
+  isSavingGraphEdit: false,
+    publishedGraphKey: null,
+    graphPreview: null,
   graphCandidate: null,
   workflowProgress: [],
   explanationPaused: false,
@@ -282,6 +299,7 @@ const agentState = {
   providerNotice: null,
   hydrateThread: vi.fn(),
   sendMessage: vi.fn(),
+  saveGraphEdit: vi.fn().mockResolvedValue(undefined),
   requestSearchTool: vi.fn(),
   stopGeneration: vi.fn(),
   toggleExplanationPause: vi.fn(),
@@ -329,7 +347,7 @@ describe('App coordination', () => {
       'User question',
       expect.objectContaining({
         complexity: 'auto',
-        graphMode: 'auto',
+        graphMode: 'on',
         researchEnabled: true,
       }),
     );
@@ -378,6 +396,43 @@ describe('App coordination', () => {
     expect(screen.getByText('New chat').parentElement?.dataset.sidebarOpen).toBe('false');
   });
 
+  it('blocks chat and thread changes while a graph edit draft is open', async () => {
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    fireEvent.click(screen.getByText('Start graph edit'));
+
+    expect(screen.getByText('Save or cancel component edits to continue.')).toBeTruthy();
+    const unload = new Event('beforeunload', { cancelable: true });
+    window.dispatchEvent(unload);
+    expect(unload.defaultPrevented).toBe(true);
+    fireEvent.click(screen.getByText('Send message'));
+    fireEvent.click(screen.getByText('New chat'));
+    fireEvent.click(screen.getByText('Select thread'));
+    fireEvent.click(screen.getByText('Delete thread'));
+    fireEvent.click(screen.getByText('Expand graph'));
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+    expect(threadState.handleSelectThread).not.toHaveBeenCalled();
+    expect(threadState.handleDeleteThread).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByText('Cancel graph edit'));
+    expect(screen.queryByText('Save or cancel component edits to continue.')).toBeNull();
+    fireEvent.click(screen.getByText('Send message'));
+    expect(agentState.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('wires graph edits to the hook and disables editing while save is pending', async () => {
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, isSavingGraphEdit: true });
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    expect(screen.getByTestId('graph-edit-disabled').textContent).toBe('true');
+    expect(screen.getByText('Saving component edits…')).toBeTruthy();
+    fireEvent.click(screen.getByText('Save graph edit'));
+    expect(agentState.saveGraphEdit).toHaveBeenCalledWith({
+      nodes: [{ id: 'retrieval', label: 'Edited retrieval' }],
+    });
+  });
+
   it('renders a preview without writing it into the durable thread snapshot', async () => {
     const preview = { ...graph, title: 'Private preview' };
     vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphPreview: preview });
@@ -392,6 +447,16 @@ describe('App coordination', () => {
       'thread-1',
       expect.objectContaining({ graphData: graph }),
     );
+  });
+
+  it('keeps the connected graph visible during a component-only expansion preview', async () => {
+    const connected = { ...graph, edges: [{ source: 'a', target: 'b', label: 'Request', technology: '', sync: 'sync' as const, description: '' }] };
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: connected,
+      graphPreview: { ...graph, title: 'Components only', edges: [] } });
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
+    expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
   });
 
   it('grounds a selected-text request and records mode changes', async () => {
@@ -466,6 +531,29 @@ describe('App coordination', () => {
     expect(localStorage.getItem('thread:user-1')).toBeNull();
     expect(readinessState.clearPreparedCache).toHaveBeenCalledTimes(1);
     expect(authState.setAuthSession).toHaveBeenCalledWith(null);
+  });
+
+  it('sends diagram confirmation separately from the unchanged learner message', async () => {
+    vi.mocked(useSelectionSuggestion).mockReturnValue({ ...selectionState, selectionSuggestion: null, selectionReferenceActive: false });
+    render(<App />);
+    fireEvent.click(await screen.findByText('Confirm diagram'));
+    expect(agentState.sendMessage).toHaveBeenCalledWith('AI trading bot?', expect.objectContaining({
+      diagramRequested: true, graphMode: 'on', displayContent: 'AI trading bot?',
+    }));
+  });
+
+  it('keeps the diagram pane after a graphless completion and displays only released messages', async () => {
+    vi.mocked(useAgentStream).mockReturnValue({
+      ...agentState,
+      graphData: null,
+      diagramRequested: true,
+      answerPending: true,
+      visibleMessages: [agentState.messages[0]],
+    });
+    render(<App />);
+    const pane = await screen.findByTestId('split-pane');
+    expect(pane.getAttribute('data-graph-visible')).toBe('true');
+    expect(screen.getByTestId('message-list').textContent).toBe('1 messages');
   });
 
   it('shows authentication and skips persistence without an active session', () => {

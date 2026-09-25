@@ -358,6 +358,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "history": history,
                 "complexity": body.complexity,
                 "graph_mode": body.graph_mode,
+                "diagram_requested": body.diagram_requested,
                 "research_enabled": body.research_enabled,
                 "route": "",
                 "rag_chunks": [],

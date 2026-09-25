@@ -480,6 +480,8 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
     if stage == "components":
         assert prompt_input["architecture_context"] == _architecture_context()
         assert "shared evidence and review frame" in prompt
+        assert "Avoid vague group labels such as Runtime, Data, or Operations" in prompt
+        assert "an internal adapter to an external API remains internal" in prompt
     else:
         assert prompt_input["architecture_context"] is None
         assert "its reverse response edge with the same flow and sync" in prompt
@@ -691,7 +693,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v23"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v24"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 

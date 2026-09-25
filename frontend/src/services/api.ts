@@ -8,6 +8,7 @@ import type {
   DashboardOverviewResponse,
   DashboardTrendsResponse,
   GraphData,
+  GraphContentEdit,
   ThreadDetail,
   ThreadSummary,
 } from '../types';
@@ -36,6 +37,16 @@ export async function fetchThread(session: AuthSession, threadId: string): Promi
   return response.json();
 }
 
+export async function checkDiagramIntent(session: AuthSession, threadId: string, message: string): Promise<'send' | 'answer' | 'ask'> {
+  const response = await authedFetch(`/api/threads/${threadId}/diagram-intent`, session, {
+    method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(5000),
+  });
+  if (!response.ok) throw new Error('Could not check diagram intent');
+  const data = await response.json();
+  if (!['send', 'answer', 'ask'].includes(data.action)) throw new Error('Invalid diagram intent');
+  return data.action;
+}
+
 export async function createThread(session: AuthSession, title = 'New chat'): Promise<ThreadDetail> {
   const response = await authedFetch('/api/threads', session, {
     method: 'POST',
@@ -58,11 +69,67 @@ export async function deleteThread(session: AuthSession, threadId: string): Prom
 }
 
 export async function updateThreadGraph(session: AuthSession, threadId: string, graphData: GraphData): Promise<void> {
-  const response = await authedFetch(`/api/threads/${threadId}/graph`, session, {
-    method: 'PUT',
-    body: JSON.stringify({ graph_data: graphData }),
-  });
+  let response: Response;
+  try {
+    response = await authedFetch(`/api/threads/${threadId}/graph`, session, {
+      method: 'PUT',
+      body: JSON.stringify({ graph_data: graphData }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error('Saving the diagram layout timed out. Check the saved diagram before retrying.');
+    }
+    throw error;
+  }
   if (!response.ok) throw new Error('Failed to update thread graph');
+}
+
+export class GraphEditApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'GraphEditApiError';
+    this.status = status;
+  }
+}
+
+export async function saveGraphContentEdit(
+  session: AuthSession,
+  threadId: string,
+  expectedVersion: string | null,
+  edit: GraphContentEdit,
+): Promise<GraphData> {
+  let response: Response;
+  try {
+    response = await authedFetch(`/api/threads/${threadId}/graph`, session, {
+      method: 'PATCH',
+      body: JSON.stringify({ ...edit, expected_version: expectedVersion }),
+      signal: AbortSignal.timeout(15_000),
+    });
+  } catch (error) {
+    if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+      throw new Error('Saving the diagram timed out. Your edit is still open; check the saved diagram before retrying.');
+    }
+    throw error;
+  }
+  if (!response.ok) {
+    const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+    const detail = typeof body?.detail === 'string' ? body.detail : null;
+    const fallback: Record<number, string> = {
+      404: 'This conversation no longer exists.',
+      409: 'The diagram changed. Reload it before saving your edit.',
+      413: 'The edited diagram is too large to save.',
+      422: 'The diagram edit contains invalid values.',
+    };
+    throw new GraphEditApiError(detail ?? fallback[response.status] ?? 'Could not save diagram edit.', response.status);
+  }
+  const body = await response.json() as { graph_data?: GraphData };
+  if (!body.graph_data || !Array.isArray(body.graph_data.nodes) || !Array.isArray(body.graph_data.edges)) {
+    throw new Error('The diagram save returned an invalid graph.');
+  }
+  return body.graph_data;
 }
 
 export interface PrepareResponse {

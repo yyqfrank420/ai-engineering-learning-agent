@@ -19,7 +19,8 @@ import type { BackendPrepareProgress } from '../../hooks/useBackendReadiness';
 import { SegmentedControl } from './SegmentedControl';
 
 interface ChatInputProps {
-  onSend:        (content: string) => void;
+  onSend:        (content: string, diagramChoice?: GraphMode) => void;
+  checkSubmission?: (content: string) => Promise<'send' | 'answer' | 'ask'>;
   onStop:        () => void;
   onPrepare?:    () => void | Promise<void>;
   onDraftChange?: (hasText: boolean) => void;
@@ -157,7 +158,6 @@ function ModePopover({
       <SegRow
         label="GRAPH"
         options={[
-          { value: 'auto' as GraphMode, label: 'auto' },
           { value: 'on'   as GraphMode, label: 'on'   },
           { value: 'off'  as GraphMode, label: 'off'  },
         ]}
@@ -219,7 +219,7 @@ function ModePopover({
 // ── Main component ────────────────────────────────────────────────────────────
 
 export function ChatInput({
-  onSend, onStop, onPrepare, onDraftChange, threadId, disabled, isGenerating,
+  onSend, checkSubmission, onStop, onPrepare, onDraftChange, threadId, disabled, isGenerating,
   sendDisabled, showPrepare, prepareDisabled, prepareMessage,
   prepareProgress,
   complexity, graphMode, researchEnabled,
@@ -229,14 +229,26 @@ export function ChatInput({
   const [value, setValue]         = useState('');
   const [popoverOpen, setPopover] = useState(false);
   const [containerHovered, setContainerHovered] = useState(false);
+  const [diagramChoiceOpen, setDiagramChoiceOpen] = useState(false);
+  const [checkingIntent, setCheckingIntent] = useState(false);
+  const intentRequestRef = useRef(0);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const popoverRef  = useRef<HTMLDivElement>(null);
   const triggerRef  = useRef<HTMLButtonElement>(null);
   const previousThreadIdRef = useRef<string | null>(threadId ?? null);
 
+  useEffect(() => () => { intentRequestRef.current += 1; }, []);
+
+  useEffect(() => {
+    if (!disabled && !sendDisabled) return;
+    intentRequestRef.current += 1;
+    setCheckingIntent(false);
+    setDiagramChoiceOpen(false);
+  }, [disabled, sendDisabled]);
+
   // Has non-default settings
   const hasActiveSettings =
-    complexity !== 'auto' || graphMode !== 'auto' || researchEnabled;
+    complexity !== 'auto' || graphMode !== 'on' || researchEnabled;
 
   const resizeTextarea = useCallback((element: HTMLTextAreaElement) => {
     element.style.height = 'auto';
@@ -251,12 +263,35 @@ export function ChatInput({
     onUseSelection?.();
   }, [onUseSelection, selectionSuggestion]);
 
-  const submit = () => {
+  const sendDraft = (diagramChoice?: GraphMode) => {
     const trimmed = value.trim();
     if (!trimmed || disabled || sendDisabled) return;
-    // Clear immediately on submit — don't wait for disabled cycle
+    setDiagramChoiceOpen(false);
     clearDraft(setValue, textareaRef.current);
-    onSend(trimmed);
+    if (diagramChoice) onSend(trimmed, diagramChoice);
+    else onSend(trimmed);
+  };
+
+  const submit = async () => {
+    const trimmed = value.trim();
+    if (!trimmed || disabled || sendDisabled || checkingIntent || diagramChoiceOpen) return;
+    if (!checkSubmission || isGenerating || graphMode === 'off') {
+      sendDraft();
+      return;
+    }
+    const requestId = ++intentRequestRef.current;
+    setCheckingIntent(true);
+    try {
+      const action = await checkSubmission(trimmed);
+      if (requestId !== intentRequestRef.current) return;
+      if (action === 'ask') setDiagramChoiceOpen(true);
+      else sendDraft(action === 'answer' ? 'off' : undefined);
+    } catch {
+      // A failed intent check must not silently choose a costly generation.
+      if (requestId === intentRequestRef.current) setDiagramChoiceOpen(true);
+    } finally {
+      if (requestId === intentRequestRef.current) setCheckingIntent(false);
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -264,6 +299,9 @@ export function ChatInput({
   };
 
   const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+    intentRequestRef.current += 1;
+    setCheckingIntent(false);
+    setDiagramChoiceOpen(false);
     if (selectionSuggestion && !selectionReferenceActive && e.target.value.trim() !== '') {
       onUseSelection?.();
     }
@@ -299,15 +337,18 @@ export function ChatInput({
     // Preserve the draft for the initial bootstrap from "no thread yet" to the
     // first real thread after Prepare. Clear only on real thread switches.
     if (previousThreadId && previousThreadId !== nextThreadId) {
+      intentRequestRef.current += 1;
+      setCheckingIntent(false);
+      setDiagramChoiceOpen(false);
       clearDraft(setValue, textareaRef.current);
     }
 
     previousThreadIdRef.current = nextThreadId;
   }, [threadId]);
 
-  const isReady = !disabled && !sendDisabled && !!value.trim();
+  const isReady = !disabled && !sendDisabled && !checkingIntent && !diagramChoiceOpen && !!value.trim();
   const placeholder = isGenerating
-    ? 'Steer the active response…'
+    ? 'Add a follow-up…'
     : (selectionReferenceActive || !!selectionSuggestion)
     ? 'Ask a question about the highlighted text…'
     : 'Ask a question…';
@@ -325,7 +366,25 @@ export function ChatInput({
     }}
     onMouseEnter={() => setContainerHovered(true)}
     onMouseLeave={() => setContainerHovered(false)}
+    onKeyDown={event => {
+      if (event.key === 'Escape' && diagramChoiceOpen) {
+        setDiagramChoiceOpen(false);
+        textareaRef.current?.focus();
+      }
+    }}
     >
+      {diagramChoiceOpen && <div role="dialog" aria-label="Include a diagram?" style={{
+        ...popoverStyle, position: 'absolute', bottom: 'calc(100% + 8px)', left: 16, right: 16, width: 'auto', zIndex: 100,
+      }}>
+        <div style={{ color: '#e6edf3', fontSize: 14 }}>Include a diagram?</div>
+        <div style={{ color: '#94a3b8', fontSize: 12 }}>Choose how you'd like to learn about this.</div>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button autoFocus type="button" disabled={disabled || sendDisabled} onClick={() => sendDraft('on')} style={selectionActionButtonStyle}>Generate a diagram</button>
+          <button type="button" disabled={disabled || sendDisabled} onClick={() => sendDraft('off')} style={selectionActionButtonStyle}>Answer only</button>
+          <button type="button" onClick={() => { setDiagramChoiceOpen(false); textareaRef.current?.focus(); }} style={selectionActionButtonStyle}>Keep editing</button>
+        </div>
+      </div>}
+      {checkingIntent && <div role="status" style={{ color: '#94a3b8', fontSize: 12, marginBottom: 8 }}>Checking your request…</div>}
       {selectionSuggestion && (
         <div
           style={selectionSuggestionStyle(containerHovered, !!selectionReferenceActive)}
@@ -467,10 +526,10 @@ export function ChatInput({
             <button
               onClick={submit}
               disabled={!isReady}
-              aria-label="Steer response"
+              aria-label="Send message"
               style={sendButtonStyle(isReady, 'Send')}
             >
-              Steer
+              Send
             </button>
             <button
               onClick={onStop}

@@ -105,7 +105,7 @@ export class AgentTransport {
     session: AuthSession,
     threadId: string,
     content: string,
-    opts?: { complexity?: ComplexityLevel; graphMode?: GraphMode; researchEnabled?: boolean },
+    opts?: { complexity?: ComplexityLevel; graphMode?: GraphMode; diagramRequested?: boolean; researchEnabled?: boolean },
     clientRequestId = createClientRequestId(),
   ): Promise<boolean> {
     if (this._chatSocket) {
@@ -187,7 +187,8 @@ export class AgentTransport {
                   thread_id: threadId,
                   content,
                   complexity: opts?.complexity ?? 'auto',
-                  graph_mode: opts?.graphMode ?? 'auto',
+                  graph_mode: opts?.graphMode ?? 'on',
+                  ...(opts?.diagramRequested ? { diagram_requested: true } : {}),
                   research_enabled: opts?.researchEnabled ?? false,
                   client_request_id: clientRequestId,
                 }));

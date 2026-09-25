@@ -1,0 +1,649 @@
+{
+  "graph_type": "architecture",
+  "title": "Recursive Self-Improving AI Trading Bot",
+  "nodes": [
+    {
+      "id": "n1",
+      "label": "Market Data Ingestion",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Initiates scheduled pulls of market prices and account state from the provider, normalizes results, and stores raw observations durably for features and audit.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n2",
+      "label": "Feature Store",
+      "type": "datastore",
+      "technology": "Data store",
+      "description": "Stores versioned features and curated market datasets with provenance, scoped by version for training, backtesting, and inference reuse.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n3",
+      "label": "Strategy Model Service",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Produces typed trade proposals (instrument, side, size, price bounds) from current features using the currently released model and strategy configuration.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n4",
+      "label": "Proposal Validator",
+      "type": "control",
+      "technology": "Control component",
+      "description": "Deterministically validates every trade and compensation proposal's structure, risk limits, and allowed constraints before any approval or execution.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n5",
+      "label": "Policy and Approval",
+      "type": "control",
+      "technology": "Control component",
+      "description": "Applies risk policy and records operator or in-policy auto-approval for validated order and compensation actions; rejects are terminal and audited.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n6",
+      "label": "Order Execution",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Executes only approved orders with a reserved durable operation identity, revalidates authorization and freshness before submission, and reconciles uncertain commits by read-back.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n7",
+      "label": "Broker Exchange",
+      "type": "external",
+      "technology": "External system",
+      "description": "External broker and market data provider; authoritative target for order placement and cancellation and source of fills, positions, and market observations.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n8",
+      "label": "Portfolio Ledger",
+      "type": "datastore",
+      "technology": "Data store",
+      "description": "Authoritative owner of positions, cash, order lifecycle state, and correlated audit trail of proposals, decisions, executions, and terminal outcomes.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n9",
+      "label": "Outcome Feedback Collector",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Collects realized trade outcomes and hostile or anomalous traces into curated versioned evidence with provenance for offline evaluation; never mutates live configuration directly.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n10",
+      "label": "Offline Evaluation",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Runs backtests and evaluation of candidate strategy or model changes against versioned evidence, producing reviewed metrics and a promotion recommendation.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n11",
+      "label": "Release Registry",
+      "type": "control",
+      "technology": "Control component",
+      "description": "Owns reviewed immutable model, prompt, and strategy releases; performs canary rollout, and keeps promotion and rollback as distinct recorded controlled operations.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n12",
+      "label": "Operations Monitor",
+      "type": "service",
+      "technology": "Application service",
+      "description": "Monitors execution health, reconciliation anomalies, and canary metrics; raises bounded escalations for unknown commits and triggers rollback review on regressions.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    }
+  ],
+  "edges": [
+    {
+      "source": "n1",
+      "target": "n7",
+      "label": "Pull latest market prices, positions, and fills on schedule",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Pull latest market prices, positions, and fills on schedule",
+      "flow": "runtime",
+      "edge_id": "applied:n1__pull_latest_market_prices_positions_and_2820d06612e29702ed11976e__n7",
+      "relation": "pull_latest_market_prices_positions_and_2820d06612e29702ed11976e"
+    },
+    {
+      "source": "n7",
+      "target": "n1",
+      "label": "Return prices, positions, and fills, or a fetch-failure status for bounded retry",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Return prices, positions, and fills, or a fetch-failure status for bounded retry",
+      "flow": "runtime",
+      "edge_id": "applied:n7__return_prices_positions_and_fills_or_a__8834e7f6dd54bdbf175ee513__n1",
+      "relation": "return_prices_positions_and_fills_or_a__8834e7f6dd54bdbf175ee513"
+    },
+    {
+      "source": "n1",
+      "target": "n2",
+      "label": "Store raw observations and derived features with provenance and version scope",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Store raw observations and derived features with provenance and version scope",
+      "flow": "runtime",
+      "edge_id": "applied:n1__store_raw_observations_and_derived_feat_dddee18558628b7446c2b83b__n2",
+      "relation": "store_raw_observations_and_derived_feat_dddee18558628b7446c2b83b"
+    },
+    {
+      "source": "n2",
+      "target": "n1",
+      "label": "Committed with version identity, or rejected with reason for operator review",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Committed with version identity, or rejected with reason for operator review",
+      "flow": "runtime",
+      "edge_id": "applied:n2__committed_with_version_identity_or_reje_0d8395acc88db0d050e7f1a0__n1",
+      "relation": "committed_with_version_identity_or_reje_0d8395acc88db0d050e7f1a0"
+    },
+    {
+      "source": "n3",
+      "target": "n2",
+      "label": "Request current versioned feature snapshot scoped to the released model and strategy",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Request current versioned feature snapshot scoped to the released model and strategy",
+      "flow": "runtime",
+      "edge_id": "applied:n3__request_current_versioned_feature_snaps_8972eda7014f56044690df52__n2",
+      "relation": "request_current_versioned_feature_snaps_8972eda7014f56044690df52"
+    },
+    {
+      "source": "n2",
+      "target": "n3",
+      "label": "Return the requested feature snapshot, or version-not-found so generation abstains",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Return the requested feature snapshot, or version-not-found so generation abstains",
+      "flow": "runtime",
+      "edge_id": "applied:n2__return_the_requested_feature_snapshot_o_cd3a17a652313054a6e8924c__n3",
+      "relation": "return_the_requested_feature_snapshot_o_cd3a17a652313054a6e8924c"
+    },
+    {
+      "source": "n3",
+      "target": "n4",
+      "label": "Submit typed trade proposal with instrument, side, size, and price bounds",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Submit typed trade proposal with instrument, side, size, and price bounds",
+      "flow": "control",
+      "edge_id": "applied:n3__submit_typed_trade_proposal_with_instru_5100a06a3dddb1a5c122b815__n4",
+      "relation": "submit_typed_trade_proposal_with_instru_5100a06a3dddb1a5c122b815"
+    },
+    {
+      "source": "n4",
+      "target": "n3",
+      "label": "Proposal passes structure, risk limits, and constraints, or rejected with reasons",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Proposal passes structure, risk limits, and constraints, or rejected with reasons",
+      "flow": "control",
+      "edge_id": "applied:n4__proposal_passes_structure_risk_limits_a_ea7295670dc7d54b3fc5b667__n3",
+      "relation": "proposal_passes_structure_risk_limits_a_ea7295670dc7d54b3fc5b667"
+    },
+    {
+      "source": "n6",
+      "target": "n4",
+      "label": "Submit typed compensation proposal to cancel or reverse an anomalous order",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Submit typed compensation proposal to cancel or reverse an anomalous order",
+      "flow": "control",
+      "edge_id": "applied:n6__submit_typed_compensation_proposal_to_c_a6b916bff6fff9c818c575cf__n4",
+      "relation": "submit_typed_compensation_proposal_to_c_a6b916bff6fff9c818c575cf"
+    },
+    {
+      "source": "n4",
+      "target": "n6",
+      "label": "Compensation passes the same validation as orders, or rejected with reasons",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Compensation passes the same validation as orders, or rejected with reasons",
+      "flow": "control",
+      "edge_id": "applied:n4__compensation_passes_the_same_validation_70cc9855a6d62721e87adff3__n6",
+      "relation": "compensation_passes_the_same_validation_70cc9855a6d62721e87adff3"
+    },
+    {
+      "source": "n4",
+      "target": "n5",
+      "label": "Forward validated order or compensation proposal for policy and approval",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Forward validated order or compensation proposal for policy and approval",
+      "flow": "control",
+      "edge_id": "applied:n4__forward_validated_order_or_compensation_56cce3028f95b622b40b35e3__n5",
+      "relation": "forward_validated_order_or_compensation_56cce3028f95b622b40b35e3"
+    },
+    {
+      "source": "n5",
+      "target": "n4",
+      "label": "Approved exact action with identity scope, or terminal audited rejection",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Approved exact action with identity scope, or terminal audited rejection",
+      "flow": "control",
+      "edge_id": "applied:n5__approved_exact_action_with_identity_sco_f2ef561d22e3a7f4d40949c0__n4",
+      "relation": "approved_exact_action_with_identity_sco_f2ef561d22e3a7f4d40949c0"
+    },
+    {
+      "source": "n5",
+      "target": "n6",
+      "label": "Dispatch approved order or compensation action for execution",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Dispatch approved order or compensation action for execution",
+      "flow": "control",
+      "edge_id": "applied:n5__dispatch_approved_order_or_compensation_524f521f59e7c3a70fd0ea60__n6",
+      "relation": "dispatch_approved_order_or_compensation_524f521f59e7c3a70fd0ea60"
+    },
+    {
+      "source": "n6",
+      "target": "n5",
+      "label": "Accepted with reserved durable operation identity, or authorization rejection",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Accepted with reserved durable operation identity, or authorization rejection",
+      "flow": "control",
+      "edge_id": "applied:n6__accepted_with_reserved_durable_operatio_aa2585dd26480bb0194b8a61__n5",
+      "relation": "accepted_with_reserved_durable_operatio_aa2585dd26480bb0194b8a61"
+    },
+    {
+      "source": "n6",
+      "target": "n7",
+      "label": "Submit approved order or cancellation with reserved operation identity",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Submit approved order or cancellation with reserved operation identity",
+      "flow": "runtime",
+      "edge_id": "applied:n6__submit_approved_order_or_cancellation_w_c537aaeffc6776fb3ce1238d__n7",
+      "relation": "submit_approved_order_or_cancellation_w_c537aaeffc6776fb3ce1238d"
+    },
+    {
+      "source": "n7",
+      "target": "n6",
+      "label": "Fill or cancellation confirmed, rejected, or uncertain-commit acknowledgment",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Fill or cancellation confirmed, rejected, or uncertain-commit acknowledgment",
+      "flow": "runtime",
+      "edge_id": "applied:n7__fill_or_cancellation_confirmed_rejected_dc8a43bb7267ff662291545c__n6",
+      "relation": "fill_or_cancellation_confirmed_rejected_dc8a43bb7267ff662291545c"
+    },
+    {
+      "source": "n6",
+      "target": "n8",
+      "label": "Read back authoritative order status by operation identity after uncertain commit",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Read back authoritative order status by operation identity after uncertain commit",
+      "flow": "runtime",
+      "edge_id": "applied:n6__read_back_authoritative_order_status_by_cb491039e6b2673a711aba48__n8",
+      "relation": "read_back_authoritative_order_status_by_cb491039e6b2673a711aba48"
+    },
+    {
+      "source": "n8",
+      "target": "n6",
+      "label": "COMMITTED: record success; NOT_FOUND: retry same key; STILL_UNKNOWN: bounded escalation",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "COMMITTED: record success; NOT_FOUND: retry same key; STILL_UNKNOWN: bounded escalation",
+      "flow": "runtime",
+      "edge_id": "applied:n8__committed_record_success_not_found_retr_6873c5c5976440a994227671__n6",
+      "relation": "committed_record_success_not_found_retr_6873c5c5976440a994227671"
+    },
+    {
+      "source": "n6",
+      "target": "n8",
+      "label": "Record proposals, approvals, executions, and terminal outcomes in the audit trail",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Record proposals, approvals, executions, and terminal outcomes in the audit trail",
+      "flow": "runtime",
+      "edge_id": "applied:n6__record_proposals_approvals_executions_a_1494fcbbbdbdb9e0e562eb32__n8",
+      "relation": "record_proposals_approvals_executions_a_1494fcbbbdbdb9e0e562eb32"
+    },
+    {
+      "source": "n8",
+      "target": "n6",
+      "label": "Durably committed with correlation identity, or rejected for bounded retry",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Durably committed with correlation identity, or rejected for bounded retry",
+      "flow": "runtime",
+      "edge_id": "applied:n8__durably_committed_with_correlation_iden_b0cfc7494d85ddee1cd4d97c__n6",
+      "relation": "durably_committed_with_correlation_iden_b0cfc7494d85ddee1cd4d97c"
+    },
+    {
+      "source": "n9",
+      "target": "n8",
+      "label": "Read realized outcomes and anomalous traces for evidence curation",
+      "technology": "Feedback flow",
+      "sync": "async",
+      "description": "Read realized outcomes and anomalous traces for evidence curation",
+      "flow": "feedback",
+      "edge_id": "applied:n9__read_realized_outcomes_and_anomalous_tr_34725870e136bf9762ad5af8__n8",
+      "relation": "read_realized_outcomes_and_anomalous_tr_34725870e136bf9762ad5af8"
+    },
+    {
+      "source": "n8",
+      "target": "n9",
+      "label": "Return correlated outcome records and hostile traces, or none-available status",
+      "technology": "Feedback flow",
+      "sync": "async",
+      "description": "Return correlated outcome records and hostile traces, or none-available status",
+      "flow": "feedback",
+      "edge_id": "applied:n8__return_correlated_outcome_records_and_h_da25b9f8cfca37a0524ec7b4__n9",
+      "relation": "return_correlated_outcome_records_and_h_da25b9f8cfca37a0524ec7b4"
+    },
+    {
+      "source": "n9",
+      "target": "n2",
+      "label": "Store curated versioned evidence with provenance; never mutates live configuration",
+      "technology": "Feedback flow",
+      "sync": "sync",
+      "description": "Store curated versioned evidence with provenance; never mutates live configuration",
+      "flow": "feedback",
+      "edge_id": "applied:n9__store_curated_versioned_evidence_with_p_50a56a6fb6d650a36888db5e__n2",
+      "relation": "store_curated_versioned_evidence_with_p_50a56a6fb6d650a36888db5e"
+    },
+    {
+      "source": "n2",
+      "target": "n9",
+      "label": "Committed with evidence version, or rejected and discarded as stale",
+      "technology": "Feedback flow",
+      "sync": "sync",
+      "description": "Committed with evidence version, or rejected and discarded as stale",
+      "flow": "feedback",
+      "edge_id": "applied:n2__committed_with_evidence_version_or_reje_f3df7e63e72c4f3e1fec2f61__n9",
+      "relation": "committed_with_evidence_version_or_reje_f3df7e63e72c4f3e1fec2f61"
+    },
+    {
+      "source": "n10",
+      "target": "n2",
+      "label": "Read versioned evidence and feature datasets for offline backtesting",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Read versioned evidence and feature datasets for offline backtesting",
+      "flow": "runtime",
+      "edge_id": "applied:n10__read_versioned_evidence_and_feature_dat_5532e9b8029cca001fab485b__n2",
+      "relation": "read_versioned_evidence_and_feature_dat_5532e9b8029cca001fab485b"
+    },
+    {
+      "source": "n2",
+      "target": "n10",
+      "label": "Return pinned dataset snapshot, or version-not-found so evaluation abstains",
+      "technology": "Runtime flow",
+      "sync": "sync",
+      "description": "Return pinned dataset snapshot, or version-not-found so evaluation abstains",
+      "flow": "runtime",
+      "edge_id": "applied:n2__return_pinned_dataset_snapshot_or_versi_6821b0dc0559ddca25e690a0__n10",
+      "relation": "return_pinned_dataset_snapshot_or_versi_6821b0dc0559ddca25e690a0"
+    },
+    {
+      "source": "n10",
+      "target": "n11",
+      "label": "Submit reviewed metrics and promotion recommendation for a candidate release",
+      "technology": "Deployment flow",
+      "sync": "sync",
+      "description": "Submit reviewed metrics and promotion recommendation for a candidate release",
+      "flow": "deployment",
+      "edge_id": "applied:n10__submit_reviewed_metrics_and_promotion_r_cff3663bbf057f904102ed3e__n11",
+      "relation": "submit_reviewed_metrics_and_promotion_r_cff3663bbf057f904102ed3e"
+    },
+    {
+      "source": "n11",
+      "target": "n10",
+      "label": "Accepted as reviewed immutable release, or rejected with evaluation rationale",
+      "technology": "Deployment flow",
+      "sync": "sync",
+      "description": "Accepted as reviewed immutable release, or rejected with evaluation rationale",
+      "flow": "deployment",
+      "edge_id": "applied:n11__accepted_as_reviewed_immutable_release__2c0fdd86a1c4c869956abca4__n10",
+      "relation": "accepted_as_reviewed_immutable_release__2c0fdd86a1c4c869956abca4"
+    },
+    {
+      "source": "n11",
+      "target": "n3",
+      "label": "Deploy canary of the reviewed immutable model and strategy release to this target",
+      "technology": "Deployment flow",
+      "sync": "async",
+      "description": "Deploy canary of the reviewed immutable model and strategy release to this target",
+      "flow": "deployment",
+      "edge_id": "applied:n11__deploy_canary_of_the_reviewed_immutable_239a1149af64b80fedc6fe94__n3",
+      "relation": "deploy_canary_of_the_reviewed_immutable_239a1149af64b80fedc6fe94"
+    },
+    {
+      "source": "n3",
+      "target": "n11",
+      "label": "Canary activated for this target with release identity, or deployment rejection",
+      "technology": "Deployment flow",
+      "sync": "async",
+      "description": "Canary activated for this target with release identity, or deployment rejection",
+      "flow": "deployment",
+      "edge_id": "applied:n3__canary_activated_for_this_target_with_r_77e4701bb3f0031f18786983__n11",
+      "relation": "canary_activated_for_this_target_with_r_77e4701bb3f0031f18786983"
+    },
+    {
+      "source": "n11",
+      "target": "n3",
+      "label": "Roll back this target's canary to the prior immutable release as a distinct operation",
+      "technology": "Deployment flow",
+      "sync": "async",
+      "description": "Roll back this target's canary to the prior immutable release as a distinct operation",
+      "flow": "deployment",
+      "edge_id": "applied:n11__roll_back_this_target_s_canary_to_the_p_3ad3852821925f1b3a78a669__n3",
+      "relation": "roll_back_this_target_s_canary_to_the_p_3ad3852821925f1b3a78a669"
+    },
+    {
+      "source": "n3",
+      "target": "n11",
+      "label": "Rollback completed and recorded for this target, or rollback failure escalated",
+      "technology": "Deployment flow",
+      "sync": "async",
+      "description": "Rollback completed and recorded for this target, or rollback failure escalated",
+      "flow": "deployment",
+      "edge_id": "applied:n3__rollback_completed_and_recorded_for_thi_3c12095e9280786e6a5c4851__n11",
+      "relation": "rollback_completed_and_recorded_for_thi_3c12095e9280786e6a5c4851"
+    },
+    {
+      "source": "n3",
+      "target": "n12",
+      "label": "Emit canary serving and proposal telemetry for regression monitoring",
+      "technology": "Feedback flow",
+      "sync": "async",
+      "description": "Emit canary serving and proposal telemetry for regression monitoring",
+      "flow": "feedback",
+      "edge_id": "applied:n3__emit_canary_serving_and_proposal_teleme_58b8416694eae64efa11ed09__n12",
+      "relation": "emit_canary_serving_and_proposal_teleme_58b8416694eae64efa11ed09"
+    },
+    {
+      "source": "n6",
+      "target": "n12",
+      "label": "Emit execution health, reconciliation, and uncertain-commit telemetry",
+      "technology": "Feedback flow",
+      "sync": "async",
+      "description": "Emit execution health, reconciliation, and uncertain-commit telemetry",
+      "flow": "feedback",
+      "edge_id": "applied:n6__emit_execution_health_reconciliation_an_b79c49e730a3c5930d5bee96__n12",
+      "relation": "emit_execution_health_reconciliation_an_b79c49e730a3c5930d5bee96"
+    },
+    {
+      "source": "n12",
+      "target": "n11",
+      "label": "Escalate unknown commits and canary regressions for bounded rollback review",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Escalate unknown commits and canary regressions for bounded rollback review",
+      "flow": "control",
+      "edge_id": "applied:n12__escalate_unknown_commits_and_canary_reg_e2c57b5fdfad475370c25be8__n11",
+      "relation": "escalate_unknown_commits_and_canary_reg_e2c57b5fdfad475370c25be8"
+    },
+    {
+      "source": "n11",
+      "target": "n12",
+      "label": "Recorded rollback or dismissal decision, or escalation timeout re-raised",
+      "technology": "Control flow",
+      "sync": "sync",
+      "description": "Recorded rollback or dismissal decision, or escalation timeout re-raised",
+      "flow": "control",
+      "edge_id": "applied:n11__recorded_rollback_or_dismissal_decision_44885d7e2b877cb23cc03077__n12",
+      "relation": "recorded_rollback_or_dismissal_decision_44885d7e2b877cb23cc03077"
+    }
+  ],
+  "sequence": [
+    {
+      "step": 1,
+      "nodes": [
+        "n1"
+      ],
+      "description": "Primary flow stage 1"
+    },
+    {
+      "step": 2,
+      "nodes": [
+        "n7"
+      ],
+      "description": "Primary flow stage 2"
+    },
+    {
+      "step": 3,
+      "nodes": [
+        "n3",
+        "n6",
+        "n9",
+        "n10"
+      ],
+      "description": "Primary flow stage 3"
+    },
+    {
+      "step": 4,
+      "nodes": [
+        "n4",
+        "n5"
+      ],
+      "description": "Primary flow stage 4"
+    }
+  ],
+  "groups": [
+    {
+      "id": "group_runtime_trading",
+      "label": "Runtime Trading",
+      "kind": "runtime",
+      "nodeIds": [
+        "n1",
+        "n3",
+        "n6"
+      ]
+    },
+    {
+      "id": "group_trading_data",
+      "label": "Trading Data",
+      "kind": "data",
+      "nodeIds": [
+        "n2",
+        "n8"
+      ]
+    },
+    {
+      "id": "group_trading_controls",
+      "label": "Trading Controls",
+      "kind": "operations",
+      "nodeIds": [
+        "n4",
+        "n5",
+        "n12"
+      ]
+    },
+    {
+      "id": "group_external_systems",
+      "label": "External Systems",
+      "kind": "external",
+      "nodeIds": [
+        "n7"
+      ]
+    },
+    {
+      "id": "group_improvement_loop",
+      "label": "Improvement Loop",
+      "kind": "runtime",
+      "nodeIds": [
+        "n9",
+        "n10"
+      ]
+    },
+    {
+      "id": "group_delivery_controls",
+      "label": "Delivery Controls",
+      "kind": "delivery",
+      "nodeIds": [
+        "n11"
+      ]
+    }
+  ],
+  "design_origin": "applied",
+  "resolved_complexity": "production",
+  "assumptions": [
+    "The bot trades a single brokerage/exchange account with real funds; orders are external mutations requiring deterministic validation and human policy approval before execution.",
+    "Self-improvement is offline: trade outcomes and market data are curated into versioned evidence, evaluated by backtests, and released as reviewed immutable model/strategy versions behind a canary.",
+    "A human operator approves risk policy changes and release promotions; routine in-policy order proposals may be auto-approved by policy.",
+    "Market data is pulled from an external provider on a schedule; no continuous unbounded streaming is required.",
+    "Compensation (order cancellation or reversal) follows the same proposal, validation, approval, execution, reconciliation, and audit path as normal orders.",
+    "Retryable internal writes reserve a durable operation identity and reconcile timeout-after-commit by authoritative read-back."
+  ],
+  "version": "65f2748a-d4c7-47d5-a6eb-45fc788c7009"
+}

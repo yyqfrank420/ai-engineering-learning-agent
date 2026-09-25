@@ -58,6 +58,23 @@ const graph = (title: string, nodePrefix: string): GraphData => ({
 });
 
 describe('useGraph', () => {
+  it('starts when a preview is published, and never restarts the same graph after a text response', () => {
+    vi.useFakeTimers();
+    const data = graph('Preview', 'p');
+    const { result, rerender } = renderHook(
+      ({ animate }) => useGraph(data, animate),
+      { initialProps: { animate: false } },
+    );
+    expect(result.current.currentStep).toBe(-1);
+    rerender({ animate: true });
+    expect(result.current.isAutoPlaying).toBe(true);
+    act(() => result.current.goToStep(1));
+    expect(result.current.isAutoPlaying).toBe(false);
+    rerender({ animate: false });
+    rerender({ animate: true });
+    expect(result.current.currentStep).toBe(1);
+    expect(result.current.isAutoPlaying).toBe(false);
+  });
   beforeEach(() => {
     vi.useFakeTimers();
   });
@@ -75,19 +92,19 @@ describe('useGraph', () => {
     expect(result.current.stepDescription).toBe('Client starts.');
 
     act(() => {
-      vi.advanceTimersByTime(900);
+      vi.advanceTimersByTime(1800);
     });
     expect(result.current.currentStep).toBe(1);
     expect([...result.current.activeNodeIds]).toEqual(['a-b']);
 
     act(() => {
-      vi.advanceTimersByTime(900);
+      vi.advanceTimersByTime(1800);
     });
     expect(result.current.currentStep).toBe(2);
     expect([...result.current.activeNodeIds]).toEqual(['a-c']);
 
     act(() => {
-      vi.advanceTimersByTime(900);
+      vi.advanceTimersByTime(1800);
     });
     expect(result.current.currentStep).toBe(-1);
     expect([...result.current.activeNodeIds]).toEqual([]);
@@ -103,7 +120,7 @@ describe('useGraph', () => {
     expect(result.current.currentStep).toBe(0);
 
     act(() => {
-      vi.advanceTimersByTime(900);
+      vi.advanceTimersByTime(1800);
     });
     expect(result.current.currentStep).toBe(1);
 

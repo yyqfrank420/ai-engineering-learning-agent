@@ -216,7 +216,10 @@ def test_legacy_graph_and_view_state_write_preserve_contract_compatibility(
         graph_contract=contract,
     )
 
-    updated_view_state = {"viewport": {"x": 1, "y": 2, "k": 1}}
+    updated_view_state = {
+        "viewport": {"x": 1, "y": 2, "k": 1},
+        "zonePadding": {"data:datastore": {"top": 20, "right": 40, "bottom": 0, "left": 10}},
+    }
     assert save_graph(
         "user-1",
         thread["id"],

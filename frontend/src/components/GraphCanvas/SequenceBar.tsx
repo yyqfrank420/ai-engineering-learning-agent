@@ -18,6 +18,7 @@ interface SequenceBarProps {
   stepDescription: string;
   onStepChange:    (step: number) => void;
   onDismiss:       () => void;
+  autoPlaying?: boolean;
 }
 
 export function SequenceBar({
@@ -26,8 +27,10 @@ export function SequenceBar({
   stepDescription,
   onStepChange,
   onDismiss,
+  autoPlaying = false,
 }: SequenceBarProps) {
   const [isPlaying, setIsPlaying] = useState(false);
+  const playing = isPlaying || autoPlaying;
 
   const atOverview = currentStep === -1;
   const atLast     = currentStep === totalSteps - 1;
@@ -47,6 +50,11 @@ export function SequenceBar({
   };
 
   const togglePlay = () => {
+    if (autoPlaying) {
+      setIsPlaying(false);
+      onStepChange(currentStep);
+      return;
+    }
     if (atLast) {
       // Restart from step 0 then play
       onStepChange(0);
@@ -62,7 +70,7 @@ export function SequenceBar({
   // Re-fires on every step change so the closure is always fresh.
 
   useEffect(() => {
-    if (!isPlaying) return;
+    if (!isPlaying || autoPlaying) return;
 
     const id = setTimeout(() => {
       if (atLast) {
@@ -73,7 +81,7 @@ export function SequenceBar({
       onStepChange(atOverview ? 0 : currentStep + 1);
     }, 1800);
     return () => clearTimeout(id);
-  }, [isPlaying, currentStep, atOverview, atLast, onStepChange]);
+  }, [isPlaying, autoPlaying, currentStep, atOverview, atLast, onStepChange]);
 
   // ── Derived labels ─────────────────────────────────────────────────────────
 
@@ -102,10 +110,10 @@ export function SequenceBar({
         {/* ▶ / ⏸ Play-Pause */}
         <button
           onClick={togglePlay}
-          aria-label={isPlaying ? 'Pause' : 'Play'}
-          style={playButtonStyle(isPlaying)}
+          aria-label={playing ? 'Pause' : 'Play'}
+          style={playButtonStyle(playing)}
         >
-          {isPlaying
+          {playing
             ? /* pause bars */
               <svg width="10" height="12" viewBox="0 0 10 12" fill="currentColor">
                 <rect x="0" y="0" width="3.5" height="12" rx="1" />
