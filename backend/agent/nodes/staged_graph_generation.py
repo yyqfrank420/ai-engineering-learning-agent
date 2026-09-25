@@ -40,7 +40,7 @@ from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v24"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v20"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v21"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -965,7 +965,17 @@ def _attempt_prompt(
             instructions += (
                 " The authoring_guidance describes applicable design guidance, not blocking "
                 "acceptance criteria. Apply streaming guidance only to declared continuous "
-                "or unbounded delivery; do not infer it from timing or transport labels."
+                "or unbounded delivery; do not infer it from timing or transport labels. "
+                "Before emitting connections for declared external effects, check each effect "
+                "owner separately: trace the normal proposal and any declared compensation "
+                "proposal from its producer through direct or delegated invocation of shared "
+                "validation and approval, then execution, reconciliation, and that effect's "
+                "correlated audit outcome. A broad downstream response does not establish "
+                "upstream submission. For declared learning or release, trace curated hostile "
+                "traces and offline evaluation before release, then each serving target's "
+                "canary, distinct promotion and rollback, and recorded outcomes. Use the "
+                "accepted components and capabilities; do not invent extra components or "
+                "capabilities to complete this check."
             )
     prompt = (
         instructions
