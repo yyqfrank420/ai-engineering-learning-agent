@@ -135,6 +135,7 @@ export function ThreadSidebar({
   // which would cause the effect below to fire repeatedly even with no real state change.
   const authSessionRef = useRef(authSession);
   const backendReadyRef = useRef(backendReady);
+  const historyRequestRef = useRef(0);
   useEffect(() => {
     authSessionRef.current = authSession;
     backendReadyRef.current = backendReady;
@@ -142,26 +143,22 @@ export function ThreadSidebar({
 
   const fetchThreads = useCallback(async () => {
     if (!authSessionRef.current || !backendReadyRef.current) return;
+    const request = ++historyRequestRef.current;
     setFetching(true);
     try {
       const list = await listThreads(authSessionRef.current);
-      setThreads(list);
+      if (request === historyRequestRef.current) setThreads(list);
     } catch {
       // Non-fatal — sidebar just stays empty
     } finally {
-      setFetching(false);
+      if (request === historyRequestRef.current) setFetching(false);
     }
   }, []); // stable reference — never recreated
 
-  // Fetch on active thread change (new chat, thread switch)
+  // A draft first enters history when its completed turn is persisted.
   useEffect(() => {
-    fetchThreads();
-  }, [fetchThreads, activeThreadId]);
-
-  // Fetch once when backend first becomes ready
-  useEffect(() => {
-    if (backendReady) fetchThreads();
-  }, [backendReady, fetchThreads]);
+    if (!isLoading) fetchThreads();
+  }, [fetchThreads, activeThreadId, isLoading, backendReady, authSession?.user.id]);
 
   const handleDelete = useCallback(async (threadId: string) => {
     if (!authSession || isLoading) return;
@@ -314,7 +311,7 @@ function sidebarStyle(isOpen: boolean): CSSProperties {
     borderRight:         isOpen ? '1px solid rgba(255,255,255,0.06)' : '1px solid transparent',
     boxShadow:           isOpen ? 'inset -1px 0 0 rgba(255,255,255,0.03)' : 'none',
     overflow:            'hidden',
-    transition:          'width 0.22s ease, border-color 0.22s ease, box-shadow 0.22s ease',
+    transition:          'border-color 0.22s ease, box-shadow 0.22s ease',
   };
 }
 

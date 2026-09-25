@@ -26,6 +26,7 @@ from agent.complexity import (
     _TOPIC_SWITCH_REQUEST,
     _routing_intent_text,
     is_applied_system_design_request,
+    requests_no_diagram,
     resolve_complexity,
     resolve_graph_operation,
 )
@@ -36,8 +37,8 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v21"
-_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v3"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v23"
+_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 logger = logging.getLogger(__name__)
 _ROUTER_SYSTEM = """<role>
@@ -103,6 +104,14 @@ Answer the user's latest request in the same language as the user's latest messa
 The user's explicit scope, count, format, and brevity control the answer. Depth changes
 how much detail to give within that task; it never changes the task. Use the shortest
 structure that answers it. Stop when the requested information is complete.
+Teach the learner. Lead with the answer. Explain the main flow and why components exist.
+Default to at most 150 words and 1-3 blocks unless the
+user explicitly asks for depth or provides multiple tasks. For a single why/how question,
+use one short paragraph or 2-4 short bullets, under 120 words. Explain with concrete
+examples in the user's domain, not a literature review. Offer one concrete next step
+only when useful. Avoid routine caveat sections, audit notes, raw node IDs, and statements
+about internal review, retrieval, or approval unless something failed and
+the user needs to act. Do not repeat the diagram's complete component inventory.
 Preserve user-supplied facts and constraints in conversation history. Distinguish them
 from previous assistant assumptions and recommendations; those become requirements only
 when the user adopts them. Do not claim a prior
@@ -126,8 +135,10 @@ prove a system-specific application or a stronger comparison. Matching page numb
 neighboring passages, link titles, model memory, graph artifacts, and prior answers cannot
 supply missing evidence. Use no book attribution or citation when no current passage
 supports it.
-Present useful reasoning beyond the evidence as an uncited "Engineering inference" or
-"Recommendation". State material assumptions and uncertainty; do not turn recommendations
+Present reasoning beyond the evidence as advice in natural language, such as "I'd start
+with..." or "Assuming...". Do not label paragraphs "Engineering inference", "uncited", or
+"developer notes". Mention an assumption or uncertainty only when it changes the user's
+decision, safety, or expected result. Do not turn recommendations
 into user constraints or established facts. Preserve supported conclusions without
 relabeling them as speculation. When web research is unavailable, say so if requested;
 do not imply current research succeeded.
@@ -143,9 +154,11 @@ Web research was requested and snippets were supplied. Address the relevant web 
 that answer the user's question. Cite each supported finding inline with its exact supplied
 URL immediately after the claim. Book citations and engineering inference do not substitute
 for reporting web findings. Apply the same direct-entailment and source-allowlist rules.
-If the snippets are too weak or irrelevant to answer the question, explicitly state that
-evidence limitation and distinguish any useful inference from current research findings.
+If snippets are irrelevant, omit them. State their limitation only if the user explicitly
+asked for current web findings; otherwise give the useful answer without a source audit.
 Do not cite irrelevant results, invent support, or add a bibliography merely to include a URL.
+Select only the one or two findings that directly help this learner. Do not summarize the
+source collection. Skip adjacent-domain analogies and citations that distract from the answer.
 </requested_web_research>"""
 
 _GRAPH_ANSWER_CONTRACT = """
@@ -200,6 +213,8 @@ Answer in the same language as the user's latest message unless they ask to swit
 
 <style>
 - Plain English.
+- Lead with the answer. No developer notes, routine caveat sections, or process narration.
+- Default to at most 100 words unless the requested scope needs more.
 - One concrete analogy only if it helps the idea click faster.
 - If the user bundled multiple sub-questions together, answer them in order.
 - Keep each chunk to one idea.
@@ -223,6 +238,8 @@ async def orchestrator_route(state: AgentState) -> AgentState:
     Phase 0: determine whether to use memory or fan out to workers.
     Sets state["route"] to "memory" or "search".
     """
+    if requests_no_diagram(state.get("user_message", "")):
+        state = {**state, "graph_mode": "off"}
     send = state["send"]
     await send(
         {"type": "worker_status", "worker": "orchestrator", "status": "Routing…"}
@@ -599,8 +616,10 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             synthesis_system += _RESEARCH_ANSWER_CONTRACT
     elif state.get("research_enabled"):
         synthesis_system += (
-            "\nExternal web research status: unavailable. Tell the user that current web research "
-            "was unavailable and distinguish any book-grounded answer from current evidence.\n\n"
+            "\nExternal web research status: unavailable. Do not claim live verification. "
+            "Mention this briefly only if the user explicitly requested web research or needs "
+            "current facts to make the decision. Otherwise answer using the supplied evidence "
+            "without a generic availability disclaimer.\n\n"
         )
 
     graph_block = ""
@@ -645,7 +664,12 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
                 f"{turn_result_block}"
                 f"{graph_block}"
                 f"Response depth contract:\n{profile.answer_contract}\n\n"
-                f"Question: {state['user_message']}"
+                f"Question: {state['user_message']}\n\n"
+                "Learner-facing answer: Unless the user explicitly requested a detailed or "
+                "multi-part answer, keep the TOTAL response under 120 words, including citations. "
+                "Use a direct explanation and at most three short bullets. Do not add a caveats, "
+                "research status, evidence limitation, or developer-notes section. Mention a "
+                "limitation briefly only if it changes the answer or prevents fulfilling the request."
             ),
         },
     ]

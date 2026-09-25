@@ -88,6 +88,13 @@ attempt receives its own authenticated browser context and thread. Turns within 
 multi-turn case remain sequential on that context, and result ordering remains the
 canonical corpus ordering even when cases finish out of order.
 
+Browser corpus `2026-09-25.v1` selects the visible on/off diagram modes and answers
+the optional diagram-choice dialog. Completion requires the composer to leave its
+generating state and a captured WebSocket `done` event; the follow-up Send button
+can remain visible during generation. Diagram paths expose their underlying
+directed connection members so the browser can verify every connection, including
+duplicates and replies, when the canvas bundles several records into one path.
+
 Staging request concurrency is 16, owned by
 `ci/quality.json` at `live.budgets.staging_request_concurrency`. Terraform and both
 evaluation deployments read that budget. Runtime validation requires at least
@@ -165,7 +172,12 @@ headroom. The Playwright turn waits at most 970 seconds so it can capture the ty
 and Cloud Run accepts a request for at most 1000
 seconds. The browser-suite timeout scales with the number of turns and the two-wide
 graph lane, with a 60-minute hard ceiling. Semantic judging is capped at 20 minutes
-for PR/smoke/diagnostic suites and 60 minutes for full suites. The outer GitHub jobs
+for PR/smoke/diagnostic suites and 60 minutes for full suites. Each semantic judge
+request has a 120-second deadline and at most one transport retry. This request
+deadline shares the suite's existing wall-clock and provider-attempt budgets;
+it does not extend either limit. Exhausted retries record a safe exception class
+and HTTP status when available, without provider messages or request data.
+The outer GitHub jobs
 allow 90 minutes for the PR gate and 150 minutes for scheduled evaluation, including
 installation, deployment, judging, artifact upload, and cleanup; the former 15/30
 minute limits no longer apply.
@@ -226,8 +238,12 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v7`, Anthropic, and `claude-sonnet-5` are the versioned judge
-selection. Reports record the active provider, model, and prompt release.
+`semantic-rubric-judge-v9`, Anthropic, and `claude-sonnet-5` are the versioned judge
+selection. The Anthropic request uses high reasoning effort with an 8192-token
+budget shared by reasoning and structured output. The judge receives the case
+and rubrics before artifact sources, with numbered evidence chunks in source
+order. Reports record the active provider, model, and prompt release.
+Calibration remains pending.
 
 `corpus_sha256()` hashes prompts, rubrics, UI modes, and deterministic expectations.
 It excludes human approval metadata, so adding labels cannot change behavior identity.

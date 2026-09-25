@@ -67,14 +67,15 @@ def _make_agent_tools(request: HTTPConnection):
 # ── Request models ─────────────────────────────────────────────────────────────
 
 _VALID_COMPLEXITY = {"auto", "low", "prototype", "production"}
-_VALID_GRAPH_MODE = {"auto", "on", "off"}
+_VALID_GRAPH_MODE = {"on", "off"}
 
 
 class ChatRequest(BaseModel):
     thread_id: str = Field(min_length=1, max_length=64)
     content: str
     complexity: str = "auto"
-    graph_mode: str = "auto"
+    graph_mode: str = "on"
+    diagram_requested: bool = False
     research_enabled: bool = False
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
@@ -91,7 +92,7 @@ class ChatRequest(BaseModel):
     @classmethod
     def validate_graph_mode(cls, value: str) -> str:
         if value not in _VALID_GRAPH_MODE:
-            return "auto"
+            return "on"
         return value
 
 
@@ -262,6 +263,11 @@ async def chat_endpoint(
                 yield sse({"type": "done"})
                 return
             # Recheck under both leases before reading context or running a model.
+            if thread_store.get_thread(user_id, thread_id) is None:
+                record_chat_rejected("thread_not_found")
+                yield sse({"type": "error", "content": "Thread not found"})
+                yield sse({"type": "done"})
+                return
             try:
                 completed_turn = thread_store.get_completed_turn(
                     user_id, thread_id, body.client_request_id
@@ -385,6 +391,7 @@ async def chat_endpoint(
                 "graph_mode": body.graph_mode,
                 "research_enabled": body.research_enabled,
                 "route": "",
+                "diagram_requested": body.diagram_requested,
                 "rag_chunks": [],
                 "retrieval_relevance": "strong",
                 "retrieval_notice": "",

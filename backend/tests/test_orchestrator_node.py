@@ -48,8 +48,8 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v21"
-    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v3"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v23"
+    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
         "explicit scope, count, format, and brevity",
@@ -59,7 +59,9 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         "subject,\nrelation, comparator, direction, degree, and scope",
         "A citation supports only the immediately preceding claim",
         "cannot\nsupply missing evidence",
-        'uncited "Engineering inference" or',
+        'Do not label paragraphs "Engineering inference"',
+        'Default to at most 150 words and 1-3 blocks',
+        'Teach the learner',
         "no book attribution or citation",
         "Never invent or alter",
         "For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied",
@@ -1980,7 +1982,8 @@ async def test_text_task_preserves_history_without_design_contract(monkeypatch, 
     })
     assert captured["messages"][:-1] == history
     message = captured["messages"][-1]["content"]
-    assert message.endswith("Question: " + question)
+    assert "Question: " + question + "\n\n" in message
+    assert "TOTAL response under 120 words" in message
     assert depth.capitalize() + " depth:" in message
     assert "buildable design" not in message
     assert "useful words" not in message

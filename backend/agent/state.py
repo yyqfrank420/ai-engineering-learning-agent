@@ -111,7 +111,8 @@ class AgentState(TypedDict):
 
     # ── Mode controls (set by the frontend per request) ───────────────────────
     complexity: str  # "auto" | "low" | "prototype" | "production"
-    graph_mode: str  # "auto" | "on" | "off"
+    graph_mode: str  # "on" | "off"
+    diagram_requested: NotRequired[bool]
     research_enabled: bool  # True = run research_worker alongside rag_worker
 
     # ── Routing ───────────────────────────────────────────────────────────────

@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-22
+Last updated: 2026-09-25
 
 This is the current runtime contract for the production-quality demo.
 
@@ -21,6 +21,23 @@ This is the current runtime contract for the production-quality demo.
 - `infra/terraform/gcp/`
   - Cloud Run + Artifact Registry + Secret Manager
 
+## Chat history
+
+Empty drafts do not appear in history, count toward the saved-chat limit, or become
+the latest saved chat. A message or stored graph makes a thread visible. Retained
+draft IDs remain addressable. An active first-turn lease prevents draft eviction.
+The sidebar refreshes after generation finishes and ignores stale history responses.
+
+Opening a blank composer never evicts a saved conversation. The existing history
+cap is applied in the completed-turn transaction. Concurrent completions serialize
+on the user's profile row in Postgres and SQLite's write lock locally.
+Idle empty drafts have a separate cap of `max_threads_per_user`. Creating a draft keeps
+its new ID and removes the oldest unleased empty drafts above that cap. A thread-scoped
+chat lease protects an in-flight turn from cleanup. An older idle tab can lose its
+draft after enough newer drafts are opened; its next request reports that the thread
+is missing before generation starts. Draft admission, stream leases, and completed
+turns take the same per-user lock in Postgres and SQLite's write lock locally.
+
 ## Request and Steering Flow
 
 1. The frontend authenticates with Supabase and opens `WS /api/chat/ws`.
@@ -31,7 +48,9 @@ This is the current runtime contract for the production-quality demo.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
-   Web research selects Brave explicitly through DDGS with safe search. Ordinary research keeps
+   Web research selects Bing through DDGS with safe search and makes one Brave fallback query
+   if the primary results contain no usable snippets. Provider failures log their backend and
+   exception class without recording user queries. Ordinary research keeps
    the original topic in one query; applied design requests also search the domain workflow and
    failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
    of relevance or factual support; synthesis must cite supported findings or state the evidence
@@ -57,7 +76,22 @@ This is the current runtime contract for the production-quality demo.
    and authorized removals. Both stages receive the same applicable criteria as their reviewers.
 7. The server owns IDs, group records, breadth-first sequence derivation, projection, graph
    versions, selected maturity, exact edit admission, validation, state transitions, and
-   persistence. The component-only candidate has no edges. Its render gate emits a reversible
+   persistence. The component-only candidate has no edges. During edits the live UI retains the
+   connected diagram until a connected preview is available. Live regions place interfaces,
+   application services, and data stores left to right, with logs below and external dependencies
+   above the right side. Generic region names are resolved into these concrete presentation roles;
+   stored groups remain unchanged. Component authoring v24 requests responsibility-specific names
+   and keeps internal API adapters outside external groups.
+   Zone borders and corners resize the frame around its contents, clamped to the padded member
+   bounds. Resizing centers the complete content bounding box below the zone header, preserving
+   relative node positions. Older asymmetric saved padding is centered without changing the frame.
+   Additional padding is saved in `view_state.zonePadding`, keyed by presentation region ID.
+   Dragging a zone translates every member and retains this padding. Nodes, zone frames, and borders
+   snap to matching edges and centers within six screen pixels, with temporary alignment guides.
+   Alt/Option bypasses snapping; Shift constrains node and zone movement to one axis. Arrow keys
+   nudge a focused node, zone, or border by one diagram unit, or ten with Shift. Fit includes expanded
+   frames. These controls do not alter graph contracts.
+   Its render gate emits a reversible
    preview before one Sonnet medium component gate call. The full candidate follows the same render,
    reversible-preview, then connection-gate order. These previews remain nonauthoritative until
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
@@ -151,7 +185,7 @@ The D3 renderer deterministically compiles that structure into responsive brande
 interaction, accessibility, layout evaluation, and compatibility with previously stored graphs.
 
 The server sends the authoritative 1440 by 960 CSS-pixel evaluation viewport and 11 CSS-pixel
-post-fit node-title floor with each private candidate. The renderer chooses horizontal or ranked vertical placement from the
+post-fit node-title floor with each private candidate. The private evaluation renderer chooses horizontal or ranked vertical placement from the
 resulting fit scale. A rank-ordered compact layout covers the full 60-node backend safety ceiling
 when either ordinary plan would be unreadable. Bottom-lane height is derived from its densest
 column. The browser still measures the real SVG. The server rejects overlapping node cards or
@@ -161,9 +195,84 @@ and its compact fallback covers the same 60-node ceiling. The browser and stagin
 candidate that omits or changes the fixed criteria. The capacity correction passes offline tests and a local Chromium replay of
 paid diagnostic `31825436257`; that paid workflow did not emit protected publication success.
 
+The interactive canvas keeps left-to-right placement at every pane width. It opens at a readable
+scale with panning; Fit provides a full-map overview. Live layout version 17 invalidates older
+vertical positions. `diagramConnections.ts` projects directed records into one connection per
+unordered component pair. Both arrowheads appear only when records exist in both directions.
+Selecting a connection opens every underlying directed exchange, including its description and
+technology. This projection never changes persisted edges or the data sent for expansion.
+
+The overview selects a connected spanning forest from real relationships, preferring runtime
+flows and shorter connections. Component hover or keyboard focus reveals incident relationships;
+Connections reveals every bundled pair. One effect owns live path opacity, hit targets, keyboard
+access, and walkthrough visibility. Future-step components and their connections stay hidden even
+when Connections is enabled. The live view does not create inline edge labels or step badges.
+Local orthogonal routing tries clear corridors around node cards before taking outer detours.
+Routes are cached within each render and recomputed after dragging. Overlapping manually placed
+cards can still force intersections; this router does not solve arbitrary obstacle mazes.
+
+Declared groups use semantic tier placement with soft background regions and one heading per region.
+This keeps unrelated components outside each boundary. Learner-facing cards omit repeated
+zone and tier labels.
+Cards show the component name and technology/type subtitle; hover and component details expose its description.
+These disclosure rules do not delete graph data
+or change private candidate evaluation; publication checks alone do not verify live-view usability.
+
+## Direct graph editing
+
+The selected-component inspector edits its name, type, technology subtitle, and responsibility
+description. The selected-connection inspector edits each underlying directed record's label,
+technology, description, flow class, and sync mode. A bundled visual connection does not merge its
+directed records. Double-clicking a node, or pressing F2 while it is focused, focuses its name field.
+The existing D3 canvas, visual language, learning details, and chat expansion remain in place.
+This pass does not add freeform notes or an undo history.
+
+Edits are drafts until explicit Save. Cancel discards the draft. Closing or changing selection must
+not silently discard unsaved text. The UI distinguishes unsaved, saving, saved, and failed states;
+a failed save retains the draft for correction or retry. `PATCH /api/threads/{thread_id}/graph`
+accepts only the editable fields and an `expected_version`. The server applies the edit to the
+canonical stored graph, validates it, and persists a new version atomically. A stale version or
+active generation lease returns 409. Node IDs, edge ordering and endpoints, sequence membership,
+groups, and saved layout remain stable. An edge index selects a directed record only within the
+submitted `expected_version`; applied `edge_id` and `relation` are derived metadata and can change
+when its label changes. No client-side preview becomes canonical before the successful response.
+
+An edited graph no longer carries the generated approval of the prior graph version. Attribution
+attached to a changed record is removed; any retained source context does not claim that the
+learner's wording was source-authored or reviewed by the generation gates. Manual values are marked
+per record in `user_edited_fields`. Later scoped patches preserve unrelated manual fields and their
+markers; an explicit patch that changes a marked field replaces that value and removes its marker.
+Compatible canonical graph selection carries manual fields across only where record identity is
+unambiguous. An explicit new create starts fresh. Subsequent scoped edits use the edited canonical
+graph and follow their applicable validation and approval path.
+
+The interaction borrows the direct text editing, connector labeling, and selection-dependent
+controls documented in Canva's [text editing](https://www.canva.com/help/add-and-edit-text/),
+[connector](https://www.canva.com/help/connect-lines-to-elements/), and
+[editor](https://www.canva.com/help/glow-up/) guides. These sources inform the small editing
+surface; they do not define this application's persistence or approval contract.
+
 FastAPI becomes available after database initialisation, then loads the FAISS artifacts and index in
 a background thread. `GET /api/prepare` reports the current server-owned milestone and completed/total
 units; the frontend renders that exact progress and never advances it with an elapsed-time animation.
+
+Diagram-enabled turns retain the canvas after completion, including a clear empty state when no
+diagram is published. The canvas and conversation show brief activity labels derived from server
+workflow events. Completed activity remains available in a collapsed disclosure until the next turn.
+The frontend stores response messages as they arrive but withholds the current turn's assistant
+messages until the stream terminates and the committed graph has painted. D3 reports readiness
+after fonts and two animation frames. A painted preview can satisfy readiness only when its exact
+structure becomes the committed graph. Text-only mode continues streaming normally; a terminal
+failure without a graph releases the available explanation instead of waiting for a missing graph.
+
+Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
+`POST /api/threads/{thread_id}/diagram-intent` endpoint. Existing intent rules identify explicit
+diagram requests and opt-outs. Ambiguous requests show a composer popover with Generate a diagram,
+Answer only, and Keep editing. No generation starts until the learner chooses. An unavailable
+intent check falls back to asking. Draft edits and thread switches invalidate pending checks.
+The generation choice sends `diagram_requested: true` separately from the unchanged message;
+request admission resolves it to a create intent when no existing edit intent applies. Answer only
+sets graph mode off for that turn. Neither choice changes the learner's saved mode preference.
 
 Every production frontend turn includes a UUID `client_request_id`. Completed user/assistant
 pairs are unique on that key at the database boundary, and a network retry replays the stored

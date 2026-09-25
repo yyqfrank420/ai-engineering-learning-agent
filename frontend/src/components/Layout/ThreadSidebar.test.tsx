@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession } from '../../types';
@@ -53,9 +53,10 @@ describe('ThreadSidebar active-work protection', () => {
 
   it('blocks selecting or deleting another thread while work is active', async () => {
     const onSelectThread = vi.fn();
-    renderSidebar(true, onSelectThread);
-
+    const view = renderSidebar(false, onSelectThread);
     const select = await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    view.rerender(<ThreadSidebar authSession={session} activeThreadId="thread-1" backendReady
+      onNewChat={vi.fn()} onSelectThread={onSelectThread} onDeleteThread={vi.fn()} isLoading isOpen />);
     const remove = screen.getByRole('button', { name: 'Delete chat Support architecture' });
     expect((select as HTMLButtonElement).disabled).toBe(true);
     expect((remove as HTMLButtonElement).disabled).toBe(true);
@@ -69,7 +70,6 @@ describe('ThreadSidebar active-work protection', () => {
   it('allows selecting another thread after work becomes idle', async () => {
     const onSelectThread = vi.fn();
     const view = renderSidebar(true, onSelectThread);
-    await screen.findByRole('button', { name: 'Open chat Support architecture' });
 
     view.rerender(
       <ThreadSidebar
@@ -83,9 +83,38 @@ describe('ThreadSidebar active-work protection', () => {
         isOpen
       />,
     );
-    const select = screen.getByRole('button', { name: 'Open chat Support architecture' });
+    const select = await screen.findByRole('button', { name: 'Open chat Support architecture' });
     await waitFor(() => expect((select as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(select);
     expect(onSelectThread).toHaveBeenCalledWith('thread-2');
+  });
+
+  it('keeps empty drafts out of history and refreshes after their first completed turn', async () => {
+    mocks.listThreads.mockResolvedValue([]);
+    const props = { authSession: session, activeThreadId: 'draft', backendReady: true,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
+    const view = render(<ThreadSidebar {...props} />);
+    await screen.findByText('No chats yet');
+    expect(screen.queryByRole('button', { name: 'Open chat New chat' })).toBeNull();
+    expect((screen.getByRole('button', { name: 'New chat' }) as HTMLButtonElement).disabled).toBe(false);
+
+    view.rerender(<ThreadSidebar {...props} isLoading />);
+    mocks.listThreads.mockResolvedValue([{ ...thread, id: 'draft' }]);
+    view.rerender(<ThreadSidebar {...props} />);
+    await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    expect(screen.queryByText('No chats yet')).toBeNull();
+  });
+
+  it('ignores an older empty-history response after a completed chat has appeared', async () => {
+    let finishOldRequest!: (value: typeof thread[]) => void;
+    mocks.listThreads.mockReturnValueOnce(new Promise(resolve => { finishOldRequest = resolve; }));
+    const props = { authSession: session, activeThreadId: 'draft', backendReady: true,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
+    const view = render(<ThreadSidebar {...props} />);
+    view.rerender(<ThreadSidebar {...props} isLoading />);
+    view.rerender(<ThreadSidebar {...props} />);
+    await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    await act(async () => finishOldRequest([]));
+    expect(screen.getByRole('button', { name: 'Open chat Support architecture' })).toBeTruthy();
   });
 });

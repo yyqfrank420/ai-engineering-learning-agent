@@ -1,5 +1,6 @@
 import asyncio
 import json
+import re
 import time
 
 import pytest
@@ -48,6 +49,42 @@ def test_empty_and_oversized_inputs_are_not_live_model_cases():
     assert all(len(prompt.encode("utf-8")) <= 12_000 for prompt in prompts)
 
 
+def test_corpus_graph_modes_are_selectable_in_browser():
+    chat_input = (
+        CORPUS_PATH.parents[4]
+        / "frontend"
+        / "src"
+        / "components"
+        / "Chat"
+        / "ChatInput.tsx"
+    ).read_text(encoding="utf-8")
+    graph_row = chat_input.split('label="GRAPH"', 1)[1].split("value={graphMode}", 1)[0]
+    browser_graph_modes = set(
+        re.findall(r"value:\s*'([^']+)'\s+as GraphMode", graph_row)
+    )
+    corpus = load_corpus()
+    selected_graph_modes = {
+        step.ui.graph_mode for case in corpus.cases for step in case.steps
+    }
+
+    assert browser_graph_modes == {"on", "off"}
+    assert selected_graph_modes == browser_graph_modes
+    assert corpus.by_id["research"].steps[0].ui.graph_mode == "on"
+    assert corpus.by_id["research"].deterministic.graph_emitted is True
+    assert corpus.by_id["ambiguity"].steps[0].ui.graph_mode == "on"
+    assert corpus.by_id["ambiguity"].deterministic.graph_emitted is None
+
+
+def test_corpus_rejects_removed_graph_auto_mode(tmp_path):
+    raw = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+    raw["cases"][0]["steps"][0]["ui"]["graph_mode"] = "auto"
+    path = tmp_path / "invalid-graph-mode.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="graph_mode"):
+        load_corpus(path=path)
+
+
 def test_graph_latency_limit_requires_graph_output_on_that_turn(tmp_path):
     raw = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
     graph_case = next(case for case in raw["cases"] if case["id"] == "graph-expansion")
@@ -82,7 +119,8 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     case = corpus.by_id["graph-expansion"]
     first_turn, second_turn = case.steps
 
-    assert corpus.corpus_version == "2026-09-12.v1"
+    assert corpus.corpus_version == "2026-09-25.v1"
+    assert corpus.release_identity == "browser-rubric-v4"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
@@ -94,7 +132,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v8", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v9", "anthropic", "claude-sonnet-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -429,6 +467,56 @@ async def test_multi_turn_case_stops_after_unexpected_timeout_error(monkeypatch)
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("quality_error", [False, True])
+async def test_turn_graph_evidence_keeps_graph_inspection_failure_kind(
+    monkeypatch, quality_error
+):
+    from unittest.mock import AsyncMock
+
+    from playwright.async_api import Error as PlaywrightError
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["graph-expansion"]
+    graph = {"version": "graph-v1", "nodes": [], "edges": []}
+    inspection_error = (
+        browser_runner.BrowserQualityError(
+            "graph_render_readiness_timeout", "graph version remained stale"
+        )
+        if quality_error
+        else PlaywrightError("graph handle was disposed")
+    )
+
+    async def send_step(_page, _case, _step_index, _frames, *, timeout_seconds):
+        del timeout_seconds
+        return [{"type": "graph_data", "data": graph}, {"type": "done"}]
+
+    monkeypatch.setattr(browser_runner, "_send_step", send_step)
+    monkeypatch.setattr(
+        browser_runner,
+        "_required_graph_turn_render_failure",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        browser_runner, "_graph_dom_state", AsyncMock(side_effect=inspection_error)
+    )
+    error_type = (
+        browser_runner.BrowserQualityError
+        if quality_error
+        else browser_runner.BrowserInfrastructureError
+    )
+    with pytest.raises(error_type) as raised:
+        await browser_runner._send_case_steps(
+            object(), case, [], [], timeout_seconds=10, turn_graphs=[]
+        )
+    assert raised.value.code == (
+        "graph_render_readiness_timeout"
+        if quality_error
+        else "graph_dom_inspection_failed"
+    )
+
+
+@pytest.mark.asyncio
 async def test_required_graph_notice_stops_before_a_later_graph(monkeypatch):
     from eval.browser_runner import BrowserQualityError, _send_case_steps
 
@@ -566,54 +654,92 @@ async def test_graph_dom_state_uses_supported_wait_for_function_signature():
     from eval.browser_runner import _graph_dom_state
 
     calls: list[dict[str, object]] = []
+    live_version = "graph-1"
 
-    class FakeLocator:
-        def __init__(self, kind: str):
-            self.kind = kind
+    class FakeHandle:
+        async def json_value(self):
+            return {
+                "version": "graph-1",
+                "node_ids": ["source", "target"],
+                "connections": [
+                    {
+                        "source": "source",
+                        "target": "target",
+                        "label": "flows",
+                        "count": "1",
+                        "members": '[{"source":"source","target":"target","label":"flows"}]',
+                    }
+                ],
+            }
 
-        async def evaluate_all(self, script):
-            del script
-            if self.kind == "nodes":
-                return ["source", "target"]
-            return [
-                {
-                    "source": "source",
-                    "target": "target",
-                    "label": "flows",
-                }
-            ]
-
-        async def get_attribute(self, _name):
-            raise AssertionError("graph canvas attribute is read from container")
-
-    class FakeCanvas:
-        def locator(self, selector):
-            if selector == "g.node":
-                return FakeLocator("nodes")
-            if selector == "path.edge-vis":
-                return FakeLocator("edges")
-            raise AssertionError(selector)
-
-        async def get_attribute(self, _name):
-            return "graph-1"
+        async def dispose(self):
+            calls.append({"disposed": True})
 
     class FakePage:
         def locator(self, selector):
-            assert selector == '[data-testid="graph-canvas"]'
-            return FakeCanvas()
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
 
         async def wait_for_function(self, *_args, **kwargs):
+            nonlocal live_version
             calls.append({"args_count": len(_args), "kwargs": dict(kwargs)})
             assert "arg" not in kwargs
+            assert "graph-1" in _args[0]
+            assert "canvases.length !== 1" in _args[0]
+            assert "querySelectorAll('g.node')" in _args[0]
+            assert "querySelectorAll('path.edge-vis')" in _args[0]
+            live_version = ""  # The canvas redraws before json_value is called.
+            return FakeHandle()
 
     graph = {"version": "graph-1"}
 
     result = await _graph_dom_state(FakePage(), graph)
 
     assert result["version"] == "graph-1"
+    assert live_version == ""
+    assert result["node_ids"] == ["source", "target"]
+    assert result["edges"] == [
+        {"source": "source", "target": "target", "label": "flows"}
+    ]
     assert calls == [
         {"args_count": 1, "kwargs": {"timeout": 10000}},
+        {"disposed": True},
     ]
+
+
+@pytest.mark.asyncio
+async def test_graph_dom_state_rejects_stale_version_after_bounded_wait():
+    from eval.browser_runner import BrowserQualityError, _graph_dom_state
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    class Page:
+        async def wait_for_function(self, script, *, timeout):
+            assert 'const expectedVersion = "current-version"' in script
+            assert "version !== expectedVersion" in script
+            assert timeout == 10_000
+            raise PlaywrightTimeoutError("graph version remained stale")
+
+        def locator(self, selector):
+            raise AssertionError(f"stale snapshot must not read the DOM: {selector}")
+
+    with pytest.raises(BrowserQualityError) as raised:
+        await _graph_dom_state(Page(), {"version": "current-version"})
+    assert raised.value.code == "graph_render_readiness_timeout"
+
+
+@pytest.mark.asyncio
+async def test_graph_dom_state_rejects_duplicate_canvases():
+    from eval.browser_runner import BrowserQualityError, _graph_dom_state
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    class Page:
+        async def wait_for_function(self, script, *, timeout):
+            assert "canvases.length !== 1" in script
+            assert timeout == 10_000
+            raise PlaywrightTimeoutError("duplicate graph canvases never became unique")
+
+    with pytest.raises(BrowserQualityError) as raised:
+        await _graph_dom_state(Page(), {"version": "graph-1"})
+    assert raised.value.code == "graph_render_readiness_timeout"
 
 
 @pytest.mark.asyncio
@@ -643,27 +769,33 @@ async def test_required_graph_turn_render_failure_ignores_graph_candidate_events
 
 
 @pytest.mark.asyncio
-async def test_required_graph_turn_must_render_before_the_next_turn(monkeypatch):
+@pytest.mark.parametrize("readiness_timeout", [False, True])
+async def test_required_graph_turn_must_render_before_the_next_turn(
+    monkeypatch, readiness_timeout
+):
     from eval.browser_runner import BrowserQualityError, _send_case_steps
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
     case = load_corpus().by_id["graph-expansion"]
     step_order: list[int] = []
 
-    class IdentityLocator:
-        async def evaluate_all(self, _script):
-            return []
+    class Handle:
+        async def json_value(self):
+            return {"version": "graph-0", "node_ids": [], "connections": []}
 
-    class Canvas:
-        def locator(self, _selector):
-            return IdentityLocator()
-
-        async def get_attribute(self, _name):
-            return "stale-version"
+        async def dispose(self):
+            return None
 
     class Page:
         def locator(self, selector):
-            assert selector == '[data-testid="graph-canvas"]'
-            return Canvas()
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
+
+        async def wait_for_function(self, script, *, timeout):
+            assert '"graph-0"' in script
+            assert timeout == 10_000
+            if readiness_timeout:
+                raise PlaywrightTimeoutError("graph version remained stale")
+            return Handle()
 
     async def fake_send_step(page, sent_case, step_index, frames, *, timeout_seconds):
         del page, sent_case, frames, timeout_seconds
@@ -686,8 +818,91 @@ async def test_required_graph_turn_must_render_before_the_next_turn(monkeypatch)
     with pytest.raises(BrowserQualityError) as raised:
         await _send_case_steps(Page(), case, [], [], timeout_seconds=390)
 
-    assert raised.value.code == "required_graph_turn_render_mismatch"
+    assert raised.value.code == (
+        "graph_render_readiness_timeout"
+        if readiness_timeout
+        else "required_graph_turn_render_mismatch"
+    )
     assert step_order == [0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("quality_error", [False, True])
+async def test_final_graph_inspection_keeps_typed_failure_kind(
+    tmp_path, monkeypatch, quality_error
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from playwright.async_api import Error as PlaywrightError
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["graph-expansion"]
+    graph = {"version": "graph-v1", "nodes": [], "edges": []}
+    page = Mock()
+    page.goto = AsyncMock()
+    page.get_by_role.return_value.is_visible = AsyncMock(return_value=False)
+    page.screenshot = AsyncMock()
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(return_value=page),
+        close=AsyncMock(),
+    )
+    browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
+    inspection_error = (
+        browser_runner.BrowserQualityError(
+            "graph_render_readiness_timeout", "graph version remained stale"
+        )
+        if quality_error
+        else PlaywrightError("graph inspection transport failed")
+    )
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "test-token"}),
+    )
+    monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
+    monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
+    monkeypatch.setattr(
+        browser_runner, "_graph_dom_state", AsyncMock(side_effect=inspection_error)
+    )
+    monkeypatch.setattr(
+        browser_runner,
+        "_node_followup_interaction_failure_details",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
+
+    async def send_steps(_page, _case, _frames, events, **_kwargs):
+        events.extend([{"type": "graph_data", "data": graph}, {"type": "done"}])
+
+    monkeypatch.setattr(browser_runner, "_send_case_steps", send_steps)
+    result = await browser_runner._run_browser_attempt(
+        browser,
+        SimpleNamespace(
+            target="http://frontend",
+            backend_target="http://backend",
+            email="eval@example.com",
+            internal_password="test-password",
+        ),
+        case,
+        artifact_dir=tmp_path,
+        screenshot_dir=tmp_path,
+        trace_dir=tmp_path,
+        turn_timeout_seconds=10,
+        attempt_number=1,
+    )
+
+    assert [(item["kind"], item["code"]) for item in result["failure_details"]] == [
+        (
+            ("quality", "graph_render_readiness_timeout")
+            if quality_error
+            else ("infrastructure", "graph_dom_inspection_failed")
+        )
+    ]
+    assert result["passed"] is False
 
 
 @pytest.mark.asyncio
@@ -782,6 +997,8 @@ async def test_required_graph_turn_rejects_wrong_same_count_dom_identity(monkeyp
             "edges": [
                 {"source": "old-source", "target": "old-target", "label": "sends"}
             ],
+            "connections": [{}],
+            "connections_valid": True,
             "version": "graph-v2",
         }
 
@@ -795,6 +1012,94 @@ async def test_required_graph_turn_rejects_wrong_same_count_dom_identity(monkeyp
 
     assert failure is not None
     assert failure[0] == "required_graph_turn_node_identity_mismatch"
+
+
+@pytest.mark.asyncio
+async def test_required_graph_turn_accepts_bundled_directed_edges():
+    from eval.browser_runner import (
+        _deterministic_failure_details,
+        _graph_dom_state,
+        _required_graph_turn_render_failure,
+    )
+
+    case = load_corpus().by_id["graph-expansion"]
+    graph = {
+        "version": "graph-v2",
+        "nodes": [{"id": "a"}, {"id": "b"}, {"id": "c"}],
+        "edges": [
+            {"source": "a", "target": "b", "label": "request"},
+            {"source": "b", "target": "a", "label": "response"},
+            {"source": "a", "target": "b", "label": "request"},
+            {"source": "b", "target": "c", "label": "publish"},
+        ],
+    }
+    connections = [
+        {
+            "source": "a",
+            "target": "b",
+            "label": "request",
+            "count": "3",
+            "members": json.dumps(graph["edges"][:3]),
+        },
+        {
+            "source": "b",
+            "target": "c",
+            "label": "publish",
+            "count": "1",
+            "members": json.dumps(graph["edges"][3:]),
+        },
+    ]
+
+    class Handle:
+        async def json_value(self):
+            return {
+                "version": "graph-v2",
+                "node_ids": ["a", "b", "c"],
+                "connections": connections,
+            }
+
+        async def dispose(self):
+            return None
+
+    class Page:
+        def locator(self, selector):
+            raise AssertionError(f"snapshot must not make a later DOM read: {selector}")
+
+        async def wait_for_function(self, script, *, timeout):
+            assert '"graph-v2"' in script
+            assert timeout == 10_000
+            return Handle()
+
+    page = Page()
+    events = [{"type": "graph_data", "data": graph}]
+    assert await _required_graph_turn_render_failure(page, case, 0, events) is None
+
+    dom = await _graph_dom_state(page, graph)
+    assert dom["connections_valid"] is True
+    assert len(dom["connections"]) == 2
+    assert len(dom["edges"]) == 4
+    final_failures = _deterministic_failure_details(
+        case,
+        events,
+        len(dom["node_ids"]),
+        len(dom["edges"]),
+        dom["version"],
+        dom["node_ids"],
+        dom["edges"],
+    )
+    assert not any("graph_edge_" in failure["code"] for failure in final_failures)
+
+    connections[0]["members"] = json.dumps(graph["edges"][:2])
+    connections[0]["count"] = "2"
+    failure = await _required_graph_turn_render_failure(page, case, 0, events)
+    assert failure is not None
+    assert failure[0] == "required_graph_turn_edge_identity_mismatch"
+
+    connections[0]["members"] = json.dumps(graph["edges"][:3])
+    connections[0]["count"] = "2"
+    failure = await _required_graph_turn_render_failure(page, case, 0, events)
+    assert failure is not None
+    assert failure[0] == "required_graph_turn_edge_identity_mismatch"
 
 
 @pytest.mark.asyncio
@@ -1030,6 +1335,15 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
         async def fill(self, _value):
             return None
 
+        def locator(self, selector):
+            raise AssertionError(
+                f"composer locator must not depend on textarea: {selector}"
+            )
+
+        def get_by_role(self, role, *, name, exact=True):
+            assert role == "button" and exact
+            return Control(name)
+
         async def click(self):
             nonlocal stop_clicks
             if self.name == "Stop generation":
@@ -1037,8 +1351,8 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
 
         async def wait_for(self, *, state, timeout):
             nonlocal completion_cancelled
-            del state, timeout
-            if self.name == "Stop generation":
+            del timeout
+            if self.name == "Stop generation" and state == "visible":
                 return None
             try:
                 await asyncio.Future()
@@ -1047,11 +1361,19 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
                 raise
 
     class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
 
         def get_by_label(self, name):
             return Control(name)
+
+        def get_by_role(self, role, *, name):
+            assert role == "dialog" and name == "Include a diagram?"
+            return Control("dialog")
 
     monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
     with pytest.raises(BrowserQualityError) as raised:
@@ -1060,6 +1382,137 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
     assert raised.value.code == "required_graph_slow"
     assert stop_clicks == 1
     assert completion_cancelled is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("confirm_diagram", [False, True])
+async def test_send_step_accepts_done_before_composer_stop_is_observed(
+    monkeypatch, confirm_diagram
+):
+    from eval.browser_runner import _send_step
+
+    case = load_corpus().by_id["graph-expansion"]
+    frames = []
+
+    async def skip_modes(*_args):
+        return None
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def locator(self, selector):
+            raise AssertionError(
+                f"composer locator must not depend on textarea: {selector}"
+            )
+
+        def get_by_role(self, role, *, name, exact=True):
+            assert role == "button" and exact
+            return Control(name)
+
+        async def fill(self, _value):
+            return None
+
+        async def click(self):
+            if (self.name == "Send message" and not confirm_diagram) or (
+                self.name == "Generate a diagram" and confirm_diagram
+            ):
+                frames.append({"direction": "received", "message": {"type": "done"}})
+
+        async def wait_for(self, *, state, timeout):
+            del timeout
+            if self.name == "Stop generation" and state == "hidden":
+                return None
+            if self.name == "dialog" and confirm_diagram and state == "visible":
+                return None
+            await asyncio.Future()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
+        def get_by_placeholder(self, _pattern):
+            return Control("textarea")
+
+        def get_by_label(self, name):
+            return Control(name)
+
+        def get_by_role(self, role, *, name):
+            assert role == "dialog" and name == "Include a diagram?"
+            return Control("dialog")
+
+    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
+    events = await asyncio.wait_for(
+        _send_step(Page(), case, 0, frames, timeout_seconds=1), timeout=2
+    )
+    assert events == [{"type": "done"}]
+
+
+@pytest.mark.asyncio
+async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypatch):
+    from eval.browser_runner import _send_step
+
+    case = load_corpus().by_id["graph-expansion"]
+    frames = []
+    placeholder_changed = asyncio.Event()
+    stop_seen = asyncio.Event()
+    stop_hidden = asyncio.Event()
+
+    async def skip_modes(*_args):
+        return None
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def locator(self, selector):
+            raise AssertionError(f"Stop must not depend on textarea: {selector}")
+
+        def get_by_role(self, role, *, name, exact=True):
+            assert role == "button" and name == "Stop generation" and exact
+            return Control(name)
+
+        async def fill(self, _value):
+            assert self.name == "textarea"
+            assert not placeholder_changed.is_set()
+
+        async def click(self):
+            if self.name == "Send message":
+                placeholder_changed.set()
+
+        async def wait_for(self, *, state, timeout):
+            del timeout
+            if self.name == "Stop generation" and state == "visible":
+                assert placeholder_changed.is_set()
+                stop_seen.set()
+            elif self.name == "Stop generation" and state == "hidden":
+                await stop_hidden.wait()
+            else:
+                await asyncio.Future()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
+        def get_by_placeholder(self, _pattern):
+            return Control("textarea")
+
+        def get_by_label(self, name):
+            return Control(name)
+
+        def get_by_role(self, role, *, name):
+            assert role == "dialog" and name == "Include a diagram?"
+            return Control("dialog")
+
+    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
+    turn = asyncio.create_task(_send_step(Page(), case, 0, frames, timeout_seconds=2))
+    await asyncio.wait_for(stop_seen.wait(), timeout=1)
+    assert not turn.done()
+    frames.append({"direction": "received", "message": {"type": "done"}})
+    stop_hidden.set()
+    assert await asyncio.wait_for(turn, timeout=2) == [{"type": "done"}]
 
 
 @pytest.mark.asyncio
@@ -2111,7 +2564,7 @@ def test_graph_renderability_rejects_a_stale_larger_canvas_and_version():
     }
 
 
-def test_auto_graph_mode_rejects_wrong_same_count_dom_identity():
+def test_required_graph_rejects_wrong_same_count_dom_identity():
     from eval.browser_runner import _deterministic_failure_details
 
     case = load_corpus().by_id["research"]
@@ -2147,7 +2600,7 @@ def test_auto_graph_mode_rejects_wrong_same_count_dom_identity():
     }
 
 
-def test_auto_graph_mode_rejects_versionless_graph():
+def test_required_graph_rejects_versionless_graph():
     from eval.browser_runner import _deterministic_failure_details
 
     case = load_corpus().by_id["research"]
@@ -3100,15 +3553,21 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
 
     from eval import browser_runner
 
-    case = load_corpus().by_id[
-        "memory" if scenario == "message_only" else "graph-expansion"
-    ].model_copy(deep=True)
+    case = (
+        load_corpus()
+        .by_id["memory" if scenario == "message_only" else "graph-expansion"]
+        .model_copy(deep=True)
+    )
     case.deterministic.cleanup = False
-    published = None if scenario == "message_only" else {
-        "version": "published-v2",
-        "nodes": [{"id": "n1", "label": "Serving Monitor"}],
-        "edges": [],
-    }
+    published = (
+        None
+        if scenario == "message_only"
+        else {
+            "version": "published-v2",
+            "nodes": [{"id": "n1", "label": "Serving Monitor"}],
+            "edges": [],
+        }
+    )
     saved = deepcopy(published)
     if scenario == "missing":
         saved = None
@@ -3124,20 +3583,35 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
     page.screenshot = AsyncMock()
     context = SimpleNamespace(
         tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
-        add_init_script=AsyncMock(), new_page=AsyncMock(return_value=page),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(return_value=page),
         close=AsyncMock(),
     )
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
-    monkeypatch.setattr(browser_runner, "_internal_session", AsyncMock(return_value={"access_token": "test-token"}))
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "test-token"}),
+    )
     monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
     monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
-    monkeypatch.setattr(browser_runner, "_should_inspect_graph_dom", lambda *_args: False)
-    monkeypatch.setattr(browser_runner, "_deterministic_failure_details", lambda *_args: [])
-    monkeypatch.setattr(browser_runner, "_node_followup_interaction_failure_details", AsyncMock(return_value=[]))
+    monkeypatch.setattr(
+        browser_runner, "_should_inspect_graph_dom", lambda *_args: False
+    )
+    monkeypatch.setattr(
+        browser_runner, "_deterministic_failure_details", lambda *_args: []
+    )
+    monkeypatch.setattr(
+        browser_runner,
+        "_node_followup_interaction_failure_details",
+        AsyncMock(return_value=[]),
+    )
     monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
 
     async def send_steps(_page, _case, frames, events, **_kwargs):
-        frames.append({"direction": "sent", "message": {"type": "start", "thread_id": "thread-1"}})
+        frames.append(
+            {"direction": "sent", "message": {"type": "start", "thread_id": "thread-1"}}
+        )
         events.extend([{"type": "graph_data", "data": published}, {"type": "done"}])
 
     requests = []
@@ -3148,20 +3622,32 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
             raise RuntimeError("read failed")
         return {
             "thread": {"id": "thread-1", "graph_data": saved},
-            "messages": [{"role": role} for _ in case.steps for role in ("user", "assistant")],
+            "messages": [
+                {"role": role} for _ in case.steps for role in ("user", "assistant")
+            ],
         }
 
     monkeypatch.setattr(browser_runner, "_send_case_steps", send_steps)
     monkeypatch.setattr(browser_runner, "_blocking_json_request", read_thread)
     result = await browser_runner._run_browser_attempt(
         browser,
-        SimpleNamespace(target="http://frontend", backend_target="http://backend", email="eval@example.com", internal_password="test-password"),
+        SimpleNamespace(
+            target="http://frontend",
+            backend_target="http://backend",
+            email="eval@example.com",
+            internal_password="test-password",
+        ),
         case,
-        artifact_dir=tmp_path, screenshot_dir=tmp_path, trace_dir=tmp_path,
-        turn_timeout_seconds=10, attempt_number=1,
+        artifact_dir=tmp_path,
+        screenshot_dir=tmp_path,
+        trace_dir=tmp_path,
+        turn_timeout_seconds=10,
+        attempt_number=1,
     )
 
-    assert requests == [("GET", "http://backend/api/threads/thread-1", None, "test-token")]
+    assert requests == [
+        ("GET", "http://backend/api/threads/thread-1", None, "test-token")
+    ]
     assert result["persistence_checked"] is (scenario != "request_error")
     assert result["persisted_graph"] == (None if scenario == "request_error" else saved)
     assert result["passed"] is (expected_failure is None)

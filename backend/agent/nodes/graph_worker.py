@@ -954,7 +954,18 @@ def _user_edit_scope(
     resolved_complexity: str,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     """Compile one user edit into layer locks and bounded mutation permissions."""
-    text = _reference_text(query)
+    # A preservation sentence grants no mutation authority. Keeping it in the
+    # selector text mistakes "all connections" for permission to edit edges.
+    scope_query = " ".join(
+        clause
+        for clause in re.split(r"[.;\n]+", query)
+        if not re.fullmatch(
+            r"\s*keep\s+(?:all|the|existing)\s+(?:connections|edges)\s+unchanged\s*",
+            clause,
+            flags=re.IGNORECASE,
+        )
+    )
+    text = _reference_text(scope_query)
     if not text or _USER_EDIT_GRAPH_REPLACEMENT.search(text):
         raise ValueError("the edit does not identify a bounded mutation scope")
 
@@ -1796,6 +1807,8 @@ async def graph_worker_node(state: AgentState, tools: list) -> AgentState:
             rag_chunks=state.get("rag_chunks", []),
             artifacts=artifacts,
         )
+        if graph is not None and graph_intent is None:
+            graph = _preserve_canonical_user_content(state.get("graph_data"), graph)
         return {**state, "graph_data": _attach_graph_version(graph)}
     except Exception as exc:
         logger.warning(
@@ -3091,6 +3104,10 @@ def _preserve_existing_record_metadata(
     existing_graph: GraphData, candidate: GraphData, patch: dict[str, Any]
 ) -> None:
     prior_nodes = {node["id"]: node for node in existing_graph.get("nodes") or []}
+    node_updates = {
+        operation["id"]: operation["set"]
+        for operation in _patch_list(patch, "update_nodes")
+    }
     for node in candidate.get("nodes") or []:
         prior = prior_nodes.get(node["id"])
         if prior is None:
@@ -3102,14 +3119,44 @@ def _preserve_existing_record_metadata(
                 node[field] = copy.deepcopy(prior[field])
             else:
                 node.pop(field, None)
+        changed_fields = {
+            field
+            for field in node_updates.get(node["id"], {})
+            if node.get(field) != prior.get(field)
+        }
+        retained_fields = _retained_user_edit_fields(
+            prior, _PATCH_NODE_MUTABLE_FIELDS, changed_fields
+        )
+        if retained_fields:
+            node["user_edited_fields"] = retained_fields
+        else:
+            node.pop("user_edited_fields", None)
     removed = set(_patch_list(patch, "remove_edges"))
     retained = [
-        edge
+        (_patch_edge_id(index), edge)
         for index, edge in enumerate(existing_graph.get("edges") or [])
         if _patch_edge_id(index) not in removed
     ]
-    # Patch application retains surviving base rows and appends additions.
-    for prior, edge in zip(retained, candidate.get("edges") or []):
+    edge_updates = {
+        operation["edge_id"]: operation["set"]
+        for operation in _patch_list(patch, "update_edges")
+    }
+    # Patch application retains surviving base rows in their original order.
+    for (edge_id, prior), edge in zip(retained, candidate.get("edges") or []):
+        changed_fields = {
+            field
+            for field in edge_updates.get(edge_id, {})
+            if edge.get(field) != prior.get(field)
+        }
+        retained_fields = _retained_user_edit_fields(
+            prior,
+            ("label", "technology", "description", "flow", "sync"),
+            changed_fields,
+        )
+        if retained_fields:
+            edge["user_edited_fields"] = retained_fields
+        else:
+            edge.pop("user_edited_fields", None)
         if any(
             edge.get(field) != prior.get(field)
             for field in ("source", "target", "label")
@@ -3122,6 +3169,113 @@ def _preserve_existing_record_metadata(
                 edge[field] = copy.deepcopy(prior[field])
             else:
                 edge.pop(field, None)
+
+
+def _retained_user_edit_fields(
+    record: dict[str, Any], allowed_fields: tuple[str, ...], changed_fields: set[str]
+) -> list[str]:
+    fields = record.get("user_edited_fields")
+    if not isinstance(fields, list):
+        return []
+    return sorted(
+        {
+            field
+            for field in fields
+            if isinstance(field, str)
+            and field in allowed_fields
+            and field not in changed_fields
+            and field in record
+        }
+    )
+
+
+def _unambiguous_records(
+    records: list[dict[str, Any]], fields: tuple[str, ...]
+) -> dict[tuple[str, ...], dict[str, Any]]:
+    by_key: dict[tuple[str, ...], dict[str, Any]] = {}
+    ambiguous: set[tuple[str, ...]] = set()
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        key = tuple(record.get(field) for field in fields)
+        if not all(isinstance(value, str) and value for value in key):
+            continue
+        if key in by_key:
+            ambiguous.add(key)
+        else:
+            by_key[key] = record
+    return {key: record for key, record in by_key.items() if key not in ambiguous}
+
+
+def _preserve_canonical_user_content(
+    existing_graph: GraphData | None, candidate: GraphData
+) -> GraphData:
+    if not isinstance(existing_graph, dict) or existing_graph.get(
+        "graph_type"
+    ) != candidate.get("graph_type"):
+        return candidate
+
+    preserved = copy.deepcopy(candidate)
+    prior_nodes = _unambiguous_records(
+        existing_graph.get("nodes") or [], ("id",)
+    )
+    candidate_nodes = _unambiguous_records(preserved.get("nodes") or [], ("id",))
+    for key, node in candidate_nodes.items():
+        prior = prior_nodes.get(key)
+        if prior is None:
+            continue
+        fields = _retained_user_edit_fields(prior, _PATCH_NODE_MUTABLE_FIELDS, set())
+        if not fields:
+            continue
+        for field in fields:
+            node[field] = copy.deepcopy(prior[field])
+        for field in ("canonical_id", "confidence", "evidence_chunk_ids", "book_refs"):
+            node.pop(field, None)
+        node["detail"] = None
+        node["user_edited_fields"] = fields
+
+    prior_edges = existing_graph.get("edges") or []
+    candidate_edges = preserved.get("edges") or []
+    prior_by_id = _unambiguous_records(prior_edges, ("edge_id",))
+    candidate_by_id = _unambiguous_records(candidate_edges, ("edge_id",))
+    prior_by_connection = _unambiguous_records(
+        prior_edges, ("source", "target", "label")
+    )
+    candidate_by_connection = _unambiguous_records(
+        candidate_edges, ("source", "target", "label")
+    )
+    for edge in candidate_edges:
+        edge_id = edge.get("edge_id")
+        prior = (
+            prior_by_id.get((edge_id,))
+            if isinstance(edge_id, str)
+            and candidate_by_id.get((edge_id,)) is edge
+            else None
+        )
+        if prior is None:
+            key = (edge.get("source"), edge.get("target"), edge.get("label"))
+            fallback = prior_by_connection.get(key)
+            if (
+                candidate_by_connection.get(key) is edge
+                and fallback is not None
+                and (not edge_id or not fallback.get("edge_id"))
+            ):
+                prior = fallback
+        if prior is None:
+            continue
+        fields = _retained_user_edit_fields(
+            prior, ("label", "technology", "description", "flow", "sync"), set()
+        )
+        if not fields:
+            continue
+        for field in fields:
+            edge[field] = copy.deepcopy(prior[field])
+        for field in ("confidence", "supporting_chunk_ids"):
+            edge.pop(field, None)
+        if "label" in fields:
+            edge.pop("relation", None)
+        edge["user_edited_fields"] = fields
+    return preserved
 
 
 def _same_graph_payload(left: dict[str, Any], right: dict[str, Any]) -> bool:

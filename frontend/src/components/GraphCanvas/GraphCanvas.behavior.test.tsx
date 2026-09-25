@@ -6,24 +6,37 @@ vi.mock('../../services/api', () => ({
 }));
 
 vi.mock('./D3Graph', () => ({
-  D3Graph: ({ graphData, onNodeClick, onViewStateChange, initialViewState }: {
+  D3Graph: ({ graphData, onNodeClick, onNodeEdit, onEditConnection, onViewStateChange, initialViewState, onLayoutReady }: {
     graphData: { nodes: Array<{ id: string; label: string }> };
     onNodeClick: (node: { id: string; label: string }) => void;
+    onNodeEdit?: (node: { id: string; label: string }) => void;
+    onEditConnection?: (edgeIndex: number) => void;
     onViewStateChange?: (state: {
       layoutVersion: number;
       nodePositions: Record<string, { x: number; y: number }>;
+      zonePadding?: Record<string, { top: number; right: number; bottom: number; left: number }>;
       viewport: { x: number; y: number; k: number };
     }) => void;
     initialViewState?: { viewport: { x: number; y: number; k: number } };
+    onLayoutReady?: (key: string) => void;
   }) => (
     <div data-testid="d3-graph">
       <span data-testid="initial-view">{initialViewState?.viewport.k ?? 'none'}</span>
+      <button onClick={() => onLayoutReady?.('painted-key')}>Layout ready</button>
       <button onClick={() => onNodeClick(graphData.nodes[0])}>Select rendered node</button>
+      <button onClick={() => onNodeEdit?.(graphData.nodes[0])}>Edit rendered node</button>
+      <button onClick={() => onEditConnection?.(0)}>Edit rendered connection</button>
       <button onClick={() => onViewStateChange?.({
         layoutVersion: 1,
         nodePositions: { service: { x: 10, y: 20 } },
         viewport: { x: 3, y: 4, k: 1.2 },
       })}>Save view</button>
+      <button onClick={() => onViewStateChange?.({
+        layoutVersion: 1,
+        nodePositions: { service: { x: 10, y: 20 } },
+        zonePadding: { runtime: { top: 10, right: 20, bottom: 30, left: 40 } },
+        viewport: { x: 3, y: 4, k: 1.2 },
+      })}>Save zone view</button>
     </div>
   ),
 }));
@@ -101,6 +114,13 @@ const baseProps = {
 
 
 describe('GraphCanvas behavior', () => {
+  it.each([false, true])('reports visible layout readiness for preview=%s', isPreview => {
+    const ready = vi.fn();
+    render(<GraphCanvas {...baseProps} graphData={graph} isPreview={isPreview} onGraphReady={ready} />);
+    fireEvent.click(screen.getByText('Layout ready'));
+    expect(ready).toHaveBeenCalledWith('painted-key');
+  });
+
   beforeEach(() => {
     vi.useFakeTimers();
     vi.clearAllMocks();
@@ -128,13 +148,13 @@ describe('GraphCanvas behavior', () => {
 
     expect(screen.getByText('Grounded architecture')).toBeTruthy();
     expect(screen.getByText('reviewed runtime')).toBeTruthy();
-    expect(screen.getByText('2 components · 1 zones')).toBeTruthy();
-    expect(screen.getByText('Runtime')).toBeTruthy();
-    expect(screen.getByText('Control')).toBeTruthy();
-    expect(screen.getByText('Feedback')).toBeTruthy();
+    expect(screen.getByText('2 components · 2 zones')).toBeTruthy();
+    expect(screen.queryByText('Runtime')).toBeNull();
+    expect(screen.queryByText('Control')).toBeNull();
+    expect(screen.queryByText('Feedback')).toBeNull();
     expect(screen.getByText('Current Retrieval API')).toBeTruthy();
     expect(screen.queryByText('Stale label')).toBeNull();
-    expect(screen.getByText('Revising privately · current approved diagram stays visible')).toBeTruthy();
+    expect(screen.getByText('Preparing your answer…')).toBeTruthy();
     expect(screen.getByTestId('initial-view').textContent).toBe('0.9');
 
     fireEvent.click(screen.getByText('Select rendered node'));
@@ -200,9 +220,120 @@ describe('GraphCanvas behavior', () => {
     expect(updateThreadGraph).not.toHaveBeenCalled();
   });
 
+  it('persists a zone resize even when positions and viewport are unchanged', async () => {
+    render(<GraphCanvas {...baseProps} graphData={{ ...graph, view_state: {
+      layoutVersion: 1,
+      nodePositions: { service: { x: 10, y: 20 } },
+      viewport: { x: 3, y: 4, k: 1.2 },
+    } }} />);
+    fireEvent.click(screen.getByText('Save zone view'));
+    await act(async () => vi.advanceTimersByTime(400));
+    expect(updateThreadGraph).toHaveBeenCalledWith(session, 'thread-1', expect.objectContaining({
+      view_state: expect.objectContaining({ zonePadding: {
+        runtime: { top: 10, right: 20, bottom: 30, left: 40 },
+      } }),
+    }));
+  });
+
+  it('flushes the latest layout before saving content and preserves that view on rerender', async () => {
+    let finishLayout: (() => void) | undefined;
+    vi.mocked(updateThreadGraph).mockImplementationOnce(() => new Promise<void>(resolve => { finishLayout = resolve; }));
+    const onSaveGraphEdit = vi.fn().mockResolvedValue(undefined);
+    const view = render(<GraphCanvas {...baseProps} graphData={graph} onSaveGraphEdit={onSaveGraphEdit} />);
+    fireEvent.click(screen.getByText('Save view'));
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Name' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Updated Retrieval API' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await act(async () => { await Promise.resolve(); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(1);
+    expect(onSaveGraphEdit).not.toHaveBeenCalled();
+    expect(view.container.querySelector('[inert]')).not.toBeNull();
+    expect(vi.mocked(updateThreadGraph).mock.calls[0][2].view_state?.viewport.k).toBe(1.2);
+
+    await act(async () => { finishLayout?.(); await Promise.resolve(); });
+    expect(onSaveGraphEdit).toHaveBeenCalledWith({ nodes: [{ id: 'service', label: 'Updated Retrieval API' }] });
+    const savedLayout = vi.mocked(updateThreadGraph).mock.calls[0][2].view_state;
+    view.rerender(<GraphCanvas {...baseProps} graphData={{ ...graph, nodes: [
+      { ...graph.nodes[0], label: 'Updated Retrieval API' }, graph.nodes[1],
+    ], view_state: savedLayout }} onSaveGraphEdit={onSaveGraphEdit} />);
+    expect(screen.getByTestId('initial-view').textContent).toBe('1.2');
+    expect(view.container.querySelector('[inert]')).toBeNull();
+  });
+
+  it('keeps the draft available to retry when the layout flush fails', async () => {
+    vi.mocked(updateThreadGraph).mockRejectedValueOnce(new Error('Layout write failed'));
+    const onSaveGraphEdit = vi.fn().mockResolvedValue(undefined);
+    const view = render(<GraphCanvas {...baseProps} graphData={graph} onSaveGraphEdit={onSaveGraphEdit} />);
+    fireEvent.click(screen.getByText('Save view'));
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Retry Retrieval API' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(onSaveGraphEdit).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toContain('Layout write failed');
+    expect((screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Retry Retrieval API');
+    expect(view.container.querySelector('[inert]')).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(onSaveGraphEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens the exact directed edge for editing', async () => {
+    const onSaveGraphEdit = vi.fn().mockResolvedValue(undefined);
+    render(<GraphCanvas {...baseProps} graphData={graph} onSaveGraphEdit={onSaveGraphEdit} />);
+    fireEvent.click(screen.getByText('Edit rendered connection'));
+    const label = screen.getByRole('textbox', { name: 'Label' });
+    expect(document.activeElement).toBe(label);
+    expect((label as HTMLInputElement).value).toBe('queries index');
+    fireEvent.change(label, { target: { value: 'reads embeddings' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    await act(async () => { await Promise.resolve(); await Promise.resolve(); });
+    expect(onSaveGraphEdit).toHaveBeenCalledWith({ edges: [{ index: 0, label: 'reads embeddings' }] });
+  });
+
+  it('reopens the same node and connection fields after Done', () => {
+    render(<GraphCanvas {...baseProps} graphData={graph} onSaveGraphEdit={vi.fn().mockResolvedValue(undefined)} />);
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Name' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Name' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+
+    fireEvent.click(screen.getByText('Edit rendered connection'));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Label' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    fireEvent.click(screen.getByText('Edit rendered connection'));
+    expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Label' }));
+  });
+
+  it('keeps a dirty inspector on its current node when another node is selected', () => {
+    const onNodeClick = vi.fn();
+    render(<GraphCanvas {...baseProps} graphData={graph} onNodeClick={onNodeClick}
+      onSaveGraphEdit={vi.fn().mockResolvedValue(undefined)} />);
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    const name = screen.getByRole('textbox', { name: 'Name' });
+    fireEvent.change(name, { target: { value: 'Unfinished name' } });
+    fireEvent.click(screen.getByText('Select rendered node'));
+    expect(onNodeClick).not.toHaveBeenCalled();
+    expect((screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Unfinished name');
+    expect(document.activeElement).toBe(name);
+  });
+
+  it('hides Dictionary while the node inspector is open', () => {
+    const selectedNode = { node: graph.nodes[0], suggestions: [] };
+    const view = render(<GraphCanvas {...baseProps} graphData={graph} selectedNode={selectedNode} />);
+    expect(screen.getByText('Dictionary').closest('[hidden]')).not.toBeNull();
+    view.rerender(<GraphCanvas {...baseProps} graphData={graph} selectedNode={null} />);
+    expect(screen.getByText('Dictionary').closest('[hidden]')).toBeNull();
+  });
+
   it('renders plain and active empty-graph states with workflow detail', () => {
     const view = render(<GraphCanvas {...baseProps} graphData={null} authSession={null} />);
-    expect(screen.getByText('Graph will appear here')).toBeTruthy();
+    expect(screen.getByText(/No diagram was generated/)).toBeTruthy();
 
     view.rerender(
       <GraphCanvas
@@ -218,7 +349,7 @@ describe('GraphCanvas behavior', () => {
         }]}
       />,
     );
-    expect(screen.getByText('Reviewing topology')).toBeTruthy();
-    expect(screen.getByText('Checking publication invariants.')).toBeTruthy();
+    expect(screen.getByText('Building your diagram…')).toBeTruthy();
+    expect(screen.queryByText('Checking publication invariants.')).toBeNull();
   });
 });

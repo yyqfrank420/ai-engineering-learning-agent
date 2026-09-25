@@ -10,12 +10,14 @@
 
 import json
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from threading import Barrier
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from adapters.database_adapter import init_db
-from storage import message_store, thread_store
+from adapters.database_adapter import fetchone, init_db
+from storage import message_store, runtime_state_store, thread_store
 from storage.errors import ThreadMessageLimitExceeded
 from storage.profile_store import upsert_profile
 
@@ -30,11 +32,7 @@ def make_user(email_prefix: str = "test") -> str:
 
 # ── Thread eviction ───────────────────────────────────────────────────────────
 
-def test_thread_eviction_keeps_max_threads(temp_data_dir, monkeypatch):
-    """
-    Creating more threads than max_threads_per_user should evict the oldest
-    thread so the count never exceeds the configured limit.
-    """
+def test_completed_threads_keep_saved_history_within_limit(temp_data_dir, monkeypatch):
     init_db()
     from config import settings
     monkeypatch.setattr(settings, "max_threads_per_user", 5)
@@ -45,16 +43,14 @@ def test_thread_eviction_keeps_max_threads(temp_data_dir, monkeypatch):
     for i in range(6):
         t = thread_store.create_thread(user_id, title=f"chat {i}")
         created_ids.append(t["id"])
+        thread_store.persist_turn(user_id, t["id"], title=f"chat {i}",
+                                  user_content="question", assistant_content="answer", graph_data=None)
 
     remaining = thread_store.list_threads(user_id, limit=20)
     assert len(remaining) == 5, f"Expected 5 threads, got {len(remaining)}"
 
 
-def test_thread_eviction_removes_oldest_thread(temp_data_dir, monkeypatch):
-    """
-    The thread that was created and least-recently-seen should be the one
-    that gets evicted.
-    """
+def test_empty_drafts_have_separate_bound_without_evicting_saved_chats(temp_data_dir, monkeypatch):
     init_db()
     from config import settings
     monkeypatch.setattr(settings, "max_threads_per_user", 3)
@@ -62,14 +58,71 @@ def test_thread_eviction_removes_oldest_thread(temp_data_dir, monkeypatch):
     user_id = make_user()
 
     first = thread_store.create_thread(user_id, title="first")
-    thread_store.create_thread(user_id, title="second")
-    thread_store.create_thread(user_id, title="third")
-
-    # Creating a 4th should evict "first"
-    thread_store.create_thread(user_id, title="fourth")
+    message_store.append(user_id, first["id"], "user", "Keep this question")
+    drafts = [thread_store.create_thread(user_id) for _ in range(8)]
 
     remaining_ids = {t["id"] for t in thread_store.list_threads(user_id, limit=20)}
-    assert first["id"] not in remaining_ids, "Oldest thread should have been evicted"
+    assert remaining_ids == {first["id"]}
+    assert thread_store.count_threads(user_id) == 1
+    assert thread_store.get_latest_thread(user_id)["id"] == first["id"]
+    retained_drafts = {
+        draft["id"] for draft in drafts if thread_store.get_thread(user_id, draft["id"])
+    }
+    assert len(retained_drafts) == 3
+    assert drafts[-1]["id"] in retained_drafts
+
+
+def test_draft_retention_preserves_saved_graph_other_user_and_active_lease(
+    temp_data_dir, monkeypatch
+):
+    init_db()
+    from config import settings
+    from adapters.database_adapter import execute
+
+    monkeypatch.setattr(settings, "max_threads_per_user", 1)
+    monkeypatch.setattr(thread_store.time, "time", lambda: 100.0)
+    user_id = make_user()
+    other_user_id = make_user("other")
+    saved = thread_store.create_thread(user_id)
+    message_store.append(user_id, saved["id"], "user", "Keep my question")
+    graph_only = thread_store.create_thread(user_id)
+    execute(
+        "UPDATE chat_threads SET graph_data = ? WHERE id = ?",
+        ('{"version":"saved-graph"}', graph_only["id"]),
+    )
+    other_draft = thread_store.create_thread(other_user_id)
+    protected = thread_store.create_thread(user_id)
+    lease = runtime_state_store.try_acquire_active_stream(
+        user_id, "chat-thread", limit=1, ttl_s=10, scope_id=protected["id"]
+    )
+    newest = thread_store.create_thread(user_id)
+
+    assert lease is not None
+    assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, protected, newest))
+    assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
+
+    monkeypatch.setattr(thread_store.time, "time", lambda: 200.0)
+    latest = thread_store.create_thread(user_id)
+    assert thread_store.get_thread(user_id, protected["id"]) is None
+    assert thread_store.get_thread(user_id, newest["id"]) is None
+    assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, latest))
+    assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
+    runtime_state_store.release_active_stream(lease)
+
+
+def test_concurrent_draft_creation_keeps_one_bounded_pool(temp_data_dir, monkeypatch):
+    init_db()
+    from config import settings
+
+    monkeypatch.setattr(settings, "max_threads_per_user", 3)
+    user_id = make_user()
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        created = list(executor.map(lambda _: thread_store.create_thread(user_id), range(12)))
+
+    assert len({thread["id"] for thread in created}) == 12
+    assert fetchone(
+        "SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ?", (user_id,)
+    )["n"] == 3
 
 
 def test_thread_eviction_cascades_messages(temp_data_dir, monkeypatch):
@@ -88,9 +141,14 @@ def test_thread_eviction_cascades_messages(temp_data_dir, monkeypatch):
     message_store.append(user_id, first["id"], "user", "hello")
     message_store.append(user_id, first["id"], "assistant", "world")
 
-    thread_store.create_thread(user_id, title="second")
-    # Third creation evicts "first"
-    thread_store.create_thread(user_id, title="third")
+    second = thread_store.create_thread(user_id, title="second")
+    message_store.append(user_id, second["id"], "user", "second question")
+    from adapters.database_adapter import execute
+    execute("UPDATE chat_threads SET last_seen_at = ? WHERE id = ?", ("2000-01-01", first["id"]))
+    third = thread_store.create_thread(user_id, title="third")
+    assert message_store.count_messages(user_id, first["id"]) == 2
+    thread_store.persist_turn(user_id, third["id"], title="third",
+                              user_content="question", assistant_content="answer", graph_data=None)
 
     db_path = temp_data_dir / "sessions.db"
     with sqlite3.connect(db_path) as conn:
@@ -99,6 +157,36 @@ def test_thread_eviction_cascades_messages(temp_data_dir, monkeypatch):
             (first["id"],),
         ).fetchone()
     assert row[0] == 0, "Evicted thread's messages were not deleted"
+
+
+def test_concurrent_first_turns_apply_history_limit_atomically(temp_data_dir, monkeypatch):
+    init_db()
+    from config import settings
+    monkeypatch.setattr(settings, "max_threads_per_user", 2)
+    user_id = make_user()
+    old = thread_store.create_thread(user_id)
+    message_store.append(user_id, old["id"], "user", "old question")
+    from adapters.database_adapter import execute
+    execute("UPDATE chat_threads SET last_seen_at = ? WHERE id = ?", ("2000-01-01", old["id"]))
+    drafts = [thread_store.create_thread(user_id) for _ in range(2)]
+    start = Barrier(2)
+
+    def complete(draft):
+        start.wait(timeout=5)
+        return thread_store.persist_turn(
+            user_id, draft["id"], title="Saved conversation",
+            user_content="question", assistant_content="answer", graph_data=None,
+            client_request_id=draft["id"],
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        assert all(executor.map(complete, drafts))
+
+    assert {thread["id"] for thread in thread_store.list_threads(user_id)} == {
+        draft["id"] for draft in drafts
+    }
+    assert all(message_store.count_messages(user_id, draft["id"]) == 2 for draft in drafts)
+    assert thread_store.get_thread(user_id, old["id"]) is None
 
 
 def test_thread_store_count_oldest_touch_and_delete_helpers(temp_data_dir, monkeypatch):
@@ -111,8 +199,8 @@ def test_thread_store_count_oldest_touch_and_delete_helpers(temp_data_dir, monke
     second = thread_store.create_thread(user_id, title="second")
     message_store.append(user_id, first["id"], "user", "hello")
 
-    assert thread_store.count_threads(user_id) == 2
-    assert thread_store.get_oldest_thread_id(user_id) in {first["id"], second["id"]}
+    assert thread_store.count_threads(user_id) == 1
+    assert thread_store.get_oldest_thread_id(user_id) == first["id"]
 
     thread_store.touch_thread(user_id, first["id"], title="renamed")
     assert thread_store.get_thread(user_id, first["id"])["title"] == "renamed"

@@ -62,7 +62,7 @@ class UIMode(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     complexity: Literal["auto", "low", "prototype", "production"]
-    graph_mode: Literal["auto", "on", "off"]
+    graph_mode: Literal["on", "off"]
     research_enabled: bool
 
 

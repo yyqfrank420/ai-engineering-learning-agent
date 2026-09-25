@@ -9,6 +9,24 @@ from agent.graph_repair_contract import validate_local_repair_admission
 from agent.nodes import graph_worker
 
 
+@pytest.mark.parametrize(
+    "preservation",
+    ["Keep all connections unchanged.", "Keep existing edges unchanged."],
+)
+def test_rename_preservation_sentence_grants_no_edge_edit_authority(preservation):
+    graph = _domain_graph(5)
+    query = f"Rename {graph['nodes'][0]['label']} back to Upload Web Client."
+    expected = graph_worker.staged_edit_scope(
+        query, graph, resolved_complexity="production"
+    )
+    actual = graph_worker.staged_edit_scope(
+        f"{query} {preservation}", graph, resolved_complexity="production"
+    )
+    assert actual == expected
+    assert actual[1]["editable_edges"] == []
+    assert not actual[1]["allow_edge_additions"]
+
+
 @pytest.mark.parametrize("removed_index", [0, 2])
 def test_staged_candidate_patch_addresses_removed_edge_before_survivors_shift(
     removed_index,

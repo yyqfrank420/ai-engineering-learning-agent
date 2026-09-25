@@ -1,0 +1,107 @@
+.diagram-toolbar {
+  position: absolute;
+  inset: 12px 12px auto auto;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 24px);
+}
+
+.diagram-toolbar button {
+  min-height: 36px;
+  border: 1px solid #45516b;
+  border-radius: 6px;
+  background: #111827;
+  color: #d8dee9;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.diagram-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 10px;
+}
+
+.diagram-toolbar__zoom { width: 36px; }
+
+.diagram-toolbar button:hover {
+  background: #1c2435;
+  border-color: #8b7db2;
+}
+
+.diagram-toolbar button[aria-pressed="true"] {
+  color: #e4d9ff;
+  background: #302447;
+  border-color: var(--accent-violet);
+}
+
+.diagram-toolbar button:focus-visible {
+  outline: 2px solid var(--accent-violet);
+  outline-offset: 2px;
+}
+
+@media (pointer: coarse) {
+  .diagram-toolbar button {
+    min-height: 44px;
+    min-width: 44px;
+  }
+}
+
+.connection-details {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 30;
+  width: min(340px, calc(100% - 24px));
+  max-height: min(420px, 55%);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid #45516b;
+  border-radius: 8px;
+  background: #111827;
+  color: #bcc7d8;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.connection-details header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #303b50;
+}
+
+.connection-details h3 { font-size: 13px; font-weight: 600; color: #e6edf3; }
+.connection-details button {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 6px;
+  color: #d8dee9;
+  background: transparent;
+  cursor: pointer;
+}
+.connection-details button:hover { background: #263047; }
+.connection-details button:focus-visible { outline: 2px solid var(--accent-violet); outline-offset: -2px; }
+.connection-details ol { list-style: none; overflow: auto; padding: 0 16px; }
+.connection-details li { padding: 14px 0; overflow-wrap: anywhere; }
+.connection-details li + li { border-top: 1px solid #303b50; }
+.connection-details p + p { margin-top: 6px; }
+.connection-details__direction { color: #c3b3f4; }
+.connection-details__label { color: #e6edf3; font-weight: 500; }
+.connection-details__technology { color: #9caec7; font-size: 11px; }
+
+.edge-hit:focus-visible {
+  outline: none;
+  stroke: var(--accent-violet);
+  stroke-width: 3;
+}

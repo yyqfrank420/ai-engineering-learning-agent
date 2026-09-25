@@ -7,7 +7,7 @@ export const NODE_H = 68;
 export const NODE_RX = 6;
 export const H_PAD = 44;
 export const V_PAD = 72;
-export const MIN_COL_W = NODE_W + 84;
+export const MIN_COL_W = NODE_W + 60;
 export const VERTICAL_PAD = 32;
 export const VERTICAL_LEVEL_H = NODE_H + 12;
 export const VERTICAL_NODE_GAP = 24;
@@ -22,7 +22,7 @@ export const COMPACT_LAYOUT_ROWS = 8;
 export const COMPACT_NODE_GAP = 24;
 export const COMPACT_NODE_PITCH = NODE_H + BOTTOM_NODE_GAP;
 export const MAX_PUBLISHED_GRAPH_NODES = 60;
-export const GRAPH_LAYOUT_VERSION = 11;
+export const GRAPH_LAYOUT_VERSION = 17;
 export const DIAGRAM_EVALUATION_VIEWPORT = {
   width: DIAGRAM_EVALUATION_CRITERIA.viewport_width,
   height: DIAGRAM_EVALUATION_CRITERIA.viewport_height,
