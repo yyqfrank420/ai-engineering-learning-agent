@@ -107,7 +107,6 @@ const COMPLEXITY_OPTIONS: { value: ComplexityLevel; label: string }[] = [
 ];
 
 const GRAPH_MODE_OPTIONS: { value: GraphMode; label: string }[] = [
-  { value: 'auto', label: 'auto' },
   { value: 'on',   label: 'on'   },
   { value: 'off',  label: 'off'  },
 ];

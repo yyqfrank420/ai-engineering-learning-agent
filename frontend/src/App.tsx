@@ -3,6 +3,7 @@ import type { CSSProperties } from 'react';
 import type { GraphNode } from './types';
 import { trackEvent } from './services/analytics';
 import { useAgentStream } from './hooks/useAgentStream';
+import { graphStructureKey } from './utils/graphStructureKey';
 import { TitleBar } from './components/Layout/TitleBar';
 import { SplitPane } from './components/Layout/SplitPane';
 import { ThreadSidebar } from './components/Layout/ThreadSidebar';
@@ -12,6 +13,7 @@ import { ContextBar } from './components/Chat/ContextBar';
 import { ChatInput } from './components/Chat/ChatInput';
 import { AuthScreen } from './components/Auth/AuthScreen';
 import { signOut } from './services/auth';
+import { checkDiagramIntent } from './services/api';
 import { useAuthSession } from './hooks/useAuthSession';
 import { useBackendReadiness } from './hooks/useBackendReadiness';
 import { useSelectionSuggestion } from './hooks/useSelectionSuggestion';
@@ -42,6 +44,7 @@ function resolveRouteFromHash(): AppRoute {
 
 export default function App() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [hasUnsavedGraphEdit, setHasUnsavedGraphEdit] = useState(false);
   const [appRoute, setAppRoute] = useState<AppRoute>(resolveRouteFromHash);
   const { authReady, handleAuthenticated, setAuthSession, authSession } = useAuthSession();
   const {
@@ -79,7 +82,13 @@ export default function App() {
 
   const {
     messages,
+    visibleMessages,
+    answerPending,
+    diagramRequested,
+    acknowledgeGraphRendered,
     graphData,
+    isSavingGraphEdit,
+    publishedGraphKey,
     graphPreview,
     graphCandidate,
     workflowProgress,
@@ -94,32 +103,50 @@ export default function App() {
     providerNotice,
     hydrateThread,
     sendMessage,
+    saveGraphEdit,
     requestSearchTool,
     stopGeneration,
     toggleExplanationPause,
   } = useAgentStream(authSession, activeThreadId);
 
   const [complexity,      setComplexity]      = useState<ComplexityLevel>('auto');
-  const [graphMode,       setGraphMode]       = useState<GraphMode>('auto');
+  const [graphMode,       setGraphMode]       = useState<GraphMode>('on');
   // Architecture prompts should arrive at the design roles with both the book
   // and current functional context. Users can still disable web research for
   // a deliberately book-only or lower-latency answer.
   const [researchEnabled, setResearchEnabled] = useState(true);
   const previousModeKeyRef = useRef<string | null>(null);
+  const graphEditBlocked = hasUnsavedGraphEdit || isSavingGraphEdit;
+
+  useEffect(() => {
+    if (!graphEditBlocked) return;
+    const warnBeforeUnload = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeUnload);
+    return () => window.removeEventListener('beforeunload', warnBeforeUnload);
+  }, [graphEditBlocked]);
 
   useEffect(() => {
     const handleHashChange = () => {
-      setAppRoute(resolveRouteFromHash());
+      const nextRoute = resolveRouteFromHash();
+      if (graphEditBlocked && nextRoute !== appRoute) {
+        window.location.hash = appRoute === 'chat' ? '' : '/internal/dashboard';
+        return;
+      }
+      setAppRoute(nextRoute);
     };
     window.addEventListener('hashchange', handleHashChange);
     return () => window.removeEventListener('hashchange', handleHashChange);
-  }, []);
+  }, [appRoute, graphEditBlocked]);
 
   useEffect(() => {
     hydrateThread(threadSnapshot);
   }, [hydrateThread, threadSnapshot]);
 
   const handleLogout = useCallback(async () => {
+    if (graphEditBlocked) return;
     if (authSession) {
       localStorage.removeItem(storageKeyForThread(authSession.user.id));
       clearPreparedCache();
@@ -127,10 +154,10 @@ export default function App() {
 
     await signOut();
     setAuthSession(null);
-  }, [authSession, clearPreparedCache, setAuthSession]);
+  }, [authSession, clearPreparedCache, graphEditBlocked, setAuthSession]);
 
-  const handleSend = useCallback((content: string) => {
-    if (backendReadiness !== 'ready') {
+  const handleSend = useCallback((content: string, diagramChoice?: GraphMode) => {
+    if (backendReadiness !== 'ready' || graphEditBlocked) {
       return;
     }
     const requestContent = selectionReferenceActive && selectionSuggestion
@@ -146,20 +173,26 @@ export default function App() {
     clearSelection();
     sendMessage(requestContent, {
       complexity,
-      graphMode,
+      graphMode: diagramChoice ?? graphMode,
+      ...(diagramChoice === 'on' ? { diagramRequested: true } : {}),
       researchEnabled,
       displayContent: content,
       backendReadinessState: backendReadiness,
       hasSelectedTextContext: selectionReferenceActive && !!selectionSuggestion,
     });
-  }, [backendReadiness, clearSelection, complexity, graphMode, researchEnabled, selectionReferenceActive, selectionSuggestion, sendMessage]);
+  }, [backendReadiness, clearSelection, complexity, graphEditBlocked, graphMode, researchEnabled, selectionReferenceActive, selectionSuggestion, sendMessage]);
+
+  const checkSubmission = useCallback(async (content: string) => {
+    if (!authSession || !activeThreadId) return 'ask' as const;
+    return checkDiagramIntent(authSession, activeThreadId, content);
+  }, [authSession, activeThreadId]);
 
   // isGenerating: LLM is actively streaming — show Stop button
   const isGenerating = streamStatus === 'generating';
   // isStreaming: busy state used to disable sidebar/new-chat during loads
-  const isStreaming = isGenerating || loadingThread;
-  const composerLocked = loadingThread;
-  const sendLocked = loadingThread || backendReadiness !== 'ready' || !activeThreadId;
+  const isStreaming = isGenerating || loadingThread || graphEditBlocked;
+  const composerLocked = loadingThread || isSavingGraphEdit;
+  const sendLocked = composerLocked || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
   const showPrepare = !!authSession && backendReadiness !== 'ready';
   const prepareDisabled = isGenerating || composerLocked || !authSession || backendReadiness === 'preparing';
 
@@ -182,6 +215,7 @@ export default function App() {
   }, [handleSend]);
 
   const handleExpandGraph = useCallback((node: GraphNode) => {
+    if (graphEditBlocked) return;
     clearSelection();
     clearSelectedNode();
     void trackEvent('expand_graph_clicked', {
@@ -211,7 +245,23 @@ export default function App() {
         hasSelectedTextContext: false,
       },
     );
-  }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, complexity, researchEnabled, sendMessage]);
+  }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, complexity, graphEditBlocked, researchEnabled, sendMessage]);
+
+  const startNewChat = useCallback(() => {
+    if (!graphEditBlocked) void handleNewChat();
+  }, [graphEditBlocked, handleNewChat]);
+
+  const selectThread = useCallback((threadId: string) => {
+    if (!graphEditBlocked) handleSelectThread(threadId);
+  }, [graphEditBlocked, handleSelectThread]);
+
+  const deleteThread = useCallback((threadId: string) => {
+    if (!graphEditBlocked) handleDeleteThread(threadId);
+  }, [graphEditBlocked, handleDeleteThread]);
+
+  const retryThread = useCallback(() => {
+    if (!graphEditBlocked) retryLatestThread();
+  }, [graphEditBlocked, retryLatestThread]);
 
   const effectiveThreadTitle = useMemo(
     () => threadTitle || 'New chat',
@@ -246,14 +296,16 @@ export default function App() {
   }, []);
 
   const openDashboard = useCallback(() => {
+    if (graphEditBlocked) return;
     window.location.hash = '/internal/dashboard';
     setAppRoute('internal-dashboard');
-  }, []);
+  }, [graphEditBlocked]);
 
   const openChat = useCallback(() => {
+    if (graphEditBlocked) return;
     window.location.hash = '';
     setAppRoute('chat');
-  }, []);
+  }, [graphEditBlocked]);
 
   useEffect(() => {
     const modeKey = `${complexity}|${graphMode}|${researchEnabled ? 'research-on' : 'research-off'}`;
@@ -276,8 +328,11 @@ export default function App() {
     return <div style={loadingScreenStyle}>Loading session…</div>;
   }
 
-  const displayedGraphData = graphPreview ?? graphData;
-  const showGraphPane = !!displayedGraphData || !!graphCandidate || (isGenerating && graphMode !== 'off');
+  // Component-only previews have no topology. Keep the connected diagram during edits.
+  const displayedGraphData = graphPreview?.edges.length === 0 && graphData?.edges.length
+    ? graphData
+    : graphPreview ?? graphData;
+  const showGraphPane = !!displayedGraphData || !!graphCandidate || diagramRequested || (isGenerating && graphMode !== 'off');
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
   return (
@@ -332,9 +387,9 @@ export default function App() {
               authSession={authSession}
               activeThreadId={activeThreadId}
               backendReady={isBackendReady}
-              onNewChat={handleNewChat}
-              onSelectThread={handleSelectThread}
-              onDeleteThread={handleDeleteThread}
+              onNewChat={startNewChat}
+              onSelectThread={selectThread}
+              onDeleteThread={deleteThread}
               isLoading={isStreaming}
               isOpen={sidebarOpen}
             />
@@ -345,18 +400,21 @@ export default function App() {
                   <GraphCanvas
                     graphData={displayedGraphData}
                     isPreview={graphPreview !== null}
-                    // Reveal the complete architecture first. The sequence bar
-                    // remains available for an intentional step-by-step tour.
-                    animateSequence={false}
+                    animateSequence={!isGenerating && !explanationPaused && publishedGraphKey === graphStructureKey(displayedGraphData)}
                     authSession={authSession}
                     activeThreadId={activeThreadId}
                     onNodeClick={handleNodeClick}
+                    onSaveGraphEdit={saveGraphEdit}
+                    onEditDraftChange={setHasUnsavedGraphEdit}
+                    editingDisabled={isGenerating || loadingThread || isSavingGraphEdit || graphPreview !== null || !authSession || !activeThreadId}
                     onTellMeMore={handleTellMeMore}
                     onExpandGraph={handleExpandGraph}
                     selectedNode={selectedNode}
                     onClosePopup={clearSelectedNode}
                     sourceTexts={[latestAssistantText]}
                     isBuilding={isGenerating}
+                    onGraphReady={acknowledgeGraphRendered}
+                    onStopGeneration={stopGeneration}
                     workflowProgress={workflowProgress}
                     graphCandidate={graphCandidate}
                   />
@@ -381,7 +439,8 @@ export default function App() {
                     }}>
                       <span>Backend unreachable: {threadError}</span>
                       <button
-                        onClick={retryLatestThread}
+                        onClick={retryThread}
+                        disabled={graphEditBlocked}
                         style={{
                           background: 'rgba(248,81,73,0.12)',
                           border: '1px solid rgba(248,81,73,0.3)',
@@ -398,12 +457,12 @@ export default function App() {
                     </div>
                   )}
                   <Suspense fallback={<div style={panelFallbackStyle}>Loading conversation…</div>}>
-                    <MessageList messages={messages} />
+                    <MessageList messages={visibleMessages} />
                   </Suspense>
                   <ThinkingIndicator
                     workerStatus={workerStatus}
                     workflowProgress={workflowProgress}
-                    isGenerating={isGenerating}
+                    isGenerating={isGenerating || answerPending}
                     explanationPaused={explanationPaused}
                     onTogglePause={toggleExplanationPause}
                   />
@@ -419,8 +478,14 @@ export default function App() {
                     onSendMessage={handleSend}
                     onClear={clearSelectedNode}
                   />
+                  {graphEditBlocked && (
+                    <p role="status" style={{ margin: '0 1rem 0.5rem', color: '#c4b5fd', fontSize: '0.75rem' }}>
+                      {isSavingGraphEdit ? 'Saving component edits…' : 'Save or cancel component edits to continue.'}
+                    </p>
+                  )}
                   <ChatInput
                     onSend={handleSend}
+                    checkSubmission={checkSubmission}
                     onStop={stopGeneration}
                     onPrepare={prepareBackendNow}
                     threadId={activeThreadId}

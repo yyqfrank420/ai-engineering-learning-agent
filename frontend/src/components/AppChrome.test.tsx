@@ -67,7 +67,7 @@ describe('application chrome', () => {
     render(
       <ModeBar
         complexity="auto"
-        graphMode="auto"
+        graphMode="on"
         researchEnabled={false}
         onComplexityChange={onComplexityChange}
         onGraphModeChange={onGraphModeChange}
@@ -85,6 +85,7 @@ describe('application chrome', () => {
     expect(onComplexityChange).toHaveBeenCalledWith('production');
     expect(onGraphModeChange).toHaveBeenCalledWith('off');
     expect(onResearchChange).toHaveBeenCalledWith(true);
+    expect(screen.getAllByText('auto')).toHaveLength(1);
   });
 
   it('sends and dismisses selected-node suggestions', () => {

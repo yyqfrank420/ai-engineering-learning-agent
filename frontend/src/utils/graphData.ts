@@ -4,6 +4,7 @@ const CONTROL_HINT = /\b(access control|control de acceso|policy engine|motor de
 
 function shouldNormalizeToControl(node: GraphNode): boolean {
   if (node.type !== 'decision') return false;
+  if (node.user_edited_fields?.includes('type')) return false;
   const haystack = [node.label, node.technology, node.description].filter(Boolean).join(' ');
   return CONTROL_HINT.test(haystack);
 }

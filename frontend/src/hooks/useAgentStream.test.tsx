@@ -1,4 +1,4 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession, GraphData, ServerEvent } from '../types';
@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   cancelNodeSelection: vi.fn(),
   useSearchTool: vi.fn(),
   trackEvent: vi.fn(),
+  saveGraphContentEdit: vi.fn(),
+}));
+
+vi.mock('../services/api', () => ({
+  saveGraphContentEdit: mocks.saveGraphContentEdit,
 }));
 
 vi.mock('../services/agentTransport', () => ({
@@ -37,6 +42,7 @@ vi.mock('../services/analytics', () => ({
 }));
 
 import { useAgentStream } from './useAgentStream';
+import { graphStructureKey } from '../utils/graphStructureKey';
 
 const session: AuthSession = {
   access_token: 'token',
@@ -122,6 +128,74 @@ function Harness({
 }
 
 describe('useAgentStream', () => {
+  it('holds the answer through stream completion until the committed graph paints', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'ordering'));
+    act(() => result.current.sendMessage('Draw a retrieval system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    emit({ type: 'response_delta', content: 'The answer' });
+    expect(result.current.visibleMessages.map(message => message.content)).not.toContain('The answer');
+    expect(result.current.messages.map(message => message.content)).toContain('The answer');
+    emit({ type: 'graph_data', data: graph() });
+    emit({ type: 'done' });
+    expect(result.current.answerPending).toBe(true);
+    act(() => result.current.acknowledgeGraphRendered('stale-graph'));
+    expect(result.current.answerPending).toBe(true);
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphData)));
+    expect(result.current.answerPending).toBe(false);
+    expect(result.current.visibleMessages.map(message => message.content)).toContain('The answer');
+    expect(result.current.diagramRequested).toBe(true);
+  });
+
+  it.each(['done', 'error', 'stop', 'disconnect'] as const)('releases an answer without a graph on %s', async terminal => {
+    const pending = deferred<boolean>();
+    mocks.sendMessage.mockReturnValue(pending.promise);
+    const { result } = renderHook(() => useAgentStream(session, 'no-graph'));
+    act(() => result.current.sendMessage('Draw a system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    act(() => mocks.eventHandler?.({ type: 'response_delta', content: 'Available explanation' }, { kind: 'chat', clientRequestId }));
+    expect(result.current.answerPending).toBe(true);
+    await act(async () => {
+      if (terminal === 'stop') result.current.stopGeneration();
+      else if (terminal === 'disconnect') pending.resolve(false);
+      else mocks.eventHandler?.(terminal === 'error' ? { type: 'error', content: 'Failed' } : { type: 'done' }, { kind: 'chat', clientRequestId });
+    });
+    expect(result.current.answerPending).toBe(false);
+    expect(result.current.visibleMessages.map(message => message.content)).toContain('Available explanation');
+    expect(result.current.diagramRequested).toBe(true);
+  });
+
+  it('streams text-only answers and resets presentation when switching threads', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), { initialProps: { threadId: 'one' } });
+    act(() => result.current.sendMessage('Explain retrieval', { graphMode: 'off' }));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    act(() => mocks.eventHandler?.({ type: 'response_delta', content: 'Text only' }, { kind: 'chat', clientRequestId }));
+    expect(result.current.answerPending).toBe(false);
+    expect(result.current.visibleMessages.map(message => message.content)).toContain('Text only');
+    rerender({ threadId: 'two' });
+    expect(result.current.diagramRequested).toBe(false);
+    expect(result.current.visibleMessages).toEqual([]);
+  });
+
+  it('accepts an already-painted preview only after that graph is committed and the stream ends', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'preview-handoff'));
+    act(() => result.current.sendMessage('Draw a system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    emit({ type: 'graph_preview', data: graph() });
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphPreview)));
+    emit({ type: 'explanation_block', block_id: 'one', title: 'How it works', content: 'The walkthrough', related_node_ids: ['agent'], evidence_refs: [] });
+    expect(result.current.visibleMessages.map(message => message.content)).not.toContain('The walkthrough');
+    emit({ type: 'graph_data', data: graph() });
+    expect(result.current.answerPending).toBe(true);
+    emit({ type: 'done' });
+    expect(result.current.answerPending).toBe(false);
+    expect(result.current.visibleMessages.map(message => message.content)).toContain('The walkthrough');
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.eventHandler = null;
@@ -130,6 +204,124 @@ describe('useAgentStream', () => {
     mocks.isChatActive.mockReturnValue(false);
     mocks.steerGeneration.mockReturnValue(false);
     mocks.useSearchTool.mockResolvedValue({ ok: true, status: 'search_requested' });
+    mocks.saveGraphContentEdit.mockReset();
+  });
+
+  it('keeps canonical graph unchanged until an edit saves and retains the saved graph after a later stream error', async () => {
+    const save = deferred<GraphData>();
+    mocks.saveGraphContentEdit.mockReturnValue(save.promise);
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('original') }));
+    act(() => result.current.selectNode(graph('original').nodes[0]));
+
+    let savePromise!: Promise<void>;
+    act(() => {
+      savePromise = result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'Edited Agent' }] });
+    });
+    expect(mocks.saveGraphContentEdit).toHaveBeenCalledWith(
+      session,
+      'thread-1',
+      'original',
+      { nodes: [{ id: 'agent', label: 'Edited Agent' }] },
+    );
+    expect(result.current.graphData?.nodes[0].label).toBe('Agent');
+    expect(result.current.isSavingGraphEdit).toBe(true);
+    act(() => result.current.sendMessage('new request'));
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+
+    await act(async () => {
+      save.resolve({ ...graph('edited'), nodes: [{ ...graph('edited').nodes[0], label: 'Edited Agent' }] });
+      await savePromise;
+    });
+    expect(result.current.graphData?.version).toBe('edited');
+    expect(result.current.selectedNode?.node.label).toBe('Edited Agent');
+    expect(result.current.isSavingGraphEdit).toBe(false);
+
+    act(() => result.current.sendMessage('new request'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)?.[4] as string;
+    act(() => mocks.eventHandler?.({ type: 'error', content: 'later failure' }, { kind: 'chat', clientRequestId }));
+    expect(result.current.graphData?.nodes[0].label).toBe('Edited Agent');
+  });
+
+  it('preserves the graph and allows retry after an edit save fails', async () => {
+    mocks.saveGraphContentEdit.mockRejectedValueOnce(new Error('The diagram changed.'));
+    mocks.saveGraphContentEdit.mockResolvedValueOnce({ ...graph('retry'), title: 'Saved on retry' });
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('original') }));
+
+    await expect(result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'Attempt' }] })).rejects.toThrow('The diagram changed.');
+    expect(result.current.graphData?.version).toBe('original');
+    expect(result.current.isSavingGraphEdit).toBe(false);
+    await act(async () => result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'Retry' }] }));
+    expect(result.current.graphData?.version).toBe('retry');
+  });
+
+  it('preserves an explicitly edited decision type with authorization text after save and hydration', async () => {
+    const editedNode = {
+      ...graph('saved').nodes[0],
+      label: 'Authorization gate',
+      description: 'Authorization determines access.',
+      type: 'decision' as const,
+      user_edited_fields: ['type'],
+    };
+    const savedGraph = { ...graph('saved'), nodes: [editedNode] };
+    mocks.saveGraphContentEdit.mockResolvedValue(savedGraph);
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('original') }));
+
+    await act(async () => result.current.saveGraphEdit({
+      nodes: [{ id: 'agent', type: 'decision', description: 'Authorization determines access.' }],
+    }));
+    expect(result.current.graphData?.nodes[0].type).toBe('decision');
+    act(() => result.current.hydrateThread({ messages: [], graphData: savedGraph }));
+    expect(result.current.graphData?.nodes[0].type).toBe('decision');
+  });
+
+  it('ignores an edit response after switching threads', async () => {
+    const save = deferred<GraphData>();
+    mocks.saveGraphContentEdit.mockReturnValue(save.promise);
+    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), {
+      initialProps: { threadId: 'thread-a' },
+    });
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('a') }));
+
+    let savePromise!: Promise<void>;
+    act(() => {
+      savePromise = result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'A edited' }] });
+    });
+    rerender({ threadId: 'thread-b' });
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('b') }));
+    await act(async () => {
+      save.resolve({ ...graph('a-edited'), title: 'A edited' });
+      await savePromise;
+    });
+    expect(result.current.graphData?.version).toBe('b');
+    expect(result.current.isSavingGraphEdit).toBe(false);
+  });
+
+  it('rejects overlapping graph edits and edits during active generation', async () => {
+    const save = deferred<GraphData>();
+    mocks.saveGraphContentEdit.mockReturnValue(save.promise);
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('original') }));
+
+    let firstSave!: Promise<void>;
+    act(() => {
+      firstSave = result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'First' }] });
+    });
+    await expect(result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'Second' }] }))
+      .rejects.toThrow('Wait for the current diagram edit');
+    expect(mocks.saveGraphContentEdit).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      save.resolve(graph('saved'));
+      await firstSave;
+    });
+    act(() => result.current.sendMessage('generate'));
+    await expect(result.current.saveGraphEdit({ nodes: [{ id: 'agent', label: 'During generation' }] }))
+      .rejects.toThrow('Wait for diagram generation');
+    expect(mocks.saveGraphContentEdit).toHaveBeenCalledTimes(1);
   });
 
   it('streams chat events into messages, graph state, notices, and completion analytics', async () => {
@@ -511,7 +703,8 @@ describe('useAgentStream', () => {
 
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
     expect(mocks.steerGeneration).toHaveBeenCalledWith('hello');
-    expect(screen.getByTestId('messages').textContent).toContain('user:Steer: hello:done');
+    expect(screen.getByTestId('messages').textContent).toContain('user:hello:done');
+    expect(screen.getByTestId('messages').textContent).not.toContain('Steer:');
   });
 
   it('discards partial assistant output when a steer restarts the workflow', () => {
@@ -729,7 +922,7 @@ describe('useAgentStream', () => {
     fireEvent.click(screen.getByText('pause'));
     expect(screen.getByTestId('graph-title').textContent).toBe('Agent Map');
     expect(screen.getByTestId('messages').textContent).toContain('A queued explanation.');
-    expect(screen.getByTestId('progress').textContent).toBe('[]');
+    expect(screen.getByTestId('progress').textContent).toContain('Primary design ready');
   });
 
   it('renders the exact private candidate without legacy node-type normalization', () => {

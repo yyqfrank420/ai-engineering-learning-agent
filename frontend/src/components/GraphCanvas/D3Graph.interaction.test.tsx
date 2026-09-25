@@ -1,8 +1,11 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { GraphData, GraphEdge } from '../../types';
 import { D3Graph } from './D3Graph';
+import tradingBotSavedGraph from './__fixtures__/tradingBotSavedGraph.json';
+import { learnerSupportGraph } from './__fixtures__/learnerSupportGraph';
+import { diagramConnections } from './diagramConnections';
 import {
   customerSupportDenseGraph,
   growthMarketingDenseGraph,
@@ -77,6 +80,398 @@ afterAll(() => {
 });
 
 describe('graph node activation', () => {
+  it.each(['node', 'zone', 'border'])('cleans up an active %s drag when the canvas unmounts', targetType => {
+    const save = vi.fn();
+    const props = { graphData: { ...graph, groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['sensor_gateway'] }] },
+      currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: vi.fn(), onViewStateChange: save, navigation: true };
+    const view = render(<D3Graph {...props} />);
+    const zone = view.container.querySelector('.group-box > rect')!;
+    fireEvent.doubleClick(zone);
+    const target = targetType === 'zone' ? zone : view.container.querySelector(targetType === 'node' ? 'g.node' : '.zone-resize')!;
+    const down = createEvent.mouseDown(target, { clientX: 100, clientY: 100, button: 0 });
+    Object.defineProperty(down, 'view', { value: document.defaultView });
+    fireEvent(target, down);
+    view.unmount();
+    save.mockClear();
+    for (const type of ['mouseMove', 'mouseUp'] as const) {
+      const event = createEvent[type](window, { clientX: 120, clientY: 140, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(window, event);
+    }
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it.each(['move', 'resize'] as const)('snaps zone %s to another frame and moves every member together', async operation => {
+    const save = vi.fn();
+    const zoneGraph: GraphData = { ...graph,
+      nodes: ['a', 'b', 'c'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      groups: [{ id: 'first', label: 'First cluster', kind: 'runtime', nodeIds: ['a', 'b'] },
+        { id: 'second', label: 'Second cluster', kind: 'runtime', nodeIds: ['c'] }] };
+    const { container } = render(<D3Graph graphData={zoneGraph} currentStep={-1} activeNodeIds={new Set<string>()}
+      onNodeClick={() => undefined} onViewStateChange={save} navigation initialViewState={{ layoutVersion: 17,
+        nodePositions: { a: { x: 200, y: 100 }, b: { x: 400, y: 100 }, c: { x: 700, y: 300 } },
+        viewport: { x: 0, y: 0, k: 1 } }} />);
+    const frame = container.querySelector('[data-group-id="first"] > rect')!;
+    fireEvent.doubleClick(frame);
+    const target = operation === 'move' ? frame : container.querySelector('[data-group-id="first"] [data-side="e"]')!;
+    const mouse = (element: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', x: number, y: number) => {
+      const event = createEvent[type](element, { clientX: x, clientY: y, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(element, event);
+    };
+    const end = operation === 'move' ? [597, 160] : [397, 100];
+    mouse(target, 'mouseDown', 100, 100);
+    mouse(window, 'mouseMove', end[0], end[1]);
+    expect(container.querySelectorAll('.alignment-guides line')).toHaveLength(1);
+    const guide = container.querySelector('.alignment-guides line')!;
+    expect(Number(guide.getAttribute('x1'))).toBe(operation === 'move' ? 583 : 817);
+    mouse(window, 'mouseUp', end[0], end[1]);
+    const positions = save.mock.lastCall![0].nodePositions;
+    expect(positions.a).toEqual(operation === 'move' ? { x: 700, y: 160 } : { x: 350, y: 100 });
+    expect(positions.b.x - positions.a.x).toBe(200);
+    expect(positions.b.y).toBe(positions.a.y);
+    expect(positions.c).toEqual({ x: 700, y: 300 });
+    expect(container.querySelectorAll('.alignment-guides line')).toHaveLength(0);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+
+  it('restores asymmetric saved padding with centered contents and no frame drift', () => {
+    const props = { graphData: { ...graph, nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['a', 'b'] }] },
+      currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: () => undefined, navigation: true, onViewStateChange: vi.fn() };
+    const saved = { layoutVersion: 17, nodePositions: { a: { x: 200, y: 100 }, b: { x: 400, y: 200 } },
+      viewport: { x: 0, y: 0, k: 1 }, zonePadding: { zone: { left: 100, right: 0, top: 30, bottom: 10 } } };
+    const view = render(<D3Graph {...props} initialViewState={saved} />);
+    const bounds = (root: HTMLElement) => ['x', 'y', 'width', 'height'].map(attr => Number(root.querySelector('.group-box > rect')!.getAttribute(attr)));
+    expect(bounds(view.container)).toEqual([-17, -6, 534, 270]);
+    const normalized = props.onViewStateChange.mock.lastCall![0];
+    expect(normalized.nodePositions).toEqual({ a: { x: 150, y: 90 }, b: { x: 350, y: 190 } });
+    expect(normalized.zonePadding.zone).toEqual({ left: 50, right: 50, top: 20, bottom: 20 });
+    view.unmount();
+    const restored = render(<D3Graph {...props} initialViewState={normalized} />);
+    expect(bounds(restored.container)).toEqual([-17, -6, 534, 270]);
+    expect(props.onViewStateChange.mock.lastCall![0].nodePositions).toEqual(normalized.nodePositions);
+  });
+
+  it.each([
+    { altKey: false, shiftKey: false, x: 496, y: 240, expected: [500, 240], guides: 1 },
+    { altKey: true, shiftKey: false, x: 496, y: 240, expected: [496, 240], guides: 0 },
+    { altKey: false, shiftKey: true, x: 300, y: 294, expected: [200, 300], guides: 1 },
+  ])('snaps node drags with visible guides and respects modifiers: %j', async scenario => {
+    const save = vi.fn();
+    const props = { graphData: { ...graph, nodes: ['a', 'b', 'c'].map(id => ({ ...graph.nodes[0], id, label: id })) },
+      currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: vi.fn(), navigation: true, onViewStateChange: save,
+      initialViewState: { layoutVersion: 17, nodePositions: { a: { x: 200, y: 100 }, b: { x: 500, y: 100 }, c: { x: 500, y: 300 } },
+        viewport: { x: 0, y: 0, k: 1 } } };
+    const { container } = render(<D3Graph {...props} />);
+    const node = container.querySelector('[data-node-id="a"]')!;
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number, clientY: number) => {
+      const event = createEvent[type](target, { clientX, clientY, button: 0, altKey: scenario.altKey, shiftKey: scenario.shiftKey });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(target, event);
+    };
+    mouse(node, 'mouseDown', 200, 100);
+    mouse(window, 'mouseMove', scenario.x, scenario.y);
+    expect(node.getAttribute('transform')).toBe(`translate(${scenario.expected.join(',')})`);
+    expect(container.querySelectorAll('.alignment-guides line')).toHaveLength(scenario.guides);
+    mouse(window, 'mouseUp', scenario.x, scenario.y);
+    expect(container.querySelectorAll('.alignment-guides line')).toHaveLength(0);
+    expect(save.mock.lastCall![0].nodePositions.a).toEqual({ x: scenario.expected[0], y: scenario.expected[1] });
+    fireEvent.keyDown(node, { key: 'ArrowRight' });
+    fireEvent.keyDown(node, { key: 'ArrowDown', shiftKey: true });
+    expect(node.getAttribute('transform')).toBe(`translate(${scenario.expected[0] + 1},${scenario.expected[1] + 10})`);
+    expect(props.onNodeClick).not.toHaveBeenCalled();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+  it('keeps future steps hidden even when focus and Connections request more detail', () => {
+    const sequenceGraph: GraphData = {
+      ...graph,
+      nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('a', 'b', 'Request'), edge('b', 'a', 'Response')],
+      sequence: [{ step: 1, nodes: ['a'], description: 'Start' }, { step: 2, nodes: ['b'], description: 'Respond' }],
+    };
+    const props = { graphData: sequenceGraph, currentStep: 0, activeNodeIds: new Set(['a']), onNodeClick: vi.fn(), navigation: true };
+    const view = render(<D3Graph {...props} />);
+    fireEvent.focus(screen.getByRole('button', { name: 'Explore a' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Connections' }));
+    expect(view.container.querySelector<SVGPathElement>('.edge-vis')?.style.opacity).toBe('0');
+    expect(view.container.querySelector('.edge-hit')?.getAttribute('tabindex')).toBe('-1');
+    expect(view.container.querySelector('[data-node-id="b"]')?.getAttribute('aria-hidden')).toBe('true');
+    expect(view.container.querySelector('[data-node-id="b"]')?.getAttribute('tabindex')).toBe('-1');
+    view.rerender(<D3Graph {...props} currentStep={1} activeNodeIds={new Set(['a', 'b'])} />);
+    const connection = screen.getByRole('button', { name: 'Connections between a and b' });
+    expect(connection.getAttribute('tabindex')).toBe('0');
+    fireEvent.keyDown(connection, { key: 'Enter' });
+    expect(screen.getByRole('region', { name: 'Connection details' }).textContent).toContain('Response');
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close connection details' }));
+  });
+  it('exposes resize handles only for the selected zone and exits with Escape', () => {
+    const { container } = render(<D3Graph graphData={learnerSupportGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+    expect(container.querySelectorAll('.zone-resize[tabindex="0"]')).toHaveLength(0);
+    const zone = container.querySelector('[data-group-id="data:datastore"] > rect')!;
+    fireEvent.keyDown(zone, { key: 'Enter' });
+    expect(container.querySelectorAll('.zone-resize[tabindex="0"]')).toHaveLength(8);
+    const border = container.querySelector<SVGElement>('[data-group-id="data:datastore"] .zone-resize')!;
+    border.focus();
+    fireEvent.keyDown(border, { key: 'Escape' });
+    expect(container.querySelectorAll('.zone-resize[tabindex="0"]')).toHaveLength(0);
+    expect(document.activeElement).toBe(zone);
+    expect(screen.getByRole('button', { name: 'Readable view' }).textContent).toBe('Readable');
+    expect(screen.queryByText('Diagram help')).toBeNull();
+  });
+  it('centers blocks while resizing zone borders, clamps to contents, and restores the saved shape', async () => {
+    const save = vi.fn();
+    const props = { graphData: learnerSupportGraph, currentStep: -1, activeNodeIds: new Set<string>(),
+      onNodeClick: () => undefined, onViewStateChange: save, navigation: true };
+    const rendered = render(<D3Graph {...props} />);
+    const zone = rendered.container.querySelector('[data-group-id="data:datastore"]')!;
+    const rect = zone.querySelector('rect')!;
+    const width = Number(rect.getAttribute('width'));
+    const x = Number(rect.getAttribute('x'));
+    const blocks = Array.from(rendered.container.querySelectorAll('g.node'), node => node.getAttribute('transform'));
+    const right = zone.querySelector('[data-side="e"]')!;
+    fireEvent.keyDown(right, { key: 'ArrowRight', shiftKey: true });
+    expect(Number(rect.getAttribute('width'))).toBe(width + 10);
+    fireEvent.keyDown(right, { key: 'ArrowLeft', shiftKey: true });
+    fireEvent.keyDown(right, { key: 'ArrowLeft', shiftKey: true });
+    expect(Number(rect.getAttribute('width'))).toBe(width);
+    const corner = zone.querySelector('[data-side="nw"]')!;
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number, clientY: number) => {
+      const event = createEvent[type](target, { clientX, clientY, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(target, event);
+    };
+    mouse(corner, 'mouseDown', 100, 100);
+    mouse(window, 'mouseMove', 70, 80);
+    mouse(window, 'mouseUp', 70, 80);
+    expect(Number(rect.getAttribute('x'))).toBe(x - 30);
+    expect(Number(rect.getAttribute('width'))).toBe(width + 30);
+    const positions = Array.from(rendered.container.querySelectorAll('g.node'), node => node.getAttribute('transform'));
+    expect(positions).not.toEqual(blocks);
+    const members = learnerSupportGraph.groups!.find(group => group.id === 'data')!.nodeIds;
+    for (const node of rendered.container.querySelectorAll<SVGGElement>('g.node')) {
+      const index = learnerSupportGraph.nodes.findIndex(item => item.id === node.dataset.nodeId);
+      const previous = blocks[index]!.match(/translate\(([^,]+),([^)]+)\)/)!.slice(1).map(Number);
+      if (members.includes(node.dataset.nodeId!)) {
+        expect(node.getAttribute('transform')).toBe(`translate(${previous[0] - 15},${previous[1] - 10})`);
+      } else expect(node.getAttribute('transform')).toBe(blocks[index]);
+    }
+    const state = save.mock.lastCall![0];
+    expect(state.zonePadding['data:datastore']).toEqual({ top: 10, right: 15, bottom: 10, left: 15 });
+    rendered.unmount();
+    const restored = render(<D3Graph {...props} initialViewState={state} />);
+    const restoredRect = restored.container.querySelector('[data-group-id="data:datastore"] > rect')!;
+    expect(Number(restoredRect.getAttribute('x'))).toBe(x - 30);
+    expect(Number(restoredRect.getAttribute('width'))).toBe(width + 30);
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+
+  it.each([false, true])('places learner-facing tiers left to right (component preview: %s)', preview => {
+    const { container } = render(<D3Graph graphData={{ ...learnerSupportGraph, edges: preview ? [] : learnerSupportGraph.edges }}
+      currentStep={-1} activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+    const position = (id: string) => container.querySelector(`[data-node-id="${id}"]`)!
+      .getAttribute('transform')!.match(/translate\(([^,]+),([^)]+)\)/)!.slice(1).map(Number);
+    expect(position('client')[0]).toBeLessThan(position('gateway')[0]);
+    expect(position('gateway')[0]).toBeLessThan(position('agent')[0]);
+    expect(position('agent')[0]).toBeLessThan(position('tickets')[0]);
+    expect(position('audit')[1]).toBeGreaterThan(position('agent')[1]);
+    expect(position('crm')[1]).toBeLessThan(position('agent')[1]);
+    expect(position('executor')[0]).toBeLessThan(position('tickets')[0]);
+    const labels = Array.from(container.querySelectorAll('.group-labels-layer text'), node => node.textContent);
+    expect(labels).toContain('Data stores');
+    expect(labels).toContain('Logs and monitoring');
+    expect(labels).not.toContain('Operations');
+    expect(labels).not.toContain('Runtime');
+  });
+
+  it('moves zone members together after double-click and persists their positions', async () => {
+    const onViewStateChange = vi.fn();
+    const zoneGraph: GraphData = {
+      ...graph,
+      nodes: ['a', 'b', 'c'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('a', 'b', 'Send'), edge('b', 'c', 'Return')],
+      groups: [{ id: 'zone', label: 'Processing', nodeIds: ['a', 'b', 'a', 'missing'], kind: 'runtime' }],
+    };
+    const { container } = render(<D3Graph graphData={zoneGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined}
+      onViewStateChange={onViewStateChange} navigation />);
+    const rect = container.querySelector<SVGRectElement>('.group-box > rect')!;
+    const svg = screen.getByTestId('graph-canvas');
+    const view = document.defaultView!;
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', x: number, y: number) => {
+      const event = createEvent[type](target, { clientX: x, clientY: y, button: 0, buttons: type === 'mouseUp' ? 0 : 1 });
+      // Vitest's window proxy is rejected by jsdom's MouseEvent constructor.
+      Object.defineProperty(event, 'view', { value: view });
+      fireEvent(target, event);
+    };
+    const position = (id: string) => {
+      const value = container.querySelector(`[data-node-id="${id}"]`)!.getAttribute('transform')!;
+      return value.match(/translate\(([^,]+),([^)]+)\)/)!.slice(1).map(Number);
+    };
+    const before = ['a', 'b', 'c'].map(position);
+    const oldPath = container.querySelector('.edge-vis')!.getAttribute('d');
+    const oldZoneX = Number(rect.getAttribute('x'));
+    fireEvent.doubleClick(rect);
+    expect(rect.style.cursor).toBe('grab');
+    expect(rect.getAttribute('aria-pressed')).toBe('true');
+    onViewStateChange.mockClear();
+    mouse(rect, 'mouseDown', 100, 100);
+    expect(rect.style.cursor).toBe('grabbing');
+    mouse(view, 'mouseMove', 140, 120);
+    mouse(view, 'mouseUp', 140, 120);
+    expect(position('a')).toEqual([before[0][0] + 40, before[0][1] + 20]);
+    expect(position('b')).toEqual([before[1][0] + 40, before[1][1] + 20]);
+    expect(position('c')).toEqual(before[2]);
+    expect(Number(rect.getAttribute('x'))).toBe(oldZoneX + 40);
+    expect(container.querySelector('.edge-vis')!.getAttribute('d')).not.toBe(oldPath);
+    expect(onViewStateChange).toHaveBeenCalledTimes(1);
+    expect(onViewStateChange.mock.calls[0][0].nodePositions.a).toEqual({ x: position('a')[0], y: position('a')[1] });
+    expect(rect.style.cursor).toBe('grab');
+    fireEvent.keyDown(rect, { key: 'Escape' });
+    expect(rect.getAttribute('aria-pressed')).toBe('false');
+    expect(rect.style.cursor).toBe('');
+    fireEvent.keyDown(rect, { key: 'Enter' });
+    expect(rect.style.cursor).toBe('grab');
+    mouse(svg, 'mouseDown', 10, 10);
+    mouse(view, 'mouseUp', 10, 10);
+    expect(rect.getAttribute('aria-pressed')).toBe('false');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+
+  it('gives wrapped live titles proper leading and separation from their subtitle', () => {
+    const measure = vi.spyOn(SVGElement.prototype as SVGElement & { getBBox(): DOMRect }, 'getBBox').mockImplementation(function(this: SVGElement) {
+      return { x: 0, y: 0, width: (this.textContent?.length ?? 0) * 8, height: 16 } as DOMRect;
+    });
+    try {
+      const { container } = render(<D3Graph graphData={{ ...graph, nodes: [{ ...graph.nodes[0],
+        label: 'Strategy Model Service', technology: 'Application service' }] }}
+        currentStep={-1} activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+      const title = container.querySelector('.node-title')!;
+      const lines = Array.from(title.querySelectorAll('tspan'));
+      expect(lines).toHaveLength(2);
+      expect(title.getAttribute('font-weight')).toBe('500');
+      expect(Number(lines[1].getAttribute('y')) - Number(lines[0].getAttribute('y'))).toBe(20);
+      const subtitleY = Number(container.querySelector('.node-technology tspan')!.getAttribute('y'));
+      expect(subtitleY - Number(lines[1].getAttribute('y'))).toBeGreaterThanOrEqual(18);
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
+  it('renders the saved trading diagram horizontally without overlapping zone frames or overview labels', () => {
+    const { container } = render(<D3Graph graphData={tradingBotSavedGraph as unknown as GraphData}
+      currentStep={-1} activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+    const positions = Array.from(container.querySelectorAll('g.node')).map(node => {
+      const match = node.getAttribute('transform')!.match(/translate\(([^,]+),\s*([^)]+)\)/)!;
+      return { x: Number(match[1]), y: Number(match[2]) };
+    });
+    expect(positions).toHaveLength(12);
+    const width = Math.max(...positions.map(p => p.x)) - Math.min(...positions.map(p => p.x));
+    const height = Math.max(...positions.map(p => p.y)) - Math.min(...positions.map(p => p.y));
+    expect(width).toBeGreaterThan(height);
+    const regions = Array.from(container.querySelectorAll<SVGRectElement>('.group-box > rect')).map(rect => ({
+      id: rect.parentElement!.getAttribute('data-group-id'),
+      x: Number(rect.getAttribute('x')), y: Number(rect.getAttribute('y')),
+      width: Number(rect.getAttribute('width')), height: Number(rect.getAttribute('height')),
+    }));
+    expect(regions).toHaveLength(tradingBotSavedGraph.groups.length);
+    for (const region of regions) {
+      const members = tradingBotSavedGraph.groups.find(group => group.id === region.id)!.nodeIds;
+      for (const node of container.querySelectorAll('g.node')) {
+        const match = node.getAttribute('transform')!.match(/translate\(([^,]+),\s*([^)]+)\)/)!;
+        const x = Number(match[1]), y = Number(match[2]);
+        const inside = x > region.x && x < region.x + region.width
+          && y > region.y && y < region.y + region.height;
+        expect(inside).toBe(members.includes(node.getAttribute('data-node-id')!));
+      }
+      for (const other of regions.filter(other => other !== region)) {
+        expect(region.y + region.height <= other.y || other.y + other.height <= region.y
+          || region.x + region.width <= other.x || other.x + other.width <= region.x).toBe(true);
+      }
+    }
+    expect(Array.from(container.querySelectorAll('.group-labels-layer text')).map(label => label.textContent))
+      .toEqual(tradingBotSavedGraph.groups.map(group => group.label));
+    expect(Array.from(container.querySelectorAll<SVGGElement>('.edge-label'))
+      .every(label => label.style.opacity === '0')).toBe(true);
+    const connections = diagramConnections(tradingBotSavedGraph.edges as GraphEdge[]);
+    expect(container.querySelectorAll('.edge-vis')).toHaveLength(connections.length);
+    expect(connections.length).toBeLessThan(tradingBotSavedGraph.edges.length);
+    expect(container.querySelectorAll('.node-group-label')).toHaveLength(0);
+    const ledger = container.querySelector('[data-node-id="n8"]')!;
+    expect(ledger.querySelector('.node-title')?.textContent).toBe('Portfolio Ledger');
+    expect(ledger.querySelector('.node-technology')?.textContent).toBe('Data store');
+    expect(ledger.querySelector('title')?.textContent).toContain(tradingBotSavedGraph.nodes.find(node => node.id === 'n8')!.description);
+    fireEvent.mouseOver(ledger);
+    expect(Array.from(container.querySelectorAll<SVGGElement>('.edge-label'))
+      .every(label => label.style.opacity === '0')).toBe(true);
+    fireEvent.mouseOut(ledger);
+    fireEvent.click(screen.getByRole('button', { name: 'Connections' }));
+    expect(Array.from(container.querySelectorAll<SVGGElement>('.edge-label'))
+      .every(label => label.style.opacity === '0')).toBe(true);
+    const edgeIndex = connections.findIndex(connection => connection.members.some(edge => edge.target === 'n8'));
+    fireEvent.mouseOver(container.querySelectorAll('.edge-hit')[edgeIndex]);
+    expect(screen.getByRole('tooltip').textContent).toContain('Portfolio Ledger');
+    fireEvent.click(container.querySelectorAll('.edge-hit')[edgeIndex]);
+    const details = screen.getByRole('region', { name: 'Connection details' });
+    for (const member of connections[edgeIndex].members) expect(details.textContent).toContain(member.label);
+    fireEvent.keyDown(details, { key: 'Escape' });
+    expect(screen.queryByRole('region', { name: 'Connection details' })).toBeNull();
+    fireEvent.mouseOut(container.querySelectorAll('.edge-hit')[edgeIndex]);
+    expect(screen.queryByRole('tooltip')).toBeNull();
+  });
+
+  it('keeps deep interactive graphs left to right and discloses return connections on focus', () => {
+    const ids = Array.from({ length: 12 }, (_, index) => `stage${index}`);
+    const chain: GraphData = {
+      ...graph,
+      nodes: ids.map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [
+        ...ids.slice(1).map((id, index) => edge(ids[index], id, 'Continue')),
+        { ...edge(ids[11], ids[0], 'Return outcome'), flow: 'feedback' },
+      ],
+    };
+    const { container } = render(<D3Graph graphData={chain} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+    const positions = ids.map(id => {
+      const match = container.querySelector(`[data-node-id="${id}"]`)!
+        .getAttribute('transform')!.match(/translate\(([^,]+),\s*([^)]+)\)/)!;
+      return { x: Number(match[1]), y: Number(match[2]) };
+    });
+    expect(new Set(positions.map(position => position.y)).size).toBe(1);
+    expect(positions.slice(1).every((position, index) => position.x > positions[index].x)).toBe(true);
+    const returnPath = container.querySelector<SVGPathElement>('[data-edge-label="Return outcome"]')!;
+    expect(returnPath.style.opacity).toBe('0');
+    const firstNode = screen.getByRole('button', { name: 'Explore stage0' });
+    fireEvent.focus(firstNode);
+    expect(returnPath.style.opacity).toBe('1');
+    fireEvent.blur(firstNode);
+    expect(returnPath.style.opacity).toBe('0');
+    fireEvent.click(screen.getByRole('button', { name: 'Connections' }));
+    expect(returnPath.style.opacity).toBe('0.4');
+    expect(screen.getByRole('button', { name: 'Connections' }).getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('keeps a three-stage flow aligned across group boundaries with local return routes', () => {
+    const chain: GraphData = {
+      ...graph,
+      nodes: ['client', 'service', 'model'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('client', 'service', 'Upload'), edge('service', 'client', 'Summary'),
+        edge('service', 'model', 'Prompt'), edge('model', 'service', 'Result')],
+      groups: [
+        { id: 'runtime', label: 'Runtime', kind: 'runtime', nodeIds: ['client', 'service'] },
+        { id: 'external', label: 'External', kind: 'external', nodeIds: ['model'] },
+      ],
+    };
+    const { container } = render(<D3Graph graphData={chain} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} />);
+    const positions = ['client', 'service', 'model'].map(id => (
+      container.querySelector(`[data-node-id="${id}"]`)?.getAttribute('transform')?.match(/translate\(([^,]+),\s*([^)]+)\)/)
+    ));
+    expect(positions.every(position => position !== null && position !== undefined)).toBe(true);
+    expect(new Set(positions.map(position => position?.[2])).size).toBe(1);
+  });
+
   it('exposes the node as a button and supports pointer and keyboard activation', () => {
     const onNodeClick = vi.fn();
     render(
@@ -100,6 +495,39 @@ describe('graph node activation', () => {
     expect(screen.getByText('Signed telemetry')).toBeTruthy();
     expect(screen.getByText('ENTRY')).toBeTruthy();
     expect(screen.queryByText('EXIT')).toBeNull();
+  });
+
+  it('opens node editing on double-click or F2 without zooming or exploring', async () => {
+    const onNodeClick = vi.fn();
+    const onNodeEdit = vi.fn();
+    const saveView = vi.fn();
+    render(<D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set<string>()}
+      navigation onNodeClick={onNodeClick} onNodeEdit={onNodeEdit} onViewStateChange={saveView} />);
+    const node = screen.getByRole('button', { name: 'Explore Sensor Gateway' });
+    const initialViewport = saveView.mock.lastCall![0].viewport;
+    expect(node.getAttribute('aria-description')).toContain('F2');
+
+    fireEvent.click(node, { detail: 1 });
+    fireEvent.click(node, { detail: 2 });
+    fireEvent.doubleClick(node);
+    expect(onNodeEdit).toHaveBeenCalledTimes(1);
+    expect(onNodeClick).not.toHaveBeenCalled();
+    expect(saveView.mock.lastCall![0].viewport).toEqual(initialViewport);
+    await new Promise(resolve => window.setTimeout(resolve, 380));
+    expect(onNodeClick).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(node, { key: 'F2' });
+    expect(onNodeEdit).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(node, { key: 'Enter' });
+    expect(onNodeClick).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a single-click node exploration available when editing is enabled', async () => {
+    const onNodeClick = vi.fn();
+    render(<D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set<string>()}
+      navigation onNodeClick={onNodeClick} onNodeEdit={() => undefined} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Explore Sensor Gateway' }), { detail: 1 });
+    await waitFor(() => expect(onNodeClick).toHaveBeenCalledTimes(1));
   });
 
   it('fits feedback-only node titles without assigning runtime entry badges', () => {
@@ -255,7 +683,7 @@ describe('graph node activation', () => {
     expect(edgeLabel?.getAttribute('opacity')).toBe('0.62');
   });
 
-  it('re-renders and re-fits when its actual canvas size changes', async () => {
+  it('preserves the diagram center and node positions when the canvas size changes', async () => {
     let notifyResize: ((entries: Array<{ contentRect: { width: number; height: number } }>) => void) | null = null;
     class TestResizeObserver {
       constructor(callback: typeof notifyResize) {
@@ -266,6 +694,7 @@ describe('graph node activation', () => {
     }
     vi.stubGlobal('ResizeObserver', TestResizeObserver);
     try {
+      const save = vi.fn();
       const { container } = render(
         <div style={{ width: 760, height: 500 }}>
           <D3Graph
@@ -273,14 +702,25 @@ describe('graph node activation', () => {
             currentStep={-1}
             activeNodeIds={new Set<string>()}
             onNodeClick={() => undefined}
+            onViewStateChange={save}
+            navigation
           />
         </div>,
       );
       const firstNode = container.querySelector('g.node');
+      const before = save.mock.lastCall![0];
+      const svg = screen.getByTestId('graph-canvas');
+      Object.defineProperty(svg, 'clientWidth', { configurable: true, value: 520 });
+      Object.defineProperty(svg, 'clientHeight', { configurable: true, value: 720 });
 
       act(() => notifyResize?.([{ contentRect: { width: 520, height: 720 } }]));
 
       await waitFor(() => expect(firstNode?.isConnected).toBe(false));
+      const after = save.mock.lastCall![0];
+      expect(after.viewport.x).toBeCloseTo(before.viewport.x - 120);
+      expect(after.viewport.y).toBeCloseTo(before.viewport.y + 110);
+      expect(after.viewport.k).toBe(before.viewport.k);
+      expect(after.nodePositions).toEqual(before.nodePositions);
       expect(container.querySelectorAll('g.node')).toHaveLength(1);
       await waitFor(() => {
         expect(container.querySelector('g.node')?.getAttribute('opacity')).toBe('1');

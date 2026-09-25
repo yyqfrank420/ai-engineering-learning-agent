@@ -1,6 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # File: backend/agent/nodes/research_worker.py
-# Purpose: Phase 1a research worker — queries Brave through DDGS for real-world context
+# Purpose: Phase 1a research worker — queries web search through DDGS for real-world context
 #          on the user's topic and returns a formatted bullet list.
 #
 #          Runs in parallel with rag_worker. Its output (research_context) is
@@ -20,7 +20,6 @@
 import asyncio
 import logging
 import re
-import time
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 
@@ -35,7 +34,8 @@ logger = logging.getLogger(__name__)
 _TITLE_MAX = 80
 _BODY_MAX = 600
 _TOPIC_MAX = 160
-_SEARCH_BACKEND = "brave"
+_SEARCH_BACKEND = "bing"
+_SEARCH_FALLBACK = "brave"
 _SEARCH_SAFESEARCH = "on"
 
 _DESIGN_SCAFFOLD = re.compile(
@@ -54,7 +54,9 @@ async def research_worker_node(state: AgentState) -> AgentState:
     downstream nodes degrade explicitly to book-only evidence.
     """
     send = state["send"]
-    await send({"type": "worker_status", "worker": "research", "status": "Searching the web…"})
+    await send(
+        {"type": "worker_status", "worker": "research", "status": "Searching the web…"}
+    )
 
     topic = _normalise_topic(state.get("design_query") or state["user_message"])
     queries = _build_queries(topic)
@@ -82,12 +84,14 @@ async def research_worker_node(state: AgentState) -> AgentState:
         await _send_unavailable(send)
         return {**state, "research_context": "", "research_status": "unavailable"}
     sources = _source_urls(context)
-    await send({
-        "type": "worker_status",
-        "worker": "research",
-        "status": "Web search results available.",
-        "sources": sources,
-    })
+    await send(
+        {
+            "type": "worker_status",
+            "worker": "research",
+            "status": "Web search results available.",
+            "sources": sources,
+        }
+    )
     if _may_emit_eval_evidence(state):
         provenance = []
         for item in raw:
@@ -97,21 +101,25 @@ async def research_worker_node(state: AgentState) -> AgentState:
                 source = {"url": url, "query": query, "backend": backend}
                 if source not in provenance:
                     provenance.append(source)
-        await send({
-            "type": "research_evidence",
-            "query": topic,
-            "results": context.splitlines(),
-            "source_provenance": provenance,
-        })
+        await send(
+            {
+                "type": "research_evidence",
+                "query": topic,
+                "results": context.splitlines(),
+                "source_provenance": provenance,
+            }
+        )
     return {**state, "research_context": context, "research_status": "ready"}
 
 
 async def _send_unavailable(send) -> None:
-    await send({
-        "type": "worker_status",
-        "worker": "research",
-        "status": "Web research unavailable — continuing with book evidence only.",
-    })
+    await send(
+        {
+            "type": "worker_status",
+            "worker": "research",
+            "status": "Web research unavailable — continuing with book evidence only.",
+        }
+    )
 
 
 def _may_emit_eval_evidence(state: AgentState) -> bool:
@@ -169,7 +177,7 @@ def _domain_topic(topic: str) -> str:
 
 def _run_ddgs_searches(queries: list[str], results_per_query: int) -> list[dict]:
     """
-    Synchronous Brave search through DDGS across all queries.
+    Synchronous search through DDGS with one bounded alternate-provider attempt.
     Called inside asyncio.to_thread — must be thread-safe.
     Returns result dicts with their originating query and backend.
     """
@@ -180,33 +188,50 @@ def _run_ddgs_searches(queries: list[str], results_per_query: int) -> list[dict]
         for query in queries:
             try:
                 hits = ddg.text(
-                    query, max_results=results_per_query,
-                    backend=_SEARCH_BACKEND, safesearch=_SEARCH_SAFESEARCH,
+                    query,
+                    max_results=results_per_query,
+                    backend=_SEARCH_BACKEND,
+                    safesearch=_SEARCH_SAFESEARCH,
                 )
                 results.extend(
                     {**hit, "query": query, "backend": _SEARCH_BACKEND} for hit in hits
                 )
-            except Exception:
-                # One failed query shouldn't abort the rest
-                logger.debug("Brave query failed", exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "Web search query failed backend=%s error=%s",
+                    _SEARCH_BACKEND,
+                    type(exc).__name__,
+                )
                 continue
-    if results or not queries:
+    if not queries or _format_results(results, settings.research_noise_domains):
         return results
 
-    # Retry the provider once with a fresh session. Retrying the whole query
-    # set would multiply traffic during an outage without improving evidence.
-    time.sleep(0.2)
+    # Keep the existing query budget, but use another provider when the primary
+    # returns no usable sources. Raw hits may all be filtered or lack snippets.
+    logger.warning(
+        "Web search fallback primary=%s fallback=%s raw_results=%d",
+        _SEARCH_BACKEND,
+        _SEARCH_FALLBACK,
+        len(results),
+    )
     try:
         with DDGS(timeout=4) as ddg:
             hits = ddg.text(
-                queries[0], max_results=results_per_query,
-                backend=_SEARCH_BACKEND, safesearch=_SEARCH_SAFESEARCH,
+                queries[0],
+                max_results=results_per_query,
+                backend=_SEARCH_FALLBACK,
+                safesearch=_SEARCH_SAFESEARCH,
             )
             results.extend(
-                {**hit, "query": queries[0], "backend": _SEARCH_BACKEND} for hit in hits
+                {**hit, "query": queries[0], "backend": _SEARCH_FALLBACK}
+                for hit in hits
             )
-    except Exception:
-        logger.debug("Brave bounded retry failed", exc_info=True)
+    except Exception as exc:
+        logger.warning(
+            "Web search fallback failed backend=%s error=%s",
+            _SEARCH_FALLBACK,
+            type(exc).__name__,
+        )
     return results
 
 
@@ -218,7 +243,9 @@ def _format_results(raw: list[dict], noise_domains: list[str]) -> str:
     """
     seen_urls: set[str] = set()
     bullets: list[str] = []
-    normalised_noise_domains = [noise.lower().removeprefix("www.") for noise in noise_domains]
+    normalised_noise_domains = [
+        noise.lower().removeprefix("www.") for noise in noise_domains
+    ]
 
     for item in raw:
         href = str(item.get("href") or item.get("url", "")).strip()
@@ -252,11 +279,20 @@ def _format_results(raw: list[dict], noise_domains: list[str]) -> str:
             continue
 
         # Truncate for prompt economy
-        safe_title = " ".join(
-            title.replace("[", "(").replace("]", ")").replace("<", "(").replace(">", ")").split()
-        ) or domain
+        safe_title = (
+            " ".join(
+                title.replace("[", "(")
+                .replace("]", ")")
+                .replace("<", "(")
+                .replace(">", ")")
+                .split()
+            )
+            or domain
+        )
         safe_body = " ".join(body.replace("<", "(").replace(">", ")").split())
-        title_trunc = safe_title[:_TITLE_MAX] + ("…" if len(safe_title) > _TITLE_MAX else "")
+        title_trunc = safe_title[:_TITLE_MAX] + (
+            "…" if len(safe_title) > _TITLE_MAX else ""
+        )
         body_trunc = safe_body[:_BODY_MAX] + ("…" if len(safe_body) > _BODY_MAX else "")
 
         bullets.append(f"- {title_trunc} — <{href}>: {body_trunc}")

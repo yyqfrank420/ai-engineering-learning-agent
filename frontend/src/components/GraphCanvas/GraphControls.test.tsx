@@ -39,6 +39,13 @@ const edges: GraphEdge[] = [
 
 
 describe('graph detail controls', () => {
+  it('shows pause while the graph hook owns automatic playback', () => {
+    const onStepChange = vi.fn();
+    render(<SequenceBar currentStep={1} totalSteps={3} stepDescription="Second step"
+      autoPlaying onStepChange={onStepChange} onDismiss={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Pause' }));
+    expect(onStepChange).toHaveBeenCalledWith(1);
+  });
   afterEach(() => {
     vi.useRealTimers();
   });
