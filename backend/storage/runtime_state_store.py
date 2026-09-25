@@ -118,17 +118,25 @@ def try_acquire_active_stream(
     stream_id = str(uuid.uuid4())
     expires_at = now + ttl_s
     effective_stream_type = f"{stream_type}:scope:{scope_id}" if scope_id else stream_type
-    lock_key = f"active_streams:{effective_stream_type}:{user_id}"
 
     with _connect() as conn:
         if settings.use_postgres:
-            conn.execute("SELECT pg_advisory_xact_lock(hashtext(%s))", (lock_key,))
+            # Use the same owner lock as draft admission and completed-turn
+            # retention. Every per-user stream count shares this lock order.
+            profile = conn.execute(
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                (user_id,),
+            ).fetchone()
+            if profile is None:
+                raise ValueError("Profile does not exist")
         else:
             conn.execute("BEGIN IMMEDIATE")
 
         conn.execute(
-            _adapt_query("DELETE FROM active_streams WHERE expires_at_epoch < ?"),
-            (now,),
+            _adapt_query(
+                "DELETE FROM active_streams WHERE user_id = ? AND expires_at_epoch < ?"
+            ),
+            (user_id, now),
         )
         row = conn.execute(
             _adapt_query(

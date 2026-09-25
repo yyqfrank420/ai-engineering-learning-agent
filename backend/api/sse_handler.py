@@ -263,6 +263,11 @@ async def chat_endpoint(
                 yield sse({"type": "done"})
                 return
             # Recheck under both leases before reading context or running a model.
+            if thread_store.get_thread(user_id, thread_id) is None:
+                record_chat_rejected("thread_not_found")
+                yield sse({"type": "error", "content": "Thread not found"})
+                yield sse({"type": "done"})
+                return
             try:
                 completed_turn = thread_store.get_completed_turn(
                     user_id, thread_id, body.client_request_id
