@@ -838,30 +838,45 @@ async def _graph_dom_state(
     graph: dict[str, Any] | None,
 ) -> GraphDomState:
     graph_version = graph.get("version") if isinstance(graph, dict) else None
-    wait_for_function = getattr(page, "wait_for_function", None)
-    if graph_version and callable(wait_for_function):
-        expected_version_js = json.dumps(graph_version)
-        try:
-            await wait_for_function(
-                f"""() => document.querySelector('[data-testid="graph-canvas"]')"""
-                f"""?.getAttribute('data-rendered-graph-version') === {expected_version_js}""",
-                timeout=10_000,
-            )
-        except PlaywrightTimeoutError:
-            pass
-    canvas = page.locator('[data-testid="graph-canvas"]')
-    node_ids = await canvas.locator("g.node").evaluate_all(
-        "elements => elements.map(element => element.getAttribute('data-node-id') || '')"
-    )
-    connections = await canvas.locator("path.edge-vis").evaluate_all(
-        """elements => elements.map(element => ({
-            source: element.getAttribute('data-source-id') || '',
-            target: element.getAttribute('data-target-id') || '',
-            label: element.getAttribute('data-edge-label') || '',
-            count: element.getAttribute('data-connection-count') || '',
-            members: element.getAttribute('data-connection-members') || '',
-        }))"""
-    )
+    expected_version_js = json.dumps(graph_version)
+    # A redraw can clear the SVG between browser calls. Capture readiness and
+    # identities in one browser execution so they describe the same render.
+    try:
+        handle = await page.wait_for_function(
+            f"""() => {{
+            const canvases = document.querySelectorAll('[data-testid="graph-canvas"]');
+            if (canvases.length !== 1) return false;
+            const canvas = canvases[0];
+            const version = canvas.getAttribute('data-rendered-graph-version');
+            const expectedVersion = {expected_version_js};
+            if (expectedVersion !== null && version !== expectedVersion) return false;
+            return {{
+                version,
+                node_ids: Array.from(canvas.querySelectorAll('g.node'),
+                    element => element.getAttribute('data-node-id') || ''),
+                connections: Array.from(canvas.querySelectorAll('path.edge-vis'),
+                    element => ({{
+                        source: element.getAttribute('data-source-id') || '',
+                        target: element.getAttribute('data-target-id') || '',
+                        label: element.getAttribute('data-edge-label') || '',
+                        count: element.getAttribute('data-connection-count') || '',
+                        members: element.getAttribute('data-connection-members') || '',
+                    }})),
+            }};
+            }}""",
+            timeout=10_000,
+        )
+    except PlaywrightTimeoutError as exc:
+        raise BrowserQualityError(
+            "graph_render_readiness_timeout",
+            f"graph canvas did not render expected version {graph_version!r} within 10000 ms",
+        ) from exc
+    try:
+        snapshot = await handle.json_value()
+    finally:
+        await handle.dispose()
+    node_ids = snapshot["node_ids"]
+    connections = snapshot["connections"]
     edges: list[dict[str, str]] = []
     pairs: set[tuple[str, str]] = set()
     connections_valid = True
@@ -902,7 +917,7 @@ async def _graph_dom_state(
         "edges": edges,
         "connections": connections,
         "connections_valid": connections_valid,
-        "version": await canvas.get_attribute("data-rendered-graph-version"),
+        "version": snapshot["version"],
     }
 
 
@@ -1172,6 +1187,8 @@ async def _send_case_steps(
                 step_index,
                 step_events,
             )
+        except BrowserQualityError:
+            raise
         except Exception as exc:
             raise BrowserInfrastructureError(
                 "graph_dom_inspection_failed",
@@ -1200,7 +1217,16 @@ async def _send_case_steps(
         if turn_graph is not None:
             previous_turn_graph = turn_graph
         if turn_graphs is not None and turn_graph:
-            dom = await _graph_dom_state(page, turn_graph)
+            try:
+                dom = await _graph_dom_state(page, turn_graph)
+            except BrowserQualityError:
+                raise
+            except Exception as exc:
+                raise BrowserInfrastructureError(
+                    "graph_dom_inspection_failed",
+                    f"case {case.id} turn {step_index + 1} graph DOM evidence "
+                    f"failed: {type(exc).__name__}: {exc}",
+                ) from exc
             turn_graphs.append(
                 {
                     "turn": step_index + 1,
@@ -1996,6 +2022,8 @@ async def _run_browser_attempt(
                 rendered_edges = len(rendered_edge_identities)
                 rendered_connections_valid = dom["connections_valid"]
                 rendered_graph_version = dom["version"]
+            except BrowserQualityError as exc:
+                failure_details.append(_exception_failure_detail(exc))
             except Exception as exc:
                 failure_details.append(
                     _failure_detail(
