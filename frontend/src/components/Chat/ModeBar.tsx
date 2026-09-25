@@ -3,7 +3,7 @@
 // Purpose: Single-row toolbar with segmented controls above the chat input.
 //
 //          Layout (horizontal, never wraps):
-//            complexity  [auto│low│proto│prod]   graph  [auto│on│off]  [● research]
+//            complexity  [auto│low│proto│prod]   graph  [on│off]  [● research]
 //
 //          Design: VS Code-style segmented containers — one rounded rectangle
 //          per group, active option filled inside, thin dividers between items.
@@ -107,7 +107,6 @@ const COMPLEXITY_OPTIONS: { value: ComplexityLevel; label: string }[] = [
 ];
 
 const GRAPH_MODE_OPTIONS: { value: GraphMode; label: string }[] = [
-  { value: 'auto', label: 'auto' },
   { value: 'on',   label: 'on'   },
   { value: 'off',  label: 'off'  },
 ];

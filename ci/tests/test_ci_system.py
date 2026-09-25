@@ -79,6 +79,15 @@ def test_manifest_tracks_every_backend_test():
     validate_manifest(load_manifest())
 
 
+def test_frontend_audits_all_dependency_severities():
+    frontend = next(
+        group for group in load_manifest()["offline_groups"]
+        if group["name"] == "frontend"
+    )
+    commands = [command["argv"] for command in frontend["commands"]]
+    assert ["npm", "audit", "--audit-level=low"] in commands
+
+
 def test_browser_navigation_does_not_wait_for_long_lived_connections_to_close():
     source = inspect.getsource(_execute_browser) + inspect.getsource(
         _run_browser_attempt

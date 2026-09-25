@@ -5,6 +5,26 @@ import { ThinkingIndicator } from './ThinkingIndicator';
 
 
 describe('ThinkingIndicator', () => {
+  it('keeps completed activity collapsed and available', () => {
+    render(<ThinkingIndicator
+      workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
+      workflowProgress={[{ phase: 'explain', status: 'complete', title: 'Done', detail: 'Finished.' }]}
+    />);
+    expect(screen.getByText('View activity').closest('details')?.open).toBe(false);
+    expect(screen.getByText('Walkthrough ready')).toBeTruthy();
+  });
+
+  it('does not promise a diagram while gathering evidence', () => {
+    render(<ThinkingIndicator
+      workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
+      workflowProgress={[{ phase: 'evidence', status: 'complete', title: 'Evidence ready', detail: 'Sources collected.' }]}
+      isGenerating
+    />);
+    expect(screen.getByRole('status').textContent).toBe('Working…');
+    expect(screen.getByText('Details').closest('details')?.open).toBe(false);
+    expect(screen.queryByText('Designing your system')).toBeNull();
+  });
+
   it('shows a bounded diagram repair clearly', () => {
     render(
       <ThinkingIndicator
@@ -19,8 +39,8 @@ describe('ThinkingIndicator', () => {
       />,
     );
 
-    expect(screen.getByText('↻')).not.toBeNull();
-    expect(screen.getByText('Designing your system')).not.toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Working…');
+    expect(screen.getByText(/Applying the clarity review/).closest('details')?.open).toBe(false);
   });
 
   it('keeps resume available after generation finishes with queued blocks', () => {

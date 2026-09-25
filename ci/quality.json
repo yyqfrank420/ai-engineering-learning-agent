@@ -12,6 +12,7 @@
             "backend/tests/test_api_security.py",
             "backend/tests/test_chat_websocket.py",
             "backend/tests/test_diagram_evaluation_channel.py",
+            "backend/tests/test_graph_content_edits.py",
             "backend/tests/test_internal_auth_and_telemetry.py",
             "backend/tests/test_internal_dashboard_routes.py",
             "backend/tests/test_observability_and_dashboard.py",
@@ -54,6 +55,7 @@
             "backend/tests/test_staged_capability_policy.py",
             "backend/tests/test_staged_clarification.py",
             "backend/tests/test_graph_identity.py",
+            "backend/tests/test_generation_path_consistency.py",
             "backend/tests/test_staged_graph_workflow.py"
           ]
         }
@@ -121,7 +123,7 @@
         {"name": "Frontend lint", "cwd": "frontend", "argv": ["npm", "run", "lint"]},
         {"name": "Frontend tests and coverage", "cwd": "frontend", "argv": ["npm", "run", "test:coverage"]},
         {"name": "Frontend production build", "cwd": "frontend", "argv": ["npm", "run", "build"]},
-        {"name": "Frontend production dependency audit", "cwd": "frontend", "argv": ["npm", "audit", "--omit=dev", "--audit-level=moderate"]}
+        {"name": "Frontend all-dependency audit", "cwd": "frontend", "argv": ["npm", "audit", "--audit-level=low"]}
       ]
     },
     {

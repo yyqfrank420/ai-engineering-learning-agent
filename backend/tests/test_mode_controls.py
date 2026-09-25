@@ -12,6 +12,80 @@ import uuid
 import pytest
 
 
+@pytest.mark.parametrize(
+    "query,applied,maturity",
+    [
+        ("build digital marketing ai", True, "production"),
+        ("Build an AI for restaurant reservations", True, "production"),
+        ("Create sales forecasting AI", True, "production"),
+        (
+            "I want to learn how to build a trading bot with automatic backtesting",
+            True,
+            "production",
+        ),
+        ("Build a prototype customer support chatbot", True, "prototype"),
+        (
+            "Draw a simple prototype architecture for a document summarizer",
+            True,
+            "prototype",
+        ),
+        ("Design a production RAG system", True, "production"),
+        ("Build a prototype recommendation engine", True, "prototype"),
+        ("Create an invoice processing pipeline", True, "production"),
+        ("Build a prototype meeting notes assistant", True, "prototype"),
+        ("What is agent planning?", False, "low"),
+        ("Explain AI in plain English", False, "low"),
+        ("Compare fine-tuning and RAG. No diagram.", False, "low"),
+        ('Explain the phrase "build digital marketing ai"', False, "low"),
+        ("Do not build a marketing AI. Explain tokenization.", False, "low"),
+    ],
+)
+def test_learner_routing_matrix(query, applied, maturity):
+    from agent.complexity import is_applied_system_design_request, resolve_complexity
+
+    assert is_applied_system_design_request(query) is applied
+    assert resolve_complexity("auto", query).resolved == maturity
+
+
+@pytest.mark.parametrize(
+    "query, expected",
+    [
+        ("Compare fine-tuning and RAG. No diagram.", True),
+        ("Explain caching. No new diagram.", True),
+        ("Explain RAG without a graph.", True),
+        ("Don't draw a diagram. Explain the trade-offs.", True),
+        ('Explain the phrase "no diagram".', False),
+        ("Draw a diagram with no database.", False),
+    ],
+)
+def test_explicit_diagram_exclusions(query, expected):
+    from agent.complexity import requests_no_diagram
+
+    assert requests_no_diagram(query) is expected
+
+
+@pytest.mark.asyncio
+async def test_diagram_exclusion_disables_graph_before_routing(monkeypatch):
+    from agent.nodes import orchestrator_node
+
+    async def route_model(**kwargs):
+        return "SEARCH"
+
+    async def send(event):
+        pass
+
+    monkeypatch.setattr(orchestrator_node, "stream_llm", route_model)
+    result = await orchestrator_node.orchestrator_route(
+        {
+            "user_message": "Compare fine-tuning and RAG. No diagram.",
+            "history": [],
+            "graph_mode": "auto",
+            "send": send,
+        }
+    )
+    assert result["graph_mode"] == "off"
+
+
 # ── ChatRequest field validation ──────────────────────────────────────────────
 
 
@@ -43,15 +117,16 @@ class TestChatRequestValidation:
     def test_valid_graph_mode_values(self):
         from api.sse_handler import ChatRequest
 
-        for value in ("auto", "on", "off"):
+        for value in ("on", "off"):
             req = ChatRequest(**self._request(graph_mode=value))
             assert req.graph_mode == value
 
-    def test_invalid_graph_mode_coerces_to_auto(self):
+    @pytest.mark.parametrize("value", ["auto", "force"])
+    def test_legacy_or_invalid_graph_mode_coerces_to_on(self, value):
         from api.sse_handler import ChatRequest
 
-        req = ChatRequest(**self._request(graph_mode="force"))
-        assert req.graph_mode == "auto"
+        req = ChatRequest(**self._request(graph_mode=value))
+        assert req.graph_mode == "on"
 
     def test_research_enabled_defaults_to_false(self):
         from api.sse_handler import ChatRequest
@@ -70,7 +145,7 @@ class TestChatRequestValidation:
 
         req = ChatRequest(**self._request())
         assert req.complexity == "auto"
-        assert req.graph_mode == "auto"
+        assert req.graph_mode == "on"
         assert req.research_enabled is False
 
 
@@ -84,6 +159,9 @@ class TestChatRequestValidation:
         "Explain retrieval-augmented generation and draw the runtime flow",
         "Visualize the execution flow for a tool-using agent",
         "Show the data flow for a retrieval pipeline",
+        "I want to learn how to build a trading bot with automatic backtesting",
+        "I want to build a customer support chatbot that answers questions from our help articles.",
+        "Help me build an assistant that answers questions from our employee handbook.",
     ],
 )
 def test_applied_system_design_detection(query):
@@ -137,6 +215,33 @@ def test_explanatory_runtime_flow_defaults_to_prototype_depth():
     )
 
     assert profile.resolved == "prototype"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Draw a simple prototype architecture for a trading bot with automatic backtesting.",
+        "Build a prototype chatbot for our help articles.",
+    ],
+)
+def test_auto_depth_honors_explicit_prototype_request(query):
+    from agent.complexity import resolve_complexity
+
+    assert resolve_complexity("auto", query).resolved == "prototype"
+    assert resolve_complexity("production", query).resolved == "production"
+
+
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Build a production chatbot, not a prototype.",
+        'Design a production system. Summarize "prototype architecture" as quoted text.',
+    ],
+)
+def test_negated_or_quoted_prototype_does_not_lower_depth(query):
+    from agent.complexity import resolve_complexity
+
+    assert resolve_complexity("auto", query).resolved == "production"
 
 
 def test_explicit_production_runtime_flow_keeps_production_depth():
@@ -420,6 +525,17 @@ def test_existing_graph_intent_separates_local_edit_and_new_artifact():
     assert not is_new_applied_graph_request("Redesign the whole architecture", graph)
     assert not is_existing_graph_edit_request("Design a fraud detection system", graph)
     assert is_new_applied_graph_request("Design a fraud detection system", graph)
+
+
+def test_explicit_composer_choice_requests_creation_without_rewriting_the_question():
+    from agent.complexity import resolve_graph_operation
+
+    question = "AI recursive self-improving trading bot?"
+    assert resolve_graph_operation(question, None) is None
+    assert resolve_graph_operation(question, None, diagram_requested=True) == "create"
+    assert resolve_graph_operation("Explain RAG. No diagram.", None, diagram_requested=True) is None
+    graph = {"design_origin": "applied", "nodes": [{"id": "monitoring", "label": "Monitoring"}]}
+    assert resolve_graph_operation("Expand monitoring", graph, diagram_requested=True) == "edit"
 
 
 def test_graph_operation_resolver_handles_ambiguous_mutation_language_once():
@@ -731,7 +847,9 @@ class TestFormatResults:
         )
         url = "https://example.com/agents?version=2&section=tradeoffs"
         raw = [
-            self._make_result(url, "Architecture comparison", introduction + qualification)
+            self._make_result(
+                url, "Architecture comparison", introduction + qualification
+            )
         ]
 
         result = _format_results(raw, noise_domains=[])
@@ -920,11 +1038,13 @@ class TestResearchWorkerResilience:
             "results": [
                 "- Report — <https://example.com/report>: Current external evidence"
             ],
-            "source_provenance": [{
-                "url": "https://example.com/report",
-                "query": "RAG pipeline architecture",
-                "backend": "brave",
-            }],
+            "source_provenance": [
+                {
+                    "url": "https://example.com/report",
+                    "query": "RAG pipeline architecture",
+                    "backend": "brave",
+                }
+            ],
         }
 
     def test_success_does_not_emit_research_evidence_for_non_allowlisted_identity(
@@ -1010,22 +1130,34 @@ class TestResearchWorkerResilience:
         calls = []
         monkeypatch.setattr(rw.settings, "research_results_per_query", limit)
         monkeypatch.setattr(
-            rw, "_run_ddgs_searches",
+            rw,
+            "_run_ddgs_searches",
             lambda queries, count: calls.append((queries, count)) or [],
         )
         topic = "Compare agents and fixed workflows for production AI products."
-        asyncio.run(rw.research_worker_node({**self._make_state(), "user_message": topic}))
+        asyncio.run(
+            rw.research_worker_node({**self._make_state(), "user_message": topic})
+        )
 
         assert calls == [([topic], expected_limit)]
 
-    def test_research_capture_keeps_query_provenance_only_for_retained_urls(self, monkeypatch):
+    def test_research_capture_keeps_query_provenance_only_for_retained_urls(
+        self, monkeypatch
+    ):
         import agent.nodes.research_worker as rw
 
-        monkeypatch.setattr(rw.settings, "internal_test_email_allowlist_raw", "eval@example.com")
+        monkeypatch.setattr(
+            rw.settings, "internal_test_email_allowlist_raw", "eval@example.com"
+        )
         monkeypatch.setattr(rw.settings, "research_noise_domains", ["noise.example"])
         raw = [
-            {"href": f"https://example.com/{index}", "title": "Report", "body": "Snippet",
-             "query": f"query {index}", "backend": "brave"}
+            {
+                "href": f"https://example.com/{index}",
+                "title": "Report",
+                "body": "Snippet",
+                "query": f"query {index}",
+                "backend": "brave",
+            }
             for index in range(8)
         ]
         raw = [
@@ -1043,9 +1175,19 @@ class TestResearchWorkerResilience:
         evidence = state["_events"][-1]
         assert len(evidence["results"]) == 6
         assert evidence["source_provenance"] == [
-            {"url": f"https://example.com/{index}", "query": f"query {index}", "backend": "brave"}
+            {
+                "url": f"https://example.com/{index}",
+                "query": f"query {index}",
+                "backend": "brave",
+            }
             for index in range(6)
-        ] + [{"url": "https://example.com/0", "query": "another query", "backend": "brave"}]
+        ] + [
+            {
+                "url": "https://example.com/0",
+                "query": "another query",
+                "backend": "brave",
+            }
+        ]
 
     def test_worker_researches_restored_design_query_for_terse_followup(
         self, monkeypatch
@@ -1108,12 +1250,27 @@ class TestResearchWorkerResilience:
         monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
 
         assert _run_ddgs_searches(["good", "bad", "later"], 2) == [
-            {"href": "https://example.com/good", "title": "good", "body": "body", "query": "good", "backend": "brave"},
-            {"href": "https://example.com/later", "title": "later", "body": "body", "query": "later", "backend": "brave"},
+            {
+                "href": "https://example.com/good",
+                "title": "good",
+                "body": "body",
+                "query": "good",
+                "backend": "bing",
+            },
+            {
+                "href": "https://example.com/later",
+                "title": "later",
+                "body": "body",
+                "query": "later",
+                "backend": "bing",
+            },
         ]
-        assert calls == [(query, 2, "brave", "on") for query in ["good", "bad", "later"]]
+        assert calls == [(query, 2, "bing", "on") for query in ["good", "bad", "later"]]
 
-    def test_run_ddgs_searches_retries_one_empty_provider_session(self, monkeypatch):
+    @pytest.mark.parametrize("primary", ["empty", "filtered", "failure"])
+    def test_run_ddgs_searches_falls_back_once_when_primary_is_empty(
+        self, monkeypatch, primary
+    ):
         import sys
         import types
         from agent.nodes.research_worker import _run_ddgs_searches
@@ -1134,6 +1291,10 @@ class TestResearchWorkerResilience:
             def text(self, query, max_results, *, backend, safesearch):
                 calls.append((query, max_results, backend, safesearch))
                 if len(sessions) == 1:
+                    if primary == "failure":
+                        raise TimeoutError("provider timeout")
+                    if primary == "filtered":
+                        return [{"href": "https://example.com/no-snippet", "body": ""}]
                     return []
                 return [
                     {
@@ -1144,17 +1305,18 @@ class TestResearchWorkerResilience:
                 ]
 
         monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
-        monkeypatch.setattr(
-            "agent.nodes.research_worker.time.sleep", lambda _seconds: None
-        )
 
         results = _run_ddgs_searches(["first", "second"], 2)
 
         assert len(sessions) == 2
-        assert results[0]["href"] == "https://example.com/recovered"
-        assert results[0]["query"] == "first"
-        assert results[0]["backend"] == "brave"
-        assert calls == [(query, 2, "brave", "on") for query in ["first", "second", "first"]]
+        assert results[-1]["href"] == "https://example.com/recovered"
+        assert results[-1]["query"] == "first"
+        assert results[-1]["backend"] == "brave"
+        assert calls == [
+            ("first", 2, "bing", "on"),
+            ("second", 2, "bing", "on"),
+            ("first", 2, "brave", "on"),
+        ]
 
 
 @pytest.mark.parametrize(
@@ -1226,12 +1388,15 @@ def test_explicit_edit_clause_takes_precedence_over_explanation(query):
 
 
 @pytest.mark.parametrize("depth", ["low", "prototype", "production"])
-@pytest.mark.parametrize("query", [
-    "Remember these constraints.",
-    "Summarise what we decided.",
-    "Explain reranking.",
-    "Design a production retrieval system.",
-])
+@pytest.mark.parametrize(
+    "query",
+    [
+        "Remember these constraints.",
+        "Summarise what we decided.",
+        "Explain reranking.",
+        "Design a production retrieval system.",
+    ],
+)
 def test_depth_changes_detail_without_assigning_a_new_task(depth, query):
     from agent.complexity import resolve_complexity
 

@@ -46,6 +46,7 @@ export interface GraphNode {
   confidence?: number;
   evidence_chunk_ids?: string[];
   design_origin?: 'applied';
+  user_edited_fields?: string[];
 }
 
 export interface GraphEdge {
@@ -79,6 +80,7 @@ export interface GraphGroup {
 export interface GraphViewState {
   layoutVersion?: number;
   nodePositions: Record<string, { x: number; y: number }>;
+  zonePadding?: Record<string, { top: number; right: number; bottom: number; left: number }>;
   viewport: {
     x: number;
     y: number;
@@ -98,6 +100,24 @@ export interface GraphData {
   resolved_complexity?: ComplexityLevel;
   assumptions?: string[];
   view_state?: GraphViewState;
+}
+
+export interface GraphContentEdit {
+  nodes?: Array<{
+    id: string;
+    label?: string;
+    type?: NodeType;
+    technology?: string;
+    description?: string;
+  }>;
+  edges?: Array<{
+    index: number;
+    label?: string;
+    technology?: string;
+    description?: string;
+    flow?: GraphEdge['flow'];
+    sync?: GraphEdge['sync'];
+  }>;
 }
 
 // ── Chat types ────────────────────────────────────────────────────────────────
@@ -345,7 +365,7 @@ export type ClientEvent = SendMessageEvent | NodeSelectedEvent;
 export type ComplexityLevel = 'auto' | 'low' | 'prototype' | 'production';
 
 // Controls whether the graph worker runs each turn
-export type GraphMode = 'auto' | 'on' | 'off';
+export type GraphMode = 'on' | 'off';
 
 // ── UI state ──────────────────────────────────────────────────────────────────
 

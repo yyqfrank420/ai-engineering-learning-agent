@@ -88,6 +88,15 @@ describe('API service boundary', () => {
       method: 'PUT',
       body: JSON.stringify({ graph_data: graph }),
     });
+    expect(fetchMock.mock.calls[5][1].signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it('bounds layout saves and leaves failures available for the editor to report', async () => {
+    fetchMock.mockRejectedValueOnce(new DOMException('expired', 'TimeoutError'));
+
+    await expect(updateThreadGraph(session, 'thread-1', graph))
+      .rejects.toThrow('Saving the diagram layout timed out. Check the saved diagram before retrying.');
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it.each([

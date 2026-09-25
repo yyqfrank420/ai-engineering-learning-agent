@@ -1,14 +1,14 @@
 {
   "format_version": 1,
-  "corpus_version": "2026-09-12.v1",
-  "release_identity": "browser-rubric-v3",
+  "corpus_version": "2026-09-25.v1",
+  "release_identity": "browser-rubric-v4",
   "approval": {
     "status": "pending_human_review",
     "reviewed_by": null,
     "reviewed_at": null,
     "approved_manifest_sha256": null,
     "calibration": {
-      "judge_release": "semantic-rubric-judge-v8",
+      "judge_release": "semantic-rubric-judge-v9",
       "judge_provider": "anthropic",
       "judge_model": "claude-sonnet-5",
       "evidence_run_id": null,
@@ -18,7 +18,7 @@
       "critical_false_passes": null,
       "evaluated_at": null
     },
-    "notes": "The 2026-09-12.v1 corpus retains the graph, persistence, streaming, and safety requirements. Domain specificity is judged against the requested application or educational subject; missing material requirements permit targeted clarification. The memory prompt requests two mitigations explicitly, and graph expansion targets Serving Monitor by name. A new full protected capture, actual human review of all 20 cases, judge calibration, and approved manifest hash are required before blocking or promotion."
+    "notes": "The 2026-09-25.v1 corpus uses explicit on/off graph UI modes; research still requires graph output and ambiguity keeps its unconstrained graph expectation. It retains the graph, persistence, streaming, and safety requirements. Domain specificity is judged against the requested application or educational subject; missing material requirements permit targeted clarification. The memory prompt requests two mitigations explicitly, and graph expansion targets Serving Monitor by name. Human corpus approval remains pending until a new full protected capture, human review of all 20 cases, judge calibration, and approved manifest hash are recorded. The protected automated release gates remain required."
   },
   "rubrics": {
     "correctness": {
@@ -231,7 +231,7 @@
           "prompt": "Research current practical trade-offs between agents and fixed workflows for production AI products.",
           "ui": {
             "complexity": "prototype",
-            "graph_mode": "auto",
+            "graph_mode": "on",
             "research_enabled": true
           }
         }
@@ -645,7 +645,7 @@
           "prompt": "Build me an agent for operations.",
           "ui": {
             "complexity": "auto",
-            "graph_mode": "auto",
+            "graph_mode": "on",
             "research_enabled": false
           }
         }

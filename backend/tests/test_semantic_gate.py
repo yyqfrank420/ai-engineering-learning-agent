@@ -1,4 +1,6 @@
+import asyncio
 from dataclasses import replace
+import traceback
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -10,6 +12,7 @@ from anthropic import (
 import httpx
 import pytest
 
+import eval.judge_adapter as judge_adapter
 import eval.live_runner as live_runner
 from eval.calibration import calculate_calibration
 from eval.judge_adapter import (
@@ -1335,6 +1338,70 @@ def test_judge_payload_preserves_each_turn_graph_identity():
     ]
 
 
+@pytest.mark.parametrize(
+    "render_identity,expected_keys",
+    [
+        ({}, set()),
+        (
+            {
+                "rendered_graph_version": None,
+                "rendered_node_ids": None,
+                "rendered_edge_identities": None,
+            },
+            set(),
+        ),
+        (
+            {"rendered_node_ids": [], "rendered_edge_identities": []},
+            {"rendered_node_ids", "rendered_edge_identities"},
+        ),
+        (
+            {
+                "rendered_graph_version": "graph-1",
+                "rendered_node_ids": ["service"],
+                "rendered_edge_identities": [
+                    {"source": "client", "target": "service", "label": "Request"}
+                ],
+            },
+            {
+                "rendered_graph_version",
+                "rendered_node_ids",
+                "rendered_edge_identities",
+            },
+        ),
+    ],
+)
+def test_judge_payload_keeps_missing_render_identity_distinct_from_empty(
+    render_identity, expected_keys
+):
+    payload = _judge_payload(
+        {
+            "turns": [
+                {
+                    "answer": "Architecture.",
+                    "graph": {
+                        "version": "graph-1",
+                        "nodes": [{"id": "service", "label": "Service"}],
+                        "edges": [],
+                    },
+                    **render_identity,
+                }
+            ]
+        }
+    )
+
+    turn = payload["turns"][0]
+    assert turn["graph"]["nodes"] == [{"id": "service", "label": "Service"}]
+    render_keys = {
+        "rendered_graph_version",
+        "rendered_node_ids",
+        "rendered_edge_identities",
+    }
+    assert render_keys.intersection(turn) == expected_keys
+    assert all(turn[key] == render_identity[key] for key in expected_keys)
+    sources = _artifact_sources(payload)
+    assert ("turn-1-render-1" in sources) == bool(expected_keys)
+
+
 def test_judge_payload_bounds_and_preserves_retrieval_evidence():
     payload = _judge_payload(
         {
@@ -1546,6 +1613,175 @@ async def test_judge_transport_retry_counts_every_provider_attempt(monkeypatch):
 
     assert actual == expected
     assert budget.judge_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_judge_transport_uses_120_second_attempt_deadline(monkeypatch):
+    expected = result(("correctness", "pass", False))
+    timeouts = []
+
+    async def capture_wait_for(awaitable, *, timeout):
+        timeouts.append(timeout)
+        return await awaitable
+
+    class PassingJudge:
+        async def judge(self, corpus, case, evidence):
+            return expected
+
+    monkeypatch.setattr(judge_adapter.asyncio, "wait_for", capture_wait_for)
+    actual = await judge_with_transport_retry(PassingJudge(), None, None, {})
+
+    assert actual == expected
+    assert timeouts == [120]
+
+
+@pytest.mark.asyncio
+async def test_judge_transport_cancellation_does_not_retry():
+    started = asyncio.Event()
+    budget = EvaluationBudget(application_calls=1, judge_calls=2)
+
+    class WaitingJudge:
+        calls = 0
+
+        async def judge(self, corpus, case, evidence):
+            self.calls += 1
+            started.set()
+            await asyncio.Event().wait()
+
+    judge = WaitingJudge()
+    task = asyncio.create_task(
+        judge_with_transport_retry(
+            judge, None, None, {}, on_attempt=budget.record_judge_call
+        )
+    )
+    await asyncio.wait_for(started.wait(), timeout=1)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert judge.calls == 1
+    assert budget.judge_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_judge_transport_budget_abort_is_not_retried(monkeypatch):
+    class UnavailableJudge:
+        calls = 0
+
+        async def judge(self, corpus, case, evidence):
+            self.calls += 1
+            raise TimeoutError("provider timed out")
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(judge_adapter.asyncio, "sleep", no_sleep)
+    budget = EvaluationBudget(application_calls=1, judge_calls=1)
+    judge = UnavailableJudge()
+    with pytest.raises(RuntimeError, match="judge model-call budget exceeded"):
+        await judge_with_transport_retry(
+            judge, None, None, {}, on_attempt=budget.record_judge_call
+        )
+    assert judge.calls == 1
+    assert budget.judge_calls == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("final_error", "error_class", "http_status"),
+    [
+        (TimeoutError("secret-key"), "TimeoutError", None),
+        (ConnectionError("secret-key"), "ConnectionError", None),
+        (
+            AnthropicAPIConnectionError(
+                request=httpx.Request("POST", "https://secret-key.example/v1/messages")
+            ),
+            "APIConnectionError",
+            None,
+        ),
+        (
+            AnthropicAPITimeoutError(
+                request=httpx.Request("POST", "https://secret-key.example/v1/messages")
+            ),
+            "APITimeoutError",
+            None,
+        ),
+        (
+            AnthropicRateLimitError(
+                "secret-key",
+                response=httpx.Response(
+                    429,
+                    request=httpx.Request(
+                        "POST", "https://secret-key.example/v1/messages"
+                    ),
+                    text="secret-key",
+                ),
+                body={"error": "secret-key"},
+            ),
+            "RateLimitError",
+            429,
+        ),
+    ],
+)
+async def test_judge_transport_exhaustion_reports_safe_final_error(
+    monkeypatch, final_error, error_class, http_status
+):
+    class ExhaustedJudge:
+        calls = 0
+
+        async def judge(self, corpus, case, evidence):
+            self.calls += 1
+            if self.calls == 1:
+                raise TimeoutError("first secret-key")
+            raise final_error
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(judge_adapter.asyncio, "sleep", no_sleep)
+    budget = EvaluationBudget(application_calls=1, judge_calls=2)
+    judge = ExhaustedJudge()
+    with pytest.raises(RuntimeError) as caught:
+        await judge_with_transport_retry(
+            judge, None, None, {}, on_attempt=budget.record_judge_call
+        )
+
+    reason = str(caught.value)
+    assert "after one bounded retry" in reason
+    assert error_class in reason
+    if http_status is not None:
+        assert f"HTTP {http_status}" in reason
+    assert "secret-key" not in reason
+    assert caught.value.__cause__ is None
+    assert caught.value.__context__ is None
+    assert "secret-key" not in "".join(traceback.format_exception(caught.value))
+    assert judge.calls == 2
+    assert budget.judge_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_judge_transport_exhaustion_redacts_subclass_and_invalid_status(
+    monkeypatch,
+):
+    class SecretKeyTimeout(TimeoutError):
+        status_code = 700
+
+    class UnavailableJudge:
+        async def judge(self, corpus, case, evidence):
+            raise SecretKeyTimeout("secret-key")
+
+    async def no_sleep(_seconds):
+        return None
+
+    monkeypatch.setattr(judge_adapter.asyncio, "sleep", no_sleep)
+    with pytest.raises(RuntimeError) as caught:
+        await judge_with_transport_retry(UnavailableJudge(), None, None, {})
+
+    reason = str(caught.value)
+    assert "RetryableJudgeError" in reason
+    assert "SecretKeyTimeout" not in reason
+    assert "HTTP 700" not in reason
+    assert "secret-key" not in "".join(traceback.format_exception(caught.value))
 
 
 @pytest.mark.asyncio
@@ -2251,7 +2487,7 @@ def test_judge_prompt_checks_payload_direction_and_component_ownership():
     corpus = load_corpus()
     system, _ = _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."})
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v8"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v9"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
@@ -2274,7 +2510,14 @@ def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence
     })
     corpus = load_corpus()
     _, user = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
-    supplied = json.loads(user)["artifact_sources"]
+    payload = json.loads(user)
+    assert list(payload) == ["case", "rubrics", "artifact_sources"]
+    supplied = payload["artifact_sources"]
+    assert list(supplied) == list(sources)
+    source_keys = list(supplied)
+    assert source_keys.index("turn-1-graph-edge-2-1") < source_keys.index(
+        "turn-1-graph-edge-10-1"
+    )
 
     # Retained evidence proves availability to the judge, not a new model verdict.
     assert len(graph["edges"]) == 64

@@ -633,7 +633,7 @@ describe('dense production graph rendering', () => {
     }
   });
 
-  it('routes adjacent vertical edges without retracing a gutter while retaining skip routes', () => {
+  it('keeps a normal-depth path horizontal in a narrow pane and retains skip and return routes', () => {
     viewport = DEEP_VIEWPORT;
     const adjacentPairs = [
       ['root', 'api'],
@@ -677,7 +677,7 @@ describe('dense production graph rendering', () => {
     for (const [source, target] of adjacentPairs) {
       const sourcePosition = positions.get(source)!;
       const targetPosition = positions.get(target)!;
-      expect(targetPosition.y - sourcePosition.y).toBe(NODE_H + 12);
+      expect(targetPosition.x).toBeGreaterThan(sourcePosition.x);
       const path = container.querySelector<SVGPathElement>(
         `path.edge-vis[data-source-id="${source}"][data-target-id="${target}"]`,
       );
@@ -702,10 +702,14 @@ describe('dense production graph rendering', () => {
         `path.edge-vis[data-source-id="${source}"][data-target-id="${target}"]`,
       );
       const points = pathControlPoints(path?.getAttribute('d') ?? null);
-      expect(points.some(point => (
-        point.x < Math.min(sourcePosition.x, targetPosition.x) - NODE_W / 2
-        || point.x > Math.max(sourcePosition.x, targetPosition.x) + NODE_W / 2
-      ))).toBe(true);
+      expect(points.length).toBeGreaterThanOrEqual(2);
+      expect(sourcePosition.x).not.toBe(targetPosition.x);
+      for (const [nodeId, position] of positions) {
+        if (nodeId === source || nodeId === target) continue;
+        for (let index = 1; index < points.length; index += 1) {
+          expect(segmentIntersectsNode(points[index - 1], points[index], position)).toBe(false);
+        }
+      }
     }
   });
 

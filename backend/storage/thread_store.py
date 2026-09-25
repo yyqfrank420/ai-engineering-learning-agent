@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 import uuid
 
 from adapters.database_adapter import (
@@ -10,16 +11,34 @@ from adapters.database_adapter import (
     fetchone,
 )
 from config import settings
+from graph.content_edit import (
+    GraphContentEditRequest,
+    GraphEditConflict,
+    GraphEditInvalid,
+    GraphEditNotFound,
+    GraphEditTooLarge,
+    apply_graph_content_edit,
+)
 
 from storage.errors import ThreadMessageLimitExceeded
 
 logger = logging.getLogger(__name__)
 
+# Retained draft IDs stay addressable, but empty drafts are not saved history.
+# SQL interpolation below inserts only this fixed predicate; user values stay bound.
+_HAS_CONTENT_SQL = """(graph_data IS NOT NULL OR EXISTS (
+    SELECT 1 FROM chat_messages
+    WHERE chat_messages.thread_id = chat_threads.id
+      AND chat_messages.user_id = chat_threads.user_id
+))"""
+
 
 def count_threads(user_id: str) -> int:
-    """Return how many threads this user currently has."""
+    """Count saved conversations, excluding empty drafts."""
     row = fetchone(
-        "SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ?",
+        "SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ? AND {}".format(  # nosec B608
+            _HAS_CONTENT_SQL
+        ),
         (user_id,),
     )
     return row["n"] if row else 0
@@ -30,10 +49,10 @@ def get_oldest_thread_id(user_id: str) -> str | None:
     row = fetchone(
         """
         SELECT id FROM chat_threads
-        WHERE user_id = ?
+        WHERE user_id = ? AND {}
         ORDER BY last_seen_at ASC
         LIMIT 1
-        """,
+        """.format(_HAS_CONTENT_SQL),  # nosec B608
         (user_id,),
     )
     return row["id"] if row else None
@@ -55,10 +74,9 @@ def delete_thread(user_id: str, thread_id: str) -> None:
 
 
 def create_thread(user_id: str, title: str = "New chat") -> dict:
+    now_epoch = time.time()
     with _connect() as conn:
         if settings.use_postgres:
-            # Serialise the count/evict/insert sequence per user. The profile is
-            # guaranteed to exist because API callers upsert it first.
             profile = conn.execute(
                 _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
                 (user_id,),
@@ -67,46 +85,6 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
                 raise ValueError("Profile does not exist")
         else:
             conn.execute("BEGIN IMMEDIATE")
-
-        row = conn.execute(
-            _adapt_query("SELECT COUNT(*) AS n FROM chat_threads WHERE user_id = ?"),
-            (user_id,),
-        ).fetchone()
-        thread_count = row["n"] if row else 0
-
-        # Evict oldest thread when the user is at the limit.
-        if thread_count >= settings.max_threads_per_user:
-            oldest = conn.execute(
-                _adapt_query(
-                    """
-                    SELECT id FROM chat_threads
-                    WHERE user_id = ?
-                    ORDER BY last_seen_at ASC
-                    LIMIT 1
-                    """
-                ),
-                (user_id,),
-            ).fetchone()
-            if oldest:
-                oldest_id = oldest["id"]
-                logger.info(
-                    "thread_store: evicting oldest thread %s for user %s (limit=%d)",
-                    oldest_id,
-                    user_id,
-                    settings.max_threads_per_user,
-                )
-                conn.execute(
-                    _adapt_query(
-                        "DELETE FROM chat_messages WHERE thread_id = ? AND user_id = ?"
-                    ),
-                    (oldest_id, user_id),
-                )
-                conn.execute(
-                    _adapt_query(
-                        "DELETE FROM chat_threads WHERE id = ? AND user_id = ?"
-                    ),
-                    (oldest_id, user_id),
-                )
 
         thread_id = str(uuid.uuid4())
         conn.execute(
@@ -129,6 +107,41 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
             (thread_id, user_id),
         ).fetchone()
         thread = dict(row) if row else None
+
+        # Blank drafts have a separate bound from saved history. A chat lease
+        # protects a first turn until it either commits or stops.
+        idle_drafts = conn.execute(
+            _adapt_query(
+                """
+                SELECT id FROM chat_threads
+                WHERE user_id = ? AND id <> ? AND NOT {}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM active_streams
+                    WHERE active_streams.user_id = chat_threads.user_id
+                      AND active_streams.stream_type =
+                          'chat-thread:scope:' || CAST(chat_threads.id AS TEXT)
+                      AND active_streams.expires_at_epoch >= ?
+                  )
+                ORDER BY created_at DESC, id DESC
+                """.format(_HAS_CONTENT_SQL)  # nosec B608
+            ),
+            (user_id, thread_id, now_epoch),
+        ).fetchall()
+        for draft in idle_drafts[settings.max_threads_per_user - 1 :]:
+            conn.execute(
+                _adapt_query(
+                    """
+                    DELETE FROM chat_threads
+                    WHERE id = ? AND user_id = ? AND graph_data IS NULL
+                      AND NOT EXISTS (
+                        SELECT 1 FROM chat_messages
+                        WHERE chat_messages.thread_id = chat_threads.id
+                          AND chat_messages.user_id = chat_threads.user_id
+                      )
+                    """
+                ),
+                (draft["id"], user_id),
+            )
 
     if thread and thread.get("graph_data"):
         try:
@@ -168,10 +181,10 @@ def list_threads(user_id: str, limit: int = 20) -> list[dict]:
         """
         SELECT id, title, created_at, updated_at, last_seen_at
         FROM chat_threads
-        WHERE user_id = ?
+        WHERE user_id = ? AND {}
         ORDER BY last_seen_at DESC
         LIMIT ?
-        """,
+        """.format(_HAS_CONTENT_SQL),  # nosec B608
         (user_id, limit),
     )
     return rows
@@ -182,10 +195,10 @@ def get_latest_thread(user_id: str) -> dict | None:
         """
         SELECT id, user_id, title, graph_data, created_at, updated_at, last_seen_at
         FROM chat_threads
-        WHERE user_id = ?
+        WHERE user_id = ? AND {}
         ORDER BY last_seen_at DESC
         LIMIT 1
-        """,
+        """.format(_HAS_CONTENT_SQL),  # nosec B608
         (user_id,),
     )
     if row and row.get("graph_data"):
@@ -368,6 +381,117 @@ def save_graph(user_id: str, thread_id: str, graph_data: dict) -> bool:
     return True
 
 
+def _edited_graph_contract(
+    stored_contract: object, *, old_version: object, new_version: str
+) -> dict | None:
+    if stored_contract is None:
+        return None
+    try:
+        contract = (
+            json.loads(stored_contract)
+            if isinstance(stored_contract, str)
+            else stored_contract
+        )
+    except (TypeError, json.JSONDecodeError):
+        return None
+    if (
+        not isinstance(contract, dict)
+        or not isinstance(old_version, str)
+        or not old_version.strip()
+        or contract.get("graph_version") != old_version
+    ):
+        return None
+
+    # User edits retain design context, never a review decision for old content.
+    updated: dict = {
+        "graph_version": new_version,
+        "source": "user_edit",
+        "stage": "edited",
+    }
+    maturity = contract.get("maturity")
+    if isinstance(maturity, str) and maturity in {"prototype", "production"}:
+        updated["maturity"] = maturity
+    capabilities = contract.get("capabilities")
+    capability_names = {"external_effects", "retrieval_or_reuse", "learning_or_release"}
+    if (
+        isinstance(capabilities, dict)
+        and set(capabilities) <= capability_names
+        and all(isinstance(value, bool) for value in capabilities.values())
+    ):
+        updated["capabilities"] = capabilities
+    objective = contract.get("objective")
+    if isinstance(objective, str) and objective.strip():
+        updated["objective"] = objective
+    return updated
+
+
+def edit_graph_content(
+    user_id: str, thread_id: str, request: GraphContentEditRequest
+) -> dict:
+    """Edit an owned graph under a version check and one database transaction."""
+    with _connect() as conn:
+        if not settings.use_postgres:
+            conn.execute("BEGIN IMMEDIATE")
+        thread_query = (
+            "SELECT graph_data, graph_contract FROM chat_threads "
+            "WHERE id = ? AND user_id = ? FOR UPDATE"
+            if settings.use_postgres
+            else "SELECT graph_data, graph_contract FROM chat_threads "
+            "WHERE id = ? AND user_id = ?"
+        )
+        row = conn.execute(_adapt_query(thread_query), (thread_id, user_id)).fetchone()
+        if row is None or row["graph_data"] is None:
+            raise GraphEditNotFound("Thread graph not found")
+
+        try:
+            graph = (
+                json.loads(row["graph_data"])
+                if isinstance(row["graph_data"], str)
+                else row["graph_data"]
+            )
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise GraphEditInvalid("saved graph is invalid") from exc
+        if not isinstance(graph, dict):
+            raise GraphEditInvalid("saved graph is invalid")
+        old_version = graph.get("version")
+        if old_version != request.expected_version:
+            raise GraphEditConflict("Graph changed. Reload it before editing.")
+
+        edited, changed = apply_graph_content_edit(graph, request)
+        if not changed:
+            return graph
+
+        new_version = str(uuid.uuid4())
+        edited["version"] = new_version
+        serialized = json.dumps(edited, ensure_ascii=False)
+        if len(serialized.encode("utf-8")) > settings.max_graph_data_bytes:
+            raise GraphEditTooLarge("Graph data too large")
+        contract = _edited_graph_contract(
+            row["graph_contract"],
+            old_version=old_version,
+            new_version=new_version,
+        )
+        conn.execute(
+            _adapt_query(
+                """
+                UPDATE chat_threads
+                SET graph_data = ?, graph_contract = ?,
+                    updated_at = CURRENT_TIMESTAMP, last_seen_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND user_id = ?
+                """
+            ),
+            (
+                serialized,
+                json.dumps(contract, ensure_ascii=False)
+                if contract is not None
+                else None,
+                thread_id,
+                user_id,
+            ),
+        )
+    return edited
+
+
 def persist_turn(
     user_id: str,
     thread_id: str,
@@ -414,7 +538,14 @@ def persist_turn(
         serialized_contract = json.dumps(graph_contract, ensure_ascii=False)
 
     with _connect() as conn:
-        if not settings.use_postgres:
+        if settings.use_postgres:
+            # Lock the history owner before thread locks to serialize retention
+            # across concurrent completed turns for this user.
+            conn.execute(
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                (user_id,),
+            ).fetchone()
+        else:
             # Acquire SQLite's write lock before checking the idempotency key.
             conn.execute("BEGIN IMMEDIATE")
         thread_query = (
@@ -501,6 +632,30 @@ def persist_turn(
                     """
                 ),
                 (title, thread_id, user_id),
+            )
+
+        # Opening a blank composer must never evict a conversation. Apply the
+        # existing history cap only after a completed turn is safely stored.
+        prior_threads = conn.execute(
+            _adapt_query(
+                """
+                SELECT id FROM chat_threads
+                WHERE user_id = ? AND id <> ? AND {}
+                ORDER BY last_seen_at DESC, created_at DESC, id DESC
+                """.format(_HAS_CONTENT_SQL)  # nosec B608
+            ),
+            (user_id, thread_id),
+        ).fetchall()
+        for prior in prior_threads[settings.max_threads_per_user - 1 :]:
+            conn.execute(
+                _adapt_query(
+                    "DELETE FROM chat_messages WHERE thread_id = ? AND user_id = ?"
+                ),
+                (prior["id"], user_id),
+            )
+            conn.execute(
+                _adapt_query("DELETE FROM chat_threads WHERE id = ? AND user_id = ?"),
+                (prior["id"], user_id),
             )
 
     return graph_saved

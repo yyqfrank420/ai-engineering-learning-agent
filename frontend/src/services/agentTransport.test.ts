@@ -71,7 +71,7 @@ describe('AgentTransport WebSocket protocol', () => {
       session,
       'thread-1',
       'design the system',
-      { complexity: 'production', graphMode: 'on' },
+      { complexity: 'production', graphMode: 'on', diagramRequested: true },
       'client-1',
     );
     const socket = MockWebSocket.instances[0];
@@ -88,6 +88,7 @@ describe('AgentTransport WebSocket protocol', () => {
       type: 'start',
       thread_id: 'thread-1',
       client_request_id: 'client-1',
+      diagram_requested: true,
     });
     expect(transport.steerGeneration('focus on approvals')).toBe(true);
     expect(JSON.parse(socket.sent[2])).toMatchObject({

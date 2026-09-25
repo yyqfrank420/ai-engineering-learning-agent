@@ -942,6 +942,8 @@ async def run_agent(
     graph_intent = resolve_graph_operation(
         state.get("user_message", ""),
         state.get("graph_data"),
+        diagram_requested=state.get("diagram_requested", False)
+        and state.get("graph_mode") != "off",
     )
     graph_operation = state.get("graph_operation")
     if graph_intent == "edit" and state.get("graph_mode") == "off":

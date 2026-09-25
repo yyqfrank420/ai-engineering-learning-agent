@@ -563,13 +563,16 @@ def _compact_judge_turns(
         compact_turn = {"turn": index, "answer": answer[:answer_limit]}
         graph = _compact_judge_graph(source.get("graph"))
         if graph is not None:
+            compact_turn["graph"] = graph
             compact_turn.update(
                 {
-                    "graph": graph,
-                    "rendered_graph_version": source.get("rendered_graph_version"),
-                    "rendered_node_ids": source.get("rendered_node_ids") or [],
-                    "rendered_edge_identities": source.get("rendered_edge_identities")
-                    or [],
+                    key: source[key]
+                    for key in (
+                        "rendered_graph_version",
+                        "rendered_node_ids",
+                        "rendered_edge_identities",
+                    )
+                    if source.get(key) is not None
                 }
             )
         compact_turns.append(compact_turn)

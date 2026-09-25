@@ -275,14 +275,31 @@ def _intent_clauses(text: str) -> list[str]:
     ]
 
 
+def requests_no_diagram(query: str) -> bool:
+    """Honor explicit output exclusions without treating quoted text as intent."""
+    text = _routing_intent_text(query)
+    return bool(
+        re.search(
+            r"\b(?:no|without)\s+(?:a\s+|any\s+)?(?:new\s+)?(?:diagrams?|graphs?)\b"
+            r"|\b(?:do\s+not|don't|never)\s+(?:draw|create|show|generate|include)\s+"
+            r"(?:(?:a|any|the)\s+)?(?:diagrams?|graphs?)\b",
+            text,
+        )
+    )
+
+
 def resolve_graph_operation(
     query: str,
     graph_data: dict | None,
+    *,
+    diagram_requested: bool = False,
 ) -> Literal["create", "edit"] | None:
     """Resolve one graph mutation intent before routing or worker selection."""
     text = _routing_intent_text(query)
     if not text:
         return None
+    if diagram_requested and not requests_no_diagram(query):
+        return resolve_graph_operation(query, graph_data) or "create"
     applied_design_requested = is_applied_system_design_request(query)
     clauses = _intent_clauses(text)
     authored_terms = tuple(
@@ -378,6 +395,15 @@ def is_new_applied_graph_request(query: str, graph_data: dict | None) -> bool:
     return resolve_graph_operation(query, graph_data) == "create"
 
 
+def diagram_submission_action(query: str, graph_data: dict | None) -> Literal["send", "answer", "ask"]:
+    """Ask before treating an ambiguous learning question as a diagram request."""
+    if requests_no_diagram(query):
+        return "answer"
+    if resolve_graph_operation(query, graph_data):
+        return "send"
+    return "ask"
+
+
 def is_applied_system_design_request(query: str) -> bool:
     """Distinguish a requested system design from a book-concept explanation."""
     text = " ".join(query.lower().split())
@@ -405,6 +431,10 @@ def is_applied_system_design_request(query: str) -> bool:
     design_verb_present = any(
         re.search(rf"\b{verb}\w*\b", intent_text) for verb in _DESIGN_VERBS
     )
+    if explicit_design_requested and re.search(
+        r"\b(?:diagrams?|graphs?|concept\s+maps?|flowcharts?)\b", intent_text
+    ):
+        return True
     # Explicit concept questions stay explanatory even when they contain a
     # product noun such as "agent" or "pipeline". "How to build ..." and
     # other direct design requests continue into the applied-design path.
@@ -421,6 +451,33 @@ def is_applied_system_design_request(query: str) -> bool:
         phrase in intent_text for phrase in _DESIGN_FLOW_PHRASES
     ):
         return True
+    if (
+        re.search(r"\b(?:build|create|implement|design|architect)\w*\b", intent_text)
+        and re.search(r"\bai\b", intent_text)
+        and len(
+            set(re.findall(r"[a-z]+", intent_text))
+            - {
+                "build",
+                "create",
+                "implement",
+                "design",
+                "architect",
+                "ai",
+                "a",
+                "an",
+                "the",
+                "please",
+                "me",
+                "for",
+                "i",
+                "want",
+                "to",
+            }
+        )
+        > 0
+    ):
+        # Domain-specific AI build requests need a system, even without a product noun.
+        return True
     if any(phrase in intent_text for phrase in _DESIGN_PHRASES):
         return True
     if re.search(
@@ -434,7 +491,8 @@ def is_applied_system_design_request(query: str) -> bool:
     ):
         return True
     if design_verb_present and any(
-        re.search(rf"\b{noun}s?\b", text) for noun in _SYSTEM_NOUNS
+        re.search(rf"\b{noun}s?\b", text)
+        for noun in (*_SYSTEM_NOUNS, *_DIRECT_PRODUCT_NOUNS)
     ):
         return True
     # Product-name seeds are a primary UI workflow: users often type only a
@@ -487,12 +545,21 @@ def resolve_complexity(requested: str, query: str) -> ComplexityProfile:
     )
     if requested == "auto":
         text = _routing_intent_text(query)
+        prototype_requested = any(
+            re.search(r"\bprototype\b", clause)
+            and not re.search(
+                r"\b(?:not|no|without|avoid|instead\s+of)\b.{0,30}\bprototype\b", clause
+            )
+            for clause in _intent_clauses(text)
+        )
         explanatory_flow = (
             bool(_CONCEPT_QUESTION.match(text))
             and any(phrase in text for phrase in _DESIGN_FLOW_PHRASES)
             and not any(hint in text for hint in _PRODUCTION_HINTS)
         )
-        if is_applied_system_design_request(query) and explanatory_flow:
+        if is_applied_system_design_request(query) and prototype_requested:
+            resolved = "prototype"
+        elif is_applied_system_design_request(query) and explanatory_flow:
             # A concept walkthrough can need an applied runtime diagram without
             # implicitly requesting every production-hardening guarantee.
             resolved = "prototype"

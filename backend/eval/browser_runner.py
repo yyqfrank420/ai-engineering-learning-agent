@@ -79,6 +79,8 @@ class FailureDetail(TypedDict):
 class GraphDomState(TypedDict):
     node_ids: list[str]
     edges: list[dict[str, str]]
+    connections: list[dict[str, str]]
+    connections_valid: bool
     version: str | None
 
 
@@ -331,14 +333,60 @@ async def _send_step(
 ) -> list[dict[str, Any]]:
     start = len(frames)
     graph_deadline_started_s = time.monotonic()
+
+    def turn_done() -> bool:
+        return any(
+            frame["direction"] == "received" and frame["message"].get("type") == "done"
+            for frame in frames[start:]
+        )
+
     try:
         await _set_modes(page, case, step_index)
         textarea = page.get_by_placeholder(re.compile(r"Ask a question"))
+        composer_stop = page.locator(".split-pane__conversation").get_by_role(
+            "button", name="Stop generation", exact=True
+        )
         await textarea.fill(case.steps[step_index].prompt)
         await page.get_by_label("Send message").click()
-        await page.get_by_label("Stop generation").wait_for(
-            state="visible", timeout=20_000
+        stop_visible = asyncio.create_task(
+            composer_stop.wait_for(state="visible", timeout=20_000)
         )
+        choice_visible = asyncio.create_task(
+            page.get_by_role("dialog", name="Include a diagram?").wait_for(
+                state="visible", timeout=20_000
+            )
+        )
+        try:
+            completed: set[asyncio.Task[None]] = set()
+            while not completed and not turn_done():
+                completed, _ = await asyncio.wait(
+                    {stop_visible, choice_visible},
+                    timeout=0.05,
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            if stop_visible in completed:
+                await stop_visible
+            elif choice_visible in completed:
+                await choice_visible
+                action = (
+                    "Generate a diagram"
+                    if case.steps[step_index].ui.graph_mode == "on"
+                    else "Answer only"
+                )
+                await (
+                    page.get_by_role("dialog", name="Include a diagram?")
+                    .get_by_role("button", name=action, exact=True)
+                    .click()
+                )
+                while not stop_visible.done() and not turn_done():
+                    await asyncio.sleep(0.05)
+                if not turn_done():
+                    await stop_visible
+        finally:
+            for task in (stop_visible, choice_visible):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stop_visible, choice_visible, return_exceptions=True)
     except PlaywrightError as exc:
         raise BrowserQualityError(
             "browser_ui_interaction_failed",
@@ -346,12 +394,20 @@ async def _send_step(
             f"{type(exc).__name__}: {exc}",
         ) from exc
 
-    completion_task = asyncio.create_task(
-        page.get_by_label("Send message").wait_for(
-            state="visible",
-            timeout=timeout_seconds * 1000,
+    async def wait_for_completion() -> None:
+        deadline = time.monotonic() + timeout_seconds
+        while not turn_done():
+            if time.monotonic() >= deadline:
+                raise PlaywrightTimeoutError(
+                    "current turn did not receive a done event"
+                )
+            await asyncio.sleep(0.05)
+        await composer_stop.wait_for(
+            state="hidden",
+            timeout=max(1, int((deadline - time.monotonic()) * 1000)),
         )
-    )
+
+    completion_task = asyncio.create_task(wait_for_completion())
     graph_deadline_task: asyncio.Task[None] | None = None
     graph_limit_ms = case.steps[step_index].graph_output_max_latency_ms
     try:
@@ -382,7 +438,7 @@ async def _send_step(
                 if not timely_graph:
                     received_events = [frame["message"] for frame in received_frames]
                     try:
-                        await page.get_by_label("Stop generation").click()
+                        await composer_stop.click()
                     except PlaywrightError:
                         pass
                     private_render_failure_code = (
@@ -545,9 +601,7 @@ def _persisted_graph_failure(
     # fields, including the server version, belong to the persisted graph.
     if not isinstance(published_graph, dict) or {
         key: value for key, value in persisted_graph.items() if key != "view_state"
-    } != {
-        key: value for key, value in published_graph.items() if key != "view_state"
-    }:
+    } != {key: value for key, value in published_graph.items() if key != "view_state"}:
         return (
             "persisted_graph_mismatch",
             "persisted graph content or version differs from the published graph",
@@ -712,18 +766,31 @@ async def _required_graph_turn_render_failure(
         return None
     dom = await _graph_dom_state(page, graph)
     expected_nodes = len(graph.get("nodes") or [])
-    expected_edges = len(graph.get("edges") or [])
+    graph_edges = graph.get("edges") or []
+    expected_edges = len(
+        {
+            tuple(
+                sorted((str(edge.get("source") or ""), str(edge.get("target") or "")))
+            )
+            for edge in graph_edges
+        }
+    )
     if len(dom["node_ids"]) != expected_nodes:
         return (
             "required_graph_turn_render_mismatch",
             f"case {case.id} turn {step_index + 1} rendered {len(dom['node_ids'])} "
             f"nodes for a {expected_nodes}-node graph",
         )
-    if len(dom["edges"]) != expected_edges:
+    if len(dom["connections"]) != expected_edges:
         return (
             "required_graph_turn_edge_render_mismatch",
-            f"case {case.id} turn {step_index + 1} rendered {len(dom['edges'])} "
-            f"edges for a {expected_edges}-edge graph",
+            f"case {case.id} turn {step_index + 1} rendered {len(dom['connections'])} "
+            f"connections for a {expected_edges}-connection graph",
+        )
+    if not dom["connections_valid"]:
+        return (
+            "required_graph_turn_edge_identity_mismatch",
+            f"case {case.id} turn {step_index + 1} rendered invalid connection members",
         )
     expected_node_ids = sorted(
         str(node.get("id") or "") for node in (graph.get("nodes") or [])
@@ -739,7 +806,7 @@ async def _required_graph_turn_render_failure(
             str(edge.get("target") or ""),
             str(edge.get("label") or ""),
         )
-        for edge in (graph.get("edges") or [])
+        for edge in graph_edges
     )
     rendered_edge_identities = sorted(
         (edge["source"], edge["target"], edge["label"]) for edge in dom["edges"]
@@ -771,32 +838,86 @@ async def _graph_dom_state(
     graph: dict[str, Any] | None,
 ) -> GraphDomState:
     graph_version = graph.get("version") if isinstance(graph, dict) else None
-    wait_for_function = getattr(page, "wait_for_function", None)
-    if graph_version and callable(wait_for_function):
-        expected_version_js = json.dumps(graph_version)
+    expected_version_js = json.dumps(graph_version)
+    # A redraw can clear the SVG between browser calls. Capture readiness and
+    # identities in one browser execution so they describe the same render.
+    try:
+        handle = await page.wait_for_function(
+            f"""() => {{
+            const canvases = document.querySelectorAll('[data-testid="graph-canvas"]');
+            if (canvases.length !== 1) return false;
+            const canvas = canvases[0];
+            const version = canvas.getAttribute('data-rendered-graph-version');
+            const expectedVersion = {expected_version_js};
+            if (expectedVersion !== null && version !== expectedVersion) return false;
+            return {{
+                version,
+                node_ids: Array.from(canvas.querySelectorAll('g.node'),
+                    element => element.getAttribute('data-node-id') || ''),
+                connections: Array.from(canvas.querySelectorAll('path.edge-vis'),
+                    element => ({{
+                        source: element.getAttribute('data-source-id') || '',
+                        target: element.getAttribute('data-target-id') || '',
+                        label: element.getAttribute('data-edge-label') || '',
+                        count: element.getAttribute('data-connection-count') || '',
+                        members: element.getAttribute('data-connection-members') || '',
+                    }})),
+            }};
+            }}""",
+            timeout=10_000,
+        )
+    except PlaywrightTimeoutError as exc:
+        raise BrowserQualityError(
+            "graph_render_readiness_timeout",
+            f"graph canvas did not render expected version {graph_version!r} within 10000 ms",
+        ) from exc
+    try:
+        snapshot = await handle.json_value()
+    finally:
+        await handle.dispose()
+    node_ids = snapshot["node_ids"]
+    connections = snapshot["connections"]
+    edges: list[dict[str, str]] = []
+    pairs: set[tuple[str, str]] = set()
+    connections_valid = True
+    for connection in connections:
         try:
-            await wait_for_function(
-                f"""() => document.querySelector('[data-testid="graph-canvas"]')"""
-                f"""?.getAttribute('data-rendered-graph-version') === {expected_version_js}""",
-                timeout=10_000,
-            )
-        except PlaywrightTimeoutError:
-            pass
-    canvas = page.locator('[data-testid="graph-canvas"]')
-    node_ids = await canvas.locator("g.node").evaluate_all(
-        "elements => elements.map(element => element.getAttribute('data-node-id') || '')"
-    )
-    edges = await canvas.locator("path.edge-vis").evaluate_all(
-        """elements => elements.map(element => ({
-            source: element.getAttribute('data-source-id') || '',
-            target: element.getAttribute('data-target-id') || '',
-            label: element.getAttribute('data-edge-label') || '',
-        }))"""
-    )
+            members = json.loads(connection["members"])
+            count = int(connection["count"])
+        except (KeyError, ValueError, TypeError):
+            connections_valid = False
+            continue
+        if not isinstance(members, list) or not members or count != len(members):
+            connections_valid = False
+            continue
+        pair = tuple(sorted((connection["source"], connection["target"])))
+        if pair in pairs:
+            connections_valid = False
+        pairs.add(pair)
+        identities = []
+        for member in members:
+            if not isinstance(member, dict) or not all(
+                isinstance(member.get(key), str)
+                for key in ("source", "target", "label")
+            ):
+                connections_valid = False
+                continue
+            if tuple(sorted((member["source"], member["target"]))) != pair:
+                connections_valid = False
+            identity = {key: member[key] for key in ("source", "target", "label")}
+            identities.append(identity)
+        if not any(
+            all(connection[key] == edge[key] for key in ("source", "target", "label"))
+            for edge in identities
+        ):
+            connections_valid = False
+        edges.extend(identities)
     return {
         "node_ids": node_ids,
         "edges": edges,
-        "version": await canvas.get_attribute("data-rendered-graph-version"),
+        "connections": connections,
+        "connections_valid": connections_valid,
+        "version": snapshot["version"],
     }
 
 
@@ -1066,6 +1187,8 @@ async def _send_case_steps(
                 step_index,
                 step_events,
             )
+        except BrowserQualityError:
+            raise
         except Exception as exc:
             raise BrowserInfrastructureError(
                 "graph_dom_inspection_failed",
@@ -1094,7 +1217,16 @@ async def _send_case_steps(
         if turn_graph is not None:
             previous_turn_graph = turn_graph
         if turn_graphs is not None and turn_graph:
-            dom = await _graph_dom_state(page, turn_graph)
+            try:
+                dom = await _graph_dom_state(page, turn_graph)
+            except BrowserQualityError:
+                raise
+            except Exception as exc:
+                raise BrowserInfrastructureError(
+                    "graph_dom_inspection_failed",
+                    f"case {case.id} turn {step_index + 1} graph DOM evidence "
+                    f"failed: {type(exc).__name__}: {exc}",
+                ) from exc
             turn_graphs.append(
                 {
                     "turn": step_index + 1,
@@ -1880,6 +2012,7 @@ async def _run_browser_attempt(
         rendered_graph_version = None
         rendered_node_ids: list[str] = []
         rendered_edge_identities: list[dict[str, str]] = []
+        rendered_connections_valid = True
         if not failure_details and _should_inspect_graph_dom(case, graph):
             try:
                 dom = await _graph_dom_state(page, graph)
@@ -1887,7 +2020,10 @@ async def _run_browser_attempt(
                 rendered_edge_identities = dom["edges"]
                 rendered_nodes = len(rendered_node_ids)
                 rendered_edges = len(rendered_edge_identities)
+                rendered_connections_valid = dom["connections_valid"]
                 rendered_graph_version = dom["version"]
+            except BrowserQualityError as exc:
+                failure_details.append(_exception_failure_detail(exc))
             except Exception as exc:
                 failure_details.append(
                     _failure_detail(
@@ -1908,6 +2044,14 @@ async def _run_browser_attempt(
                     rendered_edge_identities,
                 )
             )
+            if not rendered_connections_valid:
+                failure_details.append(
+                    _failure_detail(
+                        "quality",
+                        "graph_edge_identity_mismatch",
+                        "browser rendered invalid connection members",
+                    )
+                )
         failure_details.extend(
             await _node_followup_interaction_failure_details(
                 page,
@@ -1977,7 +2121,9 @@ async def _run_browser_attempt(
                 if requires_graph:
                     graph_failure = _persisted_graph_failure(graph, persisted_graph)
                     if graph_failure is not None:
-                        failure_details.append(_failure_detail("quality", *graph_failure))
+                        failure_details.append(
+                            _failure_detail("quality", *graph_failure)
+                        )
 
         if thread_id and case.deterministic.cleanup:
             try:

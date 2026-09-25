@@ -9,12 +9,13 @@
 import { useCallback, useEffect, useMemo, useReducer } from 'react';
 import type { GraphData } from '../types';
 
-const AUTO_PLAY_STEP_MS = 900;
+const AUTO_PLAY_STEP_MS = 1800;
 
 type PlaybackState = {
   signature: string;
   currentStep: number;
   isAutoPlaying: boolean;
+  autoPlayRequested: boolean;
 };
 
 type PlaybackAction =
@@ -48,15 +49,17 @@ function playbackReducer(state: PlaybackState, action: PlaybackAction): Playback
   switch (action.type) {
     case 'syncGraph':
       if (action.signature === state.signature) {
-        return state;
+        if (!action.shouldAutoPlay) return { ...state, isAutoPlaying: false };
+        // A preserved graph must not replay after every text-only answer.
+        if (state.autoPlayRequested) return state;
       }
       if (!action.hasGraph) {
-        return { signature: action.signature, currentStep: -1, isAutoPlaying: false };
+        return { signature: action.signature, currentStep: -1, isAutoPlaying: false, autoPlayRequested: action.shouldAutoPlay };
       }
       if (action.shouldAutoPlay) {
-        return { signature: action.signature, currentStep: 0, isAutoPlaying: true };
+        return { signature: action.signature, currentStep: 0, isAutoPlaying: true, autoPlayRequested: true };
       }
-      return { signature: action.signature, currentStep: -1, isAutoPlaying: false };
+      return { signature: action.signature, currentStep: -1, isAutoPlaying: false, autoPlayRequested: false };
 
     case 'tick':
       if (!state.isAutoPlaying) {
@@ -90,6 +93,7 @@ export function useGraph(graphData: GraphData | null, animateSequence: boolean) 
     signature: 'none',
     currentStep: -1,
     isAutoPlaying: false,
+    autoPlayRequested: false,
   });
 
   const totalSteps = graphData?.sequence?.length ?? 0;
@@ -137,6 +141,7 @@ export function useGraph(graphData: GraphData | null, animateSequence: boolean) 
 
   return {
     currentStep,
+    isAutoPlaying,
     totalSteps,
     hasSequence,
     activeNodeIds,
