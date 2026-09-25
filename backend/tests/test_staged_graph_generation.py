@@ -518,7 +518,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v20"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v21"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -527,8 +527,15 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
             "streaming_integrity": STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
         }
         assert "applicable design guidance, not blocking acceptance criteria" in prompt
+        assert "check each effect owner separately" in prompt
+        assert "compensation proposal from its producer" in prompt
+        assert "A broad downstream response does not establish upstream submission" in prompt
+        assert "curated hostile traces and offline evaluation before release" in prompt
+        assert "each serving target's canary, distinct promotion and rollback" in prompt
+        assert "do not invent extra components or capabilities" in prompt
     else:
         assert "authoring_guidance" not in prompt_input
+        assert "check each effect owner separately" not in prompt
     assert prompt_input["accepted_components"] == [
         {
             "index": 0,
