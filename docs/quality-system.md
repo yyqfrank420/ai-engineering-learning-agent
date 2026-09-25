@@ -238,8 +238,12 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v8`, Anthropic, and `claude-sonnet-5` are the versioned judge
-selection. Reports record the active provider, model, and prompt release.
+`semantic-rubric-judge-v9`, Anthropic, and `claude-sonnet-5` are the versioned judge
+selection. The Anthropic request uses high reasoning effort with an 8192-token
+budget shared by reasoning and structured output. The judge receives the case
+and rubrics before artifact sources, with numbered evidence chunks in source
+order. Reports record the active provider, model, and prompt release.
+Calibration remains pending.
 
 `corpus_sha256()` hashes prompts, rubrics, UI modes, and deterministic expectations.
 It excludes human approval metadata, so adding labels cannot change behavior identity.

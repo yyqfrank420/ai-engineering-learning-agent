@@ -27,7 +27,7 @@ from eval.semantic_gate import DimensionJudgment, JudgeResult
 DEFAULT_JUDGE_PROVIDER = "anthropic"
 DEFAULT_JUDGE_MODEL = "gpt-5.4-mini-2026-03-17"
 DEFAULT_ANTHROPIC_JUDGE_MODEL = "claude-sonnet-5"
-JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v8"
+JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v9"
 INPUT_USD_PER_MILLION = 0.75
 OUTPUT_USD_PER_MILLION = 4.50
 _JUDGE_PRICING_USD_PER_MILLION = {
@@ -45,7 +45,7 @@ _RETRYABLE_JUDGE_ERRORS = (
     AnthropicAPITimeoutError,
     AnthropicRateLimitError,
 )
-# High-effort judgments return complete non-streaming responses; the suite deadline still caps the run.
+# Judge responses are non-streaming; the per-attempt deadline still caps the request.
 _JUDGE_ATTEMPT_TIMEOUT_SECONDS = 120
 
 
@@ -257,7 +257,8 @@ For every dimension, return one to three evidence citations and keep the rationa
         "rubrics": rubric,
         "artifact_sources": artifact_sources,
     }
-    user = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    # Keep case and rubrics ahead of evidence, and numbered source chunks in source order.
+    user = json.dumps(payload, ensure_ascii=False)
     if len(user) > 80_000:
         raise RuntimeError("judge evidence packet exceeds the bounded prompt size")
     return system, user
@@ -340,6 +341,7 @@ class SemanticJudge:
                 "system": system,
                 "messages": [{"role": "user", "content": user}],
                 "output_config": {
+                    # Reasoning and JSON output share this request's 8192-token budget.
                     "effort": "high",
                     "format": {
                         "type": "json_schema",
