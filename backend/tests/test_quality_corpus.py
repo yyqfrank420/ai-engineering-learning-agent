@@ -1156,8 +1156,9 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
             return None
 
         def locator(self, selector):
-            assert selector == ".."
-            return self
+            raise AssertionError(
+                f"composer locator must not depend on textarea: {selector}"
+            )
 
         def get_by_role(self, role, *, name, exact=True):
             assert role == "button" and exact
@@ -1180,6 +1181,10 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
                 raise
 
     class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
 
@@ -1217,8 +1222,9 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(
             self.name = name
 
         def locator(self, selector):
-            assert selector == ".."
-            return self
+            raise AssertionError(
+                f"composer locator must not depend on textarea: {selector}"
+            )
 
         def get_by_role(self, role, *, name, exact=True):
             assert role == "button" and exact
@@ -1242,6 +1248,10 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(
             await asyncio.Future()
 
     class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
 
@@ -1257,6 +1267,72 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(
         _send_step(Page(), case, 0, frames, timeout_seconds=1), timeout=2
     )
     assert events == [{"type": "done"}]
+
+
+@pytest.mark.asyncio
+async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypatch):
+    from eval.browser_runner import _send_step
+
+    case = load_corpus().by_id["graph-expansion"]
+    frames = []
+    placeholder_changed = asyncio.Event()
+    stop_seen = asyncio.Event()
+    stop_hidden = asyncio.Event()
+
+    async def skip_modes(*_args):
+        return None
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def locator(self, selector):
+            raise AssertionError(f"Stop must not depend on textarea: {selector}")
+
+        def get_by_role(self, role, *, name, exact=True):
+            assert role == "button" and name == "Stop generation" and exact
+            return Control(name)
+
+        async def fill(self, _value):
+            assert self.name == "textarea"
+            assert not placeholder_changed.is_set()
+
+        async def click(self):
+            if self.name == "Send message":
+                placeholder_changed.set()
+
+        async def wait_for(self, *, state, timeout):
+            del timeout
+            if self.name == "Stop generation" and state == "visible":
+                assert placeholder_changed.is_set()
+                stop_seen.set()
+            elif self.name == "Stop generation" and state == "hidden":
+                await stop_hidden.wait()
+            else:
+                await asyncio.Future()
+
+    class Page:
+        def locator(self, selector):
+            assert selector == ".split-pane__conversation"
+            return Control("conversation")
+
+        def get_by_placeholder(self, _pattern):
+            return Control("textarea")
+
+        def get_by_label(self, name):
+            return Control(name)
+
+        def get_by_role(self, role, *, name):
+            assert role == "dialog" and name == "Include a diagram?"
+            return Control("dialog")
+
+    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
+    turn = asyncio.create_task(_send_step(Page(), case, 0, frames, timeout_seconds=2))
+    await asyncio.wait_for(stop_seen.wait(), timeout=1)
+    assert not turn.done()
+    frames.append({"direction": "received", "message": {"type": "done"}})
+    stop_hidden.set()
+    assert await asyncio.wait_for(turn, timeout=2) == [{"type": "done"}]
 
 
 @pytest.mark.asyncio

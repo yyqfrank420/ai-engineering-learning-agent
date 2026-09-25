@@ -343,7 +343,7 @@ async def _send_step(
     try:
         await _set_modes(page, case, step_index)
         textarea = page.get_by_placeholder(re.compile(r"Ask a question"))
-        composer_stop = textarea.locator("..").get_by_role(
+        composer_stop = page.locator(".split-pane__conversation").get_by_role(
             "button", name="Stop generation", exact=True
         )
         await textarea.fill(case.steps[step_index].prompt)
