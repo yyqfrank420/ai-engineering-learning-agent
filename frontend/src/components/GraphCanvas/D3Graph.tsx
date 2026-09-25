@@ -199,6 +199,16 @@ interface GraphRenderState {
   nodeFirstStep: Map<string, number>;
   sequenceLength: number;
   isForward: (d: RenderLink) => boolean;
+  viewport: () => d3.ZoomTransform;
+  setWalkthroughViewport: (transform: d3.ZoomTransform) => void;
+  focusWalkthroughNodes: (nodeIds: Set<string>) => void;
+}
+
+interface WalkthroughCamera {
+  key: string;
+  active: boolean;
+  userIntervened: boolean;
+  baseline: d3.ZoomTransform | null;
 }
 
 function compareNullableNumber(a: number | null, b: number | null): number {
@@ -231,6 +241,7 @@ export function D3Graph({
   const svgRef = useRef<SVGSVGElement>(null);
   const navigateRef = useRef<(action: 'in' | 'out' | 'fit' | 'read') => void>(() => undefined);
   const renderStateRef = useRef<GraphRenderState | null>(null);
+  const walkthroughCameraRef = useRef<WalkthroughCamera | null>(null);
   const onNodeClickRef = useRef(onNodeClick);
   const onNodeEditRef = useRef(onNodeEdit);
   const onViewStateChangeRef = useRef(onViewStateChange);
@@ -315,6 +326,9 @@ export function D3Graph({
     const renderGraphData = graphDataRef.current;
     const renderInitialViewState = initialViewStateRef.current;
     if (!renderGraphData) return;
+    if (walkthroughCameraRef.current?.key !== structureKey) {
+      walkthroughCameraRef.current = { key: structureKey, active: false, userIntervened: false, baseline: null };
+    }
     setEdgeTooltip(null);
 
     const svg = d3.select(svgRef.current);
@@ -326,6 +340,10 @@ export function D3Graph({
     };
     const trackDrag = (event: { sourceEvent: MouseEvent | TouchEvent }) => {
       if ('view' in event.sourceEvent) dragView = event.sourceEvent.view;
+    };
+    const stopWalkthroughFollow = () => {
+      const camera = walkthroughCameraRef.current;
+      if (camera?.active) camera.userIntervened = true;
     };
     svg.attr('data-rendered-graph-version', null);
     svg.selectAll('*').remove();
@@ -418,13 +436,19 @@ export function D3Graph({
       latestViewStateRef.current = { key: structureKey, state };
       onViewStateChangeRef.current?.(state);
     };
-
+    let applyingWalkthroughCamera = false;
     const zoomBehavior = d3.zoom<SVGSVGElement, unknown>()
       .scaleExtent([0.1, 3])
+      .on('start', (event) => {
+        if (event.sourceEvent) stopWalkthroughFollow();
+      })
       .on('zoom', (event) => {
         g.attr('transform', event.transform.toString());
       })
       .on('end', (event) => {
+        if (applyingWalkthroughCamera) return;
+        const camera = walkthroughCameraRef.current;
+        if (camera?.active) camera.baseline = event.transform;
         emitViewState(nodes, event.transform);
       });
     svg.call(zoomBehavior);
@@ -1248,6 +1272,7 @@ export function D3Graph({
             if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) return;
             event.preventDefault();
             event.stopPropagation();
+            stopWalkthroughFollow();
             const step = event.shiftKey ? 10 : 1;
             resize(snapshot(), side, event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0,
               event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0);
@@ -1255,7 +1280,10 @@ export function D3Graph({
           })
           .call(d3.drag<SVGRectElement, string>().container(() => g.node()!)
             .on('start', event => { trackDrag(event); activateZone(grp.id); resizeStart = snapshot(); resizePointer = { x: event.x, y: event.y }; })
-            .on('drag', (event, side) => resize(resizeStart, side, event.x - resizePointer.x, event.y - resizePointer.y, !event.sourceEvent.altKey))
+            .on('drag', (event, side) => {
+              stopWalkthroughFollow();
+              resize(resizeStart, side, event.x - resizePointer.x, event.y - resizePointer.y, !event.sourceEvent.altKey);
+            })
             .on('end', () => { dragView = null; showGuides([]); emitViewState(nodes, d3.zoomTransform(svgRef.current!)); }));
         let moveStart: ReturnType<typeof snapshot>;
         let movePointer = { x: 0, y: 0 };
@@ -1277,6 +1305,7 @@ export function D3Graph({
             if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
               event.preventDefault();
               event.stopPropagation();
+              stopWalkthroughFollow();
               activateZone(grp.id);
               centerMembers(grp);
               const step = event.shiftKey ? 10 : 1;
@@ -1298,6 +1327,7 @@ export function D3Graph({
               rect.style('cursor', 'grabbing');
             })
             .on('drag', event => {
+              stopWalkthroughFollow();
               let dx = event.x - movePointer.x, dy = event.y - movePointer.y;
               const constrain = event.sourceEvent.shiftKey;
               const horizontal = Math.abs(dx) >= Math.abs(dy);
@@ -1496,6 +1526,7 @@ export function D3Graph({
             nodeDragStarts.set(node.id, { x: node.x, y: node.y, targets });
           })
           .on('drag', (event, d) => {
+            stopWalkthroughFollow();
             const start = nodeDragStarts.get(d.id)!;
             const constrain = navigation && event.sourceEvent.shiftKey;
             const horizontal = Math.abs(event.x - start.x) >= Math.abs(event.y - start.y);
@@ -1554,6 +1585,7 @@ export function D3Graph({
         if (navigation && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
           event.preventDefault();
           event.stopPropagation();
+          stopWalkthroughFollow();
           const step = event.shiftKey ? 10 : 1;
           d.x += event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
           d.y += event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
@@ -2070,6 +2102,7 @@ export function D3Graph({
       Math.max(INITIAL_FIT_PADDING, (height - layoutH * readableScale) / 2),
     ).scale(readableScale);
     navigateRef.current = (action) => {
+      stopWalkthroughFollow();
       if (action === 'fit' || action === 'read') {
         const boxes = groupEls.map(({ rect }) => ({
           x: Number(rect.attr('x')), y: Number(rect.attr('y')),
@@ -2100,7 +2133,61 @@ export function D3Graph({
           .translate(restoreViewState.viewport.x + resizeX, restoreViewState.viewport.y + resizeY)
           .scale(restoreViewState.viewport.k)
       : navigation ? readableTransform : fitTransform;
+    const camera = walkthroughCameraRef.current;
+    if (sameDiagram && camera?.active && !camera.userIntervened) camera.baseline = initialTransform;
     svg.call(zoomBehavior.transform, initialTransform);
+
+    const setWalkthroughViewport = (transform: d3.ZoomTransform) => {
+      applyingWalkthroughCamera = true;
+      try {
+        svg.call(zoomBehavior.transform, transform);
+      } finally {
+        applyingWalkthroughCamera = false;
+      }
+    };
+    const focusWalkthroughNodes = (nodeIds: Set<string>) => {
+      const activeNodes = nodes
+        .filter(node => nodeIds.has(node.id) && Number.isFinite(node.x) && Number.isFinite(node.y))
+        .sort((a, b) => a.x - b.x || a.y - b.y || a.id.localeCompare(b.id));
+      if (activeNodes.length === 0) return;
+      const activeBounds = {
+        left: Math.min(...activeNodes.map(node => node.x - NODE_W / 2)),
+        right: Math.max(...activeNodes.map(node => node.x + NODE_W / 2)),
+        top: Math.min(...activeNodes.map(node => node.y - NODE_H / 2)),
+        bottom: Math.max(...activeNodes.map(node => node.y + NODE_H / 2)),
+      };
+      const toolbarHeight = svg.node()?.parentElement?.querySelector<HTMLElement>('.diagram-toolbar')?.offsetHeight ?? 0;
+      const left = Math.min(32, width / 4);
+      const right = width - left;
+      const top = Math.min(Math.max(72, toolbarHeight + 24), height / 3);
+      const bottom = height - Math.min(32, height / 4);
+      const current = d3.zoomTransform(svg.node()!);
+      const preferredScale = walkthroughCameraRef.current?.baseline?.k ?? current.k;
+      const readableFloor = Math.min(preferredScale, minimumTitlePx / NODE_TITLE_PX);
+      const fitScale = Math.min(
+        preferredScale,
+        (right - left) / (activeBounds.right - activeBounds.left),
+        (bottom - top) / (activeBounds.bottom - activeBounds.top),
+      );
+      const scale = Math.max(readableFloor, fitScale);
+      const first = activeNodes[0];
+      const bounds = fitScale >= readableFloor ? activeBounds : {
+        left: first.x - NODE_W / 2,
+        right: first.x + NODE_W / 2,
+        top: first.y - NODE_H / 2,
+        bottom: first.y + NODE_H / 2,
+      };
+      const correction = (start: number, end: number, minimum: number, maximum: number) => {
+        if (end - start > maximum - minimum) return (minimum + maximum - start - end) / 2;
+        if (start < minimum) return minimum - start;
+        if (end > maximum) return maximum - end;
+        return 0;
+      };
+      const dx = correction(bounds.left * scale + current.x, bounds.right * scale + current.x, left, right);
+      const dy = correction(bounds.top * scale + current.y, bounds.bottom * scale + current.y, top, bottom);
+      if (scale === current.k && dx === 0 && dy === 0) return;
+      setWalkthroughViewport(d3.zoomIdentity.translate(current.x + dx, current.y + dy).scale(scale));
+    };
 
     renderStateRef.current = {
       nodeSel,
@@ -2111,6 +2198,9 @@ export function D3Graph({
       nodeFirstStep,
       sequenceLength: sequence.length,
       isForward,
+      viewport: () => d3.zoomTransform(svg.node()!),
+      setWalkthroughViewport,
+      focusWalkthroughNodes,
     };
 
     let cancelled = false;
@@ -2160,6 +2250,26 @@ export function D3Graph({
       .duration(180)
       .attr('opacity', (d: RenderNode) => detailById.get(d.id) ? 0 : 0.7);
   }, [detailKey, graphData]);
+
+  useEffect(() => {
+    const state = renderStateRef.current;
+    const camera = walkthroughCameraRef.current;
+    if (!navigation || !state || !camera) return;
+    if (currentStep < 0) {
+      if (camera.active && !camera.userIntervened && camera.baseline) {
+        state.setWalkthroughViewport(camera.baseline);
+      }
+      camera.active = false;
+      camera.userIntervened = false;
+      camera.baseline = null;
+      return;
+    }
+    if (!camera.active) {
+      camera.active = true;
+      camera.baseline = state.viewport();
+    }
+    if (!camera.userIntervened) state.focusWalkthroughNodes(activeNodeIds);
+  }, [activeNodeIds, currentStep, navigation, structureKey, viewportRevision]);
 
   useEffect(() => {
     const renderState = renderStateRef.current;

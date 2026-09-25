@@ -1,11 +1,13 @@
 import { act, createEvent, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import * as d3 from 'd3';
 
-import type { GraphData, GraphEdge } from '../../types';
+import type { GraphData, GraphEdge, GraphViewState } from '../../types';
 import { D3Graph } from './D3Graph';
 import tradingBotSavedGraph from './__fixtures__/tradingBotSavedGraph.json';
 import { learnerSupportGraph } from './__fixtures__/learnerSupportGraph';
 import { diagramConnections } from './diagramConnections';
+import { MIN_PUBLISHED_TITLE_PX, NODE_TITLE_PX, NODE_W } from './graphLayout';
 import {
   customerSupportDenseGraph,
   growthMarketingDenseGraph,
@@ -29,6 +31,26 @@ const graph: GraphData = {
   ],
   edges: [],
   sequence: [],
+};
+
+const cameraGraph: GraphData = {
+  ...graph,
+  nodes: ['a', 'b', 'c'].map(id => ({ ...graph.nodes[0], id, label: id })),
+  edges: [
+    { source: 'a', target: 'b', label: 'First', technology: 'HTTP', sync: 'sync', description: '' },
+    { source: 'b', target: 'c', label: 'Second', technology: 'HTTP', sync: 'sync', description: '' },
+  ],
+  sequence: [
+    { step: 1, nodes: ['a'], description: 'First' },
+    { step: 2, nodes: ['b'], description: 'Second' },
+    { step: 3, nodes: ['c'], description: 'Third' },
+  ],
+};
+
+const cameraViewState: GraphViewState = {
+  layoutVersion: 17,
+  nodePositions: { a: { x: 200, y: 200 }, b: { x: 600, y: 200 }, c: { x: 1000, y: 200 } },
+  viewport: { x: 0, y: 0, k: 1 },
 };
 
 function edge(source: string, target: string, label: string): GraphEdge {
@@ -204,6 +226,174 @@ describe('graph node activation', () => {
     fireEvent.keyDown(connection, { key: 'Enter' });
     expect(screen.getByRole('region', { name: 'Connection details' }).textContent).toContain('Response');
     expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Close connection details' }));
+  });
+
+  it('keeps visible walkthrough steps still and pans offscreen steps without persisting the camera', () => {
+    const save = vi.fn();
+    const props = { graphData: cameraGraph, initialViewState: cameraViewState,
+      onNodeClick: () => undefined, onViewStateChange: save, navigation: true };
+    const view = render(<D3Graph {...props} currentStep={-1} activeNodeIds={new Set<string>()} />);
+    const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+    const savedCalls = save.mock.calls.length;
+    const step = (number: number, nodeIds: string[]) => view.rerender(
+      <D3Graph {...props} currentStep={number} activeNodeIds={new Set(nodeIds)} />,
+    );
+
+    step(0, ['a']);
+    expect(d3.zoomTransform(svg).x).toBe(0);
+    step(1, ['b']);
+    expect(d3.zoomTransform(svg).x).toBe(0);
+    step(2, ['c']);
+    const followed = d3.zoomTransform(svg);
+    expect(followed.k).toBe(1);
+    expect(followed.x).toBeLessThan(0);
+    expect(followed.x + (1000 + 186 / 2) * followed.k).toBeLessThanOrEqual(760 - 32);
+    expect(save).toHaveBeenCalledTimes(savedCalls);
+
+    step(-1, []);
+    expect(d3.zoomTransform(svg).x).toBe(0);
+    expect(d3.zoomTransform(svg).k).toBe(1);
+    expect(save).toHaveBeenCalledTimes(savedCalls);
+  });
+
+  it('fits all active bounds when a readable zoom reduction suffices', () => {
+    const fittingViewState = { ...cameraViewState,
+      nodePositions: { ...cameraViewState.nodePositions, c: { x: 950, y: 200 } } };
+    const props = { graphData: cameraGraph, initialViewState: fittingViewState,
+      onNodeClick: () => undefined, navigation: true };
+    const view = render(<D3Graph {...props} currentStep={0} activeNodeIds={new Set(['a'])} />);
+    const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+    view.rerender(<D3Graph {...props} currentStep={1} activeNodeIds={new Set(['a', 'c'])} />);
+    const followed = d3.zoomTransform(svg);
+    expect(followed.k).toBeLessThan(1);
+    expect(NODE_TITLE_PX * followed.k).toBeGreaterThanOrEqual(MIN_PUBLISHED_TITLE_PX);
+    expect(followed.x + (200 - NODE_W / 2) * followed.k).toBeCloseTo(32);
+    expect(followed.x + (950 + NODE_W / 2) * followed.k).toBeCloseTo(760 - 32);
+  });
+
+  it('keeps wide active groups readable, anchors their first node, then restores baseline zoom', () => {
+    const wideViewState = { ...cameraViewState,
+      nodePositions: { ...cameraViewState.nodePositions, c: { x: 2000, y: 200 } } };
+    const props = { graphData: cameraGraph, initialViewState: wideViewState,
+      onNodeClick: () => undefined, navigation: true };
+    const view = render(<D3Graph {...props} currentStep={0} activeNodeIds={new Set(['a'])} />);
+    const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+    view.rerender(<D3Graph {...props} currentStep={1} activeNodeIds={new Set(['c', 'a'])} />);
+    const wide = d3.zoomTransform(svg);
+    expect(NODE_TITLE_PX * wide.k).toBeCloseTo(MIN_PUBLISHED_TITLE_PX);
+    expect(wide.x + (200 - NODE_W / 2) * wide.k).toBeGreaterThanOrEqual(32);
+    expect(wide.x + (200 + NODE_W / 2) * wide.k).toBeLessThanOrEqual(760 - 32);
+    expect(wide.x + (2000 - NODE_W / 2) * wide.k).toBeGreaterThan(760);
+
+    view.rerender(<D3Graph {...props} currentStep={2} activeNodeIds={new Set(['c'])} />);
+    const narrow = d3.zoomTransform(svg);
+    expect(narrow.k).toBe(1);
+    expect(narrow.x + (2000 - NODE_W / 2) * narrow.k).toBeGreaterThanOrEqual(32);
+    expect(narrow.x + (2000 + NODE_W / 2) * narrow.k).toBeLessThanOrEqual(760 - 32);
+  });
+
+  it('adopts the visible camera for an explicit node edit and preserves it through resize and overview', () => {
+    let notifyResize: ((entries: Array<{ contentRect: { width: number; height: number } }>) => void) | null = null;
+    class TestResizeObserver {
+      constructor(callback: typeof notifyResize) { notifyResize = callback; }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    try {
+      const save = vi.fn();
+      const props = { graphData: cameraGraph, initialViewState: cameraViewState,
+        onNodeClick: () => undefined, onViewStateChange: save, navigation: true };
+      const view = render(<D3Graph {...props} currentStep={2} activeNodeIds={new Set(['c'])} />);
+      const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+      const followed = d3.zoomTransform(svg);
+      expect(followed.x).toBeLessThan(0);
+
+      fireEvent.keyDown(screen.getByRole('button', { name: 'Explore c' }), { key: 'ArrowRight' });
+      expect(save.mock.lastCall![0].viewport.x).toBe(followed.x);
+      expect(save.mock.lastCall![0].nodePositions.c).toEqual({ x: 1001, y: 200 });
+      view.rerender(<D3Graph {...props} currentStep={0} activeNodeIds={new Set(['a'])} />);
+      expect(d3.zoomTransform(svg).toString()).toBe(followed.toString());
+
+      Object.defineProperty(svg, 'clientWidth', { configurable: true, value: 520 });
+      Object.defineProperty(svg, 'clientHeight', { configurable: true, value: 720 });
+      act(() => notifyResize?.([{ contentRect: { width: 520, height: 720 } }]));
+      const resized = d3.zoomTransform(svg);
+      expect(resized.x).toBeCloseTo(followed.x - 120);
+      expect(resized.y).toBeCloseTo(followed.y + 110);
+      view.rerender(<D3Graph {...props} currentStep={-1} activeNodeIds={new Set<string>()} />);
+      expect(d3.zoomTransform(svg).toString()).toBe(resized.toString());
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('stops camera follow after a manual pan or toolbar zoom and preserves that view at overview', async () => {
+    const save = vi.fn();
+    const props = { graphData: cameraGraph, initialViewState: cameraViewState,
+      onNodeClick: () => undefined, onViewStateChange: save, navigation: true };
+    const view = render(<D3Graph {...props} currentStep={0} activeNodeIds={new Set(['a'])} />);
+    const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+    const step = (number: number, nodeIds: string[]) => view.rerender(
+      <D3Graph {...props} currentStep={number} activeNodeIds={new Set(nodeIds)} />,
+    );
+    const mouse = (element: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', x: number, y: number) => {
+      const event = createEvent[type](element, { clientX: x, clientY: y, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(element, event);
+    };
+
+    mouse(svg, 'mouseDown', 400, 300);
+    mouse(window, 'mouseMove', 350, 300);
+    mouse(window, 'mouseUp', 350, 300);
+    const manual = d3.zoomTransform(svg);
+    expect(manual.x).toBeLessThan(0);
+    expect(save.mock.lastCall![0].viewport.x).toBe(manual.x);
+    step(2, ['c']);
+    expect(d3.zoomTransform(svg).x).toBe(manual.x);
+    step(-1, []);
+    expect(d3.zoomTransform(svg).x).toBe(manual.x);
+
+    step(0, ['a']);
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
+    fireEvent.click(screen.getByRole('button', { name: 'Fit diagram' }));
+    const toolbar = d3.zoomTransform(svg);
+    expect(toolbar.k).toBeLessThan(manual.k);
+    step(2, ['c']);
+    expect(d3.zoomTransform(svg).toString()).toBe(toolbar.toString());
+    step(-1, []);
+    expect(d3.zoomTransform(svg).toString()).toBe(toolbar.toString());
+  });
+
+  it('refocuses after resize and restores the resized learner viewport at overview', () => {
+    let notifyResize: ((entries: Array<{ contentRect: { width: number; height: number } }>) => void) | null = null;
+    class TestResizeObserver {
+      constructor(callback: typeof notifyResize) { notifyResize = callback; }
+      observe() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    try {
+      const save = vi.fn();
+      const props = { graphData: cameraGraph, initialViewState: cameraViewState,
+        onNodeClick: () => undefined, onViewStateChange: save, navigation: true };
+      const view = render(<D3Graph {...props} currentStep={2} activeNodeIds={new Set(['c'])} />);
+      const svg = screen.getByTestId('graph-canvas') as unknown as SVGSVGElement;
+      expect(d3.zoomTransform(svg).x).toBeLessThan(0);
+      Object.defineProperty(svg, 'clientWidth', { configurable: true, value: 520 });
+      Object.defineProperty(svg, 'clientHeight', { configurable: true, value: 720 });
+      act(() => notifyResize?.([{ contentRect: { width: 520, height: 720 } }]));
+      const followed = d3.zoomTransform(svg);
+      expect(followed.x + (1000 + 186 / 2) * followed.k).toBeLessThanOrEqual(520 - 32);
+      const savedCalls = save.mock.calls.length;
+      view.rerender(<D3Graph {...props} currentStep={-1} activeNodeIds={new Set<string>()} />);
+      expect(d3.zoomTransform(svg).x).toBe(-120);
+      expect(d3.zoomTransform(svg).y).toBe(110);
+      expect(d3.zoomTransform(svg).k).toBe(1);
+      expect(save).toHaveBeenCalledTimes(savedCalls);
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
   it('exposes resize handles only for the selected zone and exits with Escape', () => {
     const { container } = render(<D3Graph graphData={learnerSupportGraph} currentStep={-1}
