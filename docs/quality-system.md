@@ -88,6 +88,13 @@ attempt receives its own authenticated browser context and thread. Turns within 
 multi-turn case remain sequential on that context, and result ordering remains the
 canonical corpus ordering even when cases finish out of order.
 
+Browser corpus `2026-09-25.v1` selects the visible on/off diagram modes and answers
+the optional diagram-choice dialog. Completion requires the composer to leave its
+generating state and a captured WebSocket `done` event; the follow-up Send button
+can remain visible during generation. Diagram paths expose their underlying
+directed connection members so the browser can verify every connection, including
+duplicates and replies, when the canvas bundles several records into one path.
+
 Staging request concurrency is 16, owned by
 `ci/quality.json` at `live.budgets.staging_request_concurrency`. Terraform and both
 evaluation deployments read that budget. Runtime validation requires at least

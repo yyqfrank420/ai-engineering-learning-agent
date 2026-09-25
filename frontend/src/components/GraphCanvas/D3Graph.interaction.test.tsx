@@ -421,6 +421,42 @@ describe('graph node activation', () => {
     expect(screen.queryByRole('tooltip')).toBeNull();
   });
 
+  it('exposes every directed member of bundled and individual edge paths', () => {
+    const parallelGraph: GraphData = {
+      ...graph,
+      nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [
+        edge('a', 'b', 'reads'),
+        edge('b', 'a', 'returns'),
+        edge('a', 'b', 'reads'),
+        edge('a', 'b', 'queries'),
+      ],
+    };
+    const members = (path: Element): Array<{ source: string; target: string; label: string }> =>
+      JSON.parse(path.getAttribute('data-connection-members') ?? 'null');
+    const navigationView = render(<D3Graph graphData={parallelGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation />);
+    const bundle = navigationView.container.querySelectorAll('path.edge-vis');
+    expect(bundle).toHaveLength(1);
+    expect(bundle[0].getAttribute('data-connection-count')).toBe('4');
+    expect(members(bundle[0])).toEqual([
+      { source: 'a', target: 'b', label: 'queries' },
+      { source: 'a', target: 'b', label: 'reads' },
+      { source: 'a', target: 'b', label: 'reads' },
+      { source: 'b', target: 'a', label: 'returns' },
+    ]);
+    navigationView.unmount();
+
+    const individualView = render(<D3Graph graphData={parallelGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} />);
+    const individualPaths = Array.from(individualView.container.querySelectorAll('path.edge-vis'));
+    expect(individualPaths).toHaveLength(4);
+    expect(individualPaths.map(path => members(path))).toEqual(parallelGraph.edges.map(edge => [
+      { source: edge.source, target: edge.target, label: edge.label },
+    ]));
+    expect(individualPaths.every(path => path.getAttribute('data-connection-count') === '1')).toBe(true);
+  });
+
   it('keeps deep interactive graphs left to right and discloses return connections on focus', () => {
     const ids = Array.from({ length: 12 }, (_, index) => `stage${index}`);
     const chain: GraphData = {
