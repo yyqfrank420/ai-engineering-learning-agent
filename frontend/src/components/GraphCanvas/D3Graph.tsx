@@ -1344,6 +1344,9 @@ export function D3Graph({
       .attr('data-target-id', (d: RenderLink) => d.target.id)
       .attr('data-edge-label', (d: RenderLink) => d.label)
       .attr('data-connection-count', (d: RenderLink) => d.connection.members.length)
+      .attr('data-connection-members', (d: RenderLink) => JSON.stringify(d.connection.members.map(
+        ({ source, target, label }) => ({ source, target, label }),
+      )))
       .attr('stroke-linejoin', 'round')
       .attr('vector-effect', navigation ? 'non-scaling-stroke' : null)
       .attr('fill', 'none')

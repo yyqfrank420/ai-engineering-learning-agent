@@ -4,7 +4,7 @@
 //          A small "+" button to the left of the textarea opens a floating
 //          popover (ChatGPT-style) for choosing per-message settings:
 //            • Complexity: auto | low | proto | prod
-//            • Graph mode: auto | on | off
+//            • Graph mode: on | off
 //            • Research:   toggle
 //          The "+" button shows a violet dot when any setting differs from
 //          its default.  Enter submits, Shift+Enter inserts a newline.
