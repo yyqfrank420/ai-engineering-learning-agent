@@ -1,3 +1,4 @@
+import { useEffect, useState } from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -253,7 +254,7 @@ const threadState = {
   handleNewChat: vi.fn(),
   handleSelectThread: vi.fn(),
   handleDeleteThread: vi.fn(),
-  retryLatestThread: vi.fn(),
+  retryThread: vi.fn(),
 };
 
 const agentState = {
@@ -496,7 +497,7 @@ describe('App coordination', () => {
     ));
   });
 
-  it('blocks sending while the backend warms and exposes preparation and retry', () => {
+  it('blocks sending and thread retry while the backend warms', () => {
     vi.mocked(useBackendReadiness).mockReturnValue({
       ...readinessState,
       backendReadiness: 'preparing',
@@ -511,9 +512,111 @@ describe('App coordination', () => {
     fireEvent.click(screen.getByText('Send message'));
     expect(agentState.sendMessage).not.toHaveBeenCalled();
     fireEvent.click(screen.getByText('Prepare backend'));
-    fireEvent.click(screen.getByText('Retry'));
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect((retry as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(retry);
     expect(readinessState.prepareBackendNow).toHaveBeenCalledTimes(1);
-    expect(threadState.retryLatestThread).toHaveBeenCalledTimes(1);
+    expect(threadState.retryThread).not.toHaveBeenCalled();
+  });
+
+  it('shows a thread creation error with an available retry', () => {
+    vi.mocked(useThreadSession).mockReturnValue({
+      ...threadState,
+      activeThreadId: null,
+      loadingThread: false,
+      threadError: 'Could not start a new chat. Try again.',
+    });
+    render(<App />);
+
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('Could not start a new chat. Try again.');
+    expect(alert.textContent).not.toContain('Backend unreachable');
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect((retry as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(retry);
+    expect(threadState.retryThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('prevents duplicate thread retries while a thread is loading', () => {
+    vi.mocked(useThreadSession).mockReturnValue({
+      ...threadState,
+      loadingThread: true,
+      threadError: 'Could not open this chat. Try again.',
+    });
+    render(<App />);
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect((retry as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(retry);
+    expect(threadState.retryThread).not.toHaveBeenCalled();
+  });
+
+  it('isolates workspace state by account while retaining it across token refresh', async () => {
+    const mountedOwners: string[] = [];
+    const cleanedOwners: string[] = [];
+    vi.mocked(useThreadSession).mockImplementation(({ authSession }) => {
+      const [owner] = useState(() => authSession?.user.id ?? 'signed-out');
+      const ownedGraph = owner === 'user-1' ? graph : null;
+      const ownedMessages = owner === 'user-1' ? agentState.messages : [];
+      return {
+        ...threadState,
+        activeThreadId: owner === 'signed-out' ? null : `thread-${owner}`,
+        threadTitle: owner === 'user-1' ? 'Account A chat' : 'New chat',
+        threadSnapshot: {
+          title: owner === 'user-1' ? 'Account A chat' : 'New chat',
+          messages: ownedMessages,
+          graphData: ownedGraph,
+        },
+      };
+    });
+    vi.mocked(useAgentStream).mockImplementation((authSession) => {
+      const [owner] = useState(() => authSession?.user.id ?? 'signed-out');
+      useEffect(() => {
+        mountedOwners.push(owner);
+        return () => { cleanedOwners.push(owner); };
+      }, [owner]);
+      const ownedMessages = owner === 'user-1' ? agentState.messages : [];
+      return {
+        ...agentState,
+        messages: ownedMessages,
+        visibleMessages: ownedMessages,
+        graphData: owner === 'user-1' ? graph : null,
+        selectedNode: null,
+      };
+    });
+
+    const view = render(<App />);
+    await screen.findByTestId('graph-canvas');
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe('Reviewed architecture');
+    expect(mountedOwners).toEqual(['user-1']);
+    expect(cleanedOwners).toEqual([]);
+
+    const refreshedSession = { ...session, access_token: 'refreshed-token' };
+    vi.mocked(useAuthSession).mockReturnValue({ ...authState, authSession: refreshedSession });
+    view.rerender(<App />);
+    expect(mountedOwners).toEqual(['user-1']);
+    expect(cleanedOwners).toEqual([]);
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe('Reviewed architecture');
+
+    const otherSession = {
+      ...session,
+      access_token: 'account-b-token',
+      user: { ...session.user, id: 'user-2' },
+    };
+    vi.mocked(useAuthSession).mockReturnValue({ ...authState, authSession: otherSession });
+    view.rerender(<App />);
+    expect(cleanedOwners).toEqual(['user-1']);
+    expect(mountedOwners).toEqual(['user-1', 'user-2']);
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe('');
+    expect(screen.getByTestId('message-list').textContent).toBe('0 messages');
+    expect(writeThreadSnapshot).toHaveBeenCalledWith('user-2', 'thread-user-2', {
+      title: 'New chat',
+      messages: [],
+      graphData: null,
+    });
+    expect(vi.mocked(writeThreadSnapshot).mock.calls
+      .filter(([userId]) => userId === 'user-2')
+      .every(([, , snapshot]) => snapshot.graphData === null && snapshot.messages.length === 0)).toBe(true);
   });
 
   it('moves between dashboard and chat and clears local state on logout', async () => {

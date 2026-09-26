@@ -13,7 +13,7 @@ import hashlib
 import json
 import logging
 import re
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v25"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v22"
+_COMPONENT_PROMPT_VERSION = "staged_components_v28"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v25"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -69,9 +69,15 @@ SYNC_CODES = {500 + index: value for index, value in enumerate(_SYNC_MODES)}
 GROUP_KIND_CODES = {600 + index: value for index, value in enumerate(_GROUP_KINDS)}
 
 
+class ConnectionExchange(TypedDict):
+    request_record_index: int
+    response_record_index: int | None
+
+
 class GenerationResult(TypedDict):
     wire: dict[str, Any]
     prompt_fingerprint: str
+    connection_exchanges: NotRequired[list[ConnectionExchange]]
 
 
 class ComponentClarification(TypedDict):
@@ -331,7 +337,7 @@ def _connection_create_response_schema(
 
 def _parse_connection_response(
     text: str, *, accepted_components: Sequence[Mapping[str, Any]], edge_limit: int
-) -> dict[str, Any]:
+) -> tuple[dict[str, Any], list[ConnectionExchange]]:
     """Expand full-create exchanges into canonical directed contracts."""
     payload = _parse_json(text)
     _require_exact_keys(payload, {"exchanges"})
@@ -339,6 +345,7 @@ def _parse_connection_response(
     if not isinstance(exchanges, list) or len(exchanges) > edge_limit:
         raise StagedGenerationError("connection_exchange_invalid")
     edges = []
+    connection_exchanges: list[ConnectionExchange] = []
     for exchange in exchanges:
         _require_exact_keys(
             exchange,
@@ -359,7 +366,9 @@ def _parse_connection_response(
         forward = {
             key: value for key, value in exchange.items() if key != "response_label"
         }
+        request_record_index = len(edges)
         edges.append(forward)
+        response_record_index = len(edges) if response_label is not None else None
         if response_label is not None:
             edges.append(
                 {
@@ -369,11 +378,18 @@ def _parse_connection_response(
                     "label": response_label,
                 }
             )
-    return _parse_connection_wire(
+        connection_exchanges.append(
+            {
+                "request_record_index": request_record_index,
+                "response_record_index": response_record_index,
+            }
+        )
+    wire = _parse_connection_wire(
         _canonical_json({"edges": edges}),
         accepted_components=accepted_components,
         edge_limit=edge_limit,
     )
+    return wire, connection_exchanges
 
 
 async def generate_component_candidate(
@@ -589,22 +605,27 @@ async def generate_connection_candidate(
             timeout_seconds=timeout_seconds,
             max_output_tokens=max_output_tokens,
         )
-        parse_response = (
-            _parse_connection_wire
-            if delta or correction
-            else _parse_connection_response
-        )
-        wire = parse_response(
-            _canonical_json((delta or correction).assemble(response))
-            if delta or correction
-            else response,
-            accepted_components=accepted,
-            edge_limit=_write_limits(valid_write_set)["edge_limit"],
-        )
+        edge_limit = _write_limits(valid_write_set)["edge_limit"]
+        if delta or correction:
+            wire = _parse_connection_wire(
+                _canonical_json((delta or correction).assemble(response)),
+                accepted_components=accepted,
+                edge_limit=edge_limit,
+            )
+            connection_exchanges = None
+        else:
+            wire, connection_exchanges = _parse_connection_response(
+                response,
+                accepted_components=accepted,
+                edge_limit=edge_limit,
+            )
     except StagedGenerationError as exc:
         exc.prompt_fingerprint = prompt_fingerprint
         raise
-    return {"wire": wire, "prompt_fingerprint": prompt_fingerprint}
+    result: GenerationResult = {"wire": wire, "prompt_fingerprint": prompt_fingerprint}
+    if connection_exchanges is not None:
+        result["connection_exchanges"] = connection_exchanges
+    return result
 
 
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
@@ -954,16 +975,21 @@ def _attempt_prompt(
             instructions += (
                 " Return exactly one outcome: candidate containing the schema-defined object with "
                 "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
-                "of at most 240 characters each. Establish the user's business domain and goal "
-                "from the request or its accepted conversation context. Retrieved examples "
-                "cannot choose the user's business domain or goal. Assumptions may fill "
-                "implementation details but cannot invent a missing business goal or workflow. "
-                "When the business goal or actual workflow is missing and cannot be recovered "
-                "from the request context, return candidate=null with clarification_questions. "
+                "of at most 240 characters each. This generator is already fulfilling an "
+                "admitted diagram request; do not ask whether a diagram is wanted. A named "
+                "educational, research, or comparison subject establishes diagram scope without "
+                "a concrete business use case. Depict that subject and its relevant mechanisms "
+                "or contrasting paths without inventing an application workflow; proceed with "
+                "a candidate for that subject. For an applied system design, establish the user's "
+                "business domain and goal from the request "
+                "or its accepted conversation context. Retrieved examples cannot choose the "
+                "user's business domain or goal. Assumptions may fill implementation details "
+                "but cannot invent a missing business goal or workflow. When an applied system's "
+                "business goal or actual workflow is missing and cannot be recovered from the "
+                "request context, return candidate=null with clarification_questions. "
                 "Do not demand vendor, budget, or implementation details when reasonable "
-                "stated assumptions suffice. For an educational diagram with an explicit "
-                "subject, proceed with a candidate. Never include both a candidate and "
-                "clarification questions."
+                "stated assumptions suffice. Never include both a candidate and clarification "
+                "questions."
             )
     else:
         if architecture_context is not None:
@@ -1013,9 +1039,29 @@ def _attempt_prompt(
                 "owner separately: trace the normal proposal and any declared compensation "
                 "proposal from its producer through direct or delegated invocation of shared "
                 "validation and approval, then execution, reconciliation, and that effect's "
-                "correlated audit outcome. A broad downstream response does not establish "
-                "upstream submission. For declared learning or release, trace curated hostile "
-                "traces and offline evaluation before release, then each serving target's "
+                "correlated audit outcome. For each effect executor, trace the exact approved "
+                "action payload and stable operation identity from canonical proposal or "
+                "operation ownership into execution before the write. A direct or delegated "
+                "request, executor pull with authoritative reply, or declared same-owner "
+                "state can supply them; the executor may reserve the identity durably with "
+                "canonical state. An authorization verdict or incidental reachability alone "
+                "supplies neither payload nor identity. A proposal service's declared metric "
+                "pull with reply is a valid normal input; do not add a redundant push or timer. "
+                "If one component produces both normal and compensation "
+                "proposals, check each behavior's initiation separately; its normal input does not "
+                "initiate rollback. Each declared compensation producer needs an initiating operator, "
+                "incident, or event contract, or explicit autonomous responsibility, plus the "
+                "original or applied operation reference or recovery input. That input may reach "
+                "the producer directly, through delegation, or through declared same-owner internal "
+                "behavior. Combined contracts may cover both behaviors without duplicate services "
+                "or edges; explicit autonomous action needs no synthetic incoming edge. When human "
+                "review or human approval is requested or declared for compensation, the exact "
+                "compensation proposal reaches that human decision boundary before approval. If another component "
+                "owns retry execution, the outcome owner invokes it with stable identity and controls; "
+                "a reply naming retry alone does not invoke it. Keep same-owner actions internal and "
+                "autonomous pollers autonomous; do not add a component per step. A broad downstream "
+                "response does not establish upstream submission. For declared learning or release, "
+                "trace curated hostile traces and offline evaluation before release, then each serving target's "
                 "canary, distinct promotion and rollback, and recorded outcomes. Use the "
                 "accepted components and capabilities; do not invent extra components or "
                 "capabilities to complete this check."

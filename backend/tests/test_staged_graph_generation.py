@@ -518,7 +518,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v22"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v25"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -528,9 +528,35 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
         }
         assert "applicable design guidance, not blocking acceptance criteria" in prompt
         assert "check each effect owner separately" in prompt
+        assert (
+            "trace the exact approved action payload and stable operation identity"
+            in prompt
+        )
+        assert "authorization verdict or incidental reachability alone" in prompt
+        assert "declared metric pull with reply is a valid normal input" in prompt
+        assert "do not add a redundant push or timer" in prompt
         assert "compensation proposal from its producer" in prompt
         assert (
             "A broad downstream response does not establish upstream submission"
+            in prompt
+        )
+        assert "Each declared compensation producer needs an initiating" in prompt
+        assert "check each behavior's initiation separately" in prompt
+        assert "its normal input does not initiate rollback" in prompt
+        assert "original or applied operation reference or recovery input" in prompt
+        assert "Combined contracts may cover both behaviors" in prompt
+        assert "explicit autonomous action needs no synthetic incoming edge" in prompt
+        assert "When human review or human approval is requested or declared" in prompt
+        assert (
+            "the exact compensation proposal reaches that human decision boundary "
+            "before approval"
+        ) in prompt
+        assert (
+            "the outcome owner invokes it with stable identity and controls" in prompt
+        )
+        assert "a reply naming retry alone does not invoke it" in prompt
+        assert (
+            "Keep same-owner actions internal and autonomous pollers autonomous"
             in prompt
         )
         assert "curated hostile traces and offline evaluation before release" in prompt
@@ -539,6 +565,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     else:
         assert "authoring_guidance" not in prompt_input
         assert "check each effect owner separately" not in prompt
+        assert "Each declared compensation producer needs an initiating" not in prompt
     assert prompt_input["accepted_components"] == [
         {
             "index": 0,
@@ -703,7 +730,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v25"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v28"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1254,6 +1281,7 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
         {**base[0], "label": "dispatch", "sync": 501},
         addition,
     ]
+    assert "connection_exchanges" not in result
     assert "Propose canonical edges in the delta" in calls[0]["prompt"]
     assert "Propose exchanges only" not in calls[0]["prompt"]
     assert set(
@@ -2785,6 +2813,7 @@ async def test_connection_recovery_removes_only_cited_edge_and_keeps_components(
         recovery_mode=True,
     )
     assert result["wire"] == {"edges": [second]}
+    assert "connection_exchanges" not in result
     assert accepted == _accepted_components()
     assert calls[0]["schema"]["properties"]["removals"]["items"]["enum"] == [0]
     assert generation._generation_schema_version("connections", calls[0]["schema"]) == (
@@ -3048,7 +3077,7 @@ def test_create_exchange_expands_explicit_reply_independently_of_timing(
         "response_label": response_label,
     }
     original = dict(exchange)
-    result = generation._parse_connection_response(
+    wire, connection_exchanges = generation._parse_connection_response(
         json.dumps({"exchanges": [exchange]}),
         accepted_components=_accepted_components(),
         edge_limit=2,
@@ -3059,7 +3088,13 @@ def test_create_exchange_expands_explicit_reply_independently_of_timing(
         expected.append(
             {**forward, "source_index": 0, "target_index": 1, "label": response_label}
         )
-    assert result == {"edges": expected}
+    assert wire == {"edges": expected}
+    assert connection_exchanges == [
+        {
+            "request_record_index": 0,
+            "response_record_index": 1 if response_label is not None else None,
+        }
+    ]
     assert exchange == original
 
 
@@ -3067,13 +3102,17 @@ def test_create_exchange_mixed_expansion_preserves_order_and_counts_edges():
     paired = _connection_exchanges()["exchanges"][0]
     one_way = {**paired, "label": "enqueue audit", "sync": 501, "response_label": None}
     text = json.dumps({"exchanges": [paired, one_way]})
-    result = generation._parse_connection_response(
+    wire, connection_exchanges = generation._parse_connection_response(
         text, accepted_components=_accepted_components(), edge_limit=3
     )
-    assert [edge["label"] for edge in result["edges"]] == [
+    assert [edge["label"] for edge in wire["edges"]] == [
         "requests",
         "response",
         "enqueue audit",
+    ]
+    assert connection_exchanges == [
+        {"request_record_index": 0, "response_record_index": 1},
+        {"request_record_index": 2, "response_record_index": None},
     ]
     with pytest.raises(
         generation.StagedGenerationError, match="connection_wire_invalid"
@@ -3081,6 +3120,61 @@ def test_create_exchange_mixed_expansion_preserves_order_and_counts_edges():
         generation._parse_connection_response(
             text, accepted_components=_accepted_components(), edge_limit=2
         )
+
+
+@pytest.mark.asyncio
+async def test_connection_create_returns_pairing_for_each_expanded_exchange(
+    monkeypatch,
+):
+    first = _connection_exchanges()["exchanges"][0]
+    one_way = {
+        **first,
+        "label": "send audit notice",
+        "sync": 501,
+        "response_label": None,
+    }
+    second = {
+        **first,
+        "source_index": 1,
+        "target_index": 0,
+        "label": "read status",
+        "response_label": "status result",
+    }
+
+    async def fake_stream(**_kwargs):
+        return _response({"exchanges": [first, one_way, second]})
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    result = await generation.generate_connection_candidate(
+        request="Connect accepted components",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="b" * 64,
+        accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(),
+    )
+
+    assert [edge["label"] for edge in result["wire"]["edges"]] == [
+        "requests",
+        "response",
+        "send audit notice",
+        "read status",
+        "status result",
+    ]
+    assert result["connection_exchanges"] == [
+        {"request_record_index": 0, "response_record_index": 1},
+        {"request_record_index": 2, "response_record_index": None},
+        {"request_record_index": 3, "response_record_index": 4},
+    ]
+    for exchange in result["connection_exchanges"]:
+        request_edge = result["wire"]["edges"][exchange["request_record_index"]]
+        response_index = exchange["response_record_index"]
+        if response_index is not None:
+            response_edge = result["wire"]["edges"][response_index]
+            assert (response_edge["source_index"], response_edge["target_index"]) == (
+                request_edge["target_index"],
+                request_edge["source_index"],
+            )
 
 
 @pytest.mark.parametrize(
@@ -3157,7 +3251,7 @@ def test_create_exchange_empty_graph_uses_canonical_connectivity_policy():
         '{"exchanges": []}',
         accepted_components=_accepted_components(),
         edge_limit=0,
-    ) == {"edges": []}
+    ) == ({"edges": []}, [])
 
 
 @pytest.mark.asyncio
@@ -3206,3 +3300,6 @@ async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_
             },
         ]
     }
+    assert result["connection_exchanges"] == [
+        {"request_record_index": 0, "response_record_index": 1}
+    ]
