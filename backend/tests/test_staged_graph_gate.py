@@ -561,7 +561,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v24"
+        == "staged_connection_gate_v25"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -661,6 +661,144 @@ def test_connection_gate_receives_request_scoped_exchange_evidence(monkeypatch):
     assert "forward contract (which may be a request, event, or write)" in prompt
     assert "response_record_index is its explicit paired reply" in prompt
     assert "Pairing does not prove the forward contract's semantic role" in prompt
+    assert (
+        "Apply edge_semantics to each forward contract and actual paired reply"
+        in prompt
+    )
+    assert "including supporting and deployment exchanges" in prompt
+    assert "a write verdict is not read data" in prompt
+    assert "One-way events need no reply" in prompt
+    assert "redundant processed-artifact return is advisory" in prompt
+
+
+@pytest.mark.parametrize(
+    ("candidate_components", "records", "pairs", "external_effects"),
+    [
+        (
+            [
+                {"id": "n5", "responsibility": "Holds source documents."},
+                {
+                    "id": "n6",
+                    "responsibility": "Embeds chunks and loads the vector store.",
+                },
+                {"id": "n4", "responsibility": "Stores embedded chunks."},
+            ],
+            [
+                {
+                    "source": "n5",
+                    "target": "n6",
+                    "label": "Provide source documents",
+                    "flow": "deployment",
+                    "sync": "async",
+                },
+                {
+                    "source": "n6",
+                    "target": "n5",
+                    "label": "Chunked documents with embeddings",
+                    "flow": "deployment",
+                    "sync": "async",
+                },
+                {
+                    "source": "n6",
+                    "target": "n4",
+                    "label": "Load embedded chunks",
+                    "flow": "deployment",
+                    "sync": "async",
+                },
+                {
+                    "source": "n4",
+                    "target": "n6",
+                    "label": "Index load confirmed",
+                    "flow": "deployment",
+                    "sync": "async",
+                },
+            ],
+            [
+                {"request_record_index": 0, "response_record_index": 1},
+                {"request_record_index": 2, "response_record_index": 3},
+            ],
+            False,
+        ),
+        (
+            [
+                {"id": "n6", "responsibility": "Executes tool reads and writes."},
+                {
+                    "id": "n7",
+                    "responsibility": "Holds records for tool reads and writes.",
+                },
+            ],
+            [
+                {
+                    "source": "n6",
+                    "target": "n7",
+                    "label": "Read records or write updates",
+                    "flow": "runtime",
+                    "sync": "sync",
+                },
+                {
+                    "source": "n7",
+                    "target": "n6",
+                    "label": "Committed or denied",
+                    "flow": "runtime",
+                    "sync": "sync",
+                },
+            ],
+            [{"request_record_index": 0, "response_record_index": 1}],
+            True,
+        ),
+    ],
+    ids=("supporting-indexing-exchange", "read-or-write-with-write-only-reply"),
+)
+def test_connection_review_prompt_assembles_problematic_exchange_evidence(
+    candidate_components, records, pairs, external_effects
+):
+    # Assembly coverage only: this does not claim a model review will reject the records.
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Draw the mechanism.",
+        evidence_bundle={
+            "candidate_components": candidate_components,
+            "candidate_context": {
+                "capabilities": {"external_effects": external_effects}
+            },
+            "connection_exchanges": pairs,
+        },
+        resolved_maturity="prototype",
+        candidate_records=records,
+        required_production_guarantees=(),
+    )
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    immutable_records = json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    )
+
+    assert (
+        "Block a missing required input or answer return" in criteria["edge_semantics"]
+    )
+    assert (
+        "An unrelated verdict or acknowledgment cannot replace required data"
+        in criteria["edge_semantics"]
+    )
+    assert (
+        "A redundant intermediate return or duplicate description is advisory"
+        in criteria["edge_semantics"]
+    )
+    assert evidence["candidate_components"] == candidate_components
+    assert evidence["connection_exchanges"] == pairs
+    assert immutable_records == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    assert (
+        "Apply edge_semantics to each forward contract and actual paired reply"
+        in prompt
+    )
+    assert "against both accepted component responsibilities" in prompt
+    assert "Each data-returning alternative in a combined contract" in prompt
+    assert "a write verdict is not read data" in prompt
+    assert "redundant processed-artifact return is advisory" in prompt
+    assert "One-way events need no reply" in prompt
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])

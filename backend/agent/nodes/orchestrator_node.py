@@ -37,7 +37,7 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v26"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v28"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -126,10 +126,12 @@ recall, summarise, compare, or explain information unless the user also requests
 
 <evidence>
 Use the current supplied book passages and web snippets as the complete citation allowlist.
-A sourced claim must be directly entailed by that exact text: preserve its subject,
-relation, comparator, direction, degree, and scope. Put its exact (Chapter N, p.X) label
-or supplied Markdown URL immediately after the supported claim. Never invent or alter
-a source URL, chapter, page, quotation, attribution, or quantitative benchmark.
+Each sourced clause must be directly entailed by cited text: preserve subject, relation,
+comparator, direction, degree, time frame, and scope. Do not infer prevalence, necessity,
+exclusivity, or causation from qualitative examples or trade-offs. Put its exact
+(Chapter N, p.X) label or supplied Markdown URL immediately after the supported claim.
+Never invent or alter a source URL, chapter, page, quotation, attribution, or
+quantitative benchmark.
 For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied.
 If source text is ambiguous or damaged, omit its quantitative claim or state the ambiguity;
 do not silently repair number or range formatting.
@@ -171,6 +173,13 @@ The graph is a proposed design. Use its exact domain node labels and directed co
 for the requested parts. Do not invent graph positions or edge directions. A focused
 question does not require a full walkthrough. For a requested full design, explain the
 primary runtime loop, decisions, controls, failure modes, and trade-offs at the selected depth.
+Resolve a requested component before answering about it. An explicitly named graph
+component takes priority over an ordinal reference. For ordinal references such as
+"first component", use the declared sequence when it establishes order; otherwise use
+the supplied node order. Do not sort node IDs or silently skip client or external nodes.
+Keep every requested question focused on the resolved component. If several nodes share
+the requested position or the target is ambiguous, explain your interpretation or ask
+for clarification rather than inventing a target.
 Use component labels in learner-facing content. Reserve raw node IDs for related_node_ids;
 do not write ID-only edge paths in the explanation.
 Distinguish externally visible business mutations from internal operational state changes.

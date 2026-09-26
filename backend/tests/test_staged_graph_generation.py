@@ -518,10 +518,17 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v25"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v26"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
+    assert "Check each forward contract and actual reply" in prompt
+    assert "accepted sender and recipient responsibilities" in prompt
+    assert "including supporting and deployment exchanges" in prompt
+    assert "Each data-returning alternative in a combined contract" in prompt
+    assert "a write verdict is not read data" in prompt
+    assert "Do not invent a reply to a one-way event" in prompt
+    assert "return a processed artifact to a source without its declared use" in prompt
     if maturity == "production":
         assert prompt_input["authoring_guidance"] == {
             "streaming_integrity": STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
@@ -1284,6 +1291,11 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
     assert "connection_exchanges" not in result
     assert "Propose canonical edges in the delta" in calls[0]["prompt"]
     assert "Propose exchanges only" not in calls[0]["prompt"]
+    assert (
+        "Do not label a request edge as if it carries the returned payload"
+        in calls[0]["prompt"]
+    )
+    assert "Check each forward contract and actual reply" in calls[0]["prompt"]
     assert set(
         calls[0]["schema"]["properties"]["additions"]["items"]["properties"]
     ) == {"source_index", "target_index", "label", "flow", "sync"}
