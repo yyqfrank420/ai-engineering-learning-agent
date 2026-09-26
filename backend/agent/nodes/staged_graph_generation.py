@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v24"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v21"
+_COMPONENT_PROMPT_VERSION = "staged_components_v25"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v22"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -391,12 +391,16 @@ async def generate_component_candidate(
     base_components: Mapping[str, Any] | Sequence[Any] | None = None,
     rejected_candidate: Mapping[str, Any] | None = None,
     edit_permissions: Mapping[str, Any] | None = None,
+    recovery_mode: bool = False,
     state: Mapping[str, Any] | None = None,
     timeout_seconds: float | None = None,
     max_output_tokens: int | None = None,
 ) -> GenerationResult | ComponentClarification:
     """Generate an ID-free component candidate in one Kimi provider attempt."""
     valid_write_set = _validated_write_set(write_set)
+    _validate_recovery_mode(
+        recovery_mode, attempt, valid_write_set, base_components, edit_permissions
+    )
     validated_context = _accepted_architecture_context(architecture_context)
     schema = component_generation_schema(valid_write_set)
     delta = (
@@ -413,6 +417,7 @@ async def generate_component_candidate(
             rejected_candidate=rejected_candidate,
             findings=(*structural_findings, *gate_findings),
             schema=schema,
+            recovery_mode=recovery_mode,
         )
         if edit_permissions is None
         else None
@@ -434,6 +439,7 @@ async def generate_component_candidate(
         else rejected_candidate,
         edit_delta=delta,
         correction_delta=correction,
+        recovery_mode=recovery_mode,
         architecture_context=validated_context,
         connection_addition_plan=_connection_addition_plan(
             edit_permissions,
@@ -502,12 +508,16 @@ async def generate_connection_candidate(
     base_connections: Mapping[str, Any] | Sequence[Any] | None = None,
     rejected_candidate: Mapping[str, Any] | None = None,
     edit_permissions: Mapping[str, Any] | None = None,
+    recovery_mode: bool = False,
     state: Mapping[str, Any] | None = None,
     timeout_seconds: float | None = None,
     max_output_tokens: int | None = None,
 ) -> GenerationResult:
     """Generate edges whose endpoints are limited to accepted server components."""
     valid_write_set = _validated_write_set(write_set)
+    _validate_recovery_mode(
+        recovery_mode, attempt, valid_write_set, base_connections, edit_permissions
+    )
     accepted = _accepted_component_summary(accepted_components)
     context = _accepted_context(accepted_context)
     schema = connection_generation_schema(valid_write_set)
@@ -529,6 +539,7 @@ async def generate_connection_candidate(
             schema=schema,
             accepted_components=accepted,
             accepted_context=context,
+            recovery_mode=recovery_mode,
         )
         if edit_permissions is None
         else None
@@ -550,6 +561,7 @@ async def generate_connection_candidate(
         else rejected_candidate,
         edit_delta=delta,
         correction_delta=correction,
+        recovery_mode=recovery_mode,
         accepted_components=accepted,
         accepted_context=context,
         connection_addition_plan=_connection_addition_plan(
@@ -598,12 +610,16 @@ async def generate_connection_candidate(
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
     properties = schema["properties"]
     if "additions" in properties:
+        if "removals" in properties:
+            return f"staged_{stage}_recovery_delta_v1"
         nullable_updates = any(
             "anyOf" in slot for slot in properties["updates"]["properties"].values()
         )
         return f"staged_{stage}_delta_v{2 if nullable_updates else 1}"
     if stage == "components":
         candidate_properties = properties["candidate"]["anyOf"][0]["properties"]
+        if "removals" in candidate_properties:
+            return "staged_components_recovery_response_v1"
         if "additions" in candidate_properties:
             return "staged_components_correction_response_v2"
         return _COMPONENT_SCHEMA_VERSION
@@ -703,6 +719,7 @@ def _attempt_prompt(
     architecture_context: str | None = None,
     edit_delta: _EditDelta | None = None,
     correction_delta: _EditDelta | None = None,
+    recovery_mode: bool = False,
     connection_addition_plan: Mapping[str, Any] | None = None,
 ) -> tuple[str, str]:
     _validate_fingerprint(upstream_fingerprint, "invalid_upstream_fingerprint")
@@ -751,6 +768,7 @@ def _attempt_prompt(
         "request": _bounded_string(request, _MAX_REQUEST_CHARS),
         "resolved_maturity": maturity,
         "attempt": attempt,
+        "recovery_mode": recovery_mode,
         "upstream_fingerprint": upstream_fingerprint,
         "write_set": _prompt_write_set(write_set),
         "base": _bounded_json(base),
@@ -873,6 +891,20 @@ def _attempt_prompt(
             "Resolve overlapping ownership by clarifying retained responsibilities; if removal "
             "is necessary, this correction cannot authorize it."
         )
+        if recovery_mode:
+            edit_rule = (
+                " The rejected_candidate is preserved by the server. Return only the "
+                "correction delta defined by correction_slots. Updates may change cited "
+                "slots, and removals may select only their allowlisted original indexes. "
+                "Use null for every removed slot's update and for any unchanged slot. "
+                "The server retains all other records and fields in order. Append only "
+                "records needed to restore the original request and required controls. "
+                "When component root fields are exposed, root_index refers to an "
+                "original candidate index, not the reindexed result; "
+                "root_addition_index refers to the zero-based additions array. Set "
+                "at most one, or set both null to retain the original root. A removed "
+                "root must have a replacement selection."
+            )
         rejected_candidate_rule = (
             " The rejected_candidate is diagnostic context. For a component response, put the "
             "correction delta in candidate with clarification_questions=[]. If the prior "
@@ -881,6 +913,17 @@ def _attempt_prompt(
             if stage == "components"
             else " The rejected_candidate is diagnostic context; return the correction delta."
         )
+    recovery_rule = (
+        " Recovery mode applies only to this new graph's second generation attempt. "
+        "Produce the simplest complete overview of the original request at the selected "
+        "maturity. Preserve every requested core behavior and applicable required control. "
+        "Consolidate optional complexity only within the correction slots or, when no "
+        "semantic delta is available, within the complete corrected candidate. Do not "
+        "hide capabilities, invent placeholders, or omit behavior to pass review. "
+        "Connections cannot change the accepted components."
+        if recovery_mode
+        else ""
+    )
     if stage == "components":
         if architecture_context is None:
             raise StagedGenerationError("missing_architecture_context")
@@ -996,6 +1039,7 @@ def _attempt_prompt(
         + correction_requirements
         + correction_rule
         + rejected_candidate_rule
+        + recovery_rule
         + "\nINPUT\n"
         + _canonical_json(prompt_input)
     )
@@ -1012,6 +1056,7 @@ class _EditDelta:
     retained_indexes: tuple[int, ...]
     schema: dict[str, Any]
     nullable_updates: bool = False
+    removal_allowlist: tuple[int, ...] = ()
 
     def assemble(self, text: str) -> dict[str, Any]:
         delta = _parse_json(text)
@@ -1027,6 +1072,8 @@ class _EditDelta:
             <= properties["additions"]["maxItems"]
         ):
             raise StagedGenerationError("edit_delta_addition_count_invalid")
+        if "removals" in properties:
+            return self._assemble_recovery(delta, update_fields)
         records = []
         for index in self.retained_indexes:
             record = deepcopy(self.base[self.record_key][index])
@@ -1056,6 +1103,76 @@ class _EditDelta:
             },
             self.record_key: records + additions,
         }
+
+    def _assemble_recovery(
+        self, delta: dict[str, Any], update_fields: Mapping[str, Any]
+    ) -> dict[str, Any]:
+        removals = delta["removals"]
+        if (
+            not isinstance(removals, list)
+            or any(
+                not _is_integer(index) or index not in self.removal_allowlist
+                for index in removals
+            )
+            or len(removals) != len(set(removals))
+        ):
+            raise StagedGenerationError("recovery_removals_invalid")
+        removed = set(removals)
+        records = []
+        for index in self.retained_indexes:
+            slot = f"slot_{index}"
+            update = delta["updates"].get(slot)
+            if index in removed:
+                if update is not None:
+                    raise StagedGenerationError("recovery_removal_update_conflict")
+                continue
+            record = deepcopy(self.base[self.record_key][index])
+            if slot in update_fields and update is not None:
+                slot_schema = update_fields[slot]["anyOf"][0]
+                _require_exact_keys(update, set(slot_schema["properties"]))
+                record.update(update)
+            records.append(record)
+        result = {
+            **deepcopy(self.base),
+            **{
+                key: value
+                for key, value in delta.items()
+                if key
+                not in {
+                    "updates",
+                    "additions",
+                    "removals",
+                    "root_index",
+                    "root_addition_index",
+                }
+            },
+            self.record_key: records + delta["additions"],
+        }
+        if self.record_key == "components":
+            original_root = self.base["root_index"]
+            original_selection = delta.get("root_index")
+            addition_selection = delta.get("root_addition_index")
+            if original_selection is not None and addition_selection is not None:
+                raise StagedGenerationError("recovery_root_invalid")
+            if original_selection is None and addition_selection is None:
+                original_selection = original_root
+            if original_selection is not None:
+                if (
+                    not _is_integer(original_selection)
+                    or original_selection not in self.retained_indexes
+                    or original_selection in removed
+                ):
+                    raise StagedGenerationError("recovery_root_invalid")
+                result["root_index"] = [
+                    index for index in self.retained_indexes if index not in removed
+                ].index(original_selection)
+            else:
+                if not _is_integer(
+                    addition_selection
+                ) or not 0 <= addition_selection < len(delta["additions"]):
+                    raise StagedGenerationError("recovery_root_invalid")
+                result["root_index"] = len(records) + addition_selection
+        return result
 
     def extract(self, wire: Mapping[str, Any]) -> dict[str, Any]:
         """Project a rejected assembled candidate back to its authorized delta."""
@@ -1177,8 +1294,9 @@ def _semantic_correction_delta(
     schema: Mapping[str, Any],
     accepted_components: list[dict[str, Any]] | None = None,
     accepted_context: AcceptedContext | None = None,
+    recovery_mode: bool = False,
 ) -> _EditDelta | None:
-    """Limit a semantic create repair to updates and additions over its rejected wire."""
+    """Scope semantic create repairs to cited records in the rejected wire."""
     semantic_findings = [
         finding
         for finding in findings
@@ -1216,6 +1334,7 @@ def _semantic_correction_delta(
         record_key, kind, capacity = "edges", "edge", limits["edge_limit"]
     count = len(base[record_key])
     targets: set[int] = set()
+    deletion_targets: set[int] = set()
     global_finding = False
     metadata = {"capabilities"} if stage == "components" else set()
     for finding in semantic_findings:
@@ -1233,6 +1352,7 @@ def _semantic_correction_delta(
         ):
             raise StagedGenerationError("invalid_correction_findings")
         targets.update(indexes)
+        deletion_targets.update(indexes)
         global_finding |= not indexes
         if code == "objective_fidelity":
             metadata.update(("title", "assumptions", "root_index"))
@@ -1242,8 +1362,7 @@ def _semantic_correction_delta(
         targets = set(range(count))
         metadata.update(("title", "assumptions", "root_index", "capabilities"))
     fields = schema["properties"][record_key]["items"]["properties"]
-    # Findings identify defects, never permission to delete the affected behavior.
-    return _edit_delta(
+    delta = _edit_delta(
         base=base,
         record_key=record_key,
         selectors=[str(index) for index in range(count)],
@@ -1260,6 +1379,63 @@ def _semantic_correction_delta(
         composition_fields=sorted(metadata) if stage == "components" else (),
         nullable_updates=True,
     )
+    if not recovery_mode:
+        return delta
+    recovery_schema = deepcopy(delta.schema)
+    properties = recovery_schema["properties"]
+    properties["removals"] = {
+        "type": "array",
+        "minItems": 0,
+        "maxItems": len(deletion_targets),
+        "items": {
+            "type": "integer",
+            **({"enum": sorted(deletion_targets)} if deletion_targets else {}),
+        },
+    }
+    properties["additions"]["maxItems"] = capacity - count + len(deletion_targets)
+    if stage == "components" and (
+        "root_index" in metadata or base["root_index"] in deletion_targets
+    ):
+        properties["root_index"] = {
+            "anyOf": [
+                {"type": "integer", "minimum": 0, "maximum": count - 1},
+                {"type": "null"},
+            ]
+        }
+        properties["root_addition_index"] = {
+            "anyOf": [
+                {"type": "integer", "minimum": 0, "maximum": capacity - 1},
+                {"type": "null"},
+            ]
+        }
+    recovery_schema["required"] = list(properties)
+    return _EditDelta(
+        base=delta.base,
+        record_key=delta.record_key,
+        retained_indexes=delta.retained_indexes,
+        schema=recovery_schema,
+        nullable_updates=True,
+        removal_allowlist=tuple(sorted(deletion_targets)),
+    )
+
+
+def _validate_recovery_mode(
+    recovery_mode: bool,
+    attempt: int,
+    write_set: Mapping[str, Any],
+    base: Any,
+    edit_permissions: Mapping[str, Any] | None,
+) -> None:
+    if not isinstance(recovery_mode, bool) or (
+        recovery_mode
+        and (
+            attempt != 1
+            or write_set["mode"] != "create"
+            or base is not None
+            or edit_permissions is not None
+        )
+    ):
+        raise StagedGenerationError("invalid_recovery_mode")
 
 
 def _connection_addition_plan(

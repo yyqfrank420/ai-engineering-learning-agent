@@ -78,6 +78,23 @@ describe('useThreadSession', () => {
     cleanup();
   });
 
+  it('hydrates the accepted overview detail level from a saved thread', async () => {
+    vi.mocked(fetchThread).mockResolvedValueOnce(
+      makeThreadDetail('thread-overview', 'Overview thread', [], {
+        ...makeGraph('System overview'),
+        detail_level: 'overview',
+      }),
+    );
+    const { result } = renderHook(() => useThreadSession({
+      authSession: TEST_SESSION,
+      backendReady: true,
+      clearSelection: vi.fn(),
+    }));
+
+    act(() => result.current.handleSelectThread('thread-overview'));
+    await waitFor(() => expect(result.current.threadSnapshot.graphData?.detail_level).toBe('overview'));
+  });
+
   it('clears the previous thread immediately when starting a new chat', async () => {
     vi.mocked(fetchThread).mockResolvedValueOnce(
       makeThreadDetail(

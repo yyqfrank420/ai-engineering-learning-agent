@@ -147,9 +147,10 @@ vi.mock('./components/Chat/ChatInput', () => ({
 }));
 
 vi.mock('./components/GraphCanvas', () => ({
-  GraphCanvas: ({ graphData, isPreview, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
+  GraphCanvas: ({ graphData, isPreview, isAcceptedGraph, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
     graphData: GraphData | null;
     isPreview?: boolean;
+    isAcceptedGraph?: boolean;
     onNodeClick: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onTellMeMore: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onExpandGraph: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
@@ -169,6 +170,7 @@ vi.mock('./components/GraphCanvas', () => ({
       <section data-testid="graph-canvas">
         <span data-testid="rendered-graph-title">{graphData?.title ?? ''}</span>
         <span data-testid="rendered-graph-preview">{isPreview ? 'yes' : 'no'}</span>
+        <span data-testid="rendered-graph-accepted">{isAcceptedGraph ? 'yes' : 'no'}</span>
         <span data-testid="graph-edit-disabled">{String(editingDisabled)}</span>
         <button onClick={() => onNodeClick(node)}>Choose node</button>
         <button onClick={() => onTellMeMore(node)}>Tell me more</button>
@@ -434,7 +436,7 @@ describe('App coordination', () => {
   });
 
   it('renders a preview without writing it into the durable thread snapshot', async () => {
-    const preview = { ...graph, title: 'Private preview' };
+    const preview = { ...graph, title: 'Private preview', detail_level: 'overview' as const };
     vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphPreview: preview });
 
     render(<App />);
@@ -442,6 +444,7 @@ describe('App coordination', () => {
     await screen.findByTestId('graph-canvas');
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe('Private preview');
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
+    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('no');
     expect(writeThreadSnapshot).toHaveBeenCalledWith(
       'user-1',
       'thread-1',
@@ -450,13 +453,14 @@ describe('App coordination', () => {
   });
 
   it('keeps the connected graph visible during a component-only expansion preview', async () => {
-    const connected = { ...graph, edges: [{ source: 'a', target: 'b', label: 'Request', technology: '', sync: 'sync' as const, description: '' }] };
+    const connected = { ...graph, detail_level: 'overview' as const, edges: [{ source: 'a', target: 'b', label: 'Request', technology: '', sync: 'sync' as const, description: '' }] };
     vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: connected,
       graphPreview: { ...graph, title: 'Components only', edges: [] } });
     render(<App />);
     await screen.findByTestId('graph-canvas');
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
+    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
   });
 
   it('grounds a selected-text request and records mode changes', async () => {

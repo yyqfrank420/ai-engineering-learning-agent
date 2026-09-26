@@ -29,6 +29,7 @@ interface GraphCanvasProps {
   onClosePopup: () => void;
   sourceTexts: string[];
   isPreview?: boolean;
+  isAcceptedGraph?: boolean;
   isBuilding?: boolean;
   workflowProgress?: WorkflowProgress[];
   graphCandidate?: GraphCandidate | null;
@@ -76,6 +77,7 @@ export function GraphCanvas({
   onClosePopup,
   sourceTexts,
   isPreview = false,
+  isAcceptedGraph = !isPreview,
   isBuilding = false,
   workflowProgress = [],
   graphCandidate = null,
@@ -293,6 +295,12 @@ export function GraphCanvas({
           {subtitle && (
             <div style={{ color: '#8490a0', fontSize: '0.62rem', marginTop: 2, overflowWrap: 'anywhere' }}>
               {subtitle}
+            </div>
+          )}
+          {isAcceptedGraph && graphData.detail_level === 'overview' && (
+            <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.3rem', marginTop: 3, fontSize: '0.65rem', lineHeight: 1.35 }}>
+              <span style={{ color: '#c4b5fd', fontWeight: 700 }}>Overview</span>
+              <span style={{ color: '#aeb8c8' }}>Core workflow. Supporting detail is simplified.</span>
             </div>
           )}
         </div>

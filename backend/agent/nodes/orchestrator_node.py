@@ -37,7 +37,7 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v23"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v24"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 logger = logging.getLogger(__name__)
@@ -178,6 +178,10 @@ means the prior approved graph remains unchanged; withheld means no new graph wa
 Never describe a failed or unreviewed candidate as approved or applied. Follow any required
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
+When the trusted turn result marks the diagram as an overview, briefly describe it as an
+overview of the core workflow with supporting detail simplified. Explain the actual nodes
+and directed exchanges. Do not claim requested requirements were omitted or that every
+production detail is shown.
 </graph_answer>"""
 
 _BLOCK_OUTPUT_CONTRACT = """
@@ -514,11 +518,11 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
     ):
         graph = state.get("graph_data") or {}
         kind = operation.get("kind") or state.get("graph_intent")
-        requested = "diagram edit" if kind == "edit" else "new diagram"
+        action = "update" if kind == "edit" else "create"
         content = (
-            f"The requested {requested} was not approved, so the prior approved diagram remains unchanged."
+            f"I couldn't {action} the diagram. Your existing diagram is unchanged."
             if graph and state.get("graph_publication") == "preserved"
-            else f"The requested {requested} was not approved. No new diagram was published."
+            else f"I couldn't {action} the diagram this time."
         )
         revision_instruction = (state.get("graph_review") or {}).get(
             "revision_instruction"
@@ -741,6 +745,13 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             ),
             allow_fallback=not staged_explanation,
             provider_attempt_limit=1 if staged_explanation else None,
+            accepted_graph_detail=(
+                "overview"
+                if current_graph.get("detail_level") == "overview"
+                else "standard"
+            )
+            if state.get("graph_publication") == "approved"
+            else None,
         )
         completion_title, completion_detail = _explanation_completion_status(
             graph_is_preserved=graph_is_preserved,
@@ -862,9 +873,19 @@ def _format_trusted_turn_result(state: AgentState) -> str:
         ),
     }
 
+    graph = state.get("graph_data")
+    overview_detail = (
+        "Diagram detail level: overview.\n"
+        if isinstance(graph, dict)
+        and graph.get("detail_level") == "overview"
+        and publication not in {"withheld", "unreviewed"}
+        else ""
+    )
+
     return (
         "\n<trusted_turn_result>\n"
         f"Graph operation: {operation_kind}.\n"
+        f"{overview_detail}"
         f"{result_by_publication[publication]}\n"
         "</trusted_turn_result>\n\n"
     )
@@ -1051,6 +1072,9 @@ def _format_graph_context(graph_data: dict) -> str:
         )
     )
     parts = [artifact_role, f"Title: {title}"]
+    detail_level = graph_data.get("detail_level")
+    if detail_level in ("standard", "overview"):
+        parts.append(f"Detail level: {detail_level}")
     if node_lines:
         parts.append("Nodes:\n" + "\n".join(node_lines))
     if edge_lines:
