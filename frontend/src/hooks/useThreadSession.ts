@@ -16,6 +16,10 @@ type UseThreadSessionArgs = {
   clearSelection: () => void;
 };
 
+type ThreadRequestTarget =
+  | { kind: 'create' }
+  | { kind: 'load'; threadId: string | null };
+
 export function useThreadSession({
   authSession,
   backendReady,
@@ -36,12 +40,16 @@ export function useThreadSession({
   const loadedUserIdRef = useRef<string | null>(null);
   const activeThreadIdRef = useRef<string | null>(null);
   const threadRequestSeqRef = useRef(0);
+  const retryTargetRef = useRef<ThreadRequestTarget | null>(null);
 
   const resetThreadState = useCallback(() => {
+    threadRequestSeqRef.current += 1;
+    retryTargetRef.current = null;
     loadedUserIdRef.current = null;
     activeThreadIdRef.current = null;
     setActiveThreadId(null);
     setThreadTitle('New chat');
+    setLoadingThread(false);
     setThreadError(null);
     setThreadSnapshot({ title: 'New chat', messages: [], graphData: null });
   }, []);
@@ -54,24 +62,25 @@ export function useThreadSession({
     setThreadSnapshot({ title: 'New chat', messages: [], graphData: null });
   }, []);
 
+  useEffect(() => () => {
+    // A keyed workspace can unmount before a request settles; late results must not write storage.
+    threadRequestSeqRef.current += 1;
+    retryTargetRef.current = null;
+    loadedUserIdRef.current = null;
+    activeThreadIdRef.current = null;
+  }, []);
+
   const loadThread = useCallback(
     async (session: AuthSession, threadId?: string | null) => {
       const requestSeq = ++threadRequestSeqRef.current;
+      retryTargetRef.current = { kind: 'load', threadId: threadId ?? null };
       setLoadingThread(true);
       setThreadError(null);
 
       try {
-        let detail: Awaited<ReturnType<typeof fetchThread>>;
-        try {
-          detail = threadId
-            ? await fetchThread(session, threadId)
-            : await fetchLatestThread(session);
-        } catch (error) {
-          if (requestSeq !== threadRequestSeqRef.current) {
-            return;
-          }
-          throw error;
-        }
+        const detail = threadId
+          ? await fetchThread(session, threadId)
+          : await fetchLatestThread(session);
         if (requestSeq !== threadRequestSeqRef.current) {
           return;
         }
@@ -99,6 +108,10 @@ export function useThreadSession({
           }
           return fetchedSnapshot;
         });
+      } catch {
+        if (requestSeq === threadRequestSeqRef.current) {
+          setThreadError('Could not open this chat. Try again.');
+        }
       } finally {
         if (requestSeq === threadRequestSeqRef.current) {
           setLoadingThread(false);
@@ -111,15 +124,16 @@ export function useThreadSession({
   const createFreshThread = useCallback(
     async (session: AuthSession, { clearDraftState = true }: { clearDraftState?: boolean } = {}) => {
       const requestSeq = ++threadRequestSeqRef.current;
-      if (clearDraftState) {
-        clearSelection();
-        clearActiveThreadView();
-      }
-      localStorage.removeItem(storageKeyForThread(session.user.id));
+      retryTargetRef.current = { kind: 'create' };
       setLoadingThread(true);
       setThreadError(null);
 
       try {
+        if (clearDraftState) {
+          clearSelection();
+          clearActiveThreadView();
+        }
+        localStorage.removeItem(storageKeyForThread(session.user.id));
         const detail = await createThread(session);
         if (requestSeq !== threadRequestSeqRef.current) {
           return;
@@ -134,6 +148,10 @@ export function useThreadSession({
           messages: mapThreadMessages(detail.messages),
           graphData: normalizeGraphData(detail.thread.graph_data),
         });
+      } catch {
+        if (requestSeq === threadRequestSeqRef.current) {
+          setThreadError('Could not start a new chat. Try again.');
+        }
       } finally {
         if (requestSeq === threadRequestSeqRef.current) {
           setLoadingThread(false);
@@ -148,6 +166,10 @@ export function useThreadSession({
     // Wiping state when the backend TTL expires or is re-preparing would
     // destroy live streamed content that hasn't been persisted yet.
     if (!authSession) {
+      threadRequestSeqRef.current += 1;
+      retryTargetRef.current = null;
+      loadedUserIdRef.current = null;
+      activeThreadIdRef.current = null;
       let cancelled = false;
       queueMicrotask(() => {
         if (!cancelled) resetThreadState();
@@ -157,7 +179,12 @@ export function useThreadSession({
       };
     }
 
-    // Backend warming up — preserve existing state, wait for it to become ready.
+    // A different account cannot retain the previous account's thread while preparing.
+    if (loadedUserIdRef.current && loadedUserIdRef.current !== authSession.user.id) {
+      resetThreadState();
+    }
+
+    // Backend warming up — preserve state for the same user, then retry preparation.
     if (!backendReady) return;
 
     // Guard against token refresh events: Supabase fires onAuthStateChange
@@ -166,13 +193,8 @@ export function useThreadSession({
     if (loadedUserIdRef.current === authSession.user.id) return;
     loadedUserIdRef.current = authSession.user.id;
 
-    createFreshThread(authSession, { clearDraftState: true }).catch((error: unknown) => {
-      const message = error instanceof Error ? error.message : 'Could not connect to backend';
-      console.error('[thread] Failed to create initial thread:', message);
-      setThreadError(message);
-      clearActiveThreadView();
-    });
-  }, [authSession, backendReady, clearActiveThreadView, createFreshThread, resetThreadState]);
+    void createFreshThread(authSession, { clearDraftState: true });
+  }, [authSession, backendReady, createFreshThread, resetThreadState]);
 
   const handleNewChat = useCallback(async () => {
     if (!authSession || !backendReady) {
@@ -190,7 +212,7 @@ export function useThreadSession({
 
       clearSelection();
       void trackEvent('thread_selected', { thread_id: threadId }, authSession);
-      loadThread(authSession, threadId).catch(console.error);
+      void loadThread(authSession, threadId);
     },
     [authSession, backendReady, clearSelection, loadThread],
   );
@@ -210,18 +232,23 @@ export function useThreadSession({
 
       clearSelection();
       clearActiveThreadView();
-      loadThread(authSession, null).catch(console.error);
+      void loadThread(authSession, null);
     },
     [activeThreadId, authSession, backendReady, clearActiveThreadView, clearSelection, loadThread],
   );
 
-  const retryLatestThread = useCallback(() => {
-    if (!authSession) {
+  const retryThread = useCallback(() => {
+    if (!authSession || !backendReady || !retryTargetRef.current) {
       return;
     }
 
-    loadThread(authSession, null).catch(console.error);
-  }, [authSession, loadThread]);
+    const target = retryTargetRef.current;
+    if (target.kind === 'load') {
+      void loadThread(authSession, target.threadId);
+    } else {
+      void createFreshThread(authSession, { clearDraftState: false });
+    }
+  }, [authSession, backendReady, createFreshThread, loadThread]);
 
   return {
     activeThreadId,
@@ -232,6 +259,6 @@ export function useThreadSession({
     handleNewChat,
     handleSelectThread,
     handleDeleteThread,
-    retryLatestThread,
+    retryThread,
   };
 }

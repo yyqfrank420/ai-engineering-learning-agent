@@ -48,7 +48,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v24"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v26"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -78,10 +78,10 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
     assert "Cache population, logging, feedback capture, index publication" in _GRAPH_ANSWER_CONTRACT
     assert '"no downstream business writes" into "no writes"' in _GRAPH_ANSWER_CONTRACT
     assert "completion sentence in the block exactly" in _GRAPH_ANSWER_CONTRACT
-    assert (
-        "overview of the core workflow with supporting detail simplified"
-        in _GRAPH_ANSWER_CONTRACT
-    )
+    assert "the server adds the overview disclosure" in _GRAPH_ANSWER_CONTRACT
+    assert "Do not restate or paraphrase that status" in _GRAPH_ANSWER_CONTRACT
+    assert "Reserve raw node IDs for related_node_ids" in _GRAPH_ANSWER_CONTRACT
+    assert "do not write ID-only edge paths" in _GRAPH_ANSWER_CONTRACT
     assert "Do not claim requested requirements were omitted" in _GRAPH_ANSWER_CONTRACT
     assert "Use each required key exactly once" in _BLOCK_OUTPUT_CONTRACT
     assert "evidence_refs must always be an array" in _BLOCK_OUTPUT_CONTRACT
@@ -574,12 +574,12 @@ def test_graph_context_omits_duplicate_edge_descriptions_and_retains_distinct_co
     assert "- reader (Reader)" in summary
     assert "- store (Evidence store)" in summary
     assert (
-        "- reader -> store: request authorized passages | runtime | sync | search API\n"
+        "- Reader [reader] -> Evidence store [store]: request authorized passages | runtime | sync | search API\n"
         in summary
     )
     assert summary.count("request authorized passages") == 1
     assert (
-        "- store -> reader: return passages | runtime | sync | "
+        "- Evidence store [store] -> Reader [reader]: return passages | runtime | sync | "
         "Returns only passages within the caller's access scope"
         in summary
     )
@@ -621,7 +621,10 @@ def test_concept_graph_context_keeps_navigation_but_excludes_evidence_like_metad
 
     assert "Artifact role: concept navigation only, not evidence" in summary
     assert "concept_tool_use (Tool Use)" in summary
-    assert "concept_tool_use -> concept_fine_tuning: compares with" in summary
+    assert (
+        "Tool Use [concept_tool_use] -> Fine-Tuning [concept_fine_tuning]: compares with"
+        in summary
+    )
     assert unsupported_claim not in summary
     assert "Book evidence" not in summary
     assert "ai-eng:p299:pc6" not in summary
@@ -686,7 +689,7 @@ async def test_synthesis_keeps_concept_graph_claims_outside_the_evidence_packet(
     assert unsupported_claim not in prompt
     assert "Book evidence" not in prompt
     assert "ai-eng:p299:pc6" not in prompt
-    assert "concept_tool_use -> concept_fine_tuning: compares with" in prompt
+    assert "Tool Use [concept_tool_use] -> concept_fine_tuning: compares with" in prompt
     assert captured["allowed_evidence_refs"] == {
         "Chapter 6, p.299",
         "https://example.com/guide",
@@ -720,6 +723,37 @@ def test_graph_context_formatting_handles_empty_nodes_groups_and_lanes():
     assert "- Planner -> Tool: connects to" in summary
     assert "- Runtime: Planner, Tool" in summary
     assert "- step 1" in summary
+
+
+def test_graph_context_uses_component_names_for_short_edge_ids():
+    from agent.nodes.orchestrator_node import _format_graph_context
+
+    summary = _format_graph_context(
+        {
+            "title": "Reservation flow",
+            "nodes": [
+                {"id": "n1", "label": "Inventory service"},
+                {"id": "n2", "label": "Reservation service"},
+            ],
+            "edges": [
+                {
+                    "source": "n1",
+                    "target": "n2",
+                    "label": "requests availability",
+                    "source_label": "Unverified edge alias",
+                }
+            ],
+        }
+    )
+
+    assert "- n1 (Inventory service)" in summary
+    assert "- n2 (Reservation service)" in summary
+    assert (
+        "- Inventory service [n1] -> Reservation service [n2]: requests availability"
+        in summary
+    )
+    assert "- n1 -> n2:" not in summary
+    assert "Unverified edge alias" not in summary
 
 
 @pytest.mark.parametrize("detail_level", ["standard", "overview"])
@@ -2054,6 +2088,68 @@ async def test_text_task_preserves_history_without_design_contract(monkeypatch, 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "route,chunks,research_context,recap_guidance",
+    [
+        ("memory", [], "", True),
+        (
+            "memory",
+            [{"chapter": 5, "page_number": 259, "text": "Fresh source"}],
+            "",
+            False,
+        ),
+        ("memory", [], "[Current source](https://example.test/source)", False),
+        ("search", [], "", False),
+    ],
+)
+async def test_memory_recap_guidance_requires_no_current_source_context(
+    monkeypatch, route, chunks, research_context, recap_guidance
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    captured = {}
+    history = [
+        {"role": "user", "content": "Name two prompt-injection mitigations."},
+        {
+            "role": "assistant",
+            "content": "Repeat instructions and pre-empt known attacks (Chapter 5, p.259).",
+        },
+    ]
+
+    async def provider(**kwargs):
+        captured.update(kwargs)
+        return "The two mitigations I mentioned were repeating instructions and pre-emption."
+
+    async def send(_event):
+        return None
+
+    monkeypatch.setattr(orchestrator, "stream_llm", provider)
+    result = await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "history": history,
+            "user_message": "Repeat the two mitigations you just named without re-explaining.",
+            "route": route,
+            "graph_data": None,
+            "rag_chunks": chunks,
+            "research_context": research_context,
+        }
+    )
+
+    guidance = "Do not repeat old citations as current source evidence"
+    assert (guidance in captured["system"]) is recap_guidance
+    if recap_guidance:
+        assert "attribute it as prior conversation" in captured["system"]
+        assert "Do not re-explain the topic unless asked" in captured["system"]
+    assert captured["messages"][:-1] == history
+    assert (
+        "Repeat the two mitigations you just named"
+        in captured["messages"][-1]["content"]
+    )
+    assert result["response_text"].startswith("The two mitigations I mentioned")
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("internal", [False, True])
 @pytest.mark.parametrize("path", ["retrieval", "memory", "quick"])
 async def test_answer_evidence_matches_provider_visible_sources(monkeypatch, internal, path):
@@ -2061,7 +2157,7 @@ async def test_answer_evidence_matches_provider_visible_sources(monkeypatch, int
 
     captured, events = {}, []
     monkeypatch.setattr(settings, "internal_test_email_allowlist_raw", "eval@example.test")
-    visible = "V" * 800
+    visible = "V" * 2048
     hidden = "HIDDEN_PASSAGE_TAIL"
     research = "[Source](https://example.test/source): the exact supplied snippet"
 
@@ -2110,6 +2206,85 @@ async def test_answer_evidence_matches_provider_visible_sources(monkeypatch, int
             assert "Retrieved book sections:\n" + packet["book_context"] in message
             assert packet["book_context"] == "[1] Chapter 3, p.42\n" + visible
             assert packet["research_context"] == research
+
+
+def test_format_chunks_preserves_later_defenses_with_a_bounded_parent_excerpt():
+    from agent.nodes.orchestrator_node import _format_chunks
+
+    prefix = "P" * 1244
+    defense = "System-level defense\nIsolate generated code and require human approval."
+    visible = prefix + defense + "Z" * (2048 - len(prefix) - len(defense))
+    formatted = _format_chunks(
+        [{"chapter": 5, "page_number": 259, "text": visible + "HIDDEN_TAIL"}]
+    )
+
+    assert len(visible) == 2048
+    assert formatted == "[1] Chapter 5, p.259\n" + visible
+    assert defense in formatted
+    assert "HIDDEN_TAIL" not in formatted
+    assert _format_chunks([]) == ""
+
+
+@pytest.mark.asyncio
+async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
+    monkeypatch,
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    monkeypatch.setattr(
+        settings, "internal_test_email_allowlist_raw", "eval@example.test"
+    )
+    structural_defense = "System-level defense: isolate generated code."
+    chunks = [
+        {
+            "chapter": index,
+            "page_number": 100 + index,
+            "text": "P" * 1244 + structural_defense
+            if index == 1
+            else f"SOURCE_{index}",
+        }
+        for index in range(1, 7)
+    ]
+    captured, events = {}, []
+
+    async def fake_stream_blocks(**kwargs):
+        captured.update(kwargs)
+        return "Grounded answer."
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", fake_stream_blocks)
+    await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "history": [],
+            "user_message": "Explain the diagram.",
+            "user_email": "eval@example.test",
+            "graph_data": {"version": "v1", "nodes": [], "edges": []},
+            "rag_chunks": chunks,
+        }
+    )
+
+    context = orchestrator._format_chunks(chunks[:5])
+    prompt = captured["messages"][-1]["content"]
+    evidence = [event for event in events if event["type"] == "answer_evidence"]
+    assert "Retrieved book sections:\n" + context in prompt
+    assert structural_defense in prompt
+    assert "SOURCE_6" not in prompt
+    assert captured["allowed_evidence_refs"] == {
+        f"Chapter {index}, p.{100 + index}" for index in range(1, 6)
+    }
+    assert evidence == [
+        {
+            "type": "answer_evidence",
+            "schema_version": 1,
+            "source": "synthesis_input",
+            "prompt_version": "architecture_blocks_v26",
+            "book_context": context,
+            "research_context": "",
+        }
+    ]
 
 
 @pytest.mark.asyncio

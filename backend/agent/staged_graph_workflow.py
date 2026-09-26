@@ -275,6 +275,125 @@ def _decode_connections(wire: Mapping[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _connection_edge_key(edge: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(
+        edge[key] for key in ("source_index", "target_index", "label", "flow", "sync")
+    )
+
+
+def _validated_connection_exchanges(
+    wire: Mapping[str, Any], exchanges: Any
+) -> list[dict[str, int | None]]:
+    edges = wire.get("edges")
+    if not isinstance(edges, list) or not isinstance(exchanges, list):
+        raise GraphContractError(
+            "invalid connection exchange provenance", path="connections"
+        )
+    covered: set[int] = set()
+    pairs: list[dict[str, int | None]] = []
+    for exchange in exchanges:
+        if not isinstance(exchange, Mapping) or set(exchange) != {
+            "request_record_index",
+            "response_record_index",
+        }:
+            raise GraphContractError(
+                "invalid connection exchange provenance", path="connections"
+            )
+        request_index = exchange["request_record_index"]
+        response_index = exchange["response_record_index"]
+        if (
+            not isinstance(request_index, int)
+            or isinstance(request_index, bool)
+            or not 0 <= request_index < len(edges)
+            or request_index in covered
+            or request_index != len(covered)
+            or (
+                response_index is not None
+                and (
+                    not isinstance(response_index, int)
+                    or isinstance(response_index, bool)
+                    or response_index != request_index + 1
+                    or response_index >= len(edges)
+                    or response_index in covered
+                )
+            )
+        ):
+            raise GraphContractError(
+                "invalid connection exchange provenance", path="connections"
+            )
+        request_edge = edges[request_index]
+        if not isinstance(request_edge, Mapping):
+            raise GraphContractError(
+                "invalid connection exchange provenance", path="connections"
+            )
+        covered.add(request_index)
+        if response_index is not None:
+            response_edge = edges[response_index]
+            if not isinstance(response_edge, Mapping) or any(
+                (
+                    request_edge["source_index"] != response_edge["target_index"],
+                    request_edge["target_index"] != response_edge["source_index"],
+                    request_edge["flow"] != response_edge["flow"],
+                    request_edge["sync"] != response_edge["sync"],
+                )
+            ):
+                raise GraphContractError(
+                    "invalid connection exchange provenance", path="connections"
+                )
+            covered.add(response_index)
+        pairs.append(
+            {
+                "request_record_index": request_index,
+                "response_record_index": response_index,
+            }
+        )
+    if covered != set(range(len(edges))):
+        raise GraphContractError(
+            "invalid connection exchange provenance", path="connections"
+        )
+    return pairs
+
+
+def _retained_connection_exchanges(
+    previous_wire: Mapping[str, Any] | None,
+    previous_exchanges: list[dict[str, int | None]],
+    current_wire: Mapping[str, Any],
+) -> list[dict[str, int | None]]:
+    if previous_wire is None or not previous_exchanges:
+        return []
+    previous_edges = previous_wire["edges"]
+    current_edges = current_wire["edges"]
+    current_indexes: dict[tuple[Any, ...], list[int]] = {}
+    for index, edge in enumerate(current_edges):
+        current_indexes.setdefault(_connection_edge_key(edge), []).append(index)
+    retained = []
+    for pair in previous_exchanges:
+        request_matches = current_indexes.get(
+            _connection_edge_key(previous_edges[pair["request_record_index"]]), []
+        )
+        response_index = pair["response_record_index"]
+        response_matches = (
+            current_indexes.get(
+                _connection_edge_key(previous_edges[response_index]), []
+            )
+            if response_index is not None
+            else []
+        )
+        if len(request_matches) != 1 or (
+            response_index is not None and len(response_matches) != 1
+        ):
+            continue
+        retained.append(
+            {
+                "request_record_index": request_matches[0],
+                "response_record_index": (
+                    response_matches[0] if response_index is not None else None
+                ),
+            }
+        )
+    return retained
+
+
 def _connection_prompt_base(build: Mapping[str, Any] | None) -> list[dict[str, Any]]:
     if not build:
         return []
@@ -1330,6 +1449,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     previous_connection_candidate: str | None = None
     previous_connection_wire: str | None = None
     rejected_connection_candidate: dict[str, Any] | None = None
+    reviewed_connection_wire: dict[str, Any] | None = None
+    reviewed_connection_exchanges: list[dict[str, int | None]] = []
     reviewed_connection_records: list[dict[str, Any]] = []
     correction_findings = []
     connection_gate: dict[str, Any] = {}
@@ -1407,6 +1528,17 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     path="connections",
                 )
             candidate_build = validate_staged_graph_build(candidate_build)
+            connection_exchanges = (
+                _validated_connection_exchanges(
+                    generated["wire"], generated["connection_exchanges"]
+                )
+                if "connection_exchanges" in generated
+                else _retained_connection_exchanges(
+                    reviewed_connection_wire,
+                    reviewed_connection_exchanges,
+                    generated["wire"],
+                )
+            )
             projected = _attach_graph_version(project_graph_data(candidate_build))
             if projected is None:
                 raise GraphContractError(
@@ -1465,6 +1597,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 "capabilities": copy.deepcopy(candidate_build["capabilities"]),
                 "detail_level": projected.get("detail_level", "standard"),
             }
+            if connection_exchanges:
+                evidence["connection_exchanges"] = connection_exchanges
             if base_build is not None and permissions is not None:
                 evidence["review_scope"] = _edit_review_scope(
                     base_build,
@@ -1496,6 +1630,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     rendered, phase="connections", action="review", attempt=attempt
                 ),
             )
+            reviewed_connection_wire = copy.deepcopy(generated["wire"])
+            reviewed_connection_exchanges = connection_exchanges
             if connection_gate["approved"]:
                 graph_contract = _contract(
                     candidate_build,
