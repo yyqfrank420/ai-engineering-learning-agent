@@ -1036,7 +1036,12 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         telemetry_failure or cost_policy["blocking_status"] == "fail"
     ):
         reason = telemetry_failure or cost_policy["reason"]
-    judge_cost = account_judge_cost(evaluations)
+    judge_cost = account_judge_cost(
+        evaluations,
+        attempted_calls=budget.judge_calls,
+        usage_unverified=bool(resume_evaluations)
+        or budget.judge_calls > budget.judge_limit,
+    )
     source_application_cost = application_cost["total"]["estimated_usd"]
     report = {
         "format_version": 1,
@@ -1195,6 +1200,24 @@ def _write_outputs(path: Path, report: dict[str, Any]) -> None:
                     f"Known application subtotal: `${float(known_subtotal):.6f}` "
                     "(total unavailable)"
                 )
+            judge_accounting = cost_accounting.get("judge") or {}
+            if judge_accounting:
+                judge_total = judge_accounting.get("total") or {}
+                judge_estimate = judge_total.get("estimated_usd")
+                lines.append(
+                    "Judge cost: "
+                    + (
+                        f"`${float(judge_estimate):.6f}`"
+                        if judge_estimate is not None
+                        else "`unknown`"
+                    )
+                )
+                judge_subtotal = judge_total.get("known_subtotal_usd")
+                if judge_estimate is None and judge_subtotal is not None:
+                    lines.append(
+                        f"Known judge subtotal: `${float(judge_subtotal):.6f}` "
+                        "(total unavailable)"
+                    )
         if report.get("reason"):
             lines.append(f"Reason: {report['reason']}")
         lines.extend(["", "| Case | Decision | Reason |", "| --- | --- | --- |"])

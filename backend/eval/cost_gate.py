@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 import re
 from typing import Any, Literal
 
@@ -271,24 +272,87 @@ def account_application_cost(
     }
 
 
-def account_judge_cost(evaluations: list[dict[str, Any]]) -> dict[str, Any]:
+def account_judge_cost(
+    evaluations: list[dict[str, Any]],
+    *,
+    attempted_calls: int,
+    usage_unverified: bool = False,
+) -> dict[str, Any]:
+    if type(attempted_calls) is not int or attempted_calls < 0:
+        raise ValueError("attempted judge calls must be a non-negative integer")
+
     cases = []
-    total = {"input_tokens": 0, "output_tokens": 0, "estimated_usd": 0.0}
+    total = {"input_tokens": 0, "output_tokens": 0, "known_subtotal_usd": 0.0}
+    recorded_attempts = 0
+    incomplete_recorded_attempts = 0
     for evaluation in evaluations:
-        case_usage = {"input_tokens": 0, "output_tokens": 0, "estimated_usd": 0.0}
+        case_usage = {"input_tokens": 0, "output_tokens": 0, "known_subtotal_usd": 0.0}
         for judgment in evaluation.get("judgments") or []:
-            case_usage["input_tokens"] += int(judgment.get("input_tokens") or 0)
-            case_usage["output_tokens"] += int(judgment.get("output_tokens") or 0)
-            case_usage["estimated_usd"] += float(
-                judgment.get("estimated_cost_usd") or 0
+            recorded_attempts += 1
+            input_tokens = judgment.get("input_tokens")
+            output_tokens = judgment.get("output_tokens")
+            estimated_cost_usd = judgment.get("estimated_cost_usd")
+            input_complete = type(input_tokens) is int and input_tokens > 0
+            output_complete = type(output_tokens) is int and output_tokens > 0
+            try:
+                known_cost_usd = (
+                    float(estimated_cost_usd)
+                    if type(estimated_cost_usd) in {int, float}
+                    else None
+                )
+            except OverflowError:
+                known_cost_usd = None
+            cost_complete = (
+                known_cost_usd is not None
+                and math.isfinite(known_cost_usd)
+                and known_cost_usd >= 0
             )
-        case_usage["estimated_usd"] = round(case_usage["estimated_usd"], 6)
+            if not (input_complete and output_complete and cost_complete):
+                incomplete_recorded_attempts += 1
+            if input_complete:
+                case_usage["input_tokens"] += input_tokens
+            if output_complete:
+                case_usage["output_tokens"] += output_tokens
+            if cost_complete and known_cost_usd is not None:
+                case_usage["known_subtotal_usd"] += known_cost_usd
+        case_usage["known_subtotal_usd"] = round(case_usage["known_subtotal_usd"], 6)
         total["input_tokens"] += case_usage["input_tokens"]
         total["output_tokens"] += case_usage["output_tokens"]
-        total["estimated_usd"] += case_usage["estimated_usd"]
+        total["known_subtotal_usd"] += case_usage["known_subtotal_usd"]
         cases.append({"id": evaluation["id"], **case_usage})
-    total["estimated_usd"] = round(total["estimated_usd"], 6)
-    return {"total": total, "cases": cases}
+
+    if attempted_calls < recorded_attempts:
+        raise ValueError(
+            "attempted judge calls cannot be fewer than recorded judgments"
+        )
+    # Resumes lack prior attempt counts; over-limit reservations may not reach a provider.
+    usage_complete = (
+        attempted_calls == recorded_attempts
+        and incomplete_recorded_attempts == 0
+        and not usage_unverified
+    )
+    total["known_subtotal_usd"] = round(total["known_subtotal_usd"], 6)
+    # Incomplete run accounting cannot certify per-case totals; missing attempts
+    # also lack case attribution.
+    return {
+        "usage_complete": usage_complete,
+        "incomplete_attempt_count": (
+            None
+            if usage_unverified
+            else attempted_calls - recorded_attempts + incomplete_recorded_attempts
+        ),
+        "total": {
+            **total,
+            "estimated_usd": total["known_subtotal_usd"] if usage_complete else None,
+        },
+        "cases": [
+            {
+                **case,
+                "estimated_usd": case["known_subtotal_usd"] if usage_complete else None,
+            }
+            for case in cases
+        ],
+    }
 
 
 def evaluate_cost_policy(
