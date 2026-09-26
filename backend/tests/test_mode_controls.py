@@ -1255,17 +1255,32 @@ class TestResearchWorkerResilience:
                 "title": "good",
                 "body": "body",
                 "query": "good",
-                "backend": "bing",
+                "backend": "brave",
             },
             {
                 "href": "https://example.com/later",
                 "title": "later",
                 "body": "body",
                 "query": "later",
-                "backend": "bing",
+                "backend": "brave",
             },
         ]
-        assert calls == [(query, 2, "bing", "on") for query in ["good", "bad", "later"]]
+        assert calls == [
+            (query, 2, "brave", "on") for query in ["good", "bad", "later"]
+        ]
+
+    def test_configured_backends_select_one_enabled_ddgs_engine_without_network(self):
+        from ddgs import DDGS
+        from ddgs.engines import ENGINES
+
+        from agent.nodes.research_worker import _SEARCH_BACKEND, _SEARCH_FALLBACK
+
+        assert _SEARCH_BACKEND != _SEARCH_FALLBACK
+        for backend in (_SEARCH_BACKEND, _SEARCH_FALLBACK):
+            assert backend in ENGINES["text"]
+            # A disabled name silently selects auto, so assert exact resolution.
+            selected = DDGS(timeout=4)._get_engines("text", backend)
+            assert [engine.name for engine in selected] == [backend]
 
     @pytest.mark.parametrize("primary", ["empty", "filtered", "failure"])
     def test_run_ddgs_searches_falls_back_once_when_primary_is_empty(
@@ -1311,11 +1326,11 @@ class TestResearchWorkerResilience:
         assert len(sessions) == 2
         assert results[-1]["href"] == "https://example.com/recovered"
         assert results[-1]["query"] == "first"
-        assert results[-1]["backend"] == "brave"
+        assert results[-1]["backend"] == "duckduckgo"
         assert calls == [
-            ("first", 2, "bing", "on"),
-            ("second", 2, "bing", "on"),
             ("first", 2, "brave", "on"),
+            ("second", 2, "brave", "on"),
+            ("first", 2, "duckduckgo", "on"),
         ]
 
 

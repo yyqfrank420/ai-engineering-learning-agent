@@ -1130,8 +1130,12 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
     assert request["model"] == DEFAULT_ANTHROPIC_JUDGE_MODEL
-    assert request["max_tokens"] == 8192
+    assert request["max_tokens"] == judge_adapter._ANTHROPIC_OUTPUT_TOKEN_LIMIT == 8192
     assert request["system"].startswith("You are an evaluation judge")
+    assert (
+        "The 8192-token output budget includes reasoning and JSON; "
+        "leave enough tokens to complete every required schema field."
+    ) in request["system"]
     assert request["messages"][0]["role"] == "user"
     assert request["output_config"] == {
         "effort": "high",
@@ -1348,6 +1352,64 @@ async def test_anthropic_judge_rejects_non_structured_responses(
             provider="anthropic",
             api_key="anthropic-test-key",
         ).judge(corpus, case, {"answer": "Artifact text."})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage", "expected_usage"),
+    [
+        (
+            SimpleNamespace(input_tokens=123, output_tokens=8192),
+            "input_tokens=123, output_tokens=8192",
+        ),
+        (None, "input_tokens=unknown, output_tokens=unknown"),
+        (
+            SimpleNamespace(input_tokens="secret usage", output_tokens=-1),
+            "input_tokens=unknown, output_tokens=unknown",
+        ),
+    ],
+)
+async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
+    monkeypatch, usage, expected_usage
+):
+    corpus = load_corpus()
+    case = corpus.cases[0]
+    secret_text = "secret provider response"
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", text="secret hidden reasoning"),
+                SimpleNamespace(type="text", text=secret_text),
+            ],
+            stop_reason="max_tokens",
+            usage=usage,
+        )
+    )
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(
+        "eval.judge_adapter.create_anthropic_client",
+        lambda **_kwargs: client,
+    )
+    monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+    budget = EvaluationBudget(application_calls=1, judge_calls=2)
+
+    with pytest.raises(RuntimeError, match="maximum output token limit") as caught:
+        await judge_with_transport_retry(
+            SemanticJudge(provider="anthropic", api_key="anthropic-test-key"),
+            corpus,
+            case,
+            {"answer": "Artifact text."},
+            on_attempt=budget.record_judge_call,
+        )
+
+    reason = str(caught.value)
+    assert expected_usage in reason
+    assert f"visible_text_chars={len(secret_text)}" in reason
+    assert secret_text not in reason
+    assert "secret hidden reasoning" not in reason
+    assert "secret usage" not in reason
+    assert create.await_count == 1
+    assert budget.judge_calls == 1
 
 
 def test_judge_payload_removes_duplicate_graph_events_and_internal_graph_metadata():
@@ -2600,15 +2662,25 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
 
 def test_judge_prompt_checks_payload_direction_and_component_ownership():
     corpus = load_corpus()
-    system, _ = _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."})
+    system, _ = _judge_prompt(
+        corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."}
+    )
+    openai_system, _ = _judge_prompt(
+        corpus,
+        corpus.by_id["applied-domain"],
+        {"answer-1": "Answer."},
+        provider="openai",
+    )
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v10"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v11"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
     assert "actual request/response contracts" in system
     assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
     assert "Response prose cannot repair a contradictory graph contract" in system
+    assert "8192-token output budget" in system
+    assert "8192-token output budget" not in openai_system
 
 
 def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence():

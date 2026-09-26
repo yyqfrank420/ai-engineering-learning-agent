@@ -212,11 +212,14 @@ price table; fallback and failed charged attempts are included. Protected evalua
 Anthropic's five-minute prompt cache for repeated stable role prompts. Production app revisions leave
 it disabled because sparse traffic may not recover the cache-write premium. Kimi automatic-cache hits
 use their discounted input price. Judge usage is
-reported separately and per case. An unknown model price is an infrastructure
-failure, never zero cost. Cost limits are currently report-only and unset while at
-least five clean runs establish per-case and suite baselines; only reviewed limits
-should be promoted to blocking. Explicitly incomplete provider usage, including a
-timeout before an acceptance event, leaves total cost unknown and reports a known
+reported separately and per case. Judge totals remain unknown when an attempt
+lacks complete usage, resume provenance is unverified, or budget admission is
+rejected; valid recorded charges remain a known subtotal. An unknown model price
+is an infrastructure failure, never zero cost. Cost limits are currently
+report-only and unset while at least five clean runs establish per-case and suite
+baselines; only reviewed limits should be promoted to blocking. Explicitly
+incomplete provider usage, including a timeout before an acceptance event,
+leaves total cost unknown and reports a known
 subtotal. This accounting uncertainty is nonblocking in report-only mode and blocks
 when cost policy is blocking. Malformed or missing telemetry remains an infrastructure
 failure. Unrecovered provider rate limits, transport failures, and
@@ -238,9 +241,10 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v10`, Anthropic, and `claude-sonnet-5` are the versioned judge
+`semantic-rubric-judge-v11`, Anthropic, and `claude-sonnet-5` are the versioned judge
 selection. The Anthropic request uses high reasoning effort with an 8192-token
-budget shared by reasoning and structured output. The judge receives the case
+budget shared by reasoning and structured output. Its prompt directs the judge
+to reserve room for complete schema output. The judge receives the case
 and rubrics before artifact sources, with numbered evidence chunks in source
 order. Reports record the active provider, model, and prompt release.
 Calibration remains pending.
