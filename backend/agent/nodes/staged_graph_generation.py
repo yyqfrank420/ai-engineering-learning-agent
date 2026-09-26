@@ -40,7 +40,7 @@ from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v28"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v25"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v26"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -1023,6 +1023,12 @@ def _attempt_prompt(
             "and control behavior. Route each supporting branch to a rejoin or observable outcome. Do "
             "not label a request edge as if it carries the returned payload. Do not emit self-loops "
             "or duplicate source, target, and label contracts. "
+            "Check each forward contract and actual reply against the accepted sender and "
+            "recipient responsibilities, including supporting and deployment exchanges. "
+            "Each data-returning alternative in a combined contract needs its payload reply "
+            "or a separate contract; a write verdict is not read data. Do not invent a reply "
+            "to a one-way event or return a processed artifact to a source without its "
+            "declared use. "
             "For conditional outcomes, describe the action each outcome triggers. "
             "For example: 'Committed: finish; absent: retry same key after checks; "
             "unknown: bounded escalation'. Status names alone do not describe the action. "
