@@ -297,6 +297,16 @@ def staged_review_requirements(
         if owner == stage and code not in excluded
     }
     if stage == "connections":
+        if "branch_completion" in requirements:
+            requirements["branch_completion"] = (
+                "Route each required or declared normal, denial, failure, alternate, "
+                "and fallback path to a rejoin or observable outcome. A typed response "
+                "carrying the applicable outcomes, or the same executable owner handling "
+                "them, can close those paths without a separate component or edge. Do not "
+                "require a path for an optional exception that the request and accepted "
+                "design do not declare. Block a missing required path or a path that "
+                "bypasses a required control."
+            )
         requirements["edge_semantics"] = (
             "Require contracts compatible with their source, recipient, payload, and "
             "declared behavior. Block a missing required input or answer return, a "
@@ -310,6 +320,15 @@ def staged_review_requirements(
             "for required runtime or control interactions."
         )
     if stage == "components":
+        requirements["mece_scope"] = (
+            "Give each material responsibility a clear executable owner. Block "
+            "conflicting material ownership that makes required behavior or controls "
+            "ambiguous, or mechanics outside the requested subject scope that replace "
+            "or misrepresent the requested system. Redundant decomposition, compatible "
+            "shared ownership, and naming preferences are advisory unless they cause "
+            "concrete behavior or control harm. Mechanics used to author this response "
+            "are not runtime features unless explicitly requested."
+        )
         requirements["capability_classification"] = (
             "Classify capabilities from the candidate responsibilities and assumptions: "
             "external_effects means it can mutate an external system; retrieval_or_reuse "

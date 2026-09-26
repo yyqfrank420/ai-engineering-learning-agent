@@ -6,6 +6,7 @@ from agent.architecture_rubric import (
     RUBRIC_CRITERIA,
     STAGED_PRODUCTION_REQUIREMENTS,
     STAGED_REVIEW_STANDARD,
+    TOPOLOGY_PROOF_REQUIREMENTS,
     staged_review_requirements,
 )
 from agent.nodes import staged_graph_gate as gate
@@ -130,6 +131,54 @@ def test_staged_presentation_policy_preserves_graph_correctness_rules(maturity):
         "edge_semantics",
         "safe_action_boundary",
         "gate_preserving_reuse",
+    } <= set(requirements)
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_staged_mece_blocks_material_conflicts_without_requiring_extra_boxes(maturity):
+    requirements = staged_review_requirements("components", maturity)
+    criterion = requirements["mece_scope"]
+
+    assert "Block conflicting material ownership" in criterion
+    assert "required behavior or controls ambiguous" in criterion
+    assert "outside the requested subject scope" in criterion
+    assert (
+        "Redundant decomposition, compatible shared ownership, and naming preferences are advisory"
+        in criterion
+    )
+    assert "concrete behavior or control harm" in criterion
+    assert "brief_coverage" in requirements
+    assert "objective_fidelity" in requirements
+    assert criterion != RUBRIC_CRITERIA["mece_scope"][1]
+
+
+def test_production_branch_policy_keeps_required_outcomes_and_controls():
+    requirements = staged_review_requirements(
+        "connections", "production", tuple(TOPOLOGY_PROOF_REQUIREMENTS)
+    )
+    criterion = requirements["branch_completion"]
+
+    for obligation in (
+        "required or declared normal, denial, failure, alternate, and fallback path",
+        "typed response carrying the applicable outcomes",
+        "same executable owner handling them",
+        "without a separate component or edge",
+        "optional exception that the request and accepted design do not declare",
+        "Block a missing required path",
+        "bypasses a required control",
+    ):
+        assert obligation in criterion
+    assert "branch_completion" not in staged_review_requirements(
+        "connections", "prototype"
+    )
+    assert {
+        "runtime_completeness",
+        "edge_semantics",
+        "safe_action_boundary",
+        "gate_preserving_reuse",
+        "topology_enforced_guarantees",
+        "state_effect_reconciliation",
+        *TOPOLOGY_PROOF_REQUIREMENTS,
     } <= set(requirements)
 
 

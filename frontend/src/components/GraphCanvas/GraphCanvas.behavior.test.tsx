@@ -114,6 +114,19 @@ const baseProps = {
 
 
 describe('GraphCanvas behavior', () => {
+  it('labels only an accepted overview and explains its reduced detail', () => {
+    const overview = { ...graph, detail_level: 'overview' as const };
+    const view = render(<GraphCanvas {...baseProps} graphData={graph} />);
+    expect(screen.queryByText('Overview')).toBeNull();
+
+    view.rerender(<GraphCanvas {...baseProps} graphData={overview} isPreview />);
+    expect(screen.queryByText('Overview')).toBeNull();
+
+    view.rerender(<GraphCanvas {...baseProps} graphData={overview} isPreview isAcceptedGraph />);
+    expect(screen.getByText('Overview')).toBeTruthy();
+    expect(screen.getByText('Core workflow. Supporting detail is simplified.')).toBeTruthy();
+  });
+
   it.each([false, true])('reports visible layout readiness for preview=%s', isPreview => {
     const ready = vi.fn();
     render(<GraphCanvas {...baseProps} graphData={graph} isPreview={isPreview} onGraphReady={ready} />);

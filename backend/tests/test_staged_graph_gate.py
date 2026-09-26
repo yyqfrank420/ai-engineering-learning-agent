@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v15"
+        "staged_component_gate_v16"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -338,9 +338,8 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             in generated_criteria["brief_coverage"]
         )
         assert (
-            "exclude mechanics used to author this response unless explicitly requested "
-            "as runtime features of the subject system"
-            in generated_criteria["mece_scope"]
+            "Mechanics used to author this response are not runtime features unless "
+            "explicitly requested" in generated_criteria["mece_scope"]
         )
     for code, requirement in generated_criteria.items():
         if (
@@ -367,6 +366,12 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             assert "Block a missing required input or answer return" in requirement
             assert "a path that bypasses a required control" in requirement
             assert "duplicate description is advisory unless" in requirement
+        elif stage == "components" and code == "mece_scope":
+            assert "Block conflicting material ownership" in requirement
+            assert "naming preferences are advisory" in requirement
+        elif stage == "connections" and code == "branch_completion":
+            assert "Block a missing required path" in requirement
+            assert "without a separate component or edge" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -527,13 +532,112 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v19"
+        == "staged_connection_gate_v20"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
     assert "candidate component responsibilities" in prompt
     assert "Resolved maturity remains authoritative." in prompt
     assert "a durable telemetry sink is a complete outcome" in prompt
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_overview_prompt_preserves_maturity_objective_and_required_controls(stage):
+    guarantees = tuple(TOPOLOGY_PROOF_REQUIREMENTS) if stage == "connections" else ()
+    prompt = gate._prompt(
+        gate=stage,
+        user_request="Design a production payment service with exact-action approval.",
+        evidence_bundle={"candidate_context": {"detail_level": "overview"}},
+        resolved_maturity="production",
+        candidate_records=[],
+        required_production_guarantees=guarantees,
+    )
+    requirements = json.loads(
+        prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+
+    assert "The candidate requests an overview." in prompt
+    assert "Presentation simplification may omit optional detail only." in prompt
+    assert "does not change the resolved maturity, objective" in prompt
+    assert "requested behavior, required directed interactions" in prompt
+    assert "detail_level is presentation context, not evidence" in prompt
+    assert "Resolved maturity: production" in prompt
+    assert requirements == staged_review_requirements(stage, "production", guarantees)
+    if stage == "components":
+        assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= set(
+            requirements
+        )
+    else:
+        assert {
+            "runtime_completeness",
+            "edge_semantics",
+            "safe_action_boundary",
+            "branch_completion",
+            *guarantees,
+        } <= set(requirements)
+
+
+@pytest.mark.parametrize(
+    "evidence_bundle",
+    [
+        {},
+        {"detail_level": "overview"},
+        {"candidate_context": {"detail_level": "detailed"}},
+        {"candidate_context": "overview"},
+    ],
+)
+def test_overview_guidance_requires_exact_candidate_context(evidence_bundle):
+    prompt = gate._prompt(
+        gate="components",
+        user_request="Design the service.",
+        evidence_bundle=evidence_bundle,
+        resolved_maturity="prototype",
+        candidate_records=[],
+        required_production_guarantees=(),
+    )
+
+    assert "The candidate requests an overview." not in prompt
+    assert "brief_coverage" in prompt
+
+
+@pytest.mark.parametrize(
+    ("stage", "rule"),
+    [
+        ("components", "brief_coverage"),
+        ("components", "mece_scope"),
+        ("connections", "branch_completion"),
+        ("connections", "safe_action_boundary"),
+        ("connections", "authorization_and_compensation"),
+    ],
+)
+def test_overview_metadata_cannot_approve_an_unsatisfied_rule(monkeypatch, stage, rule):
+    finding = {
+        "rule_code": rule,
+        "reason": "The required path or responsibility is missing.",
+        "record_indexes": [0],
+    }
+    _stub_response(monkeypatch, {"approved": True, "findings": [finding]})
+    review = (
+        gate.review_components if stage == "components" else gate.review_connections
+    )
+    result = asyncio.run(
+        review(
+            user_request="Design a production payment service.",
+            evidence_bundle={"candidate_context": {"detail_level": "overview"}},
+            resolved_maturity="production",
+            candidate_records=[{"label": "Payment service"}],
+            **(
+                {"required_production_guarantees": tuple(TOPOLOGY_PROOF_REQUIREMENTS)}
+                if stage == "connections"
+                else {}
+            ),
+        )
+    )
+
+    assert result["approved"] is False
+    assert result["terminal"] is False
+    assert result["findings"] == [finding]
+    assert rule in result["checked_rules"]
 
 
 def test_runtime_completeness_allows_observation_only_telemetry_outcome():
@@ -669,10 +773,6 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
             "brief_coverage",
             "Give every requested responsibility a component owner.",
         ),
-        (
-            "mece_scope",
-            "Give each material responsibility one clear owner, remove needless duplicates, and exclude diagram-authoring mechanics from the designed runtime.",
-        ),
     ],
 )
 def test_subject_runtime_policy_invalidates_previous_component_review_identity(
@@ -681,6 +781,24 @@ def test_subject_runtime_policy_invalidates_previous_component_review_identity(
     current_identity = gate.review_identity("components", maturity)
 
     monkeypatch.setitem(RUBRIC_CRITERIA, rule, ("components", previous_requirement))
+
+    assert gate.review_identity("components", maturity) != current_identity
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_staged_mece_policy_invalidates_previous_component_review_identity(
+    monkeypatch, maturity
+):
+    current_identity = gate.review_identity("components", maturity)
+    current_requirements = gate.staged_review_requirements
+
+    def previous_requirements(stage, depth, guarantees=()):
+        requirements = current_requirements(stage, depth, guarantees)
+        if stage == "components":
+            requirements["mece_scope"] = RUBRIC_CRITERIA["mece_scope"][1]
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
 
     assert gate.review_identity("components", maturity) != current_identity
 

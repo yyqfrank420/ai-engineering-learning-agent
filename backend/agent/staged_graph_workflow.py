@@ -749,7 +749,8 @@ async def _render(
             "graph_changed": True,
             "graph_publication": "unreviewed",
             "graph_stage_preview_count": preview_count,
-        }
+        },
+        interactive_presentation=True,
     )
 
 
@@ -777,11 +778,7 @@ async def _retain_staged_diagnostic(
         **state,
         "graph_review_diagnostics": diagnostics,
     }
-    if (
-        not emit_gate_progress
-        or not recorded
-        or not _may_emit_staged_diagnostics(state)
-    ):
+    if not emit_gate_progress or not recorded:
         return retained_state
 
     send = state.get("send")
@@ -792,9 +789,13 @@ async def _retain_staged_diagnostic(
                     "type": "workflow_progress",
                     "phase": "review",
                     "status": "retry",
-                    "title": "Correcting staged graph candidate",
-                    "detail": "The candidate failed one bounded admission check. One correction is running.",
-                    "diagnostic": copy.deepcopy(safe_diagnostic),
+                    "title": "Refining the diagram",
+                    "detail": "Checking the affected components and connections.",
+                    **(
+                        {"diagnostic": copy.deepcopy(safe_diagnostic)}
+                        if _may_emit_staged_diagnostics(state)
+                        else {}
+                    ),
                 }
             )
         except Exception as exc:
@@ -842,8 +843,12 @@ async def _failed(
             "phase": "review",
             "status": "rejected",
             "failure_code": code,
-            "title": "Staged graph candidate rejected",
-            "detail": "The candidate failed a bounded staged admission check and remains unpublished.",
+            "title": "Diagram needs another attempt",
+            "detail": (
+                "Your existing diagram is unchanged."
+                if approved_graph
+                else "I couldn't finish a reliable diagram for this request."
+            ),
         }
         if _may_emit_staged_diagnostics(state):
             progress_event["diagnostic"] = safe_diagnostic
@@ -856,6 +861,20 @@ async def _failed(
                     "Staged failure progress event was not delivered: %s",
                     type(exc).__name__,
                 )
+    enqueue_analytics_event(
+        event_name="staged_graph_admission",
+        event_category="graph",
+        user_id=state.get("user_id"),
+        session_id=state.get("session_id"),
+        thread_id=state.get("thread_id") or state.get("session_id"),
+        request_id=state.get("request_id"),
+        client_request_id=state.get("client_request_id"),
+        properties={
+            "outcome": "preserved" if approved_graph else "withheld",
+            "failure_code": code,
+            "intent": intent,
+        },
+    )
     result: AgentState = {
         **state,
         "graph_data": approved_graph,
@@ -1007,16 +1026,22 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     write_set_fingerprint = _fingerprint(generation_write_set)
     component_build: dict[str, Any] | None = None
     component_gate: dict[str, Any] = {}
+    # Recovery edits an unpublished creation only. Existing user work keeps its
+    # original mutation permissions, even when a correction would be easier.
+    may_simplify = state.get("graph_intent") == "create" and not approved_graph
+    component_recovered = False
+    component_attempts = 0
     previous_prompt: str | None = None
     previous_component_candidate: str | None = None
     previous_component_wire: str | None = None
     rejected_component_candidate: dict[str, Any] | None = None
     reviewed_component_records: list[dict[str, Any]] = []
-    correction_findings: list[dict[str, str]] = []
+    correction_findings: list[dict[str, Any]] = []
     preview_count = int(state.get("graph_stage_preview_count", 0))
     working_state = state
 
     for attempt in range(STAGED_COMPONENT_GENERATION_CALLS):
+        recovery_mode = may_simplify and attempt > 0
         try:
             generated = await generate_component_candidate(
                 request=request,
@@ -1033,6 +1058,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 base_components=base_build,
                 edit_permissions=permissions,
                 rejected_candidate=rejected_component_candidate,
+                recovery_mode=recovery_mode,
                 state=state,
                 timeout_seconds=staged_timeout_seconds(
                     {**working_state, "graph_stage_preview_count": preview_count},
@@ -1183,6 +1209,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "assumptions": assigned["assumptions"],
                     "root_index": assigned["root_index"],
                     "capabilities": assigned["capabilities"],
+                    "detail_level": "overview" if recovery_mode else "standard",
                 },
             }
             if scoped_edit:
@@ -1206,6 +1233,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             if component_gate["approved"]:
                 component_build = assigned
+                component_recovered = recovery_mode
+                component_attempts = attempt + 1
                 working_state = rendered
                 break
             if component_gate["terminal"]:
@@ -1305,6 +1334,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     correction_findings = []
     connection_gate: dict[str, Any] = {}
     for attempt in range(STAGED_CONNECTION_GENERATION_CALLS):
+        recovery_mode = may_simplify and attempt > 0
+        overview = component_recovered or recovery_mode
         try:
             generated = await generate_connection_candidate(
                 request=request,
@@ -1338,9 +1369,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     write_set_fingerprint if attempt else None
                 ),
                 structural_findings=correction_findings,
-                base_connections=_connection_prompt_base(component_build),
+                base_connections=(
+                    _connection_prompt_base(component_build)
+                    if base_build is not None
+                    else None
+                ),
                 edit_permissions=permissions,
                 rejected_candidate=rejected_connection_candidate,
+                recovery_mode=recovery_mode,
                 state=state,
                 timeout_seconds=staged_timeout_seconds(
                     working_state,
@@ -1400,6 +1436,12 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     raise GraphContractError(
                         "edit admission returned no graph", path="graph_data"
                     )
+            if overview or (
+                base_build is not None
+                and (approved_graph or {}).get("detail_level") == "overview"
+            ):
+                # Recovery disclosure is server-owned, outside user-editable fields.
+                projected = {**projected, "detail_level": "overview"}
             rendered = await _render(
                 working_state, projected, preview_count=preview_count
             )
@@ -1421,6 +1463,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 "assumptions": copy.deepcopy(candidate_build["assumptions"]),
                 "root_index": candidate_build["root_index"],
                 "capabilities": copy.deepcopy(candidate_build["capabilities"]),
+                "detail_level": projected.get("detail_level", "standard"),
             }
             if base_build is not None and permissions is not None:
                 evidence["review_scope"] = _edit_review_scope(
@@ -1473,6 +1516,24 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "status": "candidate",
                     "failure_code": None,
                 }
+                enqueue_analytics_event(
+                    event_name="staged_graph_admission",
+                    event_category="graph",
+                    user_id=state.get("user_id"),
+                    session_id=state.get("session_id"),
+                    thread_id=state.get("thread_id") or state.get("session_id"),
+                    request_id=state.get("request_id"),
+                    client_request_id=state.get("client_request_id"),
+                    properties={
+                        "outcome": "recovered" if overview else "accepted",
+                        "detail_level": projected.get("detail_level", "standard"),
+                        "intent": state.get("graph_intent"),
+                        "component_attempts": component_attempts,
+                        "connection_attempts": attempt + 1,
+                        "component_count": len(projected["nodes"]),
+                        "connection_count": len(projected["edges"]),
+                    },
+                )
                 return {
                     **rendered,
                     "graph_data": projected,

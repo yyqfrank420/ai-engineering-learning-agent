@@ -25,8 +25,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v15"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v19"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v16"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v20"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -196,6 +196,17 @@ def _prompt(
     required_production_guarantees: Sequence[str],
 ) -> str:
     review_scope = evidence_bundle.get("review_scope")
+    candidate_context = evidence_bundle.get("candidate_context")
+    overview_instructions = (
+        "\nThe candidate requests an overview. Presentation simplification may omit "
+        "optional detail only. It does not change the resolved maturity, objective, "
+        "requested behavior, required directed interactions, or safety and production "
+        "controls. Review every applicable criterion normally; detail_level is "
+        "presentation context, not evidence that a required control exists."
+        if isinstance(candidate_context, Mapping)
+        and candidate_context.get("detail_level") == "overview"
+        else ""
+    )
     scope_instructions = ""
     if isinstance(review_scope, Mapping):
         scope_instructions = (
@@ -272,6 +283,7 @@ def _prompt(
                 "Resolved maturity remains authoritative."
             )
         )
+        + overview_instructions
         + scope_instructions
     )
 

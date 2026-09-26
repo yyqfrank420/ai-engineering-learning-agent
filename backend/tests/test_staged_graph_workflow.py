@@ -290,6 +290,424 @@ def _install_success_boundaries(monkeypatch, *, events: list[object] | None = No
     monkeypatch.setattr(workflow, "review_connections", connection_gate)
 
 
+@pytest.mark.parametrize("recovery_stage", [None, "components", "connections"])
+@pytest.mark.asyncio
+async def test_creation_recovery_keeps_original_review_contract_and_attempt_caps(
+    monkeypatch, recovery_stage
+):
+    request = "Design a production payment system with duplicate protection."
+    component_inputs: list[dict] = []
+    connection_inputs: list[dict] = []
+    component_reviews: list[dict] = []
+    connection_reviews: list[dict] = []
+    analytics: list[dict] = []
+
+    async def components(**kwargs):
+        component_inputs.append(copy.deepcopy(kwargs))
+        wire = _components_wire()
+        if kwargs["attempt"]:
+            wire["components"][1]["responsibility"] = (
+                "Processes and audits the payment request."
+            )
+        return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
+
+    async def connections(**kwargs):
+        connection_inputs.append(copy.deepcopy(kwargs))
+        generation._validate_recovery_mode(
+            kwargs["recovery_mode"],
+            kwargs["attempt"],
+            kwargs["write_set"],
+            kwargs["base_connections"],
+            kwargs["edit_permissions"],
+        )
+        wire = _connections_wire()
+        if kwargs["attempt"]:
+            wire["edges"][0]["label"] = "submits audited payment"
+        return {"wire": wire, "prompt_fingerprint": f"connection-{kwargs['attempt']}"}
+
+    async def component_gate(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        if recovery_stage == "components" and len(component_reviews) == 1:
+            return _rejected_gate()
+        return _approved_gate()
+
+    async def connection_gate(**kwargs):
+        connection_reviews.append(copy.deepcopy(kwargs))
+        if recovery_stage == "connections" and len(connection_reviews) == 1:
+            return _rejected_gate()
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(
+        workflow, "enqueue_analytics_event", lambda **event: analytics.append(event)
+    )
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(user_message=request, design_query=request, complexity="production")
+    )
+
+    component_attempts = 2 if recovery_stage == "components" else 1
+    connection_attempts = 2 if recovery_stage == "connections" else 1
+    assert [item["recovery_mode"] for item in component_inputs] == (
+        [False, True] if component_attempts == 2 else [False]
+    )
+    assert [item["recovery_mode"] for item in connection_inputs] == (
+        [False, True] if connection_attempts == 2 else [False]
+    )
+    assert all(item["base_connections"] is None for item in connection_inputs)
+    assert len(component_reviews) == component_attempts
+    assert len(connection_reviews) == connection_attempts
+    assert all(
+        review["user_request"] == request
+        and review["resolved_maturity"] == "production"
+        for review in component_reviews + connection_reviews
+    )
+    assert [
+        review["evidence_bundle"]["candidate_context"]["detail_level"]
+        for review in component_reviews
+    ] == (["standard", "overview"] if component_attempts == 2 else ["standard"])
+    assert [
+        review["evidence_bundle"]["candidate_context"]["detail_level"]
+        for review in connection_reviews
+    ] == (
+        ["standard", "overview"]
+        if recovery_stage == "connections"
+        else ["overview"]
+        if recovery_stage == "components"
+        else ["standard"]
+    )
+    if recovery_stage == "connections":
+        assert (
+            connection_inputs[0]["accepted_components"]
+            == connection_inputs[1]["accepted_components"]
+        )
+        assert (
+            connection_inputs[0]["upstream_fingerprint"]
+            == connection_inputs[1]["upstream_fingerprint"]
+        )
+    assert result["graph_publication"] == "approved"
+    assert result["graph_review"]["approved"] is True
+    assert result["graph_stage_preview_count"] == (
+        component_attempts + connection_attempts
+    )
+    graph = result["graph_data"]
+    expected_detail = "overview" if recovery_stage else "standard"
+    assert graph.get("detail_level", "standard") == expected_detail
+    assert result["reviewed_graph_data"] == graph
+    contract = result["graph_contract"]
+    assert contract[
+        "reviewed_graph_fingerprint"
+    ] == workflow._reviewed_graph_fingerprint(graph, contract)
+    if recovery_stage:
+        unmarked = {key: value for key, value in graph.items() if key != "detail_level"}
+        assert contract["reviewed_graph_fingerprint"] != (
+            workflow._reviewed_graph_fingerprint(unmarked, contract)
+        )
+    admissions = [
+        event for event in analytics if event["event_name"] == "staged_graph_admission"
+    ]
+    assert len(admissions) == 1
+    assert admissions[0]["properties"] == {
+        "outcome": "recovered" if recovery_stage else "accepted",
+        "detail_level": expected_detail,
+        "intent": "create",
+        "component_attempts": component_attempts,
+        "connection_attempts": connection_attempts,
+        "component_count": len(graph["nodes"]),
+        "connection_count": len(graph["edges"]),
+    }
+
+
+@pytest.mark.asyncio
+async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch):
+    request = "Design a payment request path."
+    generation_calls: list[dict] = []
+    component_reviews: list[dict] = []
+    connection_reviews: list[dict] = []
+
+    async def components(**_kwargs):
+        return {"wire": _components_wire(), "prompt_fingerprint": "component-prompt"}
+
+    async def model_transport(**kwargs):
+        generation_calls.append(copy.deepcopy(kwargs))
+        edge = _connections_wire()["edges"][0]
+        if kwargs["attempt"] == 0:
+            return json.dumps({"exchanges": [{**edge, "response_label": None}]})
+        return json.dumps(
+            {
+                "additions": [],
+                "updates": {"slot_0": {**edge, "label": "submits approved payment"}},
+                "removals": [],
+            }
+        )
+
+    async def component_gate(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _approved_gate()
+
+    async def connection_gate(**kwargs):
+        connection_reviews.append(copy.deepcopy(kwargs))
+        return (
+            _rejected_gate_with_findings(
+                [
+                    {
+                        "rule_code": "edge_semantics",
+                        "reason": "The payment connection needs a clearer contract.",
+                        "record_indexes": [0],
+                    }
+                ]
+            )
+            if len(connection_reviews) == 1
+            else _approved_gate()
+        )
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(generation, "_run_generation", model_transport)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(user_message=request, design_query=request)
+    )
+
+    assert result["graph_publication"] == "approved", result["graph_operation"]
+    assert result["graph_data"]["detail_level"] == "overview"
+    assert len(component_reviews) == len(generation_calls) - 1 == 1
+    assert len(connection_reviews) == 2
+    assert [
+        generation._generation_schema_version("connections", call["schema"])
+        for call in generation_calls
+    ] == ["staged_connections_exchanges_v1", "staged_connections_recovery_delta_v1"]
+    assert [call["attempt"] for call in generation_calls] == [0, 1]
+    assert [
+        review["evidence_bundle"]["candidate_context"]["detail_level"]
+        for review in connection_reviews
+    ] == ["standard", "overview"]
+    assert (
+        connection_reviews[0]["evidence_bundle"]["candidate_components"]
+        == (connection_reviews[1]["evidence_bundle"]["candidate_components"])
+    )
+    assert connection_reviews[1]["user_request"] == request
+    assert result["graph_data"]["edges"][0]["label"] == "submits approved payment"
+
+
+@pytest.mark.asyncio
+async def test_rejected_recovery_withholds_unapproved_graph_and_safe_progress(
+    monkeypatch,
+):
+    component_inputs: list[dict] = []
+    component_reviews: list[dict] = []
+    events: list[dict] = []
+    analytics: list[dict] = []
+
+    async def components(**kwargs):
+        component_inputs.append(copy.deepcopy(kwargs))
+        wire = _components_wire()
+        if kwargs["attempt"]:
+            wire["components"][1]["responsibility"] = (
+                "Processes and audits the payment request."
+            )
+        return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
+
+    async def component_gate(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _rejected_gate()
+
+    async def unexpected_connections(**_kwargs):
+        pytest.fail("Unapproved components must not reach connection generation")
+
+    async def send(event):
+        events.append(copy.deepcopy(event))
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(
+        workflow, "generate_connection_candidate", unexpected_connections
+    )
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(
+        workflow, "enqueue_analytics_event", lambda **event: analytics.append(event)
+    )
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(send=send, user_email="normal@example.com")
+    )
+
+    assert [item["recovery_mode"] for item in component_inputs] == [False, True]
+    assert [
+        review["evidence_bundle"]["candidate_context"]["detail_level"]
+        for review in component_reviews
+    ] == ["standard", "overview"]
+    assert result["graph_publication"] == "withheld"
+    assert result["graph_changed"] is False
+    assert result["graph_data"] is None
+    assert result["graph_review"]["approved"] is False
+    assert result["graph_operation"]["failure_code"] == (
+        "staged_component_attempts_exhausted"
+    )
+    assert [
+        event["properties"]["outcome"]
+        for event in analytics
+        if event["event_name"] == "staged_graph_admission"
+    ] == ["withheld"]
+    progress = [event for event in events if event["type"] == "workflow_progress"]
+    assert [event["status"] for event in progress] == ["retry", "rejected"]
+    assert all("diagnostic" not in event for event in progress)
+    assert all(
+        "The requested workflow has no owner." not in repr(event) for event in events
+    )
+
+
+@pytest.mark.parametrize(
+    "user_request", ["Rename Request gateway to Public gateway.", "Rebuild the graph."]
+)
+@pytest.mark.asyncio
+async def test_existing_baseline_component_retry_never_enters_recovery(
+    monkeypatch, user_request
+):
+    previous_graph = _accepted_staged_graph()
+    original = copy.deepcopy(previous_graph)
+    component_inputs: list[dict] = []
+    gate_calls = 0
+    analytics: list[dict] = []
+
+    async def components(**kwargs):
+        component_inputs.append(copy.deepcopy(kwargs))
+        wire = _components_wire()
+        if kwargs["attempt"]:
+            if user_request == "Rebuild the graph.":
+                wire["components"][0]["responsibility"] = "Accepts payment requests."
+            else:
+                wire["components"][0]["label"] = "Public gateway"
+        return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
+
+    async def component_gate(**_kwargs):
+        nonlocal gate_calls
+        gate_calls += 1
+        return _rejected_gate()
+
+    async def unexpected_connections(**_kwargs):
+        pytest.fail("Rejected components must not reach connection generation")
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(
+        workflow, "generate_connection_candidate", unexpected_connections
+    )
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(
+        workflow, "enqueue_analytics_event", lambda **event: analytics.append(event)
+    )
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message=user_request,
+            design_query=user_request,
+            complexity="auto",
+            approved_graph_data=previous_graph,
+        )
+    )
+
+    assert [item["recovery_mode"] for item in component_inputs] == [False, False]
+    assert gate_calls == 2
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_data"] == original
+    assert previous_graph == original
+    assert result["graph_changed"] is False
+    assert [
+        event["properties"]["outcome"]
+        for event in analytics
+        if event["event_name"] == "staged_graph_admission"
+    ] == ["preserved"]
+
+
+@pytest.mark.asyncio
+async def test_inherited_overview_survives_rebuild_with_full_two_by_two_review(
+    monkeypatch,
+):
+    previous_graph = _accepted_staged_graph()
+    previous_graph["detail_level"] = "overview"
+    original = copy.deepcopy(previous_graph)
+    component_inputs: list[dict] = []
+    connection_inputs: list[dict] = []
+    component_reviews: list[dict] = []
+    connection_reviews: list[dict] = []
+    analytics: list[dict] = []
+
+    async def components(**kwargs):
+        component_inputs.append(copy.deepcopy(kwargs))
+        wire = _components_wire()
+        if kwargs["attempt"]:
+            wire["components"][1]["responsibility"] = (
+                "Processes and audits the payment request."
+            )
+        return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
+
+    async def connections(**kwargs):
+        connection_inputs.append(copy.deepcopy(kwargs))
+        wire = _connections_wire()
+        if kwargs["attempt"]:
+            wire["edges"][0]["label"] = "submits audited payment"
+        return {"wire": wire, "prompt_fingerprint": f"connection-{kwargs['attempt']}"}
+
+    async def component_gate(**kwargs):
+        component_reviews.append(copy.deepcopy(kwargs))
+        return _rejected_gate() if len(component_reviews) == 1 else _approved_gate()
+
+    async def connection_gate(**kwargs):
+        connection_reviews.append(copy.deepcopy(kwargs))
+        return _rejected_gate() if len(connection_reviews) == 1 else _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(
+        workflow, "enqueue_analytics_event", lambda **event: analytics.append(event)
+    )
+
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message="Rebuild the graph.",
+            design_query="Rebuild the graph.",
+            approved_graph_data=previous_graph,
+        )
+    )
+
+    assert [item["recovery_mode"] for item in component_inputs] == [False, False]
+    assert [item["recovery_mode"] for item in connection_inputs] == [False, False]
+    assert all(isinstance(item["base_connections"], list) for item in connection_inputs)
+    assert len(component_reviews) == len(connection_reviews) == 2
+    assert [
+        review["evidence_bundle"]["candidate_context"]["detail_level"]
+        for review in connection_reviews
+    ] == ["overview", "overview"]
+    assert result["graph_publication"] == "approved"
+    assert result["graph_data"]["detail_level"] == "overview"
+    assert previous_graph == original
+    assert result["graph_contract"]["reviewed_graph_fingerprint"] == (
+        workflow._reviewed_graph_fingerprint(
+            result["graph_data"], result["graph_contract"]
+        )
+    )
+    admissions = [
+        event for event in analytics if event["event_name"] == "staged_graph_admission"
+    ]
+    assert len(admissions) == 1
+    assert admissions[0]["properties"]["outcome"] == "accepted"
+    assert admissions[0]["properties"]["detail_level"] == "overview"
+    assert admissions[0]["properties"]["component_attempts"] == 2
+    assert admissions[0]["properties"]["connection_attempts"] == 2
+
+
 def test_selector_only_enables_staged_applied_graph_turns(monkeypatch):
     monkeypatch.setattr(workflow.settings, "graph_pipeline_mode", "staged")
     assert workflow.should_use_staged_graph_pipeline(_state()) is True
@@ -1436,8 +1854,13 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
     progress_events = [
         event for event in events if event["type"] == "workflow_progress"
     ]
-    assert len(progress_events) == 1
-    assert "diagnostic" not in progress_events[0]
+    assert [event["status"] for event in progress_events] == ["retry", "rejected"]
+    assert all("diagnostic" not in event for event in progress_events)
+    assert all("reason" not in repr(event) for event in progress_events)
+    assert progress_events[0]["title"] == "Refining the diagram"
+    assert progress_events[0]["detail"] == (
+        "Checking the affected components and connections."
+    )
 
 
 @pytest.mark.asyncio
@@ -1965,12 +2388,16 @@ def test_changed_global_obligations_require_full_review(changed_context):
     assert scope["trusted_baseline"] is False
 
 
+@pytest.mark.parametrize("inherited_overview", [False, True])
 @pytest.mark.asyncio
 async def test_scoped_edit_passes_verified_baseline_and_dependency_changes_to_both_gates(
     monkeypatch,
+    inherited_overview,
 ):
     _install_success_boundaries(monkeypatch)
     graph = _accepted_staged_graph()
+    if inherited_overview:
+        graph["detail_level"] = "overview"
     _, contract = _current_review_contract(graph)
     reviews = []
 
@@ -1999,6 +2426,12 @@ async def test_scoped_edit_passes_verified_baseline_and_dependency_changes_to_bo
 
     assert result["graph_publication"] == "approved", result["graph_operation"]
     assert len(reviews) == 2
+    assert result["graph_data"].get("detail_level", "standard") == (
+        "overview" if inherited_overview else "standard"
+    )
+    assert reviews[1]["evidence_bundle"]["candidate_context"]["detail_level"] == (
+        "overview" if inherited_overview else "standard"
+    )
     for review in reviews:
         scope = review["evidence_bundle"]["review_scope"]
         assert scope["trusted_baseline"] is True

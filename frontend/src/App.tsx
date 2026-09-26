@@ -400,6 +400,7 @@ export default function App() {
                   <GraphCanvas
                     graphData={displayedGraphData}
                     isPreview={graphPreview !== null}
+                    isAcceptedGraph={displayedGraphData !== null && displayedGraphData === graphData}
                     animateSequence={!isGenerating && !explanationPaused && publishedGraphKey === graphStructureKey(displayedGraphData)}
                     authSession={authSession}
                     activeThreadId={activeThreadId}
