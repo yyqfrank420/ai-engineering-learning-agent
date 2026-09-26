@@ -359,7 +359,7 @@ describe('useThreadSession', () => {
       authSession: TEST_SESSION,
       backendReady: true,
       clearSelection: vi.fn(),
-    }));
+    }), { wrapper: StrictMode });
     expect(createThread).toHaveBeenCalledTimes(1);
 
     view.unmount();
@@ -391,23 +391,93 @@ describe('useThreadSession', () => {
     expect(trackEvent).toHaveBeenCalledTimes(trackedBeforeUnmount);
   });
 
-  it('starts a current create after StrictMode replays mount effects', async () => {
-    const staleCreate = deferred<ReturnType<typeof makeThreadDetail>>();
-    vi.mocked(createThread)
-      .mockReturnValueOnce(staleCreate.promise as never)
-      .mockResolvedValueOnce(makeThreadDetail('current-thread', 'Current') as never);
+  it('reuses one pending initial create when StrictMode replays mount effects', async () => {
+    const initialCreate = deferred<ReturnType<typeof makeThreadDetail>>();
+    vi.mocked(createThread).mockReturnValueOnce(initialCreate.promise as never);
     const { result } = renderHook(() => useThreadSession({
       authSession: TEST_SESSION,
       backendReady: true,
       clearSelection: vi.fn(),
     }), { wrapper: StrictMode });
 
+    expect(createThread).toHaveBeenCalledTimes(1);
+    expect(result.current.loadingThread).toBe(true);
+    await act(async () => initialCreate.resolve(makeThreadDetail('current-thread', 'Current')));
     await waitFor(() => expect(result.current.activeThreadId).toBe('current-thread'));
+    expect(localStorage.getItem(storageKeyForThread(TEST_SESSION.user.id))).toBe('current-thread');
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+    expect(result.current.activeThreadId).toBe('current-thread');
+    expect(result.current.threadError).toBeNull();
+  });
+
+  it('retains four distinct initial threads across concurrent StrictMode mounts', async () => {
+    const requests = Array.from({ length: 4 }, () => deferred<ReturnType<typeof makeThreadDetail>>());
+    let requestIndex = 0;
+    vi.mocked(createThread).mockImplementation(() => requests[requestIndex++].promise as never);
+    const views = requests.map(() => renderHook(() => useThreadSession({
+      authSession: TEST_SESSION,
+      backendReady: true,
+      clearSelection: vi.fn(),
+    }), { wrapper: StrictMode }));
+
+    expect(createThread).toHaveBeenCalledTimes(4);
+    await act(async () => {
+      requests.forEach((request, index) => request.resolve(makeThreadDetail(`thread-${index + 1}`, 'New chat')));
+      await Promise.all(requests.map(request => request.promise));
+    });
+    views.forEach((view, index) => {
+      expect(view.result.current.activeThreadId).toBe(`thread-${index + 1}`);
+      expect(view.result.current.loadingThread).toBe(false);
+    });
+    expect(trackEvent).toHaveBeenCalledTimes(4);
+  });
+
+  it('creates a distinct explicit New chat while the initial request is pending', async () => {
+    const initialCreate = deferred<ReturnType<typeof makeThreadDetail>>();
+    const explicitCreate = deferred<ReturnType<typeof makeThreadDetail>>();
+    vi.mocked(createThread)
+      .mockReturnValueOnce(initialCreate.promise as never)
+      .mockReturnValueOnce(explicitCreate.promise as never);
+    const { result } = renderHook(() => useThreadSession({
+      authSession: TEST_SESSION,
+      backendReady: true,
+      clearSelection: vi.fn(),
+    }), { wrapper: StrictMode });
+
+    act(() => { void result.current.handleNewChat(); });
+    expect(createThread).toHaveBeenCalledTimes(2);
+    await act(async () => explicitCreate.resolve(makeThreadDetail('explicit-thread', 'New chat')));
+    await act(async () => initialCreate.resolve(makeThreadDetail('stale-initial-thread', 'New chat')));
+    expect(result.current.activeThreadId).toBe('explicit-thread');
+    expect(localStorage.getItem(storageKeyForThread(TEST_SESSION.user.id))).toBe('explicit-thread');
+    expect(trackEvent).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not reuse an unmounted workspace request in a new hook instance', async () => {
+    const staleCreate = deferred<ReturnType<typeof makeThreadDetail>>();
+    vi.mocked(createThread)
+      .mockReturnValueOnce(staleCreate.promise as never)
+      .mockResolvedValueOnce(makeThreadDetail('remounted-thread', 'New chat') as never);
+    const first = renderHook(() => useThreadSession({
+      authSession: TEST_SESSION,
+      backendReady: true,
+      clearSelection: vi.fn(),
+    }), { wrapper: StrictMode });
+    expect(createThread).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    const second = renderHook(() => useThreadSession({
+      authSession: TEST_SESSION,
+      backendReady: true,
+      clearSelection: vi.fn(),
+    }), { wrapper: StrictMode });
+    await waitFor(() => expect(second.result.current.activeThreadId).toBe('remounted-thread'));
     await act(async () => staleCreate.resolve(makeThreadDetail('stale-thread', 'Stale')));
 
     expect(createThread).toHaveBeenCalledTimes(2);
-    expect(result.current.activeThreadId).toBe('current-thread');
-    expect(result.current.threadError).toBeNull();
+    expect(second.result.current.activeThreadId).toBe('remounted-thread');
+    expect(localStorage.getItem(storageKeyForThread(TEST_SESSION.user.id))).toBe('remounted-thread');
+    expect(trackEvent).toHaveBeenCalledTimes(1);
   });
 
   it('starts a fresh request when the same user signs back in before reset completes', async () => {
@@ -422,7 +492,7 @@ describe('useThreadSession', () => {
         backendReady: true,
         clearSelection,
       }),
-      { initialProps: { authSession: TEST_SESSION as typeof TEST_SESSION | null } },
+      { initialProps: { authSession: TEST_SESSION as typeof TEST_SESSION | null }, wrapper: StrictMode },
     );
 
     rerender({ authSession: null });
@@ -452,13 +522,14 @@ describe('useThreadSession', () => {
         backendReady: true,
         clearSelection: vi.fn(),
       }),
-      { initialProps: { authSession: TEST_SESSION } },
+      { initialProps: { authSession: TEST_SESSION }, wrapper: StrictMode },
     );
 
     rerender({ authSession: secondSession });
     await waitFor(() => expect(result.current.activeThreadId).toBe('user-2-thread'));
     await act(async () => staleCreate.resolve(makeThreadDetail('user-1-thread', 'Old account')));
 
+    expect(createThread).toHaveBeenCalledTimes(2);
     expect(result.current.activeThreadId).toBe('user-2-thread');
     expect(result.current.threadError).toBeNull();
     expect(localStorage.getItem(storageKeyForThread(secondSession.user.id))).toBe('user-2-thread');

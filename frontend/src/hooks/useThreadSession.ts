@@ -41,12 +41,17 @@ export function useThreadSession({
   const activeThreadIdRef = useRef<string | null>(null);
   const threadRequestSeqRef = useRef(0);
   const retryTargetRef = useRef<ThreadRequestTarget | null>(null);
+  const pendingInitialCreateRef = useRef<{
+    userId: string;
+    request: ReturnType<typeof createThread>;
+  } | null>(null);
 
   const resetThreadState = useCallback(() => {
     threadRequestSeqRef.current += 1;
     retryTargetRef.current = null;
     loadedUserIdRef.current = null;
     activeThreadIdRef.current = null;
+    pendingInitialCreateRef.current = null;
     setActiveThreadId(null);
     setThreadTitle('New chat');
     setLoadingThread(false);
@@ -122,11 +127,14 @@ export function useThreadSession({
   );
 
   const createFreshThread = useCallback(
-    async (session: AuthSession, { clearDraftState = true }: { clearDraftState?: boolean } = {}) => {
+    async (session: AuthSession, { clearDraftState = true, initialization = false }:
+      { clearDraftState?: boolean; initialization?: boolean } = {}) => {
       const requestSeq = ++threadRequestSeqRef.current;
       retryTargetRef.current = { kind: 'create' };
       setLoadingThread(true);
       setThreadError(null);
+      if (!initialization) pendingInitialCreateRef.current = null;
+      let createRequest: ReturnType<typeof createThread> | null = null;
 
       try {
         if (clearDraftState) {
@@ -134,7 +142,14 @@ export function useThreadSession({
           clearActiveThreadView();
         }
         localStorage.removeItem(storageKeyForThread(session.user.id));
-        const detail = await createThread(session);
+        const pending = pendingInitialCreateRef.current;
+        createRequest = initialization && pending?.userId === session.user.id
+          ? pending.request : createThread(session);
+        if (initialization) pendingInitialCreateRef.current = {
+          userId: session.user.id,
+          request: createRequest,
+        };
+        const detail = await createRequest;
         if (requestSeq !== threadRequestSeqRef.current) {
           return;
         }
@@ -153,6 +168,9 @@ export function useThreadSession({
           setThreadError('Could not start a new chat. Try again.');
         }
       } finally {
+        if (pendingInitialCreateRef.current?.request === createRequest) {
+          pendingInitialCreateRef.current = null;
+        }
         if (requestSeq === threadRequestSeqRef.current) {
           setLoadingThread(false);
         }
@@ -170,6 +188,7 @@ export function useThreadSession({
       retryTargetRef.current = null;
       loadedUserIdRef.current = null;
       activeThreadIdRef.current = null;
+      pendingInitialCreateRef.current = null;
       let cancelled = false;
       queueMicrotask(() => {
         if (!cancelled) resetThreadState();
@@ -193,7 +212,7 @@ export function useThreadSession({
     if (loadedUserIdRef.current === authSession.user.id) return;
     loadedUserIdRef.current = authSession.user.id;
 
-    void createFreshThread(authSession, { clearDraftState: true });
+    void createFreshThread(authSession, { clearDraftState: true, initialization: true });
   }, [authSession, backendReady, createFreshThread, resetThreadState]);
 
   const handleNewChat = useCallback(async () => {
