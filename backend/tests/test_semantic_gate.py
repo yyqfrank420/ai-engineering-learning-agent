@@ -1,4 +1,5 @@
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 import traceback
 from types import SimpleNamespace
@@ -921,20 +922,134 @@ def test_judge_evidence_keeps_retrieval_text_and_provenance_separate():
     assert "https://example.com/report" in research_sources["research-1-result-1"]
 
 
-def test_judge_schema_has_exact_dimension_keys():
-    schema = _response_schema(
-        ("turn-1-answer-1",),
-        ("correctness", "instruction_following"),
-    )
-    dimensions = schema["properties"]["dimensions"]
+def test_judge_schema_local_refs_expand_to_previous_exact_contract():
+    source_ids = ("turn-1-answer-1", "turn-1-graph-edge-77-1")
+    dimensions = tuple(load_corpus().rubrics)
+    schema = _response_schema(source_ids, dimensions)
+    dimension_schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["grade", "evidence", "rationale"],
+        "properties": {
+            "grade": {"type": "string", "enum": ["pass", "borderline", "fail"]},
+            "evidence": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["source_id"],
+                    "properties": {
+                        "source_id": {"type": "string", "enum": list(source_ids)}
+                    },
+                },
+            },
+            "rationale": {"type": "string"},
+        },
+    }
+    expected = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["dimensions"],
+        "properties": {
+            "dimensions": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": list(dimensions),
+                "properties": {
+                    dimension: deepcopy(dimension_schema) for dimension in dimensions
+                },
+            }
+        },
+    }
+    expanded = deepcopy(schema)
+    assert expanded.pop("$defs") == {"dimension": dimension_schema}
+    for dimension in dimensions:
+        slot = expanded["properties"]["dimensions"]["properties"][dimension]
+        assert slot == {"$ref": "#/$defs/dimension"}
+        expanded["properties"]["dimensions"]["properties"][dimension] = deepcopy(
+            dimension_schema
+        )
+    assert expanded == expected
 
-    assert dimensions["type"] == "object"
-    assert dimensions["additionalProperties"] is False
-    assert dimensions["required"] == ["correctness", "instruction_following"]
-    assert set(dimensions["properties"]) == {"correctness", "instruction_following"}
-    assert dimensions["properties"]["correctness"]["properties"]["evidence"]["items"][
-        "properties"
-    ]["source_id"]["enum"] == ["turn-1-answer-1"]
+    anthropic_schema = _anthropic_response_schema(schema)
+    assert anthropic_schema["$defs"]["dimension"]["properties"]["evidence"] == {
+        "type": "array",
+        "items": dimension_schema["properties"]["evidence"]["items"],
+    }
+    assert anthropic_schema["properties"]["dimensions"]["required"] == list(dimensions)
+    assert anthropic_schema["properties"]["dimensions"]["additionalProperties"] is False
+
+
+@pytest.mark.parametrize(
+    ("grade", "evidence", "rationale"),
+    [
+        ("unknown", [{"source_id": "answer-1"}], "Reason."),
+        ("pass", [], "Reason."),
+        ("pass", [{"source_id": "answer-1"}] * 4, "Reason."),
+        ("pass", [{"source_id": "answer-1"}], ""),
+        ("pass", [{"source_id": "answer-1"}], "x" * 1001),
+    ],
+)
+def test_judge_response_still_rejects_bad_grades_counts_and_rationales(
+    grade, evidence, rationale
+):
+    with pytest.raises(ValueError):
+        _RawJudgment.model_validate(
+            {
+                "dimensions": {
+                    "correctness": {
+                        "grade": grade,
+                        "evidence": evidence,
+                        "rationale": rationale,
+                    }
+                }
+            }
+        )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["missing", "extra"])
+async def test_judge_response_still_rejects_missing_or_extra_dimensions(
+    monkeypatch, change
+):
+    corpus = load_corpus()
+    case = corpus.by_id["rag-grounding"]
+    dimensions = {
+        dimension: {
+            "grade": "pass",
+            "evidence": [{"source_id": "answer-1"}],
+            "rationale": "The cited artifact satisfies the rubric.",
+        }
+        for dimension in case.rubric_dimensions
+    }
+    if change == "missing":
+        dimensions.pop(case.rubric_dimensions[0])
+    else:
+        dimensions["unexpected"] = dimensions[case.rubric_dimensions[0]]
+    response = SimpleNamespace(
+        content=[
+            SimpleNamespace(
+                type="text",
+                text=__import__("json").dumps({"dimensions": dimensions}),
+            )
+        ],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=response))
+    )
+    monkeypatch.setattr(
+        "eval.judge_adapter.create_anthropic_client", lambda **_: client
+    )
+    monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+
+    with pytest.raises(RuntimeError, match="judge dimensions must be exactly"):
+        await SemanticJudge(api_key="test-key", provider="anthropic").judge(
+            corpus, case, {"answer": "Artifact text."}
+        )
 
 
 def test_judge_evidence_rejects_an_unknown_source():
@@ -1015,8 +1130,12 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
     assert request["model"] == DEFAULT_ANTHROPIC_JUDGE_MODEL
-    assert request["max_tokens"] == 8192
+    assert request["max_tokens"] == judge_adapter._ANTHROPIC_OUTPUT_TOKEN_LIMIT == 8192
     assert request["system"].startswith("You are an evaluation judge")
+    assert (
+        "The 8192-token output budget includes reasoning and JSON; "
+        "leave enough tokens to complete every required schema field."
+    ) in request["system"]
     assert request["messages"][0]["role"] == "user"
     assert request["output_config"] == {
         "effort": "high",
@@ -1233,6 +1352,64 @@ async def test_anthropic_judge_rejects_non_structured_responses(
             provider="anthropic",
             api_key="anthropic-test-key",
         ).judge(corpus, case, {"answer": "Artifact text."})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("usage", "expected_usage"),
+    [
+        (
+            SimpleNamespace(input_tokens=123, output_tokens=8192),
+            "input_tokens=123, output_tokens=8192",
+        ),
+        (None, "input_tokens=unknown, output_tokens=unknown"),
+        (
+            SimpleNamespace(input_tokens="secret usage", output_tokens=-1),
+            "input_tokens=unknown, output_tokens=unknown",
+        ),
+    ],
+)
+async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
+    monkeypatch, usage, expected_usage
+):
+    corpus = load_corpus()
+    case = corpus.cases[0]
+    secret_text = "secret provider response"
+    create = AsyncMock(
+        return_value=SimpleNamespace(
+            content=[
+                SimpleNamespace(type="thinking", text="secret hidden reasoning"),
+                SimpleNamespace(type="text", text=secret_text),
+            ],
+            stop_reason="max_tokens",
+            usage=usage,
+        )
+    )
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(
+        "eval.judge_adapter.create_anthropic_client",
+        lambda **_kwargs: client,
+    )
+    monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+    budget = EvaluationBudget(application_calls=1, judge_calls=2)
+
+    with pytest.raises(RuntimeError, match="maximum output token limit") as caught:
+        await judge_with_transport_retry(
+            SemanticJudge(provider="anthropic", api_key="anthropic-test-key"),
+            corpus,
+            case,
+            {"answer": "Artifact text."},
+            on_attempt=budget.record_judge_call,
+        )
+
+    reason = str(caught.value)
+    assert expected_usage in reason
+    assert f"visible_text_chars={len(secret_text)}" in reason
+    assert secret_text not in reason
+    assert "secret hidden reasoning" not in reason
+    assert "secret usage" not in reason
+    assert create.await_count == 1
+    assert budget.judge_calls == 1
 
 
 def test_judge_payload_removes_duplicate_graph_events_and_internal_graph_metadata():
@@ -2485,15 +2662,25 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
 
 def test_judge_prompt_checks_payload_direction_and_component_ownership():
     corpus = load_corpus()
-    system, _ = _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."})
+    system, _ = _judge_prompt(
+        corpus, corpus.by_id["applied-domain"], {"answer-1": "Answer."}
+    )
+    openai_system, _ = _judge_prompt(
+        corpus,
+        corpus.by_id["applied-domain"],
+        {"answer-1": "Answer."},
+        provider="openai",
+    )
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v9"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v11"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
     assert "actual request/response contracts" in system
     assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
     assert "Response prose cannot repair a contradictory graph contract" in system
+    assert "8192-token output budget" in system
+    assert "8192-token output budget" not in openai_system
 
 
 def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence():

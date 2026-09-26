@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 
 from eval.cost_gate import (
@@ -284,16 +286,283 @@ def test_judge_cost_remains_separate_and_per_case():
                 ],
             },
             {"id": "case-b", "judgments": []},
-        ]
+        ],
+        attempted_calls=1,
     )
 
+    assert accounting["usage_complete"] is True
+    assert accounting["incomplete_attempt_count"] == 0
     assert accounting["total"] == {
         "input_tokens": 100,
         "output_tokens": 20,
+        "known_subtotal_usd": 0.001,
         "estimated_usd": 0.001,
     }
+    assert accounting["cases"][0]["known_subtotal_usd"] == 0.001
     assert accounting["cases"][0]["estimated_usd"] == 0.001
+    assert accounting["cases"][1]["known_subtotal_usd"] == 0.0
     assert accounting["cases"][1]["estimated_usd"] == 0.0
+
+
+def test_judge_cost_failed_first_attempt_has_unknown_total():
+    accounting = account_judge_cost(
+        [{"id": "case", "judgments": []}], attempted_calls=1
+    )
+
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["total"]["known_subtotal_usd"] == 0.0
+    assert accounting["total"]["estimated_usd"] is None
+    assert accounting["cases"][0]["known_subtotal_usd"] == 0.0
+    assert accounting["cases"][0]["estimated_usd"] is None
+
+
+def test_judge_cost_transport_retry_keeps_known_success_but_not_complete_cost():
+    accounting = account_judge_cost(
+        [
+            {
+                "id": "retried",
+                "judgments": [
+                    {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "estimated_cost_usd": 0.001,
+                    }
+                ],
+            },
+            {"id": "other", "judgments": []},
+        ],
+        attempted_calls=2,
+    )
+
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["total"]["input_tokens"] == 100
+    assert accounting["total"]["known_subtotal_usd"] == 0.001
+    assert accounting["total"]["estimated_usd"] is None
+    assert [case["known_subtotal_usd"] for case in accounting["cases"]] == [
+        0.001,
+        0.0,
+    ]
+    assert all(case["estimated_usd"] is None for case in accounting["cases"])
+
+
+def test_reused_judgment_does_not_prove_prior_attempt_usage_complete():
+    accounting = account_judge_cost(
+        [
+            {
+                "id": "resumed",
+                "judgments": [
+                    {
+                        "input_tokens": 100,
+                        "output_tokens": 20,
+                        "estimated_cost_usd": 0.001,
+                    }
+                ],
+            },
+            {"id": "current", "judgments": []},
+        ],
+        attempted_calls=1,
+        usage_unverified=True,
+    )
+
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] is None
+    assert accounting["total"]["known_subtotal_usd"] == 0.001
+    assert accounting["total"]["estimated_usd"] is None
+    assert all(case["estimated_usd"] is None for case in accounting["cases"])
+
+
+@pytest.mark.asyncio
+async def test_live_resume_does_not_claim_complete_historical_judge_cost(monkeypatch):
+    import eval.live_runner as live_runner
+
+    judgment = {
+        "input_tokens": 100,
+        "output_tokens": 20,
+        "estimated_cost_usd": 0.001,
+    }
+    monkeypatch.setattr(
+        live_runner,
+        "_load_capture",
+        lambda _args: {
+            "results": [{"id": "memory", "thread_id": "thread", "events": []}],
+            "application_telemetry": [
+                {
+                    "thread_id": "thread",
+                    "operation": "synthesis",
+                    "model": "claude-opus-5",
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        live_runner,
+        "SemanticJudge",
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+    )
+    monkeypatch.setattr(
+        live_runner,
+        "_load_resume_evaluations",
+        lambda *_args, **_kwargs: {
+            "memory": {
+                "id": "memory",
+                "decision": "pass",
+                "reason": "prior judgment accepted",
+                "deterministic_failures": [],
+                "judgments": [judgment],
+            }
+        },
+    )
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "diagnostic",
+            "--case",
+            "memory",
+            "--target",
+            "https://candidate.example",
+            "--capture-replay",
+            "--resume-input",
+            "prior-report.json",
+        ]
+    )
+
+    report, exit_code = await live_runner.evaluate(args)
+
+    assert exit_code == 0
+    assert report["budget"]["judge_calls"] == 1
+    judge_cost = report["cost_accounting"]["judge"]
+    assert judge_cost["usage_complete"] is False
+    assert judge_cost["incomplete_attempt_count"] is None
+    assert judge_cost["total"]["known_subtotal_usd"] == 0.001
+    assert judge_cost["total"]["estimated_usd"] is None
+    assert judge_cost["cases"][0]["estimated_usd"] is None
+    assert report["estimated_cost"]["judge_usd"] is None
+
+
+@pytest.mark.asyncio
+async def test_over_limit_judge_reservation_has_unverified_attempt_count(monkeypatch):
+    import eval.live_runner as live_runner
+
+    budget_class = live_runner.EvaluationBudget
+    monkeypatch.setattr(
+        live_runner,
+        "EvaluationBudget",
+        lambda **kwargs: budget_class(
+            application_calls=kwargs["application_calls"], judge_calls=1
+        ),
+    )
+    monkeypatch.setattr(
+        live_runner,
+        "_load_capture",
+        lambda _args: {
+            "results": [{"id": "memory", "thread_id": "thread", "events": []}],
+            "application_telemetry": [
+                {
+                    "thread_id": "thread",
+                    "operation": "synthesis",
+                    "model": "claude-opus-5",
+                    "input_tokens": 100,
+                    "output_tokens": 20,
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(
+        live_runner,
+        "SemanticJudge",
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+    )
+
+    async def reserve_past_limit(*_args, on_attempt):
+        on_attempt()
+        on_attempt()
+
+    monkeypatch.setattr(live_runner, "judge_with_transport_retry", reserve_past_limit)
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "diagnostic",
+            "--case",
+            "memory",
+            "--target",
+            "https://candidate.example",
+        ]
+    )
+
+    report, exit_code = await live_runner.evaluate(args)
+
+    assert exit_code == 2
+    assert report["budget"]["judge_calls"] == 2
+    assert report["budget"]["judge_limit"] == 1
+    judge_cost = report["cost_accounting"]["judge"]
+    assert judge_cost["usage_complete"] is False
+    assert judge_cost["incomplete_attempt_count"] is None
+    assert judge_cost["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize(
+    ("input_tokens", "output_tokens", "cost_usd", "known_subtotal_usd"),
+    [
+        (0, 0, 0.0, 0.0),
+        (0, 0, 0.001, 0.001),
+        (None, None, None, 0.0),
+        (True, 20, 0.001, 0.001),
+        ("100", 20, 0.001, 0.001),
+        (100, 20, float("inf"), 0.0),
+        (100, 20, float("nan"), 0.0),
+        (100, 20, -0.001, 0.0),
+        (100, 20, 10**1000, 0.0),
+    ],
+)
+def test_recorded_judgment_without_complete_usage_is_not_zero_cost_proof(
+    input_tokens, output_tokens, cost_usd, known_subtotal_usd
+):
+    accounting = account_judge_cost(
+        [
+            {
+                "id": "case",
+                "judgments": [
+                    {
+                        "input_tokens": input_tokens,
+                        "output_tokens": output_tokens,
+                        "estimated_cost_usd": cost_usd,
+                    }
+                ],
+            }
+        ],
+        attempted_calls=1,
+    )
+
+    assert accounting["usage_complete"] is False
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["total"]["known_subtotal_usd"] == known_subtotal_usd
+    assert accounting["total"]["estimated_usd"] is None
+    assert accounting["cases"][0]["estimated_usd"] is None
+
+
+def test_judge_cost_zero_attempts_are_complete():
+    accounting = account_judge_cost(
+        [{"id": "deterministic", "judgments": []}], attempted_calls=0
+    )
+
+    assert accounting["usage_complete"] is True
+    assert accounting["incomplete_attempt_count"] == 0
+    assert accounting["total"]["known_subtotal_usd"] == 0.0
+    assert accounting["total"]["estimated_usd"] == 0.0
+    assert accounting["cases"][0]["estimated_usd"] == 0.0
+
+
+@pytest.mark.parametrize("attempted_calls", [-1, 0, True, "1"])
+def test_judge_cost_rejects_invalid_attempt_counts(attempted_calls):
+    with pytest.raises(ValueError):
+        account_judge_cost(
+            [{"id": "case", "judgments": [{"estimated_cost_usd": 0.001}]}],
+            attempted_calls=attempted_calls,
+        )
 
 
 def test_blocking_cost_breach_is_visible_in_junit_and_summary(
@@ -319,6 +588,11 @@ def test_blocking_cost_breach_is_visible_in_junit_and_summary(
                 "reason": "suite cost exceeds limit",
             },
             "application": {"total": {"estimated_usd": 1.25}},
+            "judge": {
+                "usage_complete": False,
+                "incomplete_attempt_count": 1,
+                "total": {"known_subtotal_usd": 0.001, "estimated_usd": None},
+            },
         },
     }
 
@@ -332,6 +606,8 @@ def test_blocking_cost_breach_is_visible_in_junit_and_summary(
     summary_text = summary.read_text(encoding="utf-8")
     assert "Cost policy: `over_budget` (blocking)" in summary_text
     assert "Application cost: `$1.250000`" in summary_text
+    assert "Judge cost: `unknown`" in summary_text
+    assert "Known judge subtotal: `$0.001000` (total unavailable)" in summary_text
     assert _exit_code_for_statuses({"fail", "infrastructure"}, "blocking") == 1
 
 
