@@ -15,7 +15,6 @@
 import copy
 import json
 import logging
-import re
 
 from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from config import settings
@@ -34,10 +33,11 @@ from agent.context_manager import maybe_condense_history
 from agent.deadlines import synthesis_timeout_seconds
 from agent.explanation_blocks import stream_explanation_blocks
 from agent.nodes.rag_worker import _may_emit_eval_evidence
+from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v28"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v30"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -105,14 +105,13 @@ SEARCH
 _SYNTHESIS_SYSTEM = """<task>
 Answer the user's latest request in the same language as the user's latest message.
 The user's explicit scope, count, format, and brevity control the answer. Depth changes
-how much detail to give within that task; it never changes the task. Use the shortest
-structure that answers it. Stop when the requested information is complete.
-Teach the learner. Lead with the answer. Explain the main flow and why components exist.
-Default to at most 150 words and 1-3 blocks unless the
+detail within that task; it never changes the task. Stop when the answer is complete.
+Teach the learner. For broad overviews, explain the subject and its main mechanisms first.
+Use diagrams and examples as support; never replace the subject with an unrequested product.
+Default to at most 120 words including citations and 1-3 blocks unless the
 user explicitly asks for depth or provides multiple tasks. For a single why/how question,
-use one short paragraph or 2-4 short bullets, under 120 words. Explain with concrete
-examples in the user's domain, not a literature review. Offer one concrete next step
-only when useful. Avoid routine caveat sections, audit notes, raw node IDs, and statements
+use one short paragraph or 2-4 short bullets. Use concrete examples in the requested domain.
+Offer a next step only when useful. Avoid routine caveat sections, audit notes, raw node IDs, and statements
 about internal review, retrieval, or approval unless something failed and
 the user needs to act. Do not repeat the diagram's complete component inventory.
 Preserve user-supplied facts and constraints in conversation history. Distinguish them
@@ -128,8 +127,8 @@ recall, summarise, compare, or explain information unless the user also requests
 Use the current supplied book passages and web snippets as the complete citation allowlist.
 Each sourced clause must be directly entailed by cited text: preserve subject, relation,
 comparator, direction, degree, time frame, and scope. Do not infer prevalence, necessity,
-exclusivity, or causation from qualitative examples or trade-offs. Put its exact
-(Chapter N, p.X) label or supplied Markdown URL immediately after the supported claim.
+exclusivity, or causation from qualitative examples or trade-offs. Put the supplied book
+label (Chapter N, p.X; Book, p.X; Chapter N; Book excerpt) or supplied Markdown URL after its claim.
 Never invent or alter a source URL, chapter, page, quotation, attribution, or
 quantitative benchmark.
 For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied.
@@ -169,7 +168,8 @@ source collection. Skip adjacent-domain analogies and citations that distract fr
 _GRAPH_ANSWER_CONTRACT = """
 
 <graph_answer>
-The graph is a proposed design. Use its exact domain node labels and directed contracts
+Use the graph to support the requested subject. It may map mechanisms or a lifecycle,
+or depict a requested system design. Use its exact node labels and directed contracts
 for the requested parts. Do not invent graph positions or edge directions. A focused
 question does not require a full walkthrough. For a requested full design, explain the
 primary runtime loop, decisions, controls, failure modes, and trade-offs at the selected depth.
@@ -193,8 +193,10 @@ Never describe a failed or unreviewed candidate as approved or applied. Follow a
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
 For a newly approved overview, the server adds the overview disclosure to the first block.
-Do not restate or paraphrase that status in a block title or content. Start with the actual
-domain workflow and directed exchanges. Do not claim requested requirements were omitted or
+Do not restate or paraphrase that status in a block title or content. For a requested
+system design, explain its workflow and directed exchanges. For a broad educational
+subject, explain the subject before using diagram details or an illustrative example.
+Do not claim requested requirements were omitted or
 that every production detail is shown.
 </graph_answer>"""
 
@@ -208,6 +210,7 @@ Each object must be complete before starting the next:
 {"block_id":"stable_id","title":"short beginner-facing title","content":"concise markdown",
  "related_node_ids":["exact_graph_node_id"],"evidence_refs":["Chapter N, p.X", "https://source.example/path"]}
 Use each required key exactly once. Every object must include every key and use a unique block_id.
+Each model-authored block.content must contain at most 4000 characters, including citations.
 evidence_refs must always be an array. Use [] when no current evidence supports the block. Each
 evidence_refs value must exactly match a supplied evidence reference. For a full system walkthrough,
 order the blocks by interpretation, runtime path, controls/evals, then trade-offs or next decisions.
@@ -728,8 +731,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
                 f"{graph_block}"
                 f"Response depth contract:\n{profile.answer_contract}\n\n"
                 f"Question: {state['user_message']}\n\n"
-                "Learner-facing answer: Unless the user explicitly requested a detailed or "
-                "multi-part answer, keep the TOTAL response under 120 words, including citations. "
+                "Learner-facing answer: Follow the system's scope and default length contract. "
                 "Use a direct explanation and at most three short bullets. Do not add a caveats, "
                 "research status, evidence limitation, or developer-notes section. Mention a "
                 "limitation briefly only if it changes the answer or prevents fulfilling the request."
@@ -1032,9 +1034,7 @@ def _format_chunks(chunks: list[dict]) -> str:
         return ""
     parts = []
     for i, chunk in enumerate(chunks, 1):
-        citation = (
-            f"Chapter {chunk.get('chapter', '?')}, p.{chunk.get('page_number', '?')}"
-        )
+        citation = format_book_reference(chunk.get("chapter"), chunk.get("page_number"))
         parts.append(
             f"[{i}] {citation}\n{chunk.get('text', '')[:_SYNTHESIS_MAX_CHUNK_CHARS]}"
         )
@@ -1047,16 +1047,11 @@ def _evidence_reference_allowlist(
 ) -> set[str]:
     """Return the exact references supplied to the synthesis prompt."""
     references = {
-        f"Chapter {chunk.get('chapter', '?')}, p.{chunk.get('page_number', '?')}"
+        format_book_reference(chunk.get("chapter"), chunk.get("page_number"))
         for chunk in chunks
         if isinstance(chunk, dict)
     }
-    for match in re.finditer(
-        r"<(https?://[^>\s]+)>|\]\((https?://[^)\s]+)\)",
-        research_context,
-    ):
-        references.add(match.group(1) or match.group(2))
-    return references
+    return references | source_urls(research_context)
 
 
 def _format_graph_context(graph_data: dict) -> str:
@@ -1138,8 +1133,9 @@ def _format_graph_context(graph_data: dict) -> str:
         "the UI canvas; they cannot support an external or book claim."
         if concept_graph
         else (
-            "Artifact role: proposed design. Descriptions and technology fields are proposal "
-            "context, not external or book evidence."
+            "Artifact role: generated diagram. Interpret its mechanisms or proposed design "
+            "within the user's requested scope. Descriptions and technology fields are "
+            "diagram context, not external or book evidence."
         )
     )
     parts = [artifact_role, f"Title: {title}"]

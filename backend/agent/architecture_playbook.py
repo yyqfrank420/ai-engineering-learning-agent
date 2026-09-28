@@ -12,6 +12,8 @@ import json
 import re
 from typing import Any
 
+from agent.source_references import format_book_reference, source_urls
+
 ARCHITECTURE_CHECKLIST: tuple[tuple[str, str], ...] = (
     (
         "goal_and_contract",
@@ -70,10 +72,6 @@ ARCHITECTURE_CHECKLIST: tuple[tuple[str, str], ...] = (
 _BOOK_EVIDENCE_TEXT_MAX = 900
 _RESEARCH_CONTEXT_MAX = 4_000
 _WEB_EVIDENCE_TEXT_MAX = 900
-_WEB_SOURCE_URL_PATTERNS = (
-    re.compile(r"<(https?://[^>\s]+)>", re.IGNORECASE),
-    re.compile(r"\]\((https?://[^)\s]+)\)", re.IGNORECASE),
-)
 _EVIDENCE_ID_PATTERN = re.compile(r"^(book|web):[0-9a-f]{64}$")
 
 
@@ -114,7 +112,7 @@ def _book_evidence_records(
         if evidence_id in seen_ids:
             continue
         seen_ids.add(evidence_id)
-        display_ref = f"Chapter {chapter if chapter is not None else '?'}, p.{page_number if page_number is not None else '?'}"
+        display_ref = format_book_reference(chapter, page_number)
         records.append(
             {
                 "id": evidence_id,
@@ -138,15 +136,12 @@ def _book_evidence_records(
 def _web_evidence_records(research_context: str) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
+    supplied_urls = source_urls(research_context)
     for raw_line in research_context.splitlines():
         text = " ".join(raw_line.split())[:_WEB_EVIDENCE_TEXT_MAX]
         if not text:
             continue
-        urls = {
-            match.group(1)
-            for pattern in _WEB_SOURCE_URL_PATTERNS
-            for match in pattern.finditer(text)
-        }
+        urls = source_urls(text) & supplied_urls
         for url in sorted(urls):
             source = {"url": url, "text": text}
             evidence_id = _evidence_id("web", source)

@@ -1,4 +1,4 @@
-"""Stream one model call as complete, pausable explanation blocks."""
+"""Stream one model call as complete, validated explanation blocks."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ from typing import Any, Literal
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
+from agent.source_references import book_references, canonical_source_url, source_urls
 
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
@@ -46,11 +47,7 @@ async def stream_explanation_blocks(
     provider_attempt_limit: int | None = None,
     accepted_graph_detail: Literal["standard", "overview"] | None = None,
 ) -> str:
-    """Emit a block as soon as its compact JSON object is complete.
-
-    The provider still receives one request. UI pause only delays browser reveal;
-    it never restarts a paid model call.
-    """
+    """Validate each complete JSON block before emitting it from one model call."""
     parse_buffer = ""
     emitted: list[dict[str, Any]] = []
     emitted_ids: set[str] = set()
@@ -69,7 +66,7 @@ async def stream_explanation_blocks(
                 f"{_OVERVIEW_SENTENCE}\n\n{remainder}"
                 if remainder
                 else _OVERVIEW_SENTENCE
-            )[:4000]
+            )
         if required_completion_sentence is None:
             await emit(block)
             return
@@ -207,7 +204,17 @@ def _normalise_block(
     content = "\n".join(
         line.rstrip() for line in str(value.get("content") or "").splitlines()
     ).strip()
-    if not content:
+    allowed_references = {
+        canonical_source_url(reference) or reference
+        for reference in allowed_evidence_refs or set()
+    }
+    if (
+        not content
+        or len(content) > 4000
+        or not (
+            source_urls(content, include_bare=True) | book_references(content)
+        ).issubset(allowed_references)
+    ):
         return None
     title = " ".join(str(value.get("title") or "Architecture note").split())[:100]
     title = title or "Architecture note"
@@ -224,15 +231,18 @@ def _normalise_block(
     ]
     raw_evidence = value.get("evidence_refs")
     if not isinstance(raw_evidence, list) or not all(
-        isinstance(reference, str) and reference in (allowed_evidence_refs or set())
+        isinstance(reference, str)
+        and (canonical_source_url(reference) or reference) in allowed_references
         for reference in raw_evidence
     ):
         return None
-    evidence = raw_evidence[:6]
+    evidence = [
+        canonical_source_url(reference) or reference for reference in raw_evidence[:6]
+    ]
     return {
         "block_id": block_id,
         "title": title,
-        "content": content[:4000],
+        "content": content,
         "related_node_ids": related,
         "evidence_refs": evidence,
     }
@@ -288,10 +298,7 @@ def _append_required_completion_sentence(
         return
     content = block["content"]
     if required_completion_sentence not in content:
-        available_content = 4000 - len(required_completion_sentence) - 2
-        block["content"] = (
-            f"{content[:available_content]}\n\n{required_completion_sentence}"
-        )
+        block["content"] = f"{content}\n\n{required_completion_sentence}"
 
 
 def _block_event(block: dict[str, Any], graph_version: str | None) -> dict[str, Any]:

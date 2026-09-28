@@ -18,9 +18,12 @@ import re
 from typing import Callable, Awaitable
 
 from adapters.llm_adapter import build_telemetry
+from agent.source_references import book_references, format_book_reference
 from agent.state import GraphNode
 from agent.stream_utils import stream_llm
 from config import settings
+
+_PROMPT_VERSION = "node_detail_v1"
 
 _SYSTEM = """<role>
 You are a study assistant for "AI Engineering" by Chip Huyen.
@@ -44,7 +47,7 @@ For the given concept or component, write one short teaching note for a beginner
 - no glossary-style lists
 - no equations, matrix notation, or formula blocks unless the user explicitly asked for math
 - avoid unexplained acronyms; write the full phrase first, then the acronym in parentheses
-- cite the most relevant book section inline as (Chapter N, p.X)
+- cite the most relevant supplied book reference exactly in parentheses: Chapter N, p.X; Book, p.X; Chapter N; or Book excerpt
 - sound like a calm tutor, not lecture notes
 </rules>
 
@@ -103,7 +106,7 @@ async def enrich_node(
     # ── Format context with citations ──────────────────────────────────────
     context_parts = []
     for c in all_chunks:
-        citation = f"Chapter {c.get('chapter', '?')}, p.{c.get('page_number', '?')}"
+        citation = format_book_reference(c.get("chapter"), c.get("page_number"))
         context_parts.append(f"[{citation}]\n{c.get('text', '')[:400]}")
     context = "\n\n".join(context_parts) if context_parts else "(no book content found)"
 
@@ -153,6 +156,7 @@ async def enrich_node(
             user_id=user_id,
             thread_id=thread_id,
             metadata={
+                "prompt_version": _PROMPT_VERSION,
                 "node_id": node["id"],
                 "node_label": node["label"],
                 "graph_version": graph_version,
@@ -175,11 +179,14 @@ async def enrich_node(
 
 def _parse_book_refs(text: str) -> list[str]:
     """
-    Extract book citation patterns like '(Chapter 3, p.45)' from generated text.
+    Extract parenthesized book references from generated text.
     Returns deduplicated list preserving order.
     """
-    pattern = r'\(Chapter\s+\d+[^)]{0,30}\)'
-    matches = re.findall(pattern, text)
+    matches = [
+        match.group()
+        for match in re.finditer(r"\([^()\n]{1,80}\)", text)
+        if book_references(match.group(), include_malformed=False)
+    ]
     # Deduplicate while preserving order
     seen: set[str] = set()
     unique: list[str] = []

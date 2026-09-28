@@ -737,7 +737,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v29"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v30"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -3365,3 +3365,58 @@ async def test_generation_classifies_availability_at_original_exception_boundary
     else:
         assert code == "staged_generation_unavailable"
     assert "private" not in str(raised.value)
+
+
+@pytest.mark.parametrize("has_base", [False, True])
+def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_base):
+    base = (
+        {
+            "components": [
+                {"label": "Existing owner", "responsibility": "Owns validation."}
+            ]
+        }
+        if has_base
+        else None
+    )
+    prompt, _ = generation._attempt_prompt(
+        stage="components",
+        request="Add a complementary capability."
+        if has_base
+        else "Explain AI engineering in healthcare.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=base,
+        rejected_candidate=None,
+        architecture_context="Source material describes the requested subject.",
+    )
+    instructions, payload = prompt.split("\nINPUT\n", 1)
+    assert (
+        "preserve the subject's breadth in a mechanism, lifecycle, or topic map"
+        in instructions
+    )
+    assert (
+        "must not replace the requested subject with an unrequested product"
+        in instructions
+    )
+    assert (
+        "For a requested applied-system design, show the internal services"
+        in instructions
+    )
+    complement = "choose a complementary responsibility for each addition that is not already owned"
+    assert (complement in instructions) == has_base
+    if has_base:
+        assert (
+            "An add-only edit cannot reassign an existing owner's responsibility"
+            in instructions
+        )
+        assert "instead of merely renaming an overlapping function" in instructions
+        assert (
+            "only when their slots and fields are explicitly editable" in instructions
+        )
+        assert json.loads(payload)["base"] == base

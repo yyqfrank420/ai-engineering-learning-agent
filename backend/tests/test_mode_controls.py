@@ -533,9 +533,20 @@ def test_explicit_composer_choice_requests_creation_without_rewriting_the_questi
     question = "AI recursive self-improving trading bot?"
     assert resolve_graph_operation(question, None) is None
     assert resolve_graph_operation(question, None, diagram_requested=True) == "create"
-    assert resolve_graph_operation("Explain RAG. No diagram.", None, diagram_requested=True) is None
-    graph = {"design_origin": "applied", "nodes": [{"id": "monitoring", "label": "Monitoring"}]}
-    assert resolve_graph_operation("Expand monitoring", graph, diagram_requested=True) == "edit"
+    assert (
+        resolve_graph_operation(
+            "Explain RAG. No diagram.", None, diagram_requested=True
+        )
+        is None
+    )
+    graph = {
+        "design_origin": "applied",
+        "nodes": [{"id": "monitoring", "label": "Monitoring"}],
+    }
+    assert (
+        resolve_graph_operation("Expand monitoring", graph, diagram_requested=True)
+        == "edit"
+    )
 
 
 def test_graph_operation_resolver_handles_ambiguous_mutation_language_once():
@@ -1421,3 +1432,61 @@ def test_depth_changes_detail_without_assigning_a_new_task(depth, query):
     assert "buildable design" not in profile.answer_contract
     assert "implementable design" not in profile.answer_contract
     assert "useful words" not in profile.answer_contract
+
+
+@pytest.mark.parametrize("collection", ["nodes", "groups"])
+@pytest.mark.parametrize(
+    "label",
+    [
+        "Evaluation and educator oversight",
+        "Search but verify",
+        "Retrieve then rank",
+        "Evaluation, feedback",
+        "Evaluation; feedback",
+        "Evaluation  and\n educator oversight",
+    ],
+)
+def test_authored_name_separators_do_not_split_graph_edit_intent(collection, label):
+    from agent.complexity import resolve_graph_operation
+
+    graph = {collection: [{"id": "n1", "label": label}]}
+    message = "Expand " + " ".join(label.split())
+    assert resolve_graph_operation(message, graph) == "edit"
+    assert resolve_graph_operation(message, graph, diagram_requested=True) == "edit"
+
+
+@pytest.mark.parametrize(
+    "message,expected",
+    [
+        ("Do not expand Evaluation and educator oversight", None),
+        ("Switch to fraud detection", None),
+        ("Why expand Evaluation and educator oversight?", None),
+        ("Explain Evaluation and educator oversight, then add citations", None),
+        ("Do not expand Evaluation and educator oversight, but add citations", None),
+        ("Do not expand Evaluation and educator oversight and add citations", None),
+        ("Do not expand Evaluation and educator oversight then add citations", None),
+        ("Keep Evaluation and educator oversight unchanged, but expand Cache", "edit"),
+        ("Expand Evaluation and educator oversight, then explain its purpose", "edit"),
+        (
+            "Draw a fraud detection system, but do not expand Evaluation and educator oversight",
+            "create",
+        ),
+        (
+            'Explain "Expand Evaluation and educator oversight", then add citations',
+            None,
+        ),
+        ('Expand "Evaluation and educator oversight"', None),
+        ("Expand Evaluation and educator oversights", None),
+    ],
+)
+def test_authored_name_protection_preserves_other_intent_boundaries(message, expected):
+    from agent.complexity import resolve_graph_operation
+
+    graph = {
+        "design_origin": "applied",
+        "nodes": [
+            {"id": "n1", "label": "Evaluation and educator oversight"},
+            {"id": "n2", "label": "Cache"},
+        ],
+    }
+    assert resolve_graph_operation(message, graph) == expected

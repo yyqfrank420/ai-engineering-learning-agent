@@ -53,6 +53,26 @@ def test_evidence_bundle_reuses_one_scenario_retrieval_result():
     assert len(bundle["checklist"]) == len(ARCHITECTURE_CHECKLIST)
 
 
+def test_web_evidence_excludes_links_inside_fenced_examples():
+    bundle = build_evidence_bundle(
+        {
+            "rag_chunks": [],
+            "research_context": (
+                "Source <https://real.example/report>: Observed results.\n"
+                "```python\n"
+                "[Example](https://invented.example/endpoint)\n"
+                "```\n"
+            ),
+        }
+    )
+
+    assert [
+        record["display_ref"]
+        for record in evidence_records(bundle)
+        if record["basis"] == "web"
+    ] == ["https://real.example/report"]
+
+
 def test_evidence_bundle_uses_distinct_stable_ids_for_conflicting_book_display_refs():
     state = {
         "rag_chunks": [

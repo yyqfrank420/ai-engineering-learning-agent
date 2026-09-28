@@ -5,6 +5,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from agent.complexity import is_applied_system_design_request
+from agent.source_references import format_book_reference
 from agent.state import GraphData
 from graph.artifacts import CanonicalGraphArtifacts
 from graph.ids import parent_chunk_id_from_chunk
@@ -536,10 +537,7 @@ def _book_refs(chapter_refs: list[dict[str, Any]]) -> list[str]:
     for ref in chapter_refs[:3]:
         chapter = ref.get("chapter")
         page = ref.get("page_number")
-        if chapter is None:
-            refs.append(f"p.{page}")
-        else:
-            refs.append(f"Chapter {chapter}, p.{page}")
+        refs.append(format_book_reference(chapter, page))
     return refs
 
 

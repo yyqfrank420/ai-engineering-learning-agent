@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v18"
+        "staged_component_gate_v19"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -239,6 +239,11 @@ def test_component_gate_acceptance_uses_named_subject_scope(maturity):
         in objective
     )
     assert "do not ask whether a diagram is wanted" in objective
+    assert (
+        "A broad teaching request needs a map of the requested subject or lifecycle"
+        in objective
+    )
+    assert "A single assumed product cannot replace that subject" in objective
     prompt = gate._prompt(
         gate="components",
         user_request=(
@@ -254,6 +259,75 @@ def test_component_gate_acceptance_uses_named_subject_scope(maturity):
     assert "objective_fidelity" not in staged_review_requirements(
         "connections", maturity
     )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    "user_request,responsibilities",
+    [
+        pytest.param(
+            "Explain a release monitoring system.",
+            [
+                "Computes health evidence from monitor metrics.",
+                "Stores health evidence.",
+                "Approves release decisions using evidence.",
+                "Executes only approved releases.",
+            ],
+            id="distinct-evidence-operations",
+        ),
+        pytest.param(
+            "Design an invoice payment service.",
+            [
+                "Owns final approval of invoice payments.",
+                "Independently owns final approval of the same invoice payments.",
+            ],
+            id="competing-payment-approval",
+        ),
+        pytest.param(
+            "Teach me about machine learning in agriculture.",
+            [
+                "Compares agricultural sensing, prediction, model evaluation and deployment.",
+                "Uses irrigation as an example within the broader subject.",
+            ],
+            id="broad-teaching-with-subordinate-example",
+        ),
+        pytest.param(
+            "Teach me about machine learning in agriculture.",
+            [
+                "Assumes the entire requested subject is a single irrigation chatbot product."
+            ],
+            id="assumed-product-replaces-subject",
+        ),
+    ],
+)
+def test_component_review_preserves_evidence_for_operation_and_subject_boundaries(
+    maturity, user_request, responsibilities
+):
+    # These fixtures test evidence delivery, not judgments from an uncalled model.
+    records = [
+        {"id": f"owner-{index}", "responsibility": responsibility}
+        for index, responsibility in enumerate(responsibilities)
+    ]
+    prompt = gate._prompt(
+        gate="components",
+        user_request=user_request,
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=records,
+        required_production_guarantees=(),
+    )
+    supplied_records = json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    )
+    assert supplied_records == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    assert user_request in prompt
+    supplied_criteria = json.loads(
+        prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert supplied_criteria == staged_review_requirements("components", maturity)
 
 
 def test_unknown_production_guarantee_is_rejected_before_provider_call(monkeypatch):
@@ -398,6 +472,18 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "components" and code == "mece_scope":
             assert "Block conflicting material ownership" in requirement
             assert "naming preferences are advisory" in requirement
+            assert (
+                "Identify the same executable operation and its competing authority"
+                in requirement
+            )
+            assert (
+                "Sharing an artifact, outcome, or subject does not establish conflicting ownership"
+                in requirement
+            )
+            assert (
+                "unless the component responsibilities contradict that handoff"
+                in requirement
+            )
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
@@ -1088,6 +1174,37 @@ def test_staged_mece_policy_invalidates_previous_component_review_identity(
 
     monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
 
+    assert gate.review_identity("components", maturity) != current_identity
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("rule", ["mece_scope", "objective_fidelity"])
+def test_operation_and_breadth_clarifications_invalidate_previous_review_identity(
+    monkeypatch, maturity, rule
+):
+    current_identity = gate.review_identity("components", maturity)
+    current_requirements = gate.staged_review_requirements
+    boundaries = {
+        "mece_scope": (
+            "Distinguish the operations in a dataflow:",
+            "Also block mechanics outside",
+        ),
+        "objective_fidelity": (
+            "A broad teaching request needs",
+            "For an applied system design",
+        ),
+    }
+
+    def previous_requirements(stage, depth, guarantees=()):
+        requirements = current_requirements(stage, depth, guarantees)
+        if stage == "components":
+            beginning, end = boundaries[rule]
+            before, rest = requirements[rule].split(beginning, 1)
+            _, after = rest.split(end, 1)
+            requirements[rule] = before + end + after
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
     assert gate.review_identity("components", maturity) != current_identity
 
 

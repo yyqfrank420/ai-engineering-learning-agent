@@ -327,10 +327,13 @@ async def test_explicit_educational_subject_can_proceed_without_a_business_goal(
     assert result["wire"] == candidate
     assert "clarification_questions" not in result
     prompt = calls[0]["prompt"]
-    assert (
-        "or contrasting paths without inventing an application workflow; proceed with "
-        "a candidate for that subject" in prompt
-    )
+    for requirement in (
+        "or contrasting paths without inventing an application workflow",
+        "preserve the subject's breadth in a mechanism, lifecycle, or topic map",
+        "must not replace the requested subject with an unrequested product",
+        "Proceed with a candidate for that subject",
+    ):
+        assert requirement in prompt
     criteria = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
     assert (
         "A named educational, research, or comparison subject establishes diagram scope"

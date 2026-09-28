@@ -25,7 +25,7 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v18"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v19"
 _CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v25"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
