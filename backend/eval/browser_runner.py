@@ -28,6 +28,7 @@ from playwright.async_api import (
     async_playwright,
 )
 
+from agent.complexity import diagram_submission_action
 from eval.quality_corpus import EvaluationCase, corpus_sha256, load_corpus
 from eval.response_capture import extract_response_text, extract_response_turns
 from eval.runtime_budget import (
@@ -303,24 +304,49 @@ def _capture_socket(frames: list[dict[str, Any]], socket: WebSocket) -> None:
     socket.on("framereceived", lambda payload: record("received", payload))
 
 
-async def _set_modes(page: Page, case: EvaluationCase, step_index: int) -> None:
+def _validate_product_modes(case: EvaluationCase, step_index: int) -> None:
     mode = case.steps[step_index].ui
-    await page.get_by_label("Message options").click()
-    await (
-        page.get_by_role("radiogroup", name="complexity")
-        .get_by_role("radio", name=mode.complexity)
-        .click()
-    )
-    await (
-        page.get_by_role("radiogroup", name="graph")
-        .get_by_role("radio", name=mode.graph_mode)
-        .click()
-    )
-    research = page.get_by_role("switch", name="research")
-    checked = await research.get_attribute("aria-checked") == "true"
-    if checked != mode.research_enabled:
-        await research.click()
-    await page.get_by_label("Message options").click()
+    if (mode.complexity, mode.graph_mode, mode.research_enabled) != (
+        "auto",
+        "on",
+        True,
+    ):
+        raise BrowserQualityError(
+            "unsupported_browser_modes",
+            f"case {case.id} turn {step_index + 1} does not use the fixed product settings",
+        )
+
+
+def _assert_turn_submission(
+    case: EvaluationCase,
+    step_index: int,
+    frames: list[dict[str, Any]],
+    prior_graph: dict[str, Any] | None,
+) -> None:
+    starts = [
+        frame["message"]
+        for frame in frames
+        if frame["direction"] == "sent" and frame["message"].get("type") == "start"
+    ]
+    expected = {
+        "content": case.steps[step_index].prompt,
+        "complexity": "auto",
+        "graph_mode": "on",
+        "research_enabled": True,
+        "diagram_requested": diagram_submission_action(
+            case.steps[step_index].prompt, prior_graph
+        )
+        == "ask",
+    }
+    if len(starts) != 1 or any(
+        starts[0].get(key, False if key == "diagram_requested" else None) != value
+        for key, value in expected.items()
+    ):
+        raise BrowserQualityError(
+            "browser_submission_mismatch",
+            f"case {case.id} turn {step_index + 1} did not send the expected prompt, "
+            "fixed settings and canonical diagram intent exactly once",
+        )
 
 
 async def _send_step(
@@ -332,6 +358,9 @@ async def _send_step(
     timeout_seconds: int,
 ) -> list[dict[str, Any]]:
     start = len(frames)
+    prior_graph = _extract_public_graph_data(
+        [frame["message"] for frame in frames if frame["direction"] == "received"]
+    )
     graph_deadline_started_s = time.monotonic()
 
     def turn_done() -> bool:
@@ -341,7 +370,7 @@ async def _send_step(
         )
 
     try:
-        await _set_modes(page, case, step_index)
+        _validate_product_modes(case, step_index)
         textarea = page.get_by_placeholder(re.compile(r"Ask a question"))
         composer_stop = page.locator(".split-pane__conversation").get_by_role(
             "button", name="Stop generation", exact=True
@@ -351,42 +380,15 @@ async def _send_step(
         stop_visible = asyncio.create_task(
             composer_stop.wait_for(state="visible", timeout=20_000)
         )
-        choice_visible = asyncio.create_task(
-            page.get_by_role("dialog", name="Include a diagram?").wait_for(
-                state="visible", timeout=20_000
-            )
-        )
         try:
-            completed: set[asyncio.Task[None]] = set()
-            while not completed and not turn_done():
-                completed, _ = await asyncio.wait(
-                    {stop_visible, choice_visible},
-                    timeout=0.05,
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-            if stop_visible in completed:
+            while not stop_visible.done() and not turn_done():
+                await asyncio.sleep(0.05)
+            if not turn_done():
                 await stop_visible
-            elif choice_visible in completed:
-                await choice_visible
-                action = (
-                    "Generate a diagram"
-                    if case.steps[step_index].ui.graph_mode == "on"
-                    else "Answer only"
-                )
-                await (
-                    page.get_by_role("dialog", name="Include a diagram?")
-                    .get_by_role("button", name=action, exact=True)
-                    .click()
-                )
-                while not stop_visible.done() and not turn_done():
-                    await asyncio.sleep(0.05)
-                if not turn_done():
-                    await stop_visible
         finally:
-            for task in (stop_visible, choice_visible):
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(stop_visible, choice_visible, return_exceptions=True)
+            if not stop_visible.done():
+                stop_visible.cancel()
+            await asyncio.gather(stop_visible, return_exceptions=True)
     except PlaywrightError as exc:
         raise BrowserQualityError(
             "browser_ui_interaction_failed",
@@ -513,6 +515,7 @@ async def _send_step(
             ),
             return_exceptions=True,
         )
+    _assert_turn_submission(case, step_index, frames[start:], prior_graph)
     step_frames = [
         frame for frame in frames[start:] if frame["direction"] == "received"
     ]

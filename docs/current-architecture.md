@@ -130,6 +130,10 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    boundaries; compatible internal operations belong in component responsibilities. Production
    component authoring receives the canonical final controls as conditional guidance for choosing
    executable owners. Component review checks scope, ownership, feasibility, and capability flags.
+   The shared `learning_or_release` criterion includes owned offline training, batch updates,
+   and releases requiring human approval. Live deployment and automatic feedback are not required.
+   Dataset curation, passive downstream consumption, and frozen inference alone do not qualify.
+   Component generation v29 and component review v18 share this ownership rule.
    The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
    execution. Streaming transport mechanics guide authoring rather than independently blocking a
@@ -261,18 +265,21 @@ diagram is published. The canvas and conversation show brief activity labels der
 workflow events. Completed activity remains available in a collapsed disclosure until the next turn.
 The frontend stores response messages as they arrive but withholds the current turn's assistant
 messages until the stream terminates and the committed graph has painted. D3 reports readiness
-after fonts and two animation frames. A painted preview can satisfy readiness only when its exact
+after fonts and two animation frames, with a three-second terminal grace period in the hook.
+Private candidate evaluation measures synchronous SVG geometry without waiting for paint. Its
+evaluator remains mounted across chat and dashboard routes and bounds image capture to three
+seconds. A painted preview can satisfy readiness only when its exact
 structure becomes the committed graph. Text-only mode continues streaming normally; a terminal
 failure without a graph releases the available explanation instead of waiting for a missing graph.
 
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
 `POST /api/threads/{thread_id}/diagram-intent` endpoint. Existing intent rules identify explicit
-diagram requests and opt-outs. Ambiguous requests show a composer popover with Generate a diagram,
-Answer only, and Keep editing. No generation starts until the learner chooses. An unavailable
-intent check falls back to asking. Draft edits and thread switches invalidate pending checks.
-The generation choice sends `diagram_requested: true` separately from the unchanged message;
-request admission resolves it to a create intent when no existing edit intent applies. Answer only
-sets graph mode off for that turn. Neither choice changes the learner's saved mode preference.
+diagram requests and opt-outs. The composer always sends automatic depth, graph on, and research
+on. Ambiguous learning requests automatically send `diagram_requested: true` separately from the
+unchanged message; request admission resolves it to a create intent when no existing edit intent
+applies. Existing explanations and explicit opt-outs retain their server-owned routing. There is
+no mode popover or diagram-choice dialog. An unavailable intent check retains the draft and shows
+connection feedback. Draft edits and thread switches invalidate pending checks.
 
 Every production frontend turn includes a UUID `client_request_id`. Completed user/assistant
 pairs are unique on that key at the database boundary, and a network retry replays the stored

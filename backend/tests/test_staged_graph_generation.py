@@ -737,7 +737,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v28"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v29"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -3315,3 +3315,53 @@ async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_
     assert result["connection_exchanges"] == [
         {"request_record_index": 0, "response_record_index": 1}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure_kind", ["connection", "credentials", "bad_request", "runtime", "malformed"]
+)
+async def test_generation_classifies_availability_at_original_exception_boundary(
+    monkeypatch, failure_kind
+):
+    import httpx
+    import openai
+
+    request = httpx.Request("POST", "https://example.invalid")
+    failures = {
+        "connection": openai.APIConnectionError(request=request),
+        "credentials": openai.AuthenticationError(
+            "private credentials failure",
+            response=httpx.Response(401, request=request),
+            body=None,
+        ),
+        "bad_request": openai.BadRequestError(
+            "private request failure",
+            response=httpx.Response(400, request=request),
+            body=None,
+        ),
+        "runtime": RuntimeError("private implementation failure"),
+    }
+
+    async def fake_stream(**kwargs):
+        if failure_kind == "malformed":
+            return _response({"unrecognized": "invalid response"})
+        raise failures[failure_kind]
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    with pytest.raises(generation.StagedGenerationError) as raised:
+        await generation.generate_component_candidate(
+            request="Draw the request path",
+            resolved_maturity="production",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+        )
+    code = raised.value.code
+    if failure_kind == "connection":
+        assert code == "staged_generation_provider_unavailable"
+    elif failure_kind == "malformed":
+        assert code != "staged_generation_provider_unavailable"
+    else:
+        assert code == "staged_generation_unavailable"
+    assert "private" not in str(raised.value)

@@ -19,7 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSupportedDiagramEvaluationCriteria } from '../diagramEvaluationContract';
-import { agentTransport, createClientRequestId } from '../services/agentTransport';
+import { agentTransport, ChatTurnTimeoutError, createClientRequestId } from '../services/agentTransport';
 import { saveGraphContentEdit } from '../services/api';
 import { trackEvent } from '../services/analytics';
 import type {
@@ -45,6 +45,9 @@ import { initialNodeSuggestions } from './nodeSuggestions';
 function makeId() {
   return createClientRequestId();
 }
+
+const GRAPH_PAINT_GRACE_MS = 3000;
+const EMPTY_RESPONSE_MESSAGE = 'The response could not be completed. Please try again.';
 
 const IDLE_WORKER_STATUS: WorkerStatus = {
   rag: null,
@@ -73,8 +76,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
   const [graphCandidate, setGraphCandidate] = useState<GraphCandidate | null>(null);
   const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress[]>([]);
-  const [explanationPaused, setExplanationPaused] = useState(false);
   const [answerTurn, setAnswerTurn] = useState<{ userId: string; diagram: boolean } | null>(null);
+  const [paintGraceExpiredTurnId, setPaintGraceExpiredTurnId] = useState<string | null>(null);
   const [renderedGraphKey, setRenderedGraphKey] = useState<string | null>(null);
   const acknowledgeGraphRendered = useCallback((key: string) => setRenderedGraphKey(key), []);
 
@@ -96,17 +99,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   const durableGraphDataRef = useRef<GraphData | null>(null);
   const selectedNodeRef = useRef<SelectedNode | null>(null);
   const activeChatTerminalRef = useRef<string | null>(null);
-  const explanationPausedRef = useRef(false);
-  const queuedExplanationBlocksRef = useRef<Array<{
-    id: string;
-    title: string;
-    content: string;
-    relatedNodeIds: string[];
-  }>>([]);
-  const queuedGraphUpdateRef = useRef<{
-    data: GraphData | null;
-    isPreview: boolean;
-  } | undefined>(undefined);
+  const turnOutputRef = useRef({ text: false, graph: false, initialGraphKey: 'null' });
   const activeExplanationMessageIdsRef = useRef<string[]>([]);
   const activeChatAnalyticsRef = useRef<{
     threadId: string;
@@ -134,6 +127,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     if (nodeRequestId) agentTransport.cancelNodeSelection(nodeRequestId);
     setMessages([]);
     setAnswerTurn(null);
+    setPaintGraceExpiredTurnId(null);
+    turnOutputRef.current = { text: false, graph: false, initialGraphKey: 'null' };
     setRenderedGraphKey(null);
     setGraphData(null);
     setPublishedGraphKey(null);
@@ -141,10 +136,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setSelectedNode(null);
     setGraphCandidate(null);
     setWorkflowProgress([]);
-    setExplanationPaused(false);
-    explanationPausedRef.current = false;
-    queuedExplanationBlocksRef.current = [];
-    queuedGraphUpdateRef.current = undefined;
     activeExplanationMessageIdsRef.current = [];
     graphDataRef.current = null;
     durableGraphDataRef.current = null;
@@ -317,6 +308,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
       case 'response_delta': {
         if (meta.kind !== 'chat') break;
+        turnOutputRef.current.text ||= event.content.trim().length > 0;
         if (!streamingIdRef.current) {
           // First delta — create the streaming message
           const id = makeId();
@@ -345,6 +337,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
       case 'response_reset':
         if (meta.kind !== 'chat') break;
+        turnOutputRef.current.text = false;
+        turnOutputRef.current.graph = false;
         if (streamingIdRef.current) {
           const id = streamingIdRef.current;
           setMessages(prev => prev.filter(message => message.id !== id));
@@ -356,8 +350,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           setMessages(prev => prev.filter(message => !obsolete.has(message.id)));
           activeExplanationMessageIdsRef.current = [];
         }
-        queuedExplanationBlocksRef.current = [];
-        queuedGraphUpdateRef.current = undefined;
         setGraphCandidate(null);
         setGraphPreview(null);
         publishGraph(durableGraphDataRef.current);
@@ -397,6 +389,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
       case 'explanation_block': {
         if (meta.kind !== 'chat') break;
+        turnOutputRef.current.text ||= event.content.trim().length > 0;
         const id = makeId();
         const block = {
           id,
@@ -405,16 +398,12 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           relatedNodeIds: event.related_node_ids,
         };
         activeExplanationMessageIdsRef.current.push(id);
-        if (explanationPausedRef.current) {
-          queuedExplanationBlocksRef.current.push(block);
-        } else {
-          setMessages(prev => [...prev, {
-            ...block,
-            role: 'assistant',
-            kind: 'explanation',
-            isStreaming: false,
-          }]);
-        }
+        setMessages(prev => [...prev, {
+          ...block,
+          role: 'assistant',
+          kind: 'explanation',
+          isStreaming: false,
+        }]);
         break;
       }
 
@@ -436,7 +425,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
       case 'stopped':
         if (meta.kind !== 'chat') break;
         setGraphPreview(null);
-        queuedGraphUpdateRef.current = undefined;
         publishGraph(durableGraphDataRef.current);
         break;
 
@@ -444,6 +432,12 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         if (meta.kind === 'chat') {
           const analytics = activeChatAnalyticsRef.current;
           const terminalAlreadyRecorded = activeChatTerminalRef.current === meta.clientRequestId;
+          const emptyResponse = !turnOutputRef.current.text && !turnOutputRef.current.graph;
+          if (emptyResponse && !terminalAlreadyRecorded) {
+            setMessages(prev => [...prev, {
+              id: makeId(), role: 'assistant', content: EMPTY_RESPONSE_MESSAGE, isStreaming: false,
+            }]);
+          }
           if (streamingIdRef.current) {
             const id = streamingIdRef.current;
             setMessages(prev => prev.map(m =>
@@ -457,13 +451,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           setStreamStatus('connected');
           setGraphCandidate(null);
           setGraphPreview(null);
-          if (queuedGraphUpdateRef.current?.isPreview) {
-            queuedGraphUpdateRef.current = undefined;
-          }
           if (analytics && !terminalAlreadyRecorded) {
             activeChatTerminalRef.current = analytics.clientRequestId;
             void trackEvent(
-              'chat_stream_completed',
+              emptyResponse ? 'chat_stream_failed' : 'chat_stream_completed',
               {
                 thread_id: analytics.threadId,
                 client_request_id: analytics.clientRequestId,
@@ -472,6 +463,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
                 research_enabled: analytics.researchEnabled,
                 backend_readiness_state: analytics.backendReadinessState,
                 has_selected_text_context: analytics.hasSelectedTextContext,
+                ...(emptyResponse ? { error_code: 'empty_response' } : {}),
               },
               authSessionRef.current,
             );
@@ -483,13 +475,12 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         if (meta.kind !== 'chat') break;
         {
           const nextGraph = normalizeGraphData(event.data);
+          // An empty result must not erase the last accepted diagram.
+          if (!nextGraph?.nodes.length) break;
+          turnOutputRef.current.graph = graphStructureKey(nextGraph) !== turnOutputRef.current.initialGraphKey;
           durableGraphDataRef.current = nextGraph;
           setGraphCandidate(null);
           setGraphPreview(null);
-          if (explanationPausedRef.current) {
-            queuedGraphUpdateRef.current = { data: nextGraph, isPreview: false };
-            break;
-          }
           publishGraph(nextGraph);
         }
         break;
@@ -499,10 +490,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         {
           const nextGraph = normalizeGraphData(event.data);
           setGraphCandidate(null);
-          if (explanationPausedRef.current) {
-            queuedGraphUpdateRef.current = { data: nextGraph, isPreview: true };
-            break;
-          }
           setGraphPreview(nextGraph);
         }
         break;
@@ -575,7 +562,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           setGraphCandidate(null);
           setGraphPreview(null);
           publishGraph(durableGraphDataRef.current);
-          queuedGraphUpdateRef.current = undefined;
           if (analytics) {
             activeChatTerminalRef.current = analytics.clientRequestId;
             void trackEvent(
@@ -639,6 +625,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
       }
     }
     const userId = makeId();
+    turnOutputRef.current = {
+      text: false, graph: false, initialGraphKey: graphStructureKey(durableGraphDataRef.current),
+    };
+    setPaintGraceExpiredTurnId(null);
     setAnswerTurn({ userId, diagram: opts?.graphMode !== 'off' });
     setMessages(prev => [...prev, {
       id: userId,
@@ -650,13 +640,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setGraphNotice(null);
     setGraphCandidate(null);
     setWorkflowProgress([]);
-    setExplanationPaused(false);
-    explanationPausedRef.current = false;
-    queuedExplanationBlocksRef.current = [];
-    if (queuedGraphUpdateRef.current?.isPreview === false) {
-      publishGraph(queuedGraphUpdateRef.current.data);
-    }
-    queuedGraphUpdateRef.current = undefined;
     activeExplanationMessageIdsRef.current = [];
     setStreamStatus('generating');
     setWorkerStatus(OPTIMISTIC_CHAT_STATUS);
@@ -721,7 +704,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         setGraphCandidate(null);
         setGraphPreview(null);
         publishGraph(durableGraphDataRef.current);
-        queuedGraphUpdateRef.current = undefined;
         setStreamStatus('connected');
         if (activeChatTerminalRef.current !== clientRequestId) {
           activeChatTerminalRef.current = clientRequestId;
@@ -755,7 +737,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
       }
       setMessages(prev => [...prev, {
         id: makeId(), role: 'assistant',
-        content: `Connection error: ${err.message}`, isStreaming: false,
+        content: err instanceof ChatTurnTimeoutError
+          ? 'The connection timed out. Reopen this chat before retrying; your diagram may already be saved.'
+          : 'Connection lost. Please try again.',
+        isStreaming: false,
       }]);
       setWorkerStatus(IDLE_WORKER_STATUS);
       setRetrievalNotice(null);
@@ -763,7 +748,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
       setGraphCandidate(null);
       setGraphPreview(null);
       publishGraph(durableGraphDataRef.current);
-      queuedGraphUpdateRef.current = undefined;
       setStreamStatus('connected');
       if (activeChatTerminalRef.current !== clientRequestId) {
         activeChatTerminalRef.current = clientRequestId;
@@ -817,11 +801,11 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         }]);
         setRetrievalNotice(null);
       }
-    } catch (err) {
+    } catch {
       setMessages(prev => [...prev, {
         id: makeId(),
         role: 'assistant',
-        content: `Connection error: ${err instanceof Error ? err.message : 'Could not request search tool'}`,
+        content: 'Connection lost. Please try again.',
         isStreaming: false,
       }]);
       setRetrievalNotice(null);
@@ -890,7 +874,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setProviderNotice(null);
     setGraphCandidate(null);
     setGraphPreview(null);
-    queuedGraphUpdateRef.current = undefined;
     setStreamStatus('connected');
     if (analytics) {
       activeChatTerminalRef.current = analytics.clientRequestId;
@@ -910,38 +893,20 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     }
   }, [authSession, publishGraph]);
 
-  const toggleExplanationPause = useCallback(() => {
-    const nextPaused = !explanationPausedRef.current;
-    explanationPausedRef.current = nextPaused;
-    setExplanationPaused(nextPaused);
-    if (!nextPaused && queuedExplanationBlocksRef.current.length > 0) {
-      const queued = queuedExplanationBlocksRef.current.splice(0);
-      setMessages(prev => [
-        ...prev,
-        ...queued.map(block => ({
-          ...block,
-          role: 'assistant' as const,
-          kind: 'explanation' as const,
-          isStreaming: false,
-        })),
-      ]);
-    }
-    if (!nextPaused && queuedGraphUpdateRef.current !== undefined) {
-      const queuedGraphUpdate = queuedGraphUpdateRef.current;
-      queuedGraphUpdateRef.current = undefined;
-      if (queuedGraphUpdate.isPreview) {
-        setGraphPreview(queuedGraphUpdate.data);
-      } else {
-        publishGraph(queuedGraphUpdate.data);
-      }
-    }
-  }, [publishGraph]);
-
   // Keep storage complete while the learner waits for the committed diagram to paint.
   // D3 acknowledges its layout after fonts and two animation frames have settled.
+  const waitingForGraphPaint = !!answerTurn?.diagram && !!graphData
+    && renderedGraphKey !== graphStructureKey(graphData)
+    && paintGraceExpiredTurnId !== answerTurn.userId;
+  useEffect(() => {
+    if (streamStatus === 'generating' || !waitingForGraphPaint || !answerTurn) return;
+    // A missed canvas acknowledgement must not hide the terminal response forever.
+    const timer = window.setTimeout(() => setPaintGraceExpiredTurnId(answerTurn.userId), GRAPH_PAINT_GRACE_MS);
+    return () => window.clearTimeout(timer);
+  }, [answerTurn, streamStatus, waitingForGraphPaint]);
   const answerPending = !!answerTurn?.diagram && (
     streamStatus === 'generating'
-    || (!!graphData && renderedGraphKey !== graphStructureKey(graphData))
+    || waitingForGraphPaint
   );
   const turnIndex = answerTurn ? messages.findIndex(message => message.id === answerTurn.userId) : -1;
   const visibleMessages = answerPending && turnIndex >= 0
@@ -960,7 +925,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     graphPreview,
     graphCandidate,
     workflowProgress,
-    explanationPaused,
     workerStatus,
     retrievalNotice,
     graphNotice,
@@ -974,6 +938,5 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     saveGraphEdit,
     requestSearchTool,
     stopGeneration,
-    toggleExplanationPause,
   };
 }

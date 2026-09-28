@@ -1,25 +1,9 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// File: frontend/src/components/Chat/ChatInput.tsx
-// Purpose: Text input + send/stop button at the bottom of the chat pane.
-//          A small "+" button to the left of the textarea opens a floating
-//          popover (ChatGPT-style) for choosing per-message settings:
-//            • Complexity: auto | low | proto | prod
-//            • Graph mode: on | off
-//            • Research:   toggle
-//          The "+" button shows a violet dot when any setting differs from
-//          its default.  Enter submits, Shift+Enter inserts a newline.
-// Language: TypeScript / React
-// Connects to: App.tsx (mode state lifted up), types/index.ts
-// ─────────────────────────────────────────────────────────────────────────────
-
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
-import type { ComplexityLevel, GraphMode } from '../../types';
 import type { BackendPrepareProgress } from '../../hooks/useBackendReadiness';
-import { SegmentedControl } from './SegmentedControl';
 
 interface ChatInputProps {
-  onSend:        (content: string, diagramChoice?: GraphMode) => void;
+  onSend:        (content: string, diagramRequested?: boolean) => void;
   checkSubmission?: (content: string) => Promise<'send' | 'answer' | 'ask'>;
   onStop:        () => void;
   onPrepare?:    () => void | Promise<void>;
@@ -29,79 +13,14 @@ interface ChatInputProps {
   sendDisabled?: boolean;   // blocks send while backend is not ready
   showPrepare?:  boolean;
   prepareDisabled?: boolean;
-  isGenerating?: boolean;   // LLM actively streaming — show Stop instead of Send
+  isGenerating?: boolean;   // LLM actively streaming; keep steering and Stop available
   prepareMessage?: string | null; // non-null while backend is warming up or failed
   prepareProgress?: BackendPrepareProgress | null;
-  // Mode control state — passed from App.tsx
-  complexity:         ComplexityLevel;
-  graphMode:          GraphMode;
-  researchEnabled:    boolean;
-  onComplexityChange: (v: ComplexityLevel) => void;
-  onGraphModeChange:  (v: GraphMode) => void;
-  onResearchChange:   (v: boolean) => void;
   selectionSuggestion?: string | null;
   selectionReferenceActive?: boolean;
   onUseSelection?: () => void;
   onDismissSelection?: () => void;
   onClearSelectionReference?: () => void;
-}
-
-// ── Compact segmented row ─────────────────────────────────────────────────────
-// Wraps the shared SegmentedControl with a left-aligned label and popover-
-// specific styling (stretch items, slightly smaller font, different hover color).
-
-function segRowOptionStyle(isActive: boolean, isHovered: boolean): CSSProperties {
-  return {
-    flex:       1,
-    textAlign:  'center',
-    padding:    '3px 4px',
-    fontSize:   '0.68rem',
-    fontWeight: isActive ? 600 : 400,
-    color:      isActive
-      ? '#a78bfa'
-      : isHovered
-      ? '#c9d1d9'
-      : '#6e7681',
-    background: isActive
-      ? 'rgba(167,139,250,0.14)'
-      : isHovered
-      ? 'rgba(255,255,255,0.05)'
-      : 'transparent',
-    cursor:     isActive ? 'default' : 'pointer',
-    userSelect: 'none',
-    transition: 'background 0.1s, color 0.1s',
-    whiteSpace: 'nowrap',
-    lineHeight: '1.6',
-  };
-}
-
-function SegRow<T extends string>({
-  label, options, value, onChange,
-}: {
-  label: string;
-  options: { value: T; label: string }[];
-  value: T;
-  onChange: (v: T) => void;
-}) {
-  return (
-    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '10px' }}>
-      <span style={miniLabelStyle}>{label}</span>
-      <SegmentedControl
-        ariaLabel={label.toLowerCase()}
-        options={options}
-        value={value}
-        onChange={onChange}
-        containerStyle={segContainerStyle}
-        dividerStyle={thinDivStyle}
-        optionStyle={segRowOptionStyle}
-        optionWrapper={(children) => (
-          <span style={{ display: 'flex', alignItems: 'stretch', flex: 1 }}>
-            {children}
-          </span>
-        )}
-      />
-    </div>
-  );
 }
 
 function clearDraft(
@@ -114,127 +33,18 @@ function clearDraft(
   }
 }
 
-// ── Mode popover content ──────────────────────────────────────────────────────
-
-interface PopoverProps {
-  complexity:         ComplexityLevel;
-  graphMode:          GraphMode;
-  researchEnabled:    boolean;
-  onComplexityChange: (v: ComplexityLevel) => void;
-  onGraphModeChange:  (v: GraphMode) => void;
-  onResearchChange:   (v: boolean) => void;
-}
-
-const COMPLEXITY_HELP: Record<ComplexityLevel, string> = {
-  auto: 'Adapts depth; applied design requests use production reasoning.',
-  low: 'Direct answer with the main trade-off.',
-  prototype: 'Buildable components, interfaces, and control loop.',
-  production: 'Deep review: failures, safety, operations, and rollout.',
-};
-
-function ModePopover({
-  complexity, graphMode, researchEnabled,
-  onComplexityChange, onGraphModeChange, onResearchChange,
-}: PopoverProps) {
-  return (
-    <div style={popoverStyle}>
-      <SegRow
-        label="COMPLEXITY"
-        options={[
-          { value: 'auto' as ComplexityLevel,       label: 'auto'  },
-          { value: 'low' as ComplexityLevel,        label: 'low'   },
-          { value: 'prototype' as ComplexityLevel,  label: 'proto' },
-          { value: 'production' as ComplexityLevel, label: 'prod'  },
-        ]}
-        value={complexity}
-        onChange={onComplexityChange}
-      />
-      <div style={{ fontSize: '0.62rem', color: '#6e7681', lineHeight: 1.4 }}>
-        {COMPLEXITY_HELP[complexity]}
-      </div>
-
-      <div style={popoverDivStyle} />
-
-      <SegRow
-        label="GRAPH"
-        options={[
-          { value: 'on'   as GraphMode, label: 'on'   },
-          { value: 'off'  as GraphMode, label: 'off'  },
-        ]}
-        value={graphMode}
-        onChange={onGraphModeChange}
-      />
-
-      <div style={popoverDivStyle} />
-
-      {/* Research toggle */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div>
-          <span style={miniLabelStyle}>RESEARCH</span>
-          <div style={{ fontSize: '0.62rem', color: '#3d444d', marginTop: '1px' }}>
-            Ground with current Web context
-          </div>
-        </div>
-        <div
-          role="switch"
-          aria-label="research"
-          aria-checked={researchEnabled}
-          tabIndex={0}
-          onClick={() => onResearchChange(!researchEnabled)}
-          onKeyDown={event => {
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault();
-              onResearchChange(!researchEnabled);
-            }
-          }}
-          style={{
-            width:        '32px',
-            height:       '18px',
-            borderRadius: '9px',
-            background:   researchEnabled ? 'rgba(124,58,237,0.8)' : 'rgba(255,255,255,0.08)',
-            border:       `1px solid ${researchEnabled ? 'rgba(167,139,250,0.4)' : 'rgba(255,255,255,0.1)'}`,
-            position:     'relative',
-            cursor:       'pointer',
-            transition:   'background 0.2s, border-color 0.2s',
-            flexShrink:   0,
-          }}
-        >
-          <div style={{
-            position:     'absolute',
-            top:          '2px',
-            left:         researchEnabled ? '15px' : '2px',
-            width:        '12px',
-            height:       '12px',
-            borderRadius: '50%',
-            background:   researchEnabled ? '#fff' : 'rgba(255,255,255,0.4)',
-            transition:   'left 0.2s ease, background 0.2s',
-            boxShadow:    '0 1px 3px rgba(0,0,0,0.4)',
-          }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
 export function ChatInput({
   onSend, checkSubmission, onStop, onPrepare, onDraftChange, threadId, disabled, isGenerating,
   sendDisabled, showPrepare, prepareDisabled, prepareMessage,
   prepareProgress,
-  complexity, graphMode, researchEnabled,
-  onComplexityChange, onGraphModeChange, onResearchChange,
   selectionSuggestion, selectionReferenceActive, onUseSelection, onDismissSelection, onClearSelectionReference,
 }: ChatInputProps) {
   const [value, setValue]         = useState('');
-  const [popoverOpen, setPopover] = useState(false);
-  const [containerHovered, setContainerHovered] = useState(false);
-  const [diagramChoiceOpen, setDiagramChoiceOpen] = useState(false);
   const [checkingIntent, setCheckingIntent] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
   const intentRequestRef = useRef(0);
+  const [containerHovered, setContainerHovered] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const popoverRef  = useRef<HTMLDivElement>(null);
-  const triggerRef  = useRef<HTMLButtonElement>(null);
   const previousThreadIdRef = useRef<string | null>(threadId ?? null);
 
   useEffect(() => () => { intentRequestRef.current += 1; }, []);
@@ -243,12 +53,7 @@ export function ChatInput({
     if (!disabled && !sendDisabled) return;
     intentRequestRef.current += 1;
     setCheckingIntent(false);
-    setDiagramChoiceOpen(false);
   }, [disabled, sendDisabled]);
-
-  // Has non-default settings
-  const hasActiveSettings =
-    complexity !== 'auto' || graphMode !== 'on' || researchEnabled;
 
   const resizeTextarea = useCallback((element: HTMLTextAreaElement) => {
     element.style.height = 'auto';
@@ -263,20 +68,13 @@ export function ChatInput({
     onUseSelection?.();
   }, [onUseSelection, selectionSuggestion]);
 
-  const sendDraft = (diagramChoice?: GraphMode) => {
-    const trimmed = value.trim();
-    if (!trimmed || disabled || sendDisabled) return;
-    setDiagramChoiceOpen(false);
-    clearDraft(setValue, textareaRef.current);
-    if (diagramChoice) onSend(trimmed, diagramChoice);
-    else onSend(trimmed);
-  };
-
   const submit = async () => {
     const trimmed = value.trim();
-    if (!trimmed || disabled || sendDisabled || checkingIntent || diagramChoiceOpen) return;
-    if (!checkSubmission || isGenerating || graphMode === 'off') {
-      sendDraft();
+    if (!trimmed || disabled || sendDisabled || checkingIntent) return;
+    setSubmissionError(null);
+    if (!checkSubmission || isGenerating) {
+      clearDraft(setValue, textareaRef.current);
+      onSend(trimmed);
       return;
     }
     const requestId = ++intentRequestRef.current;
@@ -284,11 +82,12 @@ export function ChatInput({
     try {
       const action = await checkSubmission(trimmed);
       if (requestId !== intentRequestRef.current) return;
-      if (action === 'ask') setDiagramChoiceOpen(true);
-      else sendDraft(action === 'answer' ? 'off' : undefined);
+      clearDraft(setValue, textareaRef.current);
+      onSend(trimmed, action === 'ask');
     } catch {
-      // A failed intent check must not silently choose a costly generation.
-      if (requestId === intentRequestRef.current) setDiagramChoiceOpen(true);
+      if (requestId === intentRequestRef.current) {
+        setSubmissionError('Could not connect. Your message is saved here. Please try again.');
+      }
     } finally {
       if (requestId === intentRequestRef.current) setCheckingIntent(false);
     }
@@ -301,30 +100,13 @@ export function ChatInput({
   const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     intentRequestRef.current += 1;
     setCheckingIntent(false);
-    setDiagramChoiceOpen(false);
+    setSubmissionError(null);
     if (selectionSuggestion && !selectionReferenceActive && e.target.value.trim() !== '') {
       onUseSelection?.();
     }
     setValue(e.target.value);
     resizeTextarea(e.target);
   };
-
-  // Close popover on outside click
-  const handleOutsideClick = useCallback((e: MouseEvent) => {
-    if (
-      popoverRef.current && !popoverRef.current.contains(e.target as Node) &&
-      triggerRef.current && !triggerRef.current.contains(e.target as Node)
-    ) {
-      setPopover(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (popoverOpen) {
-      document.addEventListener('mousedown', handleOutsideClick);
-    }
-    return () => document.removeEventListener('mousedown', handleOutsideClick);
-  }, [popoverOpen, handleOutsideClick]);
 
   useEffect(() => {
     onDraftChange?.(value.trim().length > 0);
@@ -339,14 +121,14 @@ export function ChatInput({
     if (previousThreadId && previousThreadId !== nextThreadId) {
       intentRequestRef.current += 1;
       setCheckingIntent(false);
-      setDiagramChoiceOpen(false);
+      setSubmissionError(null);
       clearDraft(setValue, textareaRef.current);
     }
 
     previousThreadIdRef.current = nextThreadId;
   }, [threadId]);
 
-  const isReady = !disabled && !sendDisabled && !checkingIntent && !diagramChoiceOpen && !!value.trim();
+  const isReady = !disabled && !sendDisabled && !checkingIntent && !!value.trim();
   const placeholder = isGenerating
     ? 'Add a follow-up…'
     : (selectionReferenceActive || !!selectionSuggestion)
@@ -366,25 +148,9 @@ export function ChatInput({
     }}
     onMouseEnter={() => setContainerHovered(true)}
     onMouseLeave={() => setContainerHovered(false)}
-    onKeyDown={event => {
-      if (event.key === 'Escape' && diagramChoiceOpen) {
-        setDiagramChoiceOpen(false);
-        textareaRef.current?.focus();
-      }
-    }}
     >
-      {diagramChoiceOpen && <div role="dialog" aria-label="Include a diagram?" style={{
-        ...popoverStyle, position: 'absolute', bottom: 'calc(100% + 8px)', left: 16, right: 16, width: 'auto', zIndex: 100,
-      }}>
-        <div style={{ color: '#e6edf3', fontSize: 14 }}>Include a diagram?</div>
-        <div style={{ color: '#94a3b8', fontSize: 12 }}>Choose how you'd like to learn about this.</div>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-          <button autoFocus type="button" disabled={disabled || sendDisabled} onClick={() => sendDraft('on')} style={selectionActionButtonStyle}>Generate a diagram</button>
-          <button type="button" disabled={disabled || sendDisabled} onClick={() => sendDraft('off')} style={selectionActionButtonStyle}>Answer only</button>
-          <button type="button" onClick={() => { setDiagramChoiceOpen(false); textareaRef.current?.focus(); }} style={selectionActionButtonStyle}>Keep editing</button>
-        </div>
-      </div>}
-      {checkingIntent && <div role="status" style={{ color: '#94a3b8', fontSize: 12, marginBottom: 8 }}>Checking your request…</div>}
+      {checkingIntent && <div role="status" style={prepareNoticeStyle}>Checking your request…</div>}
+      {submissionError && <div role="alert" style={prepareNoticeStyle}>{submissionError}</div>}
       {selectionSuggestion && (
         <div
           style={selectionSuggestionStyle(containerHovered, !!selectionReferenceActive)}
@@ -447,47 +213,7 @@ export function ChatInput({
         </div>
       )}
 
-      {/* Floating mode popover — anchored above the "+" button */}
-      {popoverOpen && (
-        <div ref={popoverRef} style={popoverAnchorStyle}>
-          <ModePopover
-            complexity={complexity}
-            graphMode={graphMode}
-            researchEnabled={researchEnabled}
-            onComplexityChange={onComplexityChange}
-            onGraphModeChange={onGraphModeChange}
-            onResearchChange={onResearchChange}
-          />
-        </div>
-      )}
-
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
-        {/* "+" trigger button */}
-        <button
-          ref={triggerRef}
-          onClick={() => setPopover(p => !p)}
-          aria-label="Message options"
-          style={triggerButtonStyle(popoverOpen)}
-        >
-          {/* + icon */}
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none">
-            <line x1="7" y1="1" x2="7" y2="13" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-            <line x1="1" y1="7" x2="13" y2="7" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" />
-          </svg>
-          {/* Active indicator dot */}
-          {hasActiveSettings && !popoverOpen && (
-            <span style={{
-              position:     'absolute',
-              top:          '3px',
-              right:        '3px',
-              width:        '5px',
-              height:       '5px',
-              borderRadius: '50%',
-              background:   '#a78bfa',
-            }} />
-          )}
-        </button>
-
         {/* Text input */}
         <textarea
           ref={textareaRef}
@@ -529,7 +255,7 @@ export function ChatInput({
               aria-label="Send message"
               style={sendButtonStyle(isReady, 'Send')}
             >
-              Send
+              <SendArrow />
             </button>
             <button
               onClick={onStop}
@@ -559,7 +285,7 @@ export function ChatInput({
             aria-label="Send message"
             style={sendButtonStyle(isReady, 'Send')}
           >
-            Send
+            <SendArrow />
           </button>
         )}
       </div>
@@ -567,14 +293,15 @@ export function ChatInput({
   );
 }
 
-// ── Styles ────────────────────────────────────────────────────────────────────
+function SendArrow() {
+  return (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" aria-hidden="true" focusable="false">
+      <path d="M12 19V5M5 12l7-7 7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
 
-const popoverAnchorStyle: CSSProperties = {
-  position:     'absolute',
-  bottom:       'calc(100% + 6px)',
-  left:         '1rem',
-  zIndex:       100,
-};
+// ── Styles ────────────────────────────────────────────────────────────────────
 
 const selectionSuggestionStyle = (hovered: boolean, active: boolean): CSSProperties => ({
   background: 'rgba(10,13,19,0.82)',
@@ -643,80 +370,6 @@ const prepareProgressFillStyle = (percent: number): CSSProperties => ({
   transition: 'width 220ms ease',
 });
 
-const popoverStyle: CSSProperties = {
-  width:                '272px',
-  background:           'rgba(18,22,30,0.97)',
-  backdropFilter:       'blur(48px) saturate(200%)',
-  WebkitBackdropFilter: 'blur(48px) saturate(200%)',
-  border:               '1px solid rgba(255,255,255,0.1)',
-  borderRadius:         '14px',
-  padding:              '0.75rem',
-  boxShadow:            [
-    'inset 0 1px 0 rgba(255,255,255,0.12)',
-    'inset 0 -1px 0 rgba(0,0,0,0.2)',
-    '0 16px 48px rgba(0,0,0,0.6)',
-    '0 0 0 1px rgba(167,139,250,0.08)',
-  ].join(', '),
-  display:              'flex',
-  flexDirection:        'column',
-  gap:                  '0.6rem',
-};
-
-const miniLabelStyle: CSSProperties = {
-  fontSize:      '0.6rem',
-  fontWeight:    600,
-  color:         '#484f58',
-  letterSpacing: '0.07em',
-  flexShrink:    0,
-  userSelect:    'none',
-  width:         '72px',   // fixed so all controls left-align
-};
-
-const segContainerStyle: CSSProperties = {
-  display:      'flex',
-  alignItems:   'stretch',
-  flex:         1,           // fills remaining width after fixed label
-  border:       '1px solid rgba(255,255,255,0.08)',
-  borderRadius: '5px',
-  overflow:     'hidden',
-  background:   'rgba(255,255,255,0.02)',
-};
-
-const popoverDivStyle: CSSProperties = {
-  height:     '1px',
-  background: 'rgba(255,255,255,0.05)',
-};
-
-const thinDivStyle: CSSProperties = {
-  width:      '1px',
-  alignSelf:  'stretch',
-  background: 'rgba(255,255,255,0.07)',
-  flexShrink: 0,
-};
-
-function triggerButtonStyle(open: boolean): CSSProperties {
-  return {
-    position:             'relative',
-    width:                '34px',
-    height:               '34px',
-    borderRadius:         '10px',
-    border:               `1px solid ${open ? 'rgba(167,139,250,0.35)' : 'rgba(255,255,255,0.08)'}`,
-    background:           open ? 'rgba(167,139,250,0.12)' : 'rgba(255,255,255,0.04)',
-    backdropFilter:       'blur(8px)',
-    WebkitBackdropFilter: 'blur(8px)',
-    boxShadow:            open
-      ? 'inset 0 1px 0 rgba(167,139,250,0.15)'
-      : 'inset 0 1px 0 rgba(255,255,255,0.06)',
-    color:                open ? '#a78bfa' : '#8b949e',
-    display:              'flex',
-    alignItems:           'center',
-    justifyContent:       'center',
-    cursor:               'pointer',
-    flexShrink:           0,
-    transition:           'background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s',
-  };
-}
-
 const textareaStyle: CSSProperties = {
   flex:                1,
   resize:              'none',
@@ -758,7 +411,12 @@ const stopButtonStyle: CSSProperties = {
 function sendButtonStyle(isReady: boolean, variant: 'Send' | 'Prepare'): CSSProperties {
   const isPrepare = variant === 'Prepare';
   return {
-    padding:              '0.5rem 1rem',
+    padding:              isPrepare ? '0.5rem 1rem' : '0.5rem',
+    width:                isPrepare ? undefined : '38px',
+    display:              'inline-flex',
+    alignItems:           'center',
+    justifyContent:       'center',
+    flexShrink:           0,
     borderRadius:         '10px',
     background:           isReady
       ? isPrepare

@@ -19,7 +19,13 @@ _PREVIOUS_CAPABILITY_CRITERION = (
     "Classify capabilities from the candidate responsibilities and assumptions: "
     "external_effects means it can mutate an external system; retrieval_or_reuse "
     "means it retrieves or reuses stored artifacts; learning_or_release means "
-    "feedback can change a model, prompt, ranking, or live configuration."
+    "feedback can change a model, prompt, ranking, or live configuration. "
+    "Check each flag independently against named component responsibilities "
+    "and assumptions, and report every unsupported flag in the same review. "
+    "Internal dataset curation or publication and a passive downstream consumer "
+    "alone do not imply external_effects or learning_or_release. Require an "
+    "owner in this system for the external write or the feedback-driven change "
+    "to a model, prompt, ranking, or live configuration, respectively."
 )
 
 _PREVIOUS_REUSE_CRITERION = (
@@ -34,7 +40,7 @@ def test_capability_policy_checks_each_owned_effect_in_one_review(maturity):
         "capability_classification"
     ]
 
-    assert criterion.startswith(_PREVIOUS_CAPABILITY_CRITERION)
+    assert criterion != _PREVIOUS_CAPABILITY_CRITERION
     assert (
         "Check each flag independently against named component responsibilities "
         "and assumptions, and report every unsupported flag in the same review."
@@ -44,9 +50,99 @@ def test_capability_policy_checks_each_owned_effect_in_one_review(maturity):
         "alone do not imply external_effects or learning_or_release."
     ) in criterion
     assert (
-        "Require an owner in this system for the external write or the feedback-driven "
-        "change to a model, prompt, ranking, or live configuration, respectively."
+        "Require an owner in this system for the external write or the update or "
+        "release, respectively."
     ) in criterion
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_learning_capability_includes_owned_offline_and_reviewed_changes(maturity):
+    criterion = staged_review_requirements("components", maturity)[
+        "capability_classification"
+    ]
+    for obligation in (
+        "this system owns an update or release of a model, prompt, ranking, or live configuration",
+        "Offline or batch training and human-approved updates or releases count",
+        "automatic feedback and immediate live deployment are not required",
+        "A no-automatic-loop assumption does not negate an explicitly owned update or release",
+        "Frozen inference without an owned update or release does not imply learning_or_release",
+    ):
+        assert obligation in criterion
+
+
+# These cases preserve review inputs and downstream obligations. They do not
+# assert that an uncalled model has classified the responsibilities correctly.
+@pytest.mark.parametrize(
+    "responsibility,assumption,learning_or_release",
+    [
+        pytest.param(
+            "Owns offline fine-tuning of a model on reviewed examples and versions the trained weights.",
+            "There is no automatic feedback loop or live deployment.",
+            True,
+            id="owned-offline-fine-tuning",
+        ),
+        pytest.param(
+            "Curates and publishes versioned datasets for a passive downstream consumer.",
+            "Training and model release are owned outside this system.",
+            False,
+            id="passive-dataset-curation",
+        ),
+        pytest.param(
+            "Serves predictions using a frozen model and records request outcomes.",
+            "This system neither updates nor releases model or prompt versions.",
+            False,
+            id="frozen-inference",
+        ),
+        pytest.param(
+            "Owns evaluation and release of revised prompt versions after human approval.",
+            "An operator approves every batch release; there is no automatic loop.",
+            True,
+            id="human-approved-prompt-release",
+        ),
+        pytest.param(
+            "Owns evaluation and release of model versions after human approval.",
+            "Model release is an offline operation performed on a scheduled batch.",
+            True,
+            id="human-approved-model-release",
+        ),
+    ],
+)
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_owned_learning_review_cases_preserve_responsibilities_and_controls(
+    responsibility, assumption, learning_or_release, maturity
+):
+    records = [{"id": "owner", "responsibility": responsibility}]
+    context = generation.AcceptedContext(
+        assumptions=(assumption,),
+        external_effects=False,
+        retrieval_or_reuse=True,
+        learning_or_release=learning_or_release,
+    )
+    capabilities = context.prompt_value()["capabilities"]
+    guarantees = production_proofs_for_capabilities(capabilities, maturity=maturity)
+    prompt = gate._prompt(
+        gate="components",
+        user_request="Explain this system's owned responsibilities.",
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity=maturity,
+        candidate_records=records,
+        required_production_guarantees=(),
+    )
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    candidate = json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    )
+    assert evidence["candidate_context"] == context.prompt_value()
+    assert candidate == [{"record_index": 0, "record": records[0]}]
+    assert ("learning_and_release" in guarantees) == (
+        maturity == "production" and learning_or_release
+    )
+    if maturity == "production" and learning_or_release:
+        requirements = staged_review_requirements("connections", maturity, guarantees)
+        assert (
+            requirements["learning_and_release"]
+            == (STAGED_PRODUCTION_REQUIREMENTS["learning_and_release"])
+        )
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -274,6 +370,7 @@ def test_capability_clarification_invalidates_prior_review_identity(
     monkeypatch, maturity
 ):
     current_identity = gate.review_identity("components", maturity)
+    connection_identity = gate.review_identity("connections", maturity)
 
     def previous_requirements(stage, depth, guarantees=()):
         requirements = staged_review_requirements(stage, depth, guarantees)
@@ -284,6 +381,7 @@ def test_capability_clarification_invalidates_prior_review_identity(
     monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
 
     assert gate.review_identity("components", maturity) != current_identity
+    assert gate.review_identity("connections", maturity) == connection_identity
 
 
 def test_production_review_consolidates_obligations_without_losing_failure_outcomes():

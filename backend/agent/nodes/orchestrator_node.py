@@ -538,9 +538,42 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             if graph and state.get("graph_publication") == "preserved"
             else f"I couldn't {action} the diagram this time."
         )
-        revision_instruction = (state.get("graph_review") or {}).get(
-            "revision_instruction"
+        review = state.get("graph_review") or {}
+        gate_failure = (review.get("staged_gate") or {}).get("failure_code")
+        generation_failure = (review.get("staged_failure") or {}).get("code")
+        timed_out = generation_failure == "staged_generation_timeout" or operation.get(
+            "failure_code"
+        ) in {
+            "staged_component_deadline_admission_denied",
+            "staged_connection_deadline_admission_denied",
+        }
+        unavailable = (
+            gate_failure == "provider_unavailable"
+            or generation_failure == "staged_generation_provider_unavailable"
         )
+        render_unavailable = review.get("render_failure_code") in {
+            "diagram_evaluation_timeout",
+            "diagram_evaluation_missing",
+            "diagram_evaluation_error",
+            "diagram_evaluation_transport_unavailable",
+        }
+        if render_unavailable:
+            content = (
+                "The browser could not finish checking the diagram. Please try again."
+            )
+        elif timed_out or unavailable:
+            content = (
+                "Diagram generation timed out. Please try again."
+                if timed_out
+                else "The AI service is temporarily unavailable. Please try again."
+            )
+        if (
+            (render_unavailable or timed_out or unavailable)
+            and graph
+            and state.get("graph_publication") == "preserved"
+        ):
+            content += " Your existing diagram is unchanged."
+        revision_instruction = review.get("revision_instruction")
         if isinstance(revision_instruction, str) and revision_instruction.strip():
             content += f"\n\n{revision_instruction.strip()}"
         if graph and kind == "edit":

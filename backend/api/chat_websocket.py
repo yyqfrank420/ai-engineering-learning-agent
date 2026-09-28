@@ -15,6 +15,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import ValidationError
 
+from adapters.llm_adapter import is_provider_unavailable_error
 from adapters.supabase_auth_adapter import get_current_user
 from agent.deadlines import WorkflowDeadlineExceeded
 from agent.graph import run_agent
@@ -122,7 +123,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
             await websocket.close(code=1008)
             return
 
-        await websocket.send_json({"type": "ready"})
+        await websocket.send_json(
+            {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
+        )
         start_message = await asyncio.wait_for(
             _receive_object(websocket), timeout=_START_TIMEOUT_S
         )
@@ -563,6 +569,25 @@ async def chat_websocket(websocket: WebSocket) -> None:
             if final_state is None:
                 break
 
+            final_graph = final_state.get("graph_data")
+            has_new_graph = (
+                final_state.get("graph_publication") == "approved"
+                and bool(final_graph and final_graph.get("nodes"))
+                and final_graph != approved_graph_at_request_start
+            )
+            if (
+                not (final_state.get("response_text") or "").strip()
+                and not has_new_graph
+            ):
+                await restore_graph_preview()
+                await send(
+                    {
+                        "type": "error",
+                        "content": "No response was returned. Please try again.",
+                    }
+                )
+                break
+
             try:
                 title = thread["title"]
                 if title == "New chat":
@@ -628,12 +653,19 @@ async def chat_websocket(websocket: WebSocket) -> None:
             return
 
         await send_done()
-    except (asyncio.TimeoutError, WebSocketDisconnect):
+    except WebSocketDisconnect:
         return
     except Exception as exc:
+        if isinstance(exc, asyncio.TimeoutError) and agent_task is None:
+            return
         logger.error("WebSocket chat failed: %s", type(exc).__name__)
         with suppress(Exception):
-            await _send_error(websocket, "Response failed — please try again")
+            await _send_error(
+                websocket,
+                "The AI service is temporarily unavailable. Please try again."
+                if is_provider_unavailable_error(exc)
+                else "Response failed — please try again",
+            )
             await websocket.send_json({"type": "done"})
     finally:
         try:

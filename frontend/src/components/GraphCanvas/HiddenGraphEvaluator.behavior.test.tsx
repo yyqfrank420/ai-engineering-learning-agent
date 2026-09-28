@@ -6,15 +6,17 @@ vi.mock('./D3Graph', async () => {
   return {
     D3Graph: ({
       minimumTitlePx,
+      layoutReadiness,
       onLayoutReady,
     }: {
       minimumTitlePx?: number;
+      layoutReadiness?: string;
       onLayoutReady?: (key: string) => void;
     }) => {
       const onLayoutReadyRef = React.useRef(onLayoutReady);
       React.useEffect(() => onLayoutReadyRef.current?.('candidate-layout'), []);
       return (
-        <svg width="100%" height="100%" data-minimum-title-px={minimumTitlePx}>
+        <svg width="100%" height="100%" data-minimum-title-px={minimumTitlePx} data-layout-readiness={layoutReadiness}>
           <text>Candidate graph</text>
         </svg>
       );
@@ -134,6 +136,7 @@ describe('HiddenGraphEvaluator browser boundary', () => {
     expect(hiddenRoot.style.height).toBe(`${DIAGRAM_EVALUATION_VIEWPORT.height}px`);
     expect(rasterizedCanvasSize).toEqual(DIAGRAM_EVALUATION_VIEWPORT);
     expect(view.container.querySelector('svg')?.getAttribute('data-minimum-title-px')).toBe('11');
+    expect(view.container.querySelector('svg')?.getAttribute('data-layout-readiness')).toBe('geometry');
     expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledWith(
       'evaluation-1',
       'graph-v1',
@@ -184,7 +187,7 @@ describe('HiddenGraphEvaluator browser boundary', () => {
   it('submits a failure report with a tiny fallback image when capture fails', async () => {
     vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null);
     vi.spyOn(HTMLCanvasElement.prototype, 'toDataURL').mockReturnValue(
-      'data:image/jpeg;base64,fallback',
+      expect.stringContaining('data:image/png;base64,'),
     );
     render(<HiddenGraphEvaluator candidate={candidate} />);
 
@@ -193,9 +196,72 @@ describe('HiddenGraphEvaluator browser boundary', () => {
     expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledWith(
       'evaluation-1',
       'graph-v1',
-      expect.objectContaining({ capture_error: 'Canvas is unavailable' }),
-      'data:image/jpeg;base64,fallback',
+      expect.objectContaining({ capture_error: 'Browser diagram capture failed' }),
+      expect.stringContaining('data:image/png;base64,'),
     );
+  });
+
+  it('reports measurement exceptions without exposing exception text', async () => {
+    vi.mocked(measureDiagram).mockImplementationOnce(() => { throw new Error('secret'); });
+    render(<HiddenGraphEvaluator candidate={candidate} />);
+    await act(async () => vi.runAllTimersAsync());
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledWith(
+      'evaluation-1', 'graph-v1',
+      expect.objectContaining({ rendered_nodes: 0, capture_error: 'Browser diagram capture failed' }),
+      expect.stringContaining('data:image/png;base64,'),
+    );
+  });
+
+  it('bounds a stalled image and sends a failure rather than an approval', async () => {
+    vi.stubGlobal('Image', class { src = ''; onload = null; onerror = null; });
+    render(<HiddenGraphEvaluator candidate={candidate} />);
+    await act(async () => vi.advanceTimersByTimeAsync(2_999));
+    expect(agentTransport.submitDiagramEvaluation).not.toHaveBeenCalled();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledWith(
+      'evaluation-1', 'graph-v1',
+      expect.objectContaining({ capture_error: 'Browser diagram capture failed' }),
+      expect.stringContaining('data:image/png;base64,'),
+    );
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:candidate');
+  });
+
+  it('cancels image handlers and timers when a candidate is replaced', async () => {
+    const images: { src: string; onload: (() => void) | null; onerror: (() => void) | null }[] = [];
+    vi.stubGlobal('Image', class {
+      src = '';
+      onload = null;
+      onerror = null;
+      constructor() { images.push(this); }
+    });
+    const view = render(<HiddenGraphEvaluator candidate={candidate} />);
+    view.rerender(<HiddenGraphEvaluator candidate={{ ...candidate, evaluationId: 'replacement' }} />);
+    expect(images[0].src).toBe('');
+    expect(images[0].onload).toBeNull();
+    expect(images[0].onerror).toBeNull();
+    await act(async () => vi.advanceTimersByTimeAsync(3_000));
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(agentTransport.submitDiagramEvaluation).mock.calls[0][0]).toBe('replacement');
+    view.unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('stops retry timers on unmount', async () => {
+    vi.mocked(agentTransport.submitDiagramEvaluation).mockReturnValue(false);
+    const view = render(<HiddenGraphEvaluator candidate={candidate} />);
+    await act(async () => vi.advanceTimersByTimeAsync(0));
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledTimes(1);
+    view.unmount();
+    await act(async () => vi.runAllTimersAsync());
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('contains exhausted transport failures without a second retry budget', async () => {
+    vi.mocked(agentTransport.submitDiagramEvaluation).mockImplementation(() => { throw new Error('offline'); });
+    render(<HiddenGraphEvaluator candidate={candidate} />);
+    await act(async () => vi.runAllTimersAsync());
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledTimes(4);
   });
 
   it('cancels pending work on unmount and renders nothing without a candidate', async () => {

@@ -4235,3 +4235,75 @@ async def test_timed_out_components_retry_after_preview_target_still_requires_pr
         assert downstream == []
         assert len(rendered_at) == 1
         assert previews == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["component", "connection"])
+@pytest.mark.parametrize(
+    "failure_code",
+    [
+        "staged_generation_unavailable",
+        "staged_generation_provider_unavailable",
+        "staged_generation_timeout",
+        "staged_generation_invalid_json",
+    ],
+)
+async def test_early_generation_failure_retains_precise_diagnostic(
+    monkeypatch, stage, failure_code
+):
+    _install_success_boundaries(monkeypatch)
+
+    async def failing_generation(**kwargs):
+        raise workflow.StagedGenerationError(failure_code)
+
+    monkeypatch.setattr(workflow, f"generate_{stage}_candidate", failing_generation)
+    result = await workflow.run_staged_graph_pipeline(_state())
+    assert (
+        result["graph_operation"]["failure_code"]
+        == f"staged_{stage}_generation_unavailable"
+    )
+    assert result["graph_review"]["staged_failure"]["code"] == failure_code
+    assert result["graph_publication"] == "withheld"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["component", "connection"])
+@pytest.mark.parametrize(
+    "failure_code", ["diagram_evaluation_timeout", "diagram_evaluation_layout_rejected"]
+)
+async def test_current_render_failure_survives_staged_admission_failure(
+    monkeypatch, stage, failure_code
+):
+    _install_success_boundaries(monkeypatch)
+    calls = 0
+
+    async def render(state, graph, *, preview_count):
+        nonlocal calls
+        calls += 1
+        if stage == "connection" and calls == 1:
+            return await _render_ok(state, graph, preview_count=preview_count)
+        review = {"approved": False, "failure_code": failure_code}
+        if failure_code == "diagram_evaluation_layout_rejected":
+            from agent.nodes.graph_critic import _deterministic_render_review
+
+            review = _deterministic_render_review(
+                graph,
+                {"screenshot_base64": "captured", "report": {"overlap_count": 1}},
+                interactive_presentation=True,
+            )
+            assert review["failure_code"] == failure_code
+        return {
+            **state,
+            "graph_data": graph,
+            "graph_render_admitted": False,
+            "graph_review": review,
+        }
+
+    monkeypatch.setattr(workflow, "_render", render)
+    result = await workflow.run_staged_graph_pipeline(_state())
+    assert (
+        result["graph_operation"]["failure_code"] == f"staged_{stage}_render_rejected"
+    )
+    assert result["graph_review"]["render_failure_code"] == failure_code
+    assert "staged_gate" not in result["graph_review"]
+    assert result["graph_publication"] == "withheld"

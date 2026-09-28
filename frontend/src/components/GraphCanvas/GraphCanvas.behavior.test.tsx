@@ -43,10 +43,6 @@ vi.mock('./D3Graph', () => ({
   ),
 }));
 
-vi.mock('./HiddenGraphEvaluator', () => ({
-  HiddenGraphEvaluator: () => <div data-testid="hidden-evaluator" />,
-}));
-
 import { updateThreadGraph } from '../../services/api';
 import type { AuthSession, GraphData } from '../../types';
 import { GraphCanvas } from './index';
@@ -410,7 +406,7 @@ describe('GraphCanvas behavior', () => {
 
   it('renders plain and active empty-graph states with workflow detail', () => {
     const view = render(<GraphCanvas {...baseProps} graphData={null} authSession={null} />);
-    expect(screen.getByText(/No diagram was generated/)).toBeTruthy();
+    expect(screen.getByText(/No diagram is available yet/)).toBeTruthy();
 
     view.rerender(
       <GraphCanvas
@@ -427,6 +423,6 @@ describe('GraphCanvas behavior', () => {
       />,
     );
     expect(screen.getByText('Building your diagram…')).toBeTruthy();
-    expect(screen.queryByText('Checking publication invariants.')).toBeNull();
+    expect(screen.getByText('Checking publication invariants.')).toBeTruthy();
   });
 });

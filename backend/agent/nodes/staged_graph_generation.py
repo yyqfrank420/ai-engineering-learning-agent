@@ -15,7 +15,7 @@ import logging
 import re
 from typing import Any, NotRequired, TypedDict
 
-from adapters.llm_adapter import build_telemetry
+from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
@@ -39,7 +39,7 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v28"
+_COMPONENT_PROMPT_VERSION = "staged_components_v29"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v26"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
@@ -713,7 +713,12 @@ async def _run_generation(
         logging.getLogger(__name__).warning(
             "Staged %s generation unavailable (%s)", stage, type(exc).__name__
         )
-        raise StagedGenerationError("staged_generation_unavailable") from exc
+        code = (
+            "staged_generation_provider_unavailable"
+            if is_provider_unavailable_error(exc)
+            else "staged_generation_unavailable"
+        )
+        raise StagedGenerationError(code) from exc
     if response.finish_reason == "max_tokens":
         raise StagedGenerationError("staged_generation_truncated")
     if response.finish_reason != "end_turn":

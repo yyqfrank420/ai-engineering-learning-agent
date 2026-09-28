@@ -46,14 +46,19 @@ authorize a read-only replacement for the core diagram workflow.
 
 - Keep D3 as the diagram renderer for direct control over appearance and interaction.
   Improve the existing renderer without migrating to another editor framework.
-- Diagrams are enabled by default. Ambiguous requests should offer a clear choice
-  about diagram generation near the conversation input.
+- The composer always uses automatic depth with diagrams and research enabled.
+  Broad learning requests include a diagram without a separate choice dialog.
+  Follow-up explanations preserve the current diagram unless a change is requested.
+- A successful diagram request produces a fresh custom diagram. Cached or reference
+  diagrams do not substitute for generation. Provider and connection failures must
+  appear as understandable feedback; they must never count as successful generation.
 - Explanations should use learner-facing terms and concise prose. Implementation
   notes, repetitive caveats, and internal workflow jargon should not dominate answers.
 - Reduce initial information density without removing architectural depth. Keep
   component responsibilities and connection details available through interaction.
-- Show truthful generation activity. Keep the generation experience present until
-  the graph is ready, then release the completed explanation.
+- Show truthful generation activity directly while work runs. Keep one Stop control
+  in the composer and use an upward arrow for sending. Release the completed answer
+  after the graph renders, with a bounded wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
 - Direct editing should let learners revise component names, types, subtitles, and
   descriptions, plus each directed connection's label and metadata. Selection reveals
