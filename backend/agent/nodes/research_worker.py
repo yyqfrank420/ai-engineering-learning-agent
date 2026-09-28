@@ -34,8 +34,9 @@ logger = logging.getLogger(__name__)
 _TITLE_MAX = 80
 _BODY_MAX = 600
 _TOPIC_MAX = 160
-_SEARCH_BACKEND = "bing"
-_SEARCH_FALLBACK = "brave"
+# Pinned DDGS 9.14.4 disables Bing and silently routes that backend to auto.
+_SEARCH_BACKEND = "brave"
+_SEARCH_FALLBACK = "duckduckgo"
 _SEARCH_SAFESEARCH = "on"
 
 _DESIGN_SCAFFOLD = re.compile(
