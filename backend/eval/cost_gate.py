@@ -10,6 +10,7 @@ PRICE_RELEASE = "2026-09-28"
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
     "claude-sonnet-5": (2.00, 10.00),
+    "claude-sonnet-5-5": (2.00, 10.00),
     "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
@@ -213,7 +214,7 @@ def account_application_cost(
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
                 continue
-            # Opus 5.5 cache reads cost 5% of input; older models retain 10%.
+            # Opus 5.5 cache reads cost 5% of input; other priced models use 10%.
             cache_read_multiplier = (
                 0.05
                 if _MODEL_VERSION_SUFFIX.sub("", model) == "claude-opus-5-5"

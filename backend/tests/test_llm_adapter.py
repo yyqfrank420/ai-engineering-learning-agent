@@ -501,7 +501,7 @@ def test_application_model_roles_default_to_calibrated_models():
     configured = Settings(_env_file=None)
 
     assert configured.orchestrator_model == "claude-opus-5"
-    assert configured.explanation_model == "claude-opus-5-5"
+    assert configured.explanation_model == "claude-sonnet-5-5"
     assert configured.worker_model == "claude-opus-5"
     assert configured.architecture_model == "claude-opus-5"
     assert configured.graph_builder_model == "kimi-k3"
@@ -1241,9 +1241,11 @@ def test_stream_response_compat_filters_max_output_tokens():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cache_enabled", [False, True])
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-sonnet-5-5"])
 async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
     monkeypatch,
     cache_enabled,
+    model,
 ):
     import adapters.llm_adapter as llm
 
@@ -1279,7 +1281,7 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
     }
 
     events = await _collect(llm.stream_response(
-        "claude-sonnet-5",
+        model,
         "system",
         [],
         effort="low",
@@ -1287,6 +1289,8 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
         allow_fallback=False,
     ))
 
+    assert calls[0]["model"] == model
+    assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & calls[0].keys()
     output_config = calls[0]["output_config"]
     expected_system = {"type": "text", "text": "system"}
     if cache_enabled:
@@ -1307,7 +1311,7 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
         "input_tokens": 12,
         "output_tokens": 5,
         "provider": "anthropic",
-        "model": "claude-sonnet-5",
+        "model": model,
     }
     assert events[2] == ("done", "")
 
