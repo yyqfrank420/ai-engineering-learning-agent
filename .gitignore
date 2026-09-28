@@ -52,8 +52,9 @@ override.tf.json
 !**/.terraform.lock.hcl
 
 # ── Claude Code ───────────────────────────────────────────────────────────────
-# Local Claude Code settings (permissions, tool overrides) — not for the repo
-.claude/
+# Share commit attribution preferences while keeping local settings private.
+.claude/*
+!.claude/settings.json
 
 # ── OS ────────────────────────────────────────────────────────────────────────
 .DS_Store
