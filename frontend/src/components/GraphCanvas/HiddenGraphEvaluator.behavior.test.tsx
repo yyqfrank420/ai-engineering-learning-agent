@@ -17,7 +17,7 @@ vi.mock('./D3Graph', async () => {
       React.useEffect(() => onLayoutReadyRef.current?.('candidate-layout'), []);
       return (
         <svg width="100%" height="100%" data-minimum-title-px={minimumTitlePx} data-layout-readiness={layoutReadiness}>
-          <text>Candidate graph</text>
+          <text>{'学生 & <Teacher> #1: café 🧠'}</text>
         </svg>
       );
     },
@@ -80,6 +80,7 @@ const candidate: GraphCandidate = {
   },
 };
 
+let imageSources: string[] = [];
 let rasterizedCanvasSize: { width: number; height: number } | null = null;
 
 
@@ -91,11 +92,13 @@ describe('HiddenGraphEvaluator browser boundary', () => {
       createObjectURL: vi.fn(() => 'blob:candidate'),
       revokeObjectURL: vi.fn(),
     });
+    imageSources = [];
     class LoadedImage {
       onload: (() => void) | null = null;
       onerror: (() => void) | null = null;
 
-      set src(_value: string) {
+      set src(value: string) {
+        imageSources.push(value);
         queueMicrotask(() => this.onload?.());
       }
     }
@@ -129,8 +132,16 @@ describe('HiddenGraphEvaluator browser boundary', () => {
     await act(async () => vi.runAllTimersAsync());
 
     expect(measureDiagram).toHaveBeenCalledWith(expect.any(SVGSVGElement));
-    expect(URL.createObjectURL).toHaveBeenCalled();
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:candidate');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    expect(imageSources).toHaveLength(1);
+    expect(imageSources[0]).toMatch(/^data:image\/svg\+xml;charset=utf-8,%3Csvg/);
+    const xml = decodeURIComponent(imageSources[0].split(',')[1]);
+    expect(xml).toContain('xmlns="http://www.w3.org/2000/svg"');
+    expect(xml).toContain('width="1440"');
+    expect(xml).toContain('height="960"');
+    expect(xml).toContain('<text>学生 &amp; &lt;Teacher&gt; #1: café 🧠</text>');
+    expect(imageSources[0]).not.toContain('#');
     const hiddenRoot = view.container.querySelector('[aria-hidden="true"]') as HTMLElement;
     expect(hiddenRoot.style.width).toBe(`${DIAGRAM_EVALUATION_VIEWPORT.width}px`);
     expect(hiddenRoot.style.height).toBe(`${DIAGRAM_EVALUATION_VIEWPORT.height}px`);
@@ -223,7 +234,25 @@ describe('HiddenGraphEvaluator browser boundary', () => {
       expect.objectContaining({ capture_error: 'Browser diagram capture failed' }),
       expect.stringContaining('data:image/png;base64,'),
     );
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:candidate');
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('reports an image load failure without approving the candidate', async () => {
+    vi.stubGlobal('Image', class {
+      onload: (() => void) | null = null;
+      onerror: (() => void) | null = null;
+      set src(value: string) {
+        if (value) queueMicrotask(() => this.onerror?.());
+      }
+    });
+    render(<HiddenGraphEvaluator candidate={candidate} />);
+    await act(async () => vi.runAllTimersAsync());
+    expect(agentTransport.submitDiagramEvaluation).toHaveBeenCalledExactlyOnceWith(
+      'evaluation-1', 'graph-v1',
+      expect.objectContaining({ capture_error: 'Browser diagram capture failed' }),
+      expect.stringContaining('data:image/png;base64,'),
+    );
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('cancels image handlers and timers when a candidate is replaced', async () => {

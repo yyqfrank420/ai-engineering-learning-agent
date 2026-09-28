@@ -248,3 +248,27 @@ async def test_channel_rejects_a_truncated_image_that_has_valid_headers():
         "capture_error": "diagram evaluation image did not match its contract",
         "report": {},
     }
+
+
+@pytest.mark.asyncio
+async def test_capture_failure_preserves_only_validated_metrics_without_waiting_for_image():
+    channel = DiagramEvaluationChannel(timeout_s=1, max_screenshot_bytes=100_000)
+    sent = []
+    ready = asyncio.Event()
+
+    async def send(event):
+        sent.append(event)
+        ready.set()
+
+    request = asyncio.create_task(channel.request({"version": "graph-v1"}, send))
+    await ready.wait()
+    channel.accept({
+        "type": "diagram_evaluation_start", "evaluation_id": sent[0]["evaluation_id"],
+        "graph_version": "graph-v1", "media_type": "image/png", "total_chunks": 1,
+        "report": _report(capture_error="private-sentinel-browser-error", arbitrary="private-sentinel"),
+    })
+    result = await request
+    assert result == {"capture_error": "browser_capture_failed", "report": _report()}
+    assert "private-sentinel" not in str(result)
+    assert channel._waiters == {}
+    assert channel._uploads == {}

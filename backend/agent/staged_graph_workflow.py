@@ -7,7 +7,7 @@ from hashlib import sha256
 import json
 import logging
 import re
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from analytics.events import enqueue_analytics_event
 from agent.architecture_playbook import format_evidence_bundle
@@ -860,6 +860,7 @@ async def _render(
     graph: GraphData,
     *,
     preview_count: int,
+    stage: Literal["components", "connections"],
 ) -> AgentState:
     return await graph_render_gate_node(
         {
@@ -868,6 +869,7 @@ async def _render(
             "graph_changed": True,
             "graph_publication": "unreviewed",
             "graph_stage_preview_count": preview_count,
+            "graph_render_stage": stage,
         },
         interactive_presentation=True,
     )
@@ -992,6 +994,7 @@ async def _failed(
         properties={
             "outcome": "preserved" if approved_graph else "withheld",
             "failure_code": code,
+            **({"render_failure_code": render_failure_code} if render_failure_code else {}),
             "intent": intent,
         },
     )
@@ -1322,7 +1325,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 )
             preview = _component_preview(assigned)
             rendered = await _render(
-                working_state, preview, preview_count=preview_count
+                working_state, preview, preview_count=preview_count, stage="components"
             )
             if not rendered.get("graph_render_admitted"):
                 return await _failed(
@@ -1594,7 +1597,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 # Recovery disclosure is server-owned, outside user-editable fields.
                 projected = {**projected, "detail_level": "overview"}
             rendered = await _render(
-                working_state, projected, preview_count=preview_count
+                working_state, projected, preview_count=preview_count, stage="connections"
             )
             if not rendered.get("graph_render_admitted"):
                 return await _failed(

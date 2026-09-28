@@ -135,21 +135,17 @@ async function rasteriseSvg(
   clone.setAttribute('width', String(viewport.width));
   clone.setAttribute('height', String(viewport.height));
   const xml = new XMLSerializer().serializeToString(clone);
-  const url = URL.createObjectURL(new Blob([xml], { type: 'image/svg+xml;charset=utf-8' }));
-  try {
-    const image = await loadImage(url, signal);
-    const canvas = document.createElement('canvas');
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const context = canvas.getContext('2d');
-    if (!context) throw new Error('Canvas is unavailable');
-    context.fillStyle = '#080d14';
-    context.fillRect(0, 0, canvas.width, canvas.height);
-    context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL('image/jpeg', 0.58);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  // Production CSP permits data: images but blocks blob: image URLs.
+  const image = await loadImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(xml)}`, signal);
+  const canvas = document.createElement('canvas');
+  canvas.width = viewport.width;
+  canvas.height = viewport.height;
+  const context = canvas.getContext('2d');
+  if (!context) throw new Error('Canvas is unavailable');
+  context.fillStyle = '#080d14';
+  context.fillRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  return canvas.toDataURL('image/jpeg', 0.58);
 }
 
 

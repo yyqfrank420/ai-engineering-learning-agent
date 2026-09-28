@@ -259,7 +259,10 @@ jobs:
         name: Start frontend and capture journeys
         continue-on-error: true
         run: |
-          VITE_EVAL_AUTH_BOOTSTRAP=true VITE_API_PROXY_TARGET="$CANDIDATE_URL" npm --prefix frontend run dev -- --host localhost --port 5173 --strictPort > artifacts/live-eval/vite.log 2>&1 &
+          # Internal auth bootstrap is development-only; preview applies production headers.
+          export NODE_ENV=development VITE_EVAL_AUTH_BOOTSTRAP=true VITE_API_PROXY_TARGET="$CANDIDATE_URL"
+          npm --prefix frontend run build
+          npm --prefix frontend run preview -- --host localhost --port 5173 --strictPort > artifacts/live-eval/vite.log 2>&1 &
           echo "VITE_PID=$!" >> "$GITHUB_ENV"
           frontend_ready=false
           for attempt in $(seq 1 30); do

@@ -158,6 +158,7 @@ class AgentState(TypedDict):
     approved_graph_contract: NotRequired[dict[str, Any] | None]
     staged_graph_build: NotRequired[dict[str, Any]]
     graph_stage_preview_count: NotRequired[int]
+    graph_render_stage: NotRequired[Literal["components", "connections"]]
     graph_review_diagnostics: NotRequired[list[dict[str, Any]]]
     workflow_started_at_s: NotRequired[float]
     terminal_deadline_s: NotRequired[float]

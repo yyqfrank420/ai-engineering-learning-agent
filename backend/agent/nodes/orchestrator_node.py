@@ -559,8 +559,14 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             "diagram_evaluation_missing",
             "diagram_evaluation_error",
             "diagram_evaluation_transport_unavailable",
+            "graph_preview_timeout",
         }
-        if render_unavailable:
+        render_failed = review.get("render_failure_code") in {
+            "diagram_evaluation_layout_rejected", "diagram_evaluation_capture_failed",
+        }
+        if render_failed:
+            content = "The diagram could not be rendered. Please try again."
+        elif render_unavailable:
             content = (
                 "The browser could not finish checking the diagram. Please try again."
             )
@@ -571,7 +577,7 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
                 else "The external API service is unavailable. Please try again."
             )
         if (
-            (render_unavailable or timed_out or unavailable)
+            (render_failed or render_unavailable or timed_out or unavailable)
             and graph
             and state.get("graph_publication") == "preserved"
         ):

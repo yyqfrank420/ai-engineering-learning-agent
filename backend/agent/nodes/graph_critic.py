@@ -2,11 +2,13 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 from copy import deepcopy
 from typing import Any
 
+from analytics.events import enqueue_analytics_event
 from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
 from agent.architecture_rubric import (
@@ -3218,6 +3220,47 @@ def _candidate_preview_deadline(state: AgentState) -> float | None:
     return float(deadline) if isinstance(deadline, (int, float)) else None
 
 
+def _record_render_failure(
+    state: AgentState, *, review: dict[str, Any], render_result: dict[str, Any]
+) -> tuple[AgentState, dict[str, Any] | None]:
+    recorded_state, event_diagnostic = record_graph_review_diagnostic(state, review=review)
+    report = render_result.get("report") or {}
+    metrics = {
+        key: value for key in _RENDER_REPORT_FIELDS
+        if key != "capture_error"
+        and isinstance(value := report.get(key), (int, float))
+        and not isinstance(value, bool)
+        and 0 <= value <= 1_000_000_000 and math.isfinite(value)
+    }
+    properties = {
+        "failure_code": review["failure_code"],
+        "stage": state.get("graph_render_stage", "render"),
+        "render_metrics": metrics,
+        "failed_checks": [
+            _deterministic_blocker_rule({"finding": finding})
+            for finding in review.get("missing", [])
+            if _deterministic_blocker_rule({"finding": finding}) != "legacy"
+        ],
+        "capture_failure_category": (
+            "capture_failed" if render_result.get("capture_error") or report.get("capture_error")
+            else "screenshot_missing" if render_result and not render_result.get("screenshot_base64")
+            else "none"
+        ),
+    }
+    correlation = {
+        "thread_id": state.get("thread_id") or state.get("session_id"),
+        "request_id": state.get("request_id"),
+        "client_request_id": state.get("client_request_id"),
+    }
+    enqueue_analytics_event(
+        event_name="graph_render_failure", event_category="graph",
+        user_id=state.get("user_id"), session_id=state.get("session_id"),
+        **correlation, properties=properties,
+    )
+    logger.warning("Private diagram render failed: %s", json.dumps({**correlation, **properties}, sort_keys=True))
+    return recorded_state, event_diagnostic
+
+
 async def graph_render_gate_node(
     state: AgentState, *, interactive_presentation: bool = False
 ) -> AgentState:
@@ -3256,10 +3299,8 @@ async def graph_render_gate_node(
             else:
                 candidate_result = await await_render(graph)
         except TimeoutError:
-            logger.warning("Browser diagram render unavailable: timeout")
             unavailable_reason = "timeout"
-        except Exception as exc:
-            logger.warning("Browser diagram render unavailable: %s", type(exc).__name__)
+        except Exception:
             unavailable_reason = "error"
         else:
             if isinstance(candidate_result, dict) and candidate_result:
@@ -3273,9 +3314,8 @@ async def graph_render_gate_node(
             failure_code=failure_code,
             reason="The private browser render did not complete.",
         )
-        state, event_diagnostic = record_graph_review_diagnostic(
-            state,
-            review=review,
+        state, event_diagnostic = _record_render_failure(
+            state, review=review, render_result=render_result
         )
         progress_event: dict[str, Any] = {
             "type": "workflow_progress",
@@ -3302,9 +3342,8 @@ async def graph_render_gate_node(
             "review_status": "completed",
             "topology_proofs": [],
         }
-        state, event_diagnostic = record_graph_review_diagnostic(
-            state,
-            review=review,
+        state, event_diagnostic = _record_render_failure(
+            state, review=review, render_result=render_result
         )
         progress_event: dict[str, Any] = {
             "type": "workflow_progress",
@@ -3346,9 +3385,8 @@ async def graph_render_gate_node(
             failure_code="graph_preview_timeout",
             reason="The reversible preview did not reach the transport deadline.",
         )
-        state, event_diagnostic = record_graph_review_diagnostic(
-            state,
-            review=review,
+        state, event_diagnostic = _record_render_failure(
+            state, review=review, render_result=render_result
         )
         progress_event: dict[str, Any] = {
             "type": "workflow_progress",
@@ -3962,7 +4000,12 @@ def _deterministic_render_review(
         # graph model to revise domain topology cannot reliably fix clipping,
         # overlap, or text scaling and needlessly doubles latency and spend.
         "terminal": bool(missing),
-        **({"failure_code": "diagram_evaluation_layout_rejected"} if missing else {}),
+        **({"failure_code": (
+            "diagram_evaluation_capture_failed"
+            if render_result.get("capture_error") or report.get("capture_error")
+            or not render_result.get("screenshot_base64")
+            else "diagram_evaluation_layout_rejected"
+        )} if missing else {}),
     }
 
 

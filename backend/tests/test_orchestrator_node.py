@@ -2560,10 +2560,13 @@ async def test_failed_graph_notice_distinguishes_availability_from_rejection(
     "diagram_evaluation_missing",
     "diagram_evaluation_error",
     "diagram_evaluation_transport_unavailable",
+    "graph_preview_timeout",
     "diagram_evaluation_layout_rejected",
+    "diagram_evaluation_capture_failed",
     None,
 ])
-async def test_render_failure_notice_requires_current_explicit_availability_code(existing_graph, failure_code):
+@pytest.mark.parametrize("kind", ["create", "edit"])
+async def test_render_failure_notice_requires_current_explicit_availability_code(existing_graph, failure_code, kind):
     from agent.nodes import orchestrator_node as orchestrator
 
     graph = {"version": "approved", "nodes": [{"id": "n1"}], "edges": []} if existing_graph else None
@@ -2577,16 +2580,22 @@ async def test_render_failure_notice_requires_current_explicit_availability_code
         "graph_data": graph,
         "approved_graph_data": graph,
         "graph_publication": "preserved" if existing_graph else "withheld",
-        "graph_operation": {"kind": "create", "status": "failed", "failure_code": "staged_component_render_rejected"},
+        "graph_operation": {"kind": kind, "status": "failed", "failure_code": "staged_component_render_rejected"},
         "graph_review": {"render_failure_code": failure_code},
         "graph_review_diagnostics": [{"failure_code": "diagram_evaluation_timeout"}],
     })
-    if failure_code and failure_code != "diagram_evaluation_layout_rejected":
-        expected = "The browser could not finish checking the diagram. Please try again."
+    if failure_code:
+        expected = (
+            "The diagram could not be rendered. Please try again."
+            if failure_code in {"diagram_evaluation_capture_failed", "diagram_evaluation_layout_rejected"}
+            else "The browser could not finish checking the diagram. Please try again."
+        )
         if existing_graph:
             expected += " Your existing diagram is unchanged."
     else:
-        expected = "I couldn't create the diagram. Your existing diagram is unchanged." if existing_graph else "I couldn't create the diagram this time."
-    assert result["response_text"] == expected
+        action = "update" if kind == "edit" else "create"
+        expected = f"I couldn't {action} the diagram. Your existing diagram is unchanged." if existing_graph else f"I couldn't {action} the diagram this time."
+    expected_response = f"## Diagram unchanged\n\n{expected}" if existing_graph and kind == "edit" else expected
+    assert result["response_text"] == expected_response
     assert events[0]["content"] == expected
     assert result["graph_data"] == graph
