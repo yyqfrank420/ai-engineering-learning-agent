@@ -110,8 +110,11 @@ refactorable changes with evidence that they work.
   controlled and reviewed.
 - Give production prompt/model combinations a stable release identity or content
   fingerprint in telemetry. A failure must be traceable to the exact model and prompt.
-- Behaviour changes require focused regression tests plus representative offline or
-  staging evaluations. Never rely only on a successful API response.
+- Select checks that exercise the changed behavior. Generation changes require focused
+  regression tests and representative fresh generation evaluation. Copy, icons,
+  documentation, and offline-test-only changes use appropriate offline or UI checks
+  without paid generation calls. Mixed changes retain the generation checks. Never
+  rely only on a successful API response.
 - Maintain a rollback path: configuration rollback for models and normal deployment
   rollback for prompts/pipelines. Monitor quality, safety, latency, and cost after release.
 
@@ -174,16 +177,28 @@ Before handing off:
 
 Before opening or updating a pull request, or triggering cloud CI/CD evaluations:
 
-1. Run the changed application locally using the dev/local account and current source.
-   Verify that it uses development services and storage, not production user data.
-2. Exercise the affected user journey through the real UI and backend. For generation
+1. Select verification for the affected behavior. Generation-affecting changes need
+   relevant fresh generation evidence. Copy, icon, styling, documentation, offline
+   test, and CI policy changes that do not affect generation need meaningful offline
+   or UI verification; they do not require paid model calls solely for verification.
+2. For application changes, exercise the affected local flow using the dev/local
+   account and current source, with development services and storage. For generation
    changes, submit a representative request, inspect the rendered diagram and answer,
    and check affected editing, failure recovery, and reload/persistence behavior.
-3. Inspect browser and backend errors, fix defects locally, and repeat the affected
-   journey before pushing. Keep existing model-call and spending limits.
-4. Record the tested revision, account/environment, actions, results, and remaining
-   gaps. Mocked transports, captured fixtures, unit tests, and static screenshots
-   supplement this check; they do not replace the actual dev/local-account flow.
-5. If local verification is blocked, report the blocker and obtain an explicit
+   Documentation, test-only, and CI policy changes do not require an unrelated app run.
+3. Inspect relevant browser and backend errors, fix defects locally, and repeat the
+   affected journey before pushing. Keep existing model-call and spending limits.
+4. Record the tested revision, account/environment where applicable, actions, results,
+   and remaining gaps. Mocked transports, captured fixtures, unit tests, and screenshots
+   support verification. They do not replace fresh generation evidence when generation
+   behavior changed.
+5. If required local verification is blocked, report the blocker and obtain an explicit
    exception before opening or updating a pull request or starting cloud evaluation.
    Applicable cloud checks remain required after local verification passes.
+
+The CI manifest classifies paths conservatively. Copy inside a mixed runtime module
+can still trigger generation checks because path classification cannot identify the
+edit's semantics. Only established non-runtime files and audited presentation owners
+are exempt. Backend runtime files, request routing, prompts, transport, and private
+rendering remain protected. An exemption from paid evaluation does not authorize
+skipping relevant offline checks or changing backend deployment guarantees.

@@ -35,11 +35,32 @@ the payload.
 
 ## Trust and staging isolation
 
-The live workflow uses `pull_request`, never `pull_request_target`. Documentation
-and isolated CSS/assets receive a successful no-live-calls result. Unknown paths
-are fail-safe AI-impacting. An AI-impacting fork receives no secrets and fails with
-instructions for a maintainer to copy the reviewed patch to a same-repository
-branch.
+The live workflow uses `pull_request`, never `pull_request_target`. Paid live
+generation runs are required when changes affect generation behavior. The manifest
+identifies non-runtime documentation, offline test files, CI policy, and audited
+presentation owners whose copy or icons do not affect generation. These changes
+receive a successful no-live-calls result and require meaningful offline or UI
+checks for the affected behavior. Mixed changes still require paid evaluation when
+any changed path affects generation. Unknown paths remain fail-safe AI-impacting.
+CI policy changes retain their existing offline checks, including the full matrix
+for changes to the manifest, runner, or CI workflow. Relevant live harness checks
+can be run deliberately; a policy-only edit does not require a paid generation run.
+
+Classification uses paths and cannot determine the meaning of individual edits
+within a shared runtime file. Keep stable presentation code in separate owners
+when practical. A future runtime prompt stored in Markdown remains
+generation-impacting. Chat submission, transport, and private renderer geometry
+remain protected because they can affect generation or diagram publication.
+The existing CSS/assets classification is unchanged; GraphCanvas CSS still
+requires generation evaluation.
+
+Changes limited to non-runtime files or audited frontend presentation retain the
+approved running backend. Frontend presentation changes can deploy without paid
+generation calls. This exemption does not cover backend runtime changes, including
+copy edits inside backend runtime files.
+
+An AI-impacting fork receives no secrets and fails with instructions for a
+maintainer to copy the reviewed patch to a same-repository branch.
 
 Same-repository AI changes wait for approval of the `staging-eval` GitHub
 Environment. Its federated GCP identity is bound to that exact

@@ -229,10 +229,19 @@
     }
   },
   "impact": {
-    "documentation": ["*.md", "docs/**", ".cursor/**"],
+    "documentation": [
+      "AGENTS.md", "CLAUDE.md", "PRODUCT.md", "README.md", "plan.md",
+      "docs/**", ".cursor/**", "infra/terraform/gcp/README.md"
+    ],
+    "non_generation": [
+      "backend/tests/test_*.py", "frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx",
+      "ingestion/test_*.py", "ci/**", "scripts/ci", "scripts/ci_runner.py",
+      ".github/workflows/ci.yml", "frontend/src/components/Chat/ThinkingIndicator.tsx",
+      "frontend/src/components/Layout/TitleBar.tsx"
+    ],
     "visual_only": ["frontend/src/*.css", "frontend/src/**/*.css", "frontend/public/**"],
     "ai": [
-      ".github/**", "ci/**", "scripts/ci", "scripts/ci_runner.py",
+      ".github/**",
       "scripts/run_staging_eval.py", "scripts/staging_database.py",
       "backend/adapters/llm_adapter.py", "backend/agent/**", "backend/api/chat_*",
       "backend/api/sse_*", "backend/api/node_selected_service.py", "backend/eval/**",
