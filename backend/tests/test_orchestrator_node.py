@@ -2444,12 +2444,12 @@ async def test_quick_answer_keeps_user_format_without_forced_sentence_count(monk
         (
             {"staged_gate": {"failure_code": "provider_unavailable"}},
             "staged_component_gate_unavailable",
-            "The AI service is temporarily unavailable. Please try again.",
+            "The external API service is unavailable. Please try again.",
         ),
         (
             {"staged_failure": {"code": "staged_generation_provider_unavailable"}},
             "staged_component_generation_unavailable",
-            "The AI service is temporarily unavailable. Please try again.",
+            "The external API service is unavailable. Please try again.",
         ),
         (
             {"staged_failure": {"code": "staged_generation_timeout"}},

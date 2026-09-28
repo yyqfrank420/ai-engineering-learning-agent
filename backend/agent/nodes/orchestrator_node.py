@@ -565,7 +565,7 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             content = (
                 "Diagram generation timed out. Please try again."
                 if timed_out
-                else "The AI service is temporarily unavailable. Please try again."
+                else "The external API service is unavailable. Please try again."
             )
         if (
             (render_unavailable or timed_out or unavailable)
