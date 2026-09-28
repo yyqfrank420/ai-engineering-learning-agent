@@ -7,7 +7,7 @@ from hashlib import sha256
 import json
 import logging
 import re
-from typing import Any, Mapping
+from typing import Any, Literal, Mapping
 
 from analytics.events import enqueue_analytics_event
 from agent.architecture_playbook import format_evidence_bundle
@@ -860,6 +860,7 @@ async def _render(
     graph: GraphData,
     *,
     preview_count: int,
+    stage: Literal["components", "connections"],
 ) -> AgentState:
     return await graph_render_gate_node(
         {
@@ -868,6 +869,7 @@ async def _render(
             "graph_changed": True,
             "graph_publication": "unreviewed",
             "graph_stage_preview_count": preview_count,
+            "graph_render_stage": stage,
         },
         interactive_presentation=True,
     )
@@ -923,6 +925,33 @@ async def _retain_staged_diagnostic(
                 type(exc).__name__,
             )
     return retained_state
+
+
+def _review_snapshot(
+    stage: Literal["components", "connections"],
+    records: list[dict[str, Any]],
+    evidence: dict[str, Any],
+    review: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Retain only one complete, nonterminal review for this stage's correction."""
+    if (
+        review.get("terminal") is not False
+        or not isinstance(review.get("review_identity"), str)
+        or not review["review_identity"].strip()
+        or not isinstance(review.get("rule_reviews"), dict)
+        or set(review["rule_reviews"]) != set(review.get("checked_rules", []))
+        or not review["rule_reviews"]
+    ):
+        return None
+    return copy.deepcopy(
+        {
+            "stage": stage,
+            "review_identity": review["review_identity"],
+            "candidate_records": records,
+            "evidence_bundle": evidence,
+            "rule_reviews": review["rule_reviews"],
+        }
+    )
 
 
 async def _failed(
@@ -992,6 +1021,7 @@ async def _failed(
         properties={
             "outcome": "preserved" if approved_graph else "withheld",
             "failure_code": code,
+            **({"render_failure_code": render_failure_code} if render_failure_code else {}),
             "intent": intent,
         },
     )
@@ -1160,6 +1190,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     previous_component_candidate: str | None = None
     previous_component_wire: str | None = None
     rejected_component_candidate: dict[str, Any] | None = None
+    previous_component_review: dict[str, Any] | None = None
     reviewed_component_records: list[dict[str, Any]] = []
     correction_findings: list[dict[str, Any]] = []
     preview_count = int(state.get("graph_stage_preview_count", 0))
@@ -1322,7 +1353,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 )
             preview = _component_preview(assigned)
             rendered = await _render(
-                working_state, preview, preview_count=preview_count
+                working_state, preview, preview_count=preview_count, stage="components"
             )
             if not rendered.get("graph_render_admitted"):
                 return await _failed(
@@ -1353,6 +1384,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 )
             reviewed_component_records = copy.deepcopy(assigned["components"])
             component_gate = await review_components(
+                previous_review=previous_component_review,
                 user_request=request,
                 evidence_bundle=component_evidence,
                 resolved_maturity=maturity,
@@ -1361,6 +1393,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 timeout_seconds=staged_timeout_seconds(
                     rendered, phase="components", action="review", attempt=attempt
                 ),
+            )
+            previous_component_review = _review_snapshot(
+                "components", reviewed_component_records, component_evidence, component_gate
             )
             if component_gate["approved"]:
                 component_build = assigned
@@ -1472,6 +1507,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     reviewed_connection_exchanges: list[dict[str, int | None]] = []
     reviewed_connection_records: list[dict[str, Any]] = []
     correction_findings = []
+    previous_connection_review: dict[str, Any] | None = None
     connection_gate: dict[str, Any] = {}
     for attempt in range(STAGED_CONNECTION_GENERATION_CALLS):
         recovery_mode = may_simplify and attempt > 0
@@ -1594,7 +1630,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 # Recovery disclosure is server-owned, outside user-editable fields.
                 projected = {**projected, "detail_level": "overview"}
             rendered = await _render(
-                working_state, projected, preview_count=preview_count
+                working_state, projected, preview_count=preview_count, stage="connections"
             )
             if not rendered.get("graph_render_admitted"):
                 return await _failed(
@@ -1643,6 +1679,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 for edge in candidate_build["connections"]
             ]
             connection_gate = await review_connections(
+                previous_review=previous_connection_review,
                 user_request=request,
                 evidence_bundle=evidence,
                 resolved_maturity=maturity,
@@ -1654,6 +1691,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 timeout_seconds=staged_timeout_seconds(
                     rendered, phase="connections", action="review", attempt=attempt
                 ),
+            )
+            previous_connection_review = _review_snapshot(
+                "connections", reviewed_connection_records, evidence, connection_gate
             )
             reviewed_connection_wire = copy.deepcopy(generated["wire"])
             reviewed_connection_exchanges = connection_exchanges

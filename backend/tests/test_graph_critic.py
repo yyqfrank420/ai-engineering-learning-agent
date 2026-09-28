@@ -5284,7 +5284,7 @@ def test_render_gate_rejects_overlap_clipping_or_missing_capture():
 
     assert review["approved"] is False
     assert review["terminal"] is True
-    assert review["failure_code"] == "diagram_evaluation_layout_rejected"
+    assert review["failure_code"] == "diagram_evaluation_capture_failed"
     assert any("actual candidate" in item for item in review["missing"])
     assert any("overlapping" in item for item in review["missing"])
 
@@ -5414,7 +5414,10 @@ def test_interactive_render_preserves_each_hard_failure_with_warnings(
 
     assert review["approved"] is False
     assert review["terminal"] is True
-    assert review["failure_code"] == "diagram_evaluation_layout_rejected"
+    assert review["failure_code"] == (
+        "diagram_evaluation_capture_failed" if field == "screenshot_base64"
+        else "diagram_evaluation_layout_rejected"
+    )
     assert len(review["missing"]) == 1
     assert finding in review["missing"][0]
     assert len(review["advisories"]) == 4
@@ -7242,3 +7245,74 @@ async def test_staged_preview_target_does_not_remove_private_render_timeout(
     assert result["graph_review"]["failure_code"] == "diagram_evaluation_timeout"
     assert not any(event.get("type") == "graph_preview" for event in events)
     assert channel._waiters == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["layout", "capture", "missing_screenshot", "timeout", "error", "missing", "transport", "preview_timeout"])
+async def test_private_render_failures_record_correlated_safe_feedback(monkeypatch, caplog, failure):
+    from agent.nodes import graph_critic as critic
+
+    graph = _domain_graph()
+    graph["design_origin"] = "applied"
+    analytics = []
+    monkeypatch.setattr(critic, "enqueue_analytics_event", lambda **event: analytics.append(event))
+    report = {
+        "rendered_nodes": len(graph["nodes"]), "rendered_edges": len(graph["edges"]),
+        "overlap_count": int(failure == "layout"), "clipped_nodes": 0,
+        "clipped_edges": 0, "minimum_text_px": 12,
+        "viewport_width": 1440, "viewport_height": 960,
+        "arbitrary": "private-sentinel", "visible_group_boundaries": float("nan"),
+    }
+    render = {"report": report, "screenshot_base64": "private-sentinel-image"}
+    if failure == "capture":
+        report["capture_error"] = "private-sentinel-browser-error"
+    if failure == "missing_screenshot":
+        render.pop("screenshot_base64")
+
+    async def await_render(_graph):
+        if failure == "timeout":
+            raise TimeoutError("private-sentinel")
+        if failure == "error":
+            raise RuntimeError("private-sentinel")
+        return {} if failure == "missing" else render
+
+    async def send(event):
+        if event.get("type") == "graph_preview" and failure == "preview_timeout":
+            raise TimeoutError("private-sentinel")
+
+    state = {
+        "graph_data": graph, "graph_changed": True, "send": send,
+        "request_id": "request-1", "thread_id": "thread-1", "client_request_id": "client-1",
+        "graph_stage_preview_count": 1,
+        "graph_render_stage": "connections",
+    }
+    if failure != "transport":
+        state["await_diagram_evaluation"] = await_render
+    result = await graph_render_gate_node(state)
+    assert result["graph_render_admitted"] is False
+    assert len(analytics) == 1
+    event = analytics[0]
+    expected = {
+        "layout": "diagram_evaluation_layout_rejected",
+        "capture": "diagram_evaluation_capture_failed",
+        "missing_screenshot": "diagram_evaluation_capture_failed",
+        "timeout": "diagram_evaluation_timeout", "error": "diagram_evaluation_error",
+        "missing": "diagram_evaluation_missing", "transport": "diagram_evaluation_transport_unavailable",
+        "preview_timeout": "graph_preview_timeout",
+    }[failure]
+    assert event["event_name"] == "graph_render_failure"
+    assert event["request_id"] == "request-1"
+    assert event["thread_id"] == "thread-1"
+    assert event["client_request_id"] == "client-1"
+    assert event["properties"]["failure_code"] == expected
+    assert event["properties"]["stage"] == "connections"
+    if failure in {"capture", "missing_screenshot"}:
+        assert "render_capture" in event["properties"]["failed_checks"]
+    if failure == "layout":
+        assert event["properties"]["failed_checks"] == ["node_overlap"]
+        assert event["properties"]["render_metrics"]["overlap_count"] == 1
+    assert "visible_group_boundaries" not in event["properties"]["render_metrics"]
+    assert "private-sentinel" not in json.dumps(analytics)
+    assert "private-sentinel" not in caplog.text
+    assert expected in caplog.text
+    assert "request-1" in caplog.text

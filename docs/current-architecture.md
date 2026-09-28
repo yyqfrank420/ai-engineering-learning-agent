@@ -104,7 +104,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    against accepted responsibilities.
 8. Prototype gates exclude production criteria. Production semantic requirements derive from the
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
-   gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
+   gate. Sonnet 5.5 low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
    Each gate returns an array with one result per applicable rule, a short reason, and explicit
    candidate record indexes. One shared item schema avoids expanding the provider's compiled grammar
@@ -113,6 +113,11 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   A repair review receives the previous validated rule evidence and the exact changed records
+   and context. This history stays within its stage and request. Current complete rule results
+   determine admission; prior approval cannot override a blocker or incomplete response.
+   Reviewers retain evidence for unchanged paths unless changed dependencies or a concrete
+   overlooked defect invalidate it.
    Prototype action review preserves explicitly requested controls and requires authorization
    and failure handling for concrete external mutations. Generic educational tools do not
    require a separate approval, audit, or rollback workflow. An existing component may own
@@ -144,7 +149,11 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    identifies the retry, redelivery, competing delivery, or uncertain-commit behavior declared
    for the specific write before requiring its reconciliation protocol. A datastore or a
    committed/rejected response alone does not establish that behavior. Explicitly requested
-   guarantees and declared unsafe retries remain blocking. Compensation uses the same controls
+   guarantees and declared unsafe retries remain blocking. A declared atomic durable commit of
+   the effect and same-operation deduplication with safe same-key replay satisfies reconciliation
+   within that boundary. A key alone, race-prone check-before-write, or separately committed marker
+   does not. Effects outside that boundary still need safe target-side idempotency or authoritative
+   reconciliation before retry. Compensation uses the same controls
    as normal actions; existing validation and approval contracts must explicitly cover it.
    Its producer must invoke those controls directly or through a declared delegation; another
    producer's validation path does not establish that coverage.
@@ -294,7 +303,7 @@ limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
 and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
-validation, maturity, and all state transitions. Opus 5 low writes the explanation stream and has a
+validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
 do not add model calls.
@@ -310,6 +319,13 @@ task; it does not turn a memory, summary, or explanation request into a system d
 proposals become requirements only when the user adopts them. Graph publication instructions apply
 only to graph answers. Internal evaluation captures the exact book and research strings passed to
 synthesis, including empty context, under the prompt release identity.
+
+Graph explanations use `EXPLANATION_MODEL` (default `claude-sonnet-5-5`) independently of
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v31` includes the user's September 28
+writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
+authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
+original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
+The model can be rolled back through `EXPLANATION_MODEL`; reverting the prompt change restores v30.
 
 The September 12 simplification keeps two authoring stages because a complete graph can be a large
 output. Component review catches responsibility defects while that stage can repair them; connection

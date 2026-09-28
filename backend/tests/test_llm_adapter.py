@@ -501,6 +501,7 @@ def test_application_model_roles_default_to_calibrated_models():
     configured = Settings(_env_file=None)
 
     assert configured.orchestrator_model == "claude-opus-5"
+    assert configured.explanation_model == "claude-sonnet-5-5"
     assert configured.worker_model == "claude-opus-5"
     assert configured.architecture_model == "claude-opus-5"
     assert configured.graph_builder_model == "kimi-k3"
@@ -1240,9 +1241,11 @@ def test_stream_response_compat_filters_max_output_tokens():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cache_enabled", [False, True])
+@pytest.mark.parametrize("model", ["claude-sonnet-5", "claude-sonnet-5-5"])
 async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
     monkeypatch,
     cache_enabled,
+    model,
 ):
     import adapters.llm_adapter as llm
 
@@ -1278,7 +1281,7 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
     }
 
     events = await _collect(llm.stream_response(
-        "claude-sonnet-5",
+        model,
         "system",
         [],
         effort="low",
@@ -1286,6 +1289,8 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
         allow_fallback=False,
     ))
 
+    assert calls[0]["model"] == model
+    assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & calls[0].keys()
     output_config = calls[0]["output_config"]
     expected_system = {"type": "text", "text": "system"}
     if cache_enabled:
@@ -1306,7 +1311,7 @@ async def test_anthropic_structured_output_merges_schema_effort_and_metadata(
         "input_tokens": 12,
         "output_tokens": 5,
         "provider": "anthropic",
-        "model": "claude-sonnet-5",
+        "model": model,
     }
     assert events[2] == ("done", "")
 
@@ -1676,3 +1681,37 @@ async def test_openai_stream_closes_sdk_stream_after_consumption(monkeypatch):
         ("done", "")
     ]
     assert sdk_stream.closed is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "effort,thinking_budget,expected",
+    [(None, None, "medium"), ("low", None, "low"), ("high", None, "high"),
+     ("xhigh", None, "xhigh"), ("max", None, "max"), ("low", 1000, "low")],
+)
+async def test_opus_55_uses_always_on_adaptive_request_without_legacy_sampling(
+    monkeypatch, effort, thinking_budget, expected
+):
+    import adapters.llm_adapter as llm
+
+    _patch_llm_telemetry(monkeypatch)
+    requests = []
+
+    async def fake_anthropic_stream_once(kwargs):
+        requests.append(kwargs)
+        yield _Event("content_block_delta", _Delta("thinking_delta", thinking=""))
+        yield _Event("content_block_delta", _Delta("text_delta", text="answer"))
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_anthropic_stream_once)
+    events = await _collect(llm.stream_response(
+        "claude-opus-5-5", "system", [{"role": "user", "content": "Explain"}],
+        effort=effort, thinking_budget=thinking_budget, temperature=0.2, top_p=0.8, top_k=20,
+        max_output_tokens=4096, provider_attempt_limit=1, allow_fallback=False,
+    ))
+    assert len(requests) == 1
+    assert requests[0]["model"] == "claude-opus-5-5"
+    assert requests[0]["output_config"] == {"effort": expected}
+    assert requests[0]["max_tokens"] == 4096
+    assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & requests[0].keys()
+    assert ("text", "answer") in events
+    assert events[-1] == ("done", "")

@@ -70,7 +70,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v30"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v31"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -845,6 +845,7 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
 ):
     import agent.nodes.orchestrator_node as orchestrator
 
+    monkeypatch.setattr(settings, "explanation_model", "explanation-model")
     captured = {}
 
     async def fake_stream_blocks(**kwargs):
@@ -957,6 +958,10 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
     )
     assert "<already_shown_untrusted_frame>" in captured["messages"][-1]["content"]
     assert "supplied Markdown" in captured["system"]
+    assert captured["model"] == "explanation-model"
+    assert orchestrator._EXPLANATION_WRITING_STYLE in captured["system"]
+    assert "Preserve exact graph labels" in captured["system"]
+    assert "citations, URLs, quotations, code, schema keys" in captured["system"]
     assert "a source URL, chapter, page, quotation" in captured["system"]
     assert captured["effort"] == "low"
     assert captured["max_output_tokens"] == 4500
@@ -1075,6 +1080,8 @@ async def test_graph_free_synthesis_stream_matches_persisted_early_response(
     import agent.nodes.orchestrator_node as orchestrator
 
     async def fake_stream_llm(**kwargs):
+        assert kwargs["model"] == settings.orchestrator_model
+        assert orchestrator._EXPLANATION_WRITING_STYLE not in kwargs["system"]
         await kwargs["send"]({"type": "response_delta", "content": "Final answer"})
         return "Final answer"
 
@@ -2432,7 +2439,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v30",
+            "prompt_version": "architecture_blocks_v31",
             "book_context": context,
             "research_context": "",
         }
@@ -2560,10 +2567,13 @@ async def test_failed_graph_notice_distinguishes_availability_from_rejection(
     "diagram_evaluation_missing",
     "diagram_evaluation_error",
     "diagram_evaluation_transport_unavailable",
+    "graph_preview_timeout",
     "diagram_evaluation_layout_rejected",
+    "diagram_evaluation_capture_failed",
     None,
 ])
-async def test_render_failure_notice_requires_current_explicit_availability_code(existing_graph, failure_code):
+@pytest.mark.parametrize("kind", ["create", "edit"])
+async def test_render_failure_notice_requires_current_explicit_availability_code(existing_graph, failure_code, kind):
     from agent.nodes import orchestrator_node as orchestrator
 
     graph = {"version": "approved", "nodes": [{"id": "n1"}], "edges": []} if existing_graph else None
@@ -2577,16 +2587,22 @@ async def test_render_failure_notice_requires_current_explicit_availability_code
         "graph_data": graph,
         "approved_graph_data": graph,
         "graph_publication": "preserved" if existing_graph else "withheld",
-        "graph_operation": {"kind": "create", "status": "failed", "failure_code": "staged_component_render_rejected"},
+        "graph_operation": {"kind": kind, "status": "failed", "failure_code": "staged_component_render_rejected"},
         "graph_review": {"render_failure_code": failure_code},
         "graph_review_diagnostics": [{"failure_code": "diagram_evaluation_timeout"}],
     })
-    if failure_code and failure_code != "diagram_evaluation_layout_rejected":
-        expected = "The browser could not finish checking the diagram. Please try again."
+    if failure_code:
+        expected = (
+            "The diagram could not be rendered. Please try again."
+            if failure_code in {"diagram_evaluation_capture_failed", "diagram_evaluation_layout_rejected"}
+            else "The browser could not finish checking the diagram. Please try again."
+        )
         if existing_graph:
             expected += " Your existing diagram is unchanged."
     else:
-        expected = "I couldn't create the diagram. Your existing diagram is unchanged." if existing_graph else "I couldn't create the diagram this time."
-    assert result["response_text"] == expected
+        action = "update" if kind == "edit" else "create"
+        expected = f"I couldn't {action} the diagram. Your existing diagram is unchanged." if existing_graph else f"I couldn't {action} the diagram this time."
+    expected_response = f"## Diagram unchanged\n\n{expected}" if existing_graph and kind == "edit" else expected
+    assert result["response_text"] == expected_response
     assert events[0]["content"] == expected
     assert result["graph_data"] == graph

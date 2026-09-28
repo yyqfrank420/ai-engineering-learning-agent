@@ -283,7 +283,7 @@ def _accepted_staged_graph(*, maturity: str = "prototype") -> dict:
     return graph
 
 
-async def _render_ok(state: dict, graph: dict, *, preview_count: int) -> dict:
+async def _render_ok(state: dict, graph: dict, *, preview_count: int, stage=None) -> dict:
     return {
         **state,
         "graph_data": copy.deepcopy(graph),
@@ -344,7 +344,7 @@ def _install_success_boundaries(monkeypatch, *, events: list[object] | None = No
             events.append("connections")
         return {"wire": _connections_wire(), "prompt_fingerprint": "connection-prompt"}
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         if events is not None:
             events.append(("render", len(graph["edges"])))
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -1112,7 +1112,7 @@ async def test_component_gate_retries_at_most_twice_and_renders_each_candidate(
             "prompt_fingerprint": f"component-{len(calls)}",
         }
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         calls.append(("render", len(graph["edges"])))
         return await _render_ok(state, graph, preview_count=preview_count)
 
@@ -1328,7 +1328,7 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
     async def send(event):
         events.append(event)
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         return await _render_ok(state, graph, preview_count=preview_count)
 
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
@@ -1457,7 +1457,7 @@ async def test_component_contract_correction_receives_rejected_wire(monkeypatch)
             "prompt_fingerprint": f"component-{len(component_inputs)}",
         }
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         rendered_edge_counts.append(len(graph["edges"]))
         return await _render_ok(state, graph, preview_count=preview_count)
 
@@ -1497,7 +1497,7 @@ async def test_successful_connection_contract_correction_retains_first_diagnosti
             "prompt_fingerprint": f"connection-{connection_calls}",
         }
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -1531,7 +1531,7 @@ async def test_repeated_invalid_component_wire_stops_before_render(monkeypatch):
         wire["components"][0]["label"] = "x" * 61
         return {"wire": wire, "prompt_fingerprint": f"component-{generation_calls}"}
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -1562,7 +1562,7 @@ async def test_final_component_contract_failure_retains_safe_coordinate(monkeypa
             wire["components"][0]["label"] = "secret-" + "x" * 60
         return {"wire": wire, "prompt_fingerprint": f"component-{generation_calls}"}
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -1759,6 +1759,7 @@ async def test_component_correction_uses_local_count_after_first_preview(monkeyp
     _install_success_boundaries(monkeypatch)
     generation_timeouts = []
     reviews = []
+    connection_reviews = []
 
     async def components(**kwargs):
         generation_timeouts.append(kwargs["timeout_seconds"])
@@ -1766,7 +1767,7 @@ async def test_component_correction_uses_local_count_after_first_preview(monkeyp
         wire["components"][1]["responsibility"] += f" Revision {kwargs['attempt']}."
         return {"wire": wire, "prompt_fingerprint": f"component-{kwargs['attempt']}"}
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         rendered = await _render_ok(state, graph, preview_count=preview_count)
         return {
             **rendered,
@@ -1776,11 +1777,21 @@ async def test_component_correction_uses_local_count_after_first_preview(monkeyp
 
     async def component_gate(**kwargs):
         reviews.append(kwargs)
-        return _rejected_gate() if len(reviews) == 1 else _approved_gate()
+        if len(reviews) == 1:
+            return {**_rejected_gate(), "review_identity": "component-policy",
+                    "checked_rules": ["mece_scope"], "rule_reviews": {
+                        "mece_scope": {"satisfied": False, "reason": "Competing ownership.",
+                                       "record_indexes": [1]}}}
+        return _approved_gate()
+
+    async def connection_gate(**kwargs):
+        connection_reviews.append(kwargs)
+        return _approved_gate()
 
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
     monkeypatch.setattr(workflow, "_render", render)
     monkeypatch.setattr(workflow, "review_components", component_gate)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
     result = await workflow.run_staged_graph_pipeline(
         _state(
             terminal_deadline_s=2_000.0,
@@ -1788,6 +1799,12 @@ async def test_component_correction_uses_local_count_after_first_preview(monkeyp
         )
     )
     assert result["graph_publication"] == "approved"
+    assert reviews[0]["previous_review"] is None
+    assert reviews[1]["previous_review"]["stage"] == "components"
+    assert reviews[1]["previous_review"]["candidate_records"] == reviews[0]["candidate_records"]
+    assert reviews[1]["previous_review"]["evidence_bundle"] == reviews[0]["evidence_bundle"]
+    assert len(connection_reviews) == 1
+    assert connection_reviews[0]["previous_review"] is None
     assert generation_timeouts == [workflow.settings.graph_builder_max_timeout_s] * 2
 
 
@@ -1926,7 +1943,7 @@ async def test_semantic_gate_rejects_unowned_control_flow_on_correction(
             ]
         )
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -2020,7 +2037,7 @@ async def test_connection_correction_after_generation_error_requires_semantic_ap
             ]
         )
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -2124,6 +2141,13 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
         }
     ]
     stage_gate = _rejected_gate_with_findings(gate_findings)
+    stage_gate.update({
+        "review_identity": "policy", "checked_rules": ["edge_semantics"],
+        "rule_reviews": {"edge_semantics": {
+            "satisfied": False, "reason": "Duplicate flow edge.", "record_indexes": [0],
+        }},
+    })
+    received_previous = []
 
     async def connections(**_kwargs):
         nonlocal connection_calls
@@ -2140,6 +2164,7 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
         return _approved_gate()
 
     async def connection_gate(**_kwargs):
+        received_previous.append(_kwargs.get("previous_review"))
         nonlocal connection_gate_calls
         connection_gate_calls += 1
         return stage_gate
@@ -2165,6 +2190,10 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
 
     assert connection_calls == 2
     assert connection_gate_calls == 2
+    assert received_previous[0] is None
+    assert received_previous[1]["stage"] == "connections"
+    assert received_previous[1]["candidate_records"][0]["label"] == "submits payment"
+    assert received_previous[1]["rule_reviews"] == stage_gate["rule_reviews"]
     assert (
         result["graph_operation"]["failure_code"]
         == "staged_connection_attempts_exhausted"
@@ -2271,7 +2300,7 @@ async def test_final_connection_contract_failure_skips_second_render(monkeypatch
         connection_gate_calls += 1
         return _rejected_gate()
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal render_calls
         render_calls += 1
         return await _render_ok(state, graph, preview_count=preview_count)
@@ -4269,15 +4298,17 @@ async def test_early_generation_failure_retains_precise_diagnostic(
 @pytest.mark.asyncio
 @pytest.mark.parametrize("stage", ["component", "connection"])
 @pytest.mark.parametrize(
-    "failure_code", ["diagram_evaluation_timeout", "diagram_evaluation_layout_rejected"]
+    "failure_code", ["diagram_evaluation_timeout", "diagram_evaluation_layout_rejected", "diagram_evaluation_capture_failed"]
 )
 async def test_current_render_failure_survives_staged_admission_failure(
     monkeypatch, stage, failure_code
 ):
     _install_success_boundaries(monkeypatch)
+    analytics = []
+    monkeypatch.setattr(workflow, "enqueue_analytics_event", lambda **event: analytics.append(event))
     calls = 0
 
-    async def render(state, graph, *, preview_count):
+    async def render(state, graph, *, preview_count, **kwargs):
         nonlocal calls
         calls += 1
         if stage == "connection" and calls == 1:
@@ -4307,3 +4338,71 @@ async def test_current_render_failure_survives_staged_admission_failure(
     assert result["graph_review"]["render_failure_code"] == failure_code
     assert "staged_gate" not in result["graph_review"]
     assert result["graph_publication"] == "withheld"
+    admission = next(event for event in analytics if event["event_name"] == "staged_graph_admission")
+    assert admission["properties"]["render_failure_code"] == failure_code
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["components", "connections"])
+async def test_render_stage_is_explicit_for_graph_without_edges(monkeypatch, stage):
+    async def gate(state, *, interactive_presentation):
+        assert interactive_presentation is True
+        assert state["graph_render_stage"] == stage
+        assert state["graph_data"]["edges"] == []
+        return state
+
+    monkeypatch.setattr(workflow, "graph_render_gate_node", gate)
+    await workflow._render({}, {"nodes": [{"id": "single"}], "edges": []}, preview_count=1, stage=stage)
+
+
+def test_review_snapshot_copies_stage_evidence_and_discards_terminal_results():
+    records = [{"id": "a"}]
+    evidence = {"candidate_context": {"title": "Before"}}
+    review = {
+        "terminal": False,
+        "review_identity": "policy",
+        "checked_rules": ["rule"],
+        "rule_reviews": {
+            "rule": {
+                "satisfied": False,
+                "reason": "Missing path.",
+                "record_indexes": [0],
+            }
+        },
+    }
+    snapshot = workflow._review_snapshot("components", records, evidence, review)
+    records[0]["id"] = "changed"
+    evidence["candidate_context"]["title"] = "After"
+    review["rule_reviews"]["rule"]["reason"] = "Mutated"
+    assert snapshot["stage"] == "components"
+    assert snapshot["candidate_records"] == [{"id": "a"}]
+    assert snapshot["evidence_bundle"]["candidate_context"]["title"] == "Before"
+    assert snapshot["rule_reviews"]["rule"]["reason"] == "Missing path."
+    assert (
+        workflow._review_snapshot("connections", [], {}, {**review, "terminal": True})
+        is None
+    )
+    assert (
+        workflow._review_snapshot(
+            "connections", [], {}, {**review, "checked_rules": []}
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("identity", [None, 3, ""])
+def test_review_snapshot_discards_missing_or_invalid_policy_identity(identity):
+    review = {
+        "terminal": False,
+        "checked_rules": ["rule"],
+        "rule_reviews": {
+            "rule": {
+                "satisfied": False,
+                "reason": "Missing path.",
+                "record_indexes": [],
+            }
+        },
+    }
+    if identity is not None:
+        review["review_identity"] = identity
+    assert workflow._review_snapshot("components", [], {}, review) is None

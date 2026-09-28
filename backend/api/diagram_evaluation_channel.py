@@ -140,6 +140,16 @@ class DiagramEvaluationChannel:
         if not self._report_is_complete(report):
             self._reject_upload(waiter, "diagram evaluation report fields were invalid")
             return
+        if report.get("capture_error"):
+            if not waiter.future.done():
+                waiter.future.set_result({
+                    "capture_error": "browser_capture_failed",
+                    "report": {
+                        key: report[key]
+                        for key in (*self._REPORT_COUNT_FIELDS, "minimum_text_px", "viewport_width", "viewport_height")
+                    },
+                })
+            return
         if not 1 <= total_chunks <= self.MAX_CHUNKS:
             self._reject_upload(waiter, "diagram evaluation chunk count was invalid")
             return

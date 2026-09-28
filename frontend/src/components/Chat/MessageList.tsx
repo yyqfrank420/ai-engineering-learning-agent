@@ -10,6 +10,8 @@ import { useEffect, useRef } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import type { Root, RootContent } from 'mdast';
+import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 import type { Message } from '../../types';
@@ -151,9 +153,34 @@ const mdComponents = {
   ),
 };
 
+// Book locations are citation labels, not URL destinations. CommonMark leaves
+// these malformed self-links as prose text; preserve code and actual link nodes.
+function remarkBookCitationLabels() {
+  return (tree: Root, file: VFile) => {
+    const source = String(file);
+    function visit(node: Root | RootContent) {
+      if (node.type === 'text') {
+        const start = node.position?.start.offset;
+        const end = node.position?.end.offset;
+        // Parsed text loses escapes; leave deliberate Markdown literals intact.
+        if (start === undefined || end === undefined || source.slice(start, end).includes("\\")) {
+          return;
+        }
+        node.value = node.value.replace(
+          /(?<!!)\[(Chapter [1-9][0-9]*(?:, p\.[1-9][0-9]*)?|Book, p\.[1-9][0-9]*|Book excerpt)\]\(\1\)/g,
+          '$1',
+        );
+      } else if ('children' in node && node.type !== 'link' && node.type !== 'linkReference') {
+        node.children.forEach(visit);
+      }
+    }
+    visit(tree);
+  };
+}
+
 // ── Message content renderer ──────────────────────────────────────────────────
 // Splits on LaTeX first, then renders each text segment through ReactMarkdown.
-function MessageContent({ content }: { content: string }) {
+function MessageContent({ content, isAssistant }: { content: string; isAssistant: boolean }) {
   const segments = splitLatex(content);
   return (
     <>
@@ -161,7 +188,7 @@ function MessageContent({ content }: { content: string }) {
         if (seg.type === 'block-math') return <BlockMath key={i} math={seg.value} />;
         if (seg.type === 'inline-math') return <InlineMath key={i} math={seg.value} />;
         return (
-          <ReactMarkdown key={i} remarkPlugins={[remarkGfm]} components={mdComponents}>
+          <ReactMarkdown key={i} remarkPlugins={isAssistant ? [remarkGfm, remarkBookCitationLabels] : [remarkGfm]} components={mdComponents}>
             {seg.value}
           </ReactMarkdown>
         );
@@ -233,7 +260,7 @@ export function MessageList({ messages }: MessageListProps) {
                 {msg.title}
               </div>
             )}
-            <MessageContent content={msg.content} />
+            <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
             {msg.kind === 'explanation' && msg.relatedNodeIds && msg.relatedNodeIds.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: '0.45rem' }}>
                 {msg.relatedNodeIds.slice(0, 4).map(nodeId => (

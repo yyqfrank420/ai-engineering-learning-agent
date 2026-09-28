@@ -173,7 +173,7 @@ def test_specific_model_price_wins_over_a_shared_prefix():
 
 
 def test_model_prices_reject_lookalike_future_skus():
-    for model in ("gpt-5.40", "gpt-5.4-turbo", "claude-opus-50"):
+    for model in ("gpt-5.40", "gpt-5.4-turbo", "claude-opus-50", "claude-opus-5-50", "claude-sonnet-5-50"):
         accounting = account_application_cost(
             [{"id": "case", "thread_id": "thread"}],
             [
@@ -705,3 +705,34 @@ def test_incomplete_usage_does_not_hide_malformed_accounting(mode, invalid):
     policy = evaluate_cost_policy(accounting, CostPolicy(mode=mode))
     assert policy["status"] == "infrastructure"
     assert policy["blocking_status"] == "fail"
+
+
+def test_opus_55_prices_input_output_and_default_ephemeral_cache():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{
+            "thread_id": "thread", "operation": "synthesis", "model": "claude-opus-5-5",
+            "input_tokens": 1_000_000, "output_tokens": 1_000_000,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000,
+        }],
+    )
+    assert accounting["status"] == "pass"
+    assert accounting["total"]["estimated_usd"] == 29.2
+    assert accounting["total"]["known_subtotal_usd"] == 29.2
+
+
+@pytest.mark.parametrize("model", ["claude-sonnet-5-5", "claude-sonnet-5-5-20260928"])
+def test_sonnet_55_prices_input_output_and_default_ephemeral_cache(model):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [{
+            "thread_id": "thread", "operation": "synthesis", "model": model,
+            "input_tokens": 1_000_000, "output_tokens": 1_000_000,
+            "cache_creation_input_tokens": 1_000_000,
+            "cache_read_input_tokens": 1_000_000,
+        }],
+    )
+    assert accounting["status"] == "pass"
+    assert accounting["total"]["estimated_usd"] == 14.7
+    assert accounting["total"]["known_subtotal_usd"] == 14.7

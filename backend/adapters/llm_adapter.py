@@ -723,7 +723,8 @@ async def stream_response(
     if uses_adaptive_effort:
         # Current adaptive-thinking Claude models reject manual thinking budgets
         # and non-default sampling. Effort is their quality/cost control.
-        kwargs["output_config"] = {"effort": effective_effort or "high"}
+        default_effort = "medium" if model == "claude-opus-5-5" else "high"
+        kwargs["output_config"] = {"effort": effective_effort or default_effort}
         if model.startswith("claude-opus-4-8"):
             kwargs["thinking"] = {"type": "adaptive"}
     else:

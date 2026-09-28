@@ -35,6 +35,13 @@ the payload.
 
 ## Trust and staging isolation
 
+Live, scheduled, and production-smoke browser workflows build the frontend and
+serve it through Vite preview with the security headers from `frontend/vercel.json`.
+The preview proxies HTTP and WebSocket API traffic to the candidate backend.
+`NODE_ENV=development` preserves the existing development-only internal auth
+bootstrap. These runs exercise deployed CSP restrictions, including private diagram
+capture; they do not claim full production-build semantics.
+
 The live workflow uses `pull_request`, never `pull_request_target`. Paid live
 generation runs are required when changes affect generation behavior. The manifest
 identifies non-runtime documentation, offline test files, CI policy, and audited

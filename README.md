@@ -33,6 +33,8 @@ For an applied architecture request, the default staged pipeline:
 3. Builds connections against the accepted components and reviews the complete design.
 4. Writes the walkthrough, saves the accepted graph, and publishes the result.
 
+Kimi K3 generates the graph, Sonnet 5 reviews each stage, and Sonnet 5.5 writes the walkthrough.
+
 Each stage allows one correction. Previews remain provisional until the graph passes its checks and is saved. If requirements are unclear, the agent can ask clarifying questions before building connections.
 
 See the [current architecture](docs/current-architecture.md) for routing, model roles, persistence, and failure handling. `GRAPH_PIPELINE_MODE=legacy` remains an explicit rollback option for the applied graph pipeline.
