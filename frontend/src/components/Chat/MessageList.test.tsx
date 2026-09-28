@@ -98,6 +98,61 @@ describe('MessageList', () => {
     expect(screen.getAllByTestId(/message-/)).toHaveLength(2);
   });
 
+  it.each([false, true])('renders duplicated book citation labels during streaming=%s', (isStreaming) => {
+    const labels = ['Chapter 10, p.473', 'Book, p.12', 'Chapter 3', 'Book excerpt'];
+    const { container } = render(<MessageList messages={[{
+      id: 'citations', role: 'assistant', isStreaming,
+      content: labels.map((label) => `([${label}](${label}))`).join(' '),
+    }]} />);
+
+    expect(screen.getByText(labels.map((label) => `(${label})`).join(' '))).toBeTruthy();
+    expect(container.querySelector('a')).toBeNull();
+  });
+
+  it('preserves code, real links, mismatched citations and unsupported book labels', () => {
+    const citation = '[Chapter 10, p.473](Chapter 10, p.473)';
+    const untouched = [
+      '[Chapter 10, p.473](Chapter 10, p.474)',
+      '[Chapter 0](Chapter 0)',
+      '[Chapter 01](Chapter 01)',
+      '[Book, p.0](Book, p.0)',
+      '[Chapter 2, pp.3-4](Chapter 2, pp.3-4)',
+      '[Chapter two](Chapter two)',
+    ];
+    const { container } = render(<MessageList messages={[{
+      id: 'citation-boundaries', role: 'assistant',
+      content: [
+        `\`${citation}\``,
+        `\`\`\`text\n${citation}\n\`\`\``,
+        '[Chapter 10, p.473](https://example.com/book)',
+        '[Book excerpt](http://example.com/excerpt)',
+        ...untouched,
+      ].join('\n\n'),
+    }]} />);
+
+    expect(container.querySelectorAll('code')).toHaveLength(2);
+    for (const code of container.querySelectorAll('code')) {
+      expect(code.textContent?.trim()).toBe(citation);
+    }
+    expect(screen.getByRole('link', { name: 'Chapter 10, p.473' }).getAttribute('href')).toBe('https://example.com/book');
+    expect(screen.getByRole('link', { name: 'Book excerpt' }).getAttribute('href')).toBe('http://example.com/excerpt');
+    for (const value of untouched) expect(screen.getByText(value)).toBeTruthy();
+  });
+
+  it('preserves intentionally escaped assistant citation literals', () => {
+    render(<MessageList messages={[{
+      id: 'escaped-citation', role: 'assistant',
+      content: String.raw`\[Chapter 3\]\(Chapter 3\)`,
+    }]} />);
+    expect(screen.getByText('[Chapter 3](Chapter 3)')).toBeTruthy();
+  });
+
+  it('preserves user-authored book citation syntax', () => {
+    const content = '([Chapter 10, p.473](Chapter 10, p.473))';
+    render(<MessageList messages={[{ id: 'user-citation', role: 'user', content }]} />);
+    expect(screen.getByText(content)).toBeTruthy();
+  });
+
   it('renders a stable empty state', () => {
     render(<MessageList messages={[]} />);
 
