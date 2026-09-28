@@ -42,6 +42,11 @@ retry, and recovered with the draft intact through first-thread initialization. 
 were zero generation requests, unexpected external requests, or JavaScript page errors.
 This verifies startup behavior; it does not measure a real backend cold start.
 
-The release-policy suite passed 366 tests with five environment-dependent skips, and
+The release-policy suite passed 368 tests with five environment-dependent skips, and
 manifest validation passed. The tested source starts from main 29847b3f300f81cddedd2a987bc418edbd7a7cf5;
 the exact changed runtime blobs are recorded in the manifest.
+
+The classification check also exposed a glob gap: root-level frontend tests were not
+matched by nested test patterns. Explicit root test patterns and regression cases now
+classify those offline tests without triggering model evaluation. Runtime files remain
+subject to their existing policy.

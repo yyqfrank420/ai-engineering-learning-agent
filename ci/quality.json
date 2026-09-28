@@ -307,7 +307,8 @@
       }
     ],
     "non_generation": [
-      "backend/tests/test_*.py", "frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx",
+      "backend/tests/test_*.py", "frontend/src/*.test.ts", "frontend/src/*.test.tsx",
+      "frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx",
       "ingestion/test_*.py", "ci/**", "scripts/ci", "scripts/ci_runner.py",
       ".github/workflows/ci.yml", "frontend/src/components/Chat/ThinkingIndicator.tsx",
       "frontend/src/components/Layout/TitleBar.tsx"
