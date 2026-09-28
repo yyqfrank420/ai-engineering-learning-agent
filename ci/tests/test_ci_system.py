@@ -191,6 +191,8 @@ def test_change_classification_is_fail_safe(paths, expected):
     "path",
     [
         "backend/tests/test_orchestrator_node.py",
+        "frontend/src/App.test.tsx",
+        "frontend/src/example.test.ts",
         "frontend/src/hooks/useAgentStream.test.tsx",
         "frontend/src/components/GraphCanvas/D3Graph.capacity.test.tsx",
         "frontend/src/services/agentTransport.test.ts",

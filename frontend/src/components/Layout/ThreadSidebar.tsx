@@ -13,13 +13,14 @@
 import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
+import type { BackendReadiness } from '../../hooks/useBackendReadiness';
 import type { AuthSession, ThreadSummary } from '../../types';
 import { listThreads, deleteThread } from '../../services/api';
 
 interface ThreadSidebarProps {
   authSession:     AuthSession | null;
   activeThreadId:  string | null;
-  backendReady:    boolean;
+  backendReadiness: BackendReadiness;
   onNewChat:       () => void;
   onSelectThread:  (threadId: string) => void;
   onDeleteThread:  (threadId: string) => void;
@@ -117,13 +118,14 @@ function DeletePopup({ onConfirm, onClose, anchor }: DeletePopupProps) {
 export function ThreadSidebar({
   authSession,
   activeThreadId,
-  backendReady,
+  backendReadiness,
   onNewChat,
   onSelectThread,
   onDeleteThread,
   isLoading,
   isOpen,
 }: ThreadSidebarProps) {
+  const backendReady = backendReadiness === 'ready';
   const [threads, setThreads]           = useState<ThreadSummary[]>([]);
   const [fetching, setFetching]         = useState(false);
   const [hoveredId, setHoveredId]       = useState<string | null>(null);
@@ -208,7 +210,11 @@ export function ThreadSidebar({
           )}
 
           {!fetching && threads.length === 0 && (
-            <div style={emptyStyle}>{backendReady ? 'No chats yet' : 'Prepare backend to load chats'}</div>
+            <div role="status" style={emptyStyle}>
+              {!authSession ? 'Sign in to view your chats'
+                : backendReadiness === 'error' ? 'Could not connect to load chats'
+                  : backendReady ? 'No chats yet' : 'Connecting to your chats…'}
+            </div>
           )}
 
           {grouped.map(group => (

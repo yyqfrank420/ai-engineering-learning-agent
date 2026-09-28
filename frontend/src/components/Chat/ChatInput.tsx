@@ -1,21 +1,21 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
-import type { BackendPrepareProgress } from '../../hooks/useBackendReadiness';
+import type { BackendPrepareProgress, BackendReadiness } from '../../hooks/useBackendReadiness';
 
 interface ChatInputProps {
   onSend:        (content: string, diagramRequested?: boolean) => void;
   checkSubmission?: (content: string) => Promise<'send' | 'answer' | 'ask'>;
   onStop:        () => void;
-  onPrepare?:    () => void | Promise<void>;
+  onRetryReadiness?:    () => void | Promise<void>;
   onDraftChange?: (hasText: boolean) => void;
   threadId?:     string | null;
   disabled?:     boolean;   // locks textarea (loading, no thread)
   sendDisabled?: boolean;   // blocks send while backend is not ready
-  showPrepare?:  boolean;
-  prepareDisabled?: boolean;
+  backendReadiness?: BackendReadiness;
+  retryDisabled?: boolean;
   isGenerating?: boolean;   // LLM actively streaming; keep steering and Stop available
-  prepareMessage?: string | null; // non-null while backend is warming up or failed
-  prepareProgress?: BackendPrepareProgress | null;
+  readinessMessage?: string | null; // non-null while backend is warming up or failed
+  readinessProgress?: BackendPrepareProgress | null;
   selectionSuggestion?: string | null;
   selectionReferenceActive?: boolean;
   onUseSelection?: () => void;
@@ -34,9 +34,9 @@ function clearDraft(
 }
 
 export function ChatInput({
-  onSend, checkSubmission, onStop, onPrepare, onDraftChange, threadId, disabled, isGenerating,
-  sendDisabled, showPrepare, prepareDisabled, prepareMessage,
-  prepareProgress,
+  onSend, checkSubmission, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating,
+  sendDisabled, backendReadiness = 'ready', retryDisabled, readinessMessage,
+  readinessProgress,
   selectionSuggestion, selectionReferenceActive, onUseSelection, onDismissSelection, onClearSelectionReference,
 }: ChatInputProps) {
   const [value, setValue]         = useState('');
@@ -50,10 +50,10 @@ export function ChatInput({
   useEffect(() => () => { intentRequestRef.current += 1; }, []);
 
   useEffect(() => {
-    if (!disabled && !sendDisabled) return;
+    if (!disabled && !sendDisabled && backendReadiness === 'ready') return;
     intentRequestRef.current += 1;
     setCheckingIntent(false);
-  }, [disabled, sendDisabled]);
+  }, [disabled, sendDisabled, backendReadiness]);
 
   const resizeTextarea = useCallback((element: HTMLTextAreaElement) => {
     element.style.height = 'auto';
@@ -77,7 +77,7 @@ export function ChatInput({
 
   const submit = async () => {
     const trimmed = value.trim();
-    if (!trimmed || disabled || sendDisabled || checkingIntent) return;
+    if (!trimmed || disabled || sendDisabled || backendReadiness !== 'ready' || checkingIntent) return;
     setSubmissionError(null);
     if (!checkSubmission || isGenerating) {
       clearDraft(setValue, textareaRef.current);
@@ -123,7 +123,7 @@ export function ChatInput({
     const nextThreadId = threadId ?? null;
 
     // Preserve the draft for the initial bootstrap from "no thread yet" to the
-    // first real thread after Prepare. Clear only on real thread switches.
+    // first real thread after startup. Clear only on real thread switches.
     if (previousThreadId && previousThreadId !== nextThreadId) {
       intentRequestRef.current += 1;
       setCheckingIntent(false);
@@ -134,7 +134,10 @@ export function ChatInput({
     previousThreadIdRef.current = nextThreadId;
   }, [threadId]);
 
-  const isReady = !disabled && !sendDisabled && !checkingIntent && !!value.trim();
+  const isReady = backendReadiness === 'ready' && !disabled && !sendDisabled && !checkingIntent && !!value.trim();
+  const readinessNotice = readinessMessage ?? (backendReadiness === 'error'
+    ? 'Could not connect. Please retry.'
+    : backendReadiness !== 'ready' ? 'Connecting…' : null);
   const placeholder = isGenerating
     ? 'Add a follow-up…'
     : (selectionReferenceActive || !!selectionSuggestion)
@@ -198,22 +201,22 @@ export function ChatInput({
         </div>
       )}
 
-      {prepareMessage && (
-        <div style={prepareNoticeStyle}>
+      {readinessNotice && (
+        <div role={backendReadiness === 'error' ? 'alert' : 'status'} aria-atomic="true" style={prepareNoticeStyle}>
           <div style={prepareNoticeHeaderStyle}>
-            <span>{prepareMessage}</span>
-            {prepareProgress && <span>{prepareProgress.percent}%</span>}
+            <span>{readinessNotice}</span>
+            {readinessProgress && <span>{readinessProgress.percent}%</span>}
           </div>
-          {prepareProgress && (
+          {readinessProgress && (
             <div
               role="progressbar"
               aria-label="Backend preparation progress"
               aria-valuemin={0}
               aria-valuemax={100}
-              aria-valuenow={prepareProgress.percent}
-              style={prepareProgressTrackStyle}
+              aria-valuenow={readinessProgress.percent}
+              style={readinessProgressTrackStyle}
             >
-              <div style={prepareProgressFillStyle(prepareProgress.percent)} />
+              <div style={readinessProgressFillStyle(readinessProgress.percent)} />
             </div>
           )}
         </div>
@@ -273,16 +276,14 @@ export function ChatInput({
               Stop
             </button>
           </div>
-        ) : showPrepare ? (
+        ) : backendReadiness === 'error' ? (
           <button
-            onClick={() => void onPrepare?.()}
-            disabled={prepareDisabled}
-            aria-label="Prepare backend"
-            style={sendButtonStyle(!prepareDisabled, 'Prepare')}
+            onClick={() => void onRetryReadiness?.()}
+            disabled={retryDisabled}
+            aria-label="Retry connection"
+            style={sendButtonStyle(!retryDisabled, 'Retry')}
           >
-            {prepareMessage && !prepareMessage.toLowerCase().includes('unavailable')
-              ? 'Preparing…'
-              : 'Prepare'}
+            Retry
           </button>
         ) : (
           <button
@@ -360,7 +361,7 @@ const prepareNoticeHeaderStyle: CSSProperties = {
   gap: '0.75rem',
 };
 
-const prepareProgressTrackStyle: CSSProperties = {
+const readinessProgressTrackStyle: CSSProperties = {
   height: '4px',
   marginTop: '0.5rem',
   overflow: 'hidden',
@@ -368,7 +369,7 @@ const prepareProgressTrackStyle: CSSProperties = {
   background: 'rgba(96,165,250,0.14)',
 };
 
-const prepareProgressFillStyle = (percent: number): CSSProperties => ({
+const readinessProgressFillStyle = (percent: number): CSSProperties => ({
   width: `${percent}%`,
   height: '100%',
   borderRadius: 'inherit',
@@ -422,31 +423,31 @@ const stopButtonStyle: CSSProperties = {
   transition:           'background 0.15s',
 };
 
-function sendButtonStyle(isReady: boolean, variant: 'Send' | 'Prepare'): CSSProperties {
-  const isPrepare = variant === 'Prepare';
+function sendButtonStyle(isReady: boolean, variant: 'Send' | 'Retry'): CSSProperties {
+  const isRetry = variant === 'Retry';
   return {
-    padding:              isPrepare ? '0.5rem 1rem' : '0.5rem',
-    width:                isPrepare ? undefined : '38px',
+    padding:              isRetry ? '0.5rem 1rem' : '0.5rem',
+    width:                isRetry ? undefined : '38px',
     display:              'inline-flex',
     alignItems:           'center',
     justifyContent:       'center',
     flexShrink:           0,
     borderRadius:         '10px',
     background:           isReady
-      ? isPrepare
+      ? isRetry
         ? 'linear-gradient(135deg, rgba(37,99,235,0.9), rgba(14,165,233,0.88))'
         : 'linear-gradient(135deg, rgba(124,58,237,0.9), rgba(59,130,246,0.9))'
       : 'rgba(255,255,255,0.04)',
     backdropFilter:       'blur(8px)',
     WebkitBackdropFilter: 'blur(8px)',
     boxShadow:            isReady
-      ? isPrepare
+      ? isRetry
         ? 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px rgba(37,99,235,0.25)'
         : 'inset 0 1px 0 rgba(255,255,255,0.2), 0 4px 12px rgba(124,58,237,0.25)'
       : 'inset 0 1px 0 rgba(255,255,255,0.04)',
     color:                isReady ? '#fff' : '#6e7681',
     border:               isReady
-      ? isPrepare
+      ? isRetry
         ? '1px solid rgba(96,165,250,0.3)'
         : '1px solid rgba(167,139,250,0.3)'
       : '1px solid rgba(255,255,255,0.06)',

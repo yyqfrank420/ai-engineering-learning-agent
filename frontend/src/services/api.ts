@@ -144,8 +144,8 @@ export interface PrepareResponse {
   faiss_loaded?: boolean;
 }
 
-export async function prepareBackend(): Promise<PrepareResponse> {
-  const response = await fetch(`${API_BASE}/api/prepare`);
+export async function prepareBackend(signal?: AbortSignal): Promise<PrepareResponse> {
+  const response = await fetch(`${API_BASE}/api/prepare`, signal ? { signal } : undefined);
   const data = await response.json() as Record<string, unknown>;
   if (!response.ok) {
     const status = typeof data.status === 'string' ? data.status : 'preparing';

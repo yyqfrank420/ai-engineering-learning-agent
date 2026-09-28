@@ -92,7 +92,7 @@ npm ci
 npm run dev
 ```
 
-Open [localhost:5173](http://localhost:5173), sign in, and use **Prepare** when prompted. Sending a message becomes available once the retrieval index is ready.
+Open [localhost:5173](http://localhost:5173) and sign in. The app checks backend readiness automatically after sign-in and refresh. Sending a message becomes available once the retrieval index is ready. If startup fails, the composer shows the error and a **Retry** button.
 
 ## Development
 
@@ -117,7 +117,7 @@ Live browser and model evaluations are separate protected checks. See the [quali
 
 ## Deployment
 
-The deployment target is Vercel for the frontend and Cloud Run for the backend, with zero minimum backend instances. The Prepare flow handles retrieval readiness after a cold start.
+The deployment target is Vercel for the frontend and Cloud Run for the backend, with zero minimum backend instances. Automatic startup checks handle retrieval readiness after a cold start.
 
 Production promotion requires an approved immutable image for the exact Git tree and a successful smoke check before traffic moves. Check the release evidence for the validation and deployment status of a specific revision.
 

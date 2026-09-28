@@ -6,14 +6,14 @@ import { ChatInput } from './ChatInput';
 const defaultProps = {
   onSend: vi.fn(),
   onStop: vi.fn(),
-  onPrepare: vi.fn(),
+  onRetryReadiness: vi.fn(),
   threadId: 'thread-1' as string | null,
   disabled: false,
   sendDisabled: false,
-  showPrepare: false,
-  prepareDisabled: false,
-  prepareMessage: null as string | null,
-  prepareProgress: null,
+  backendReadiness: 'ready' as const,
+  retryDisabled: false,
+  readinessMessage: null as string | null,
+  readinessProgress: null,
   isGenerating: false,
   selectionSuggestion: null as string | null,
   selectionReferenceActive: false,
@@ -202,35 +202,46 @@ describe('ChatInput', () => {
     expect(input.style.borderColor).toBe('rgba(255, 255, 255, 0.08)');
   });
 
-  it('shows prepare button and notice while backend is warming', () => {
-    const onPrepare = vi.fn();
+  it('keeps the send arrow disabled and announces automatic startup milestones', () => {
+    const onSend = vi.fn();
     renderInput('thread-1', {
-      showPrepare: true,
-      prepareMessage: 'Backend is warming up',
-      prepareProgress: { completedUnits: 2, totalUnits: 3, percent: 67 },
-      onPrepare,
+      backendReadiness: 'preparing',
+      readinessMessage: 'Loading the retrieval index…',
+      readinessProgress: { completedUnits: 2, totalUnits: 3, percent: 67 },
+      onSend,
     });
-
-    expect(screen.getByText('Backend is warming up')).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my draft' } });
+    expect(screen.getByRole('status').textContent).toContain('Loading the retrieval index…');
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('67');
-    fireEvent.click(screen.getByRole('button', { name: 'Prepare backend' }));
-
-    expect(onPrepare).toHaveBeenCalled();
+    expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: /prepare|retry/i })).toBeNull();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('shows unavailable prepare label and honors disabled prepare state', () => {
-    const onPrepare = vi.fn();
-    renderInput('thread-1', {
-      showPrepare: true,
-      prepareDisabled: true,
-      prepareMessage: 'Backend unavailable',
-      onPrepare,
-    });
+  it('shows Retry only for an explicit readiness error and preserves the draft across recovery', () => {
+    const onRetryReadiness = vi.fn();
+    const view = renderInput('thread-1', { backendReadiness: 'error', readinessMessage: 'Connection failed.', onRetryReadiness });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Saved draft' } });
+    expect(screen.getByRole('alert').textContent).toBe('Connection failed.');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
+    expect(onRetryReadiness).toHaveBeenCalledOnce();
+    view.rerender(<ChatInput {...defaultProps} backendReadiness="preparing" />);
+    expect(screen.queryByRole('button', { name: 'Retry connection' })).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('Connecting…');
+    view.rerender(<ChatInput {...defaultProps} />);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Saved draft');
+    expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(false);
+  });
 
-    const button = screen.getByRole('button', { name: 'Prepare backend' });
-    expect(button.textContent).toBe('Prepare');
-    fireEvent.click(button);
-    expect(onPrepare).not.toHaveBeenCalled();
+  it('honors disabled retry without inferring state from message text', () => {
+    const onRetryReadiness = vi.fn();
+    const view = renderInput('thread-1', { backendReadiness: 'error', retryDisabled: true, onRetryReadiness });
+    fireEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
+    expect(onRetryReadiness).not.toHaveBeenCalled();
+    view.rerender(<ChatInput {...defaultProps} backendReadiness="preparing" readinessMessage="Temporarily unavailable" />);
+    expect(screen.queryByRole('button', { name: 'Retry connection' })).toBeNull();
+    expect(screen.queryByRole('alert')).toBeNull();
   });
 
   it('keeps an empty composer at one row when highlighted context changes', () => {

@@ -268,6 +268,10 @@ surface; they do not define this application's persistence or approval contract.
 FastAPI becomes available after database initialisation, then loads the FAISS artifacts and index in
 a background thread. `GET /api/prepare` reports the current server-owned milestone and completed/total
 units; the frontend renders that exact progress and never advances it with an elapsed-time animation.
+Authenticated workspaces start this check automatically, including after a page refresh. Checks run
+serially and stop on failure until the user chooses Retry. Workspace teardown cancels requests and
+polling; late responses cannot update a different account or a newer attempt. A token refresh for the
+same user does not restart preparation.
 
 Diagram-enabled turns retain the canvas after completion, including a clear empty state when no
 diagram is published. The conversation shows one short status derived from the latest server
