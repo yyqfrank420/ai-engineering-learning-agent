@@ -99,7 +99,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     graphPreview,
     graphCandidate,
     workflowProgress,
-    workerStatus,
     retrievalNotice,
     graphNotice,
     selectedNode,
@@ -399,7 +398,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     sourceTexts={[latestAssistantText]}
                     isBuilding={isGenerating}
                     onGraphReady={acknowledgeGraphRendered}
-                    workflowProgress={workflowProgress}
                   />
                 </Suspense>
               }
@@ -443,7 +441,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     <MessageList messages={visibleMessages} />
                   </Suspense>
                   <ThinkingIndicator
-                    workerStatus={workerStatus}
                     workflowProgress={workflowProgress}
                     isGenerating={isGenerating || answerPending}
                   />

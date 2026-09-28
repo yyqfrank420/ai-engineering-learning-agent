@@ -5,6 +5,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 # Argument-vector subprocesses are the runner's core execution boundary.
 import subprocess  # nosec B404
@@ -80,14 +81,94 @@ def _matches(path: str, patterns: list[str]) -> bool:
     return any(fnmatch.fnmatchcase(path, pattern) for pattern in patterns)
 
 
-def classify_paths(paths: list[str], manifest: dict[str, Any]) -> dict[str, Any]:
+def _presentation_records(manifest: dict[str, Any]) -> list[dict[str, str]]:
+    records = manifest["impact"].get("reviewed_presentation_changes", [])
+    if not isinstance(records, list):
+        raise ValueError("reviewed_presentation_changes must be a list")
+    seen = set()
+    for record in records:
+        required = {"path", "before_blob", "after_blob", "reason", "verification"}
+        if not isinstance(record, dict) or set(record) != required:
+            raise ValueError("presentation review must contain path, blob pair, reason and verification")
+        if any(not isinstance(value, str) or not value.strip() for value in record.values()):
+            raise ValueError("presentation review fields must be nonempty strings")
+        path = record["path"]
+        if (
+            not path.startswith("frontend/src/")
+            or any(part in {"", ".", ".."} for part in path.split("/"))
+            or path in seen
+        ):
+            raise ValueError("presentation review requires a unique frontend source path")
+        seen.add(path)
+        if any(not re.fullmatch(r"[0-9a-f]{40}", record[key]) for key in ("before_blob", "after_blob")):
+            raise ValueError("presentation review requires full Git blob hashes")
+        if record["before_blob"] == ZERO_SHA or record["before_blob"] == record["after_blob"]:
+            raise ValueError("presentation review must describe a modification or deletion")
+    return records
+
+
+def _reviewed_presentation_changes(
+    manifest: dict[str, Any], base: str, head: str
+) -> list[dict[str, str]]:
+    records = _presentation_records(manifest)
+    if not records:
+        return []
+    completed = subprocess.run(  # nosec B603, B607
+        ["git", "diff", "--raw", "-z", "--no-abbrev", "--find-renames", f"{base}...{head}"],
+        cwd=ROOT, check=True, text=True, capture_output=True,
+    )
+    # PR workflows test a synthetic merge checkout, which may include newer base code.
+    checkout = subprocess.run(  # nosec B603, B607
+        ["git", "--literal-pathspecs", "ls-tree", "-z", "HEAD", "--", *[record["path"] for record in records]],
+        cwd=ROOT, check=True, text=True, capture_output=True,
+    )
+    checkout_blobs = {}
+    for entry in checkout.stdout.split("\0"):
+        if entry:
+            metadata, path = entry.split("\t", 1)
+            mode, kind, blob = metadata.split()
+            checkout_blobs[path] = (mode, kind, blob)
+    fields = iter(completed.stdout.rstrip("\0").split("\0"))
+    matched = []
+    by_path = {record["path"]: record for record in records}
+    for header in fields:
+        if not header:
+            continue
+        old_mode, new_mode, before, after, status = header.removeprefix(":").split()
+        path = next(fields)
+        if status.startswith(("R", "C")):
+            next(fields)
+            continue
+        record = by_path.get(path)
+        if (
+            record
+            and old_mode == "100644"
+            and (status, new_mode) in {("M", "100644"), ("D", "000000")}
+            and (before, after) == (record["before_blob"], record["after_blob"])
+            and (
+                checkout_blobs.get(path) == ("100644", "blob", after)
+                if status == "M"
+                else path not in checkout_blobs
+            )
+        ):
+            matched.append(record)
+    return matched
+
+
+def classify_paths(
+    paths: list[str], manifest: dict[str, Any], *, base: str | None = None, head: str | None = None
+) -> dict[str, Any]:
     normalized = sorted({path.strip().removeprefix("./") for path in paths if path.strip()})
     rules = manifest["impact"]
+    _presentation_records(manifest)
+    reviewed = _reviewed_presentation_changes(manifest, base, head) if base and head else []
+    reviewed = [record for record in reviewed if record["path"] in normalized]
+    reviewed_paths = {record["path"] for record in reviewed}
     docs = [path for path in normalized if _matches(path, rules["documentation"])]
     visual = [path for path in normalized if _matches(path, rules["visual_only"])]
     non_generation = [path for path in normalized if _matches(path, rules["non_generation"])]
     # Runtime prefixes also contain offline tests and documentation.
-    excluded = set(docs) | set(non_generation)
+    excluded = set(docs) | set(non_generation) | reviewed_paths
     explicit_ai = [path for path in normalized if path not in excluded and _matches(path, rules["ai"])]
     classified_non_ai = excluded | set(visual)
     fail_safe_ai = [path for path in normalized if path not in classified_non_ai and path not in explicit_ai]
@@ -99,7 +180,8 @@ def classify_paths(paths: list[str], manifest: dict[str, Any]) -> dict[str, Any]
         "ai_impact": bool(ai_paths),
         "ai_paths": ai_paths,
         "reasons": {
-            "explicit_non_generation": sorted(excluded),
+            "explicit_non_generation": sorted(set(docs) | set(non_generation)),
+            "reviewed_presentation_changes": reviewed,
             "explicit_ai": explicit_ai,
             "unclassified_fail_safe": fail_safe_ai,
         },
@@ -162,12 +244,13 @@ def impact_command(args: argparse.Namespace, manifest: dict[str, Any]) -> None:
     event: dict[str, Any] = {}
     if args.event_file:
         event = json.loads(Path(args.event_file).read_text(encoding="utf-8"))
+    base = head = None
     if args.paths_from:
         paths = Path(args.paths_from).read_text(encoding="utf-8").splitlines()
     else:
         base, head = (args.base, args.head) if args.base and args.head else _event_revisions(event)
         paths = _git_changed_paths(base, head)
-    result = classify_paths(paths, manifest)
+    result = classify_paths(paths, manifest, base=base, head=head)
     trusted, trust_reason = trust_for_event(event)
     result.update({"trusted": trusted, "trust_reason": trust_reason})
     if args.github_output:
@@ -226,6 +309,7 @@ def select_offline_groups(paths: list[str], manifest: dict[str, Any]) -> list[di
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
+    _presentation_records(manifest)
     groups = group_map(manifest)
     for group in groups.values():
         if group.get("runtime") not in {"python", "node", "infra", "docker"}:

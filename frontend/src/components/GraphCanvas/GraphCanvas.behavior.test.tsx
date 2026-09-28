@@ -227,7 +227,7 @@ describe('GraphCanvas behavior', () => {
     expect(screen.queryByText('Feedback')).toBeNull();
     expect(screen.getByText('Current Retrieval API')).toBeTruthy();
     expect(screen.queryByText('Stale label')).toBeNull();
-    expect(screen.getByText('Preparing your answer…')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(screen.getByTestId('initial-view').textContent).toBe('0.9');
 
     fireEvent.click(screen.getByText('Select rendered node'));
@@ -404,7 +404,7 @@ describe('GraphCanvas behavior', () => {
     expect(screen.getByText('Dictionary').closest('[hidden]')).toBeNull();
   });
 
-  it('renders plain and active empty-graph states with workflow detail', () => {
+  it('leaves generation feedback to the conversation while the canvas is empty', () => {
     const view = render(<GraphCanvas {...baseProps} graphData={null} authSession={null} />);
     expect(screen.getByText(/No diagram is available yet/)).toBeTruthy();
 
@@ -414,15 +414,9 @@ describe('GraphCanvas behavior', () => {
         graphData={null}
         authSession={null}
         isBuilding={true}
-        workflowProgress={[{
-          phase: 'review',
-          status: 'active',
-          title: 'Reviewing topology',
-          detail: 'Checking publication invariants.',
-        }]}
       />,
     );
-    expect(screen.getByText('Building your diagram…')).toBeTruthy();
-    expect(screen.getByText('Checking publication invariants.')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(view.container.textContent).toBe('');
   });
 });
