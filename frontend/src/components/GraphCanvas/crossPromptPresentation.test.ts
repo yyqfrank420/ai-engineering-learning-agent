@@ -236,6 +236,31 @@ describe('presentation across generated prompt shapes', () => {
     expect(details).not.toContain('returns result');
   });
 
+  it('places an added node away from saved nodes occupying its default position', () => {
+    const original = cases[4];
+    const data: GraphData = { ...original, nodes: [...original.nodes, {
+      ...original.nodes[0], id: 'added', label: 'Added service', type: 'service',
+    }] };
+    const props = { currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: () => undefined, navigation: true };
+    const baseline = render(createElement(D3Graph, { ...props, graphData: data }));
+    const target = position(baseline.container, 'added');
+    const nodePositions = Object.fromEntries(original.nodes.map(node => [node.id, position(baseline.container, node.id)]));
+    nodePositions.writer = target;
+    baseline.unmount();
+    const saved: GraphViewState = {
+      layoutVersion: GRAPH_LAYOUT_VERSION, nodePositions,
+      viewport: { x: 35, y: 45, k: 0.8 },
+    };
+    const onViewStateChange = vi.fn();
+    const view = render(createElement(D3Graph, { ...props, graphData: data, initialViewState: saved, onViewStateChange }));
+    const added = position(view.container, 'added');
+    for (const [id, anchor] of Object.entries(nodePositions)) {
+      expect(position(view.container, id)).toEqual(anchor);
+      expect(Math.abs(added.x - anchor.x) >= 186 || Math.abs(added.y - anchor.y) >= 68).toBe(true);
+    }
+    expect(onViewStateChange.mock.lastCall?.[0].viewport).toEqual(saved.viewport);
+  });
+
   it('uses changed content with the same server version and retains saved positions through expansion', () => {
     const first = cases[4];
     const expanded: GraphData = {

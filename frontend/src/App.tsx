@@ -1,6 +1,6 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { GraphNode } from './types';
+import type { DiagramIntentAction, GraphNode, SendOptions } from './types';
 import { trackEvent } from './services/analytics';
 import { useAgentStream } from './hooks/useAgentStream';
 import { graphStructureKey } from './utils/graphStructureKey';
@@ -13,6 +13,9 @@ import { ContextBar } from './components/Chat/ContextBar';
 import { ChatInput } from './components/Chat/ChatInput';
 import { AuthScreen } from './components/Auth/AuthScreen';
 import { signOut } from './services/auth';
+import type { GraphCanvasHandle } from './components/GraphCanvas';
+import { GraphHistoryControls } from './components/GraphHistoryControls';
+import { useGraphHistory } from './hooks/useGraphHistory';
 import { checkDiagramIntent } from './services/api';
 import { useAuthSession } from './hooks/useAuthSession';
 import { useBackendReadiness } from './hooks/useBackendReadiness';
@@ -107,12 +110,34 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     providerNotice,
     hydrateThread,
     sendMessage,
+    startThreadAndSend,
+    adoptRestoredGraph,
     saveGraphEdit,
     requestSearchTool,
     stopGeneration,
   } = useAgentStream(authSession, activeThreadId);
 
   const graphEditBlocked = hasUnsavedGraphEdit || isSavingGraphEdit;
+  const graphCanvasRef = useRef<GraphCanvasHandle>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const actionInFlight = useRef(false);
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+  const currentContext = useRef('');
+  const context = `${authSession?.user.id ?? ''}:${activeThreadId ?? ''}:${graphData?.version ?? ''}`;
+  currentContext.current = context;
+  const flushLayout = useCallback(async () => { await graphCanvasRef.current?.flushPendingLayout(); }, []);
+  const clearGraphSelection = useCallback(() => { clearSelection(); clearSelectedNode(); }, [clearSelection, clearSelectedNode]);
+  const history = useGraphHistory({
+    session: authSession, threadId: activeThreadId, graph: graphData,
+    blocked: graphEditBlocked || loadingThread || actionBusy || streamStatus === 'generating',
+    flushLayout, clearSelection: clearGraphSelection, adoptGraph: adoptRestoredGraph,
+  });
+
 
   useEffect(() => {
     if (!graphEditBlocked) return;
@@ -152,31 +177,51 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setAuthSession(null);
   }, [authSession, clearPreparedCache, graphEditBlocked, setAuthSession]);
 
-  const handleSend = useCallback((content: string, diagramRequested?: boolean) => {
-    if (backendReadiness !== 'ready' || graphEditBlocked) {
-      return;
+  const handleSend = useCallback(async (content: string, action?: DiagramIntentAction) => {
+    if (backendReadiness !== 'ready' || graphEditBlocked || history.busy || history.preview || actionInFlight.current) {
+      throw new Error('Finish the current diagram action before sending. Your message is saved here.');
     }
-    const requestContent = selectionReferenceActive && selectionSuggestion
-      ? [
-          'Explain this highlighted part in beginner-friendly terms and relate it to the diagram.',
-          '',
-          `Highlighted text: "${selectionSuggestion}"`,
-          '',
-          `User question: ${content}`,
-        ].join('\n')
-      : content;
-
-    clearSelection();
-    sendMessage(requestContent, {
-      complexity: 'auto',
-      graphMode: 'on',
-      diagramRequested,
-      researchEnabled: true,
-      displayContent: content,
-      backendReadinessState: backendReadiness,
-      hasSelectedTextContext: selectionReferenceActive && !!selectionSuggestion,
-    });
-  }, [backendReadiness, clearSelection, graphEditBlocked, selectionReferenceActive, selectionSuggestion, sendMessage]);
+    actionInFlight.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await flushLayout();
+      if (!mountedRef.current || currentContext.current !== context) throw new Error('The conversation changed. Please try again.');
+      const requestContent = selectionReferenceActive && selectionSuggestion
+        ? ['Explain this highlighted part in beginner-friendly terms and relate it to the diagram.', '',
+          `Highlighted text: "${selectionSuggestion}"`, '', `User question: ${content}`].join('\n')
+        : content;
+      const graphAction = action === 'extend' ? 'extend' : action === 'answer' ? 'answer'
+        : action === 'new_chat' || !graphData ? 'new' : undefined;
+      const options: SendOptions = {
+        complexity: 'auto', graphMode: 'on', researchEnabled: true,
+        graphAction, expectedGraphVersion: graphAction === 'extend' ? graphData?.version ?? null : undefined,
+        displayContent: content, backendReadinessState: backendReadiness,
+        hasSelectedTextContext: selectionReferenceActive && !!selectionSuggestion,
+      };
+      let accepted: boolean;
+      if (action === 'new_chat') {
+        const created = await handleNewChat({ preserveCurrentView: true });
+        if (!created) throw new Error('Could not create a new chat. Your message is saved here.');
+        const createdContext = `${authSession?.user.id ?? ''}:${created.thread.id}:`;
+        if (!mountedRef.current || (currentContext.current !== context && !currentContext.current.startsWith(createdContext))) {
+          throw new Error('The conversation changed. Please try again.');
+        }
+        accepted = startThreadAndSend(created, requestContent, options);
+      } else {
+        accepted = sendMessage(requestContent, options);
+      }
+      if (!accepted) throw new Error('Could not send. Your message is saved here. Please try again.');
+      clearGraphSelection();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Could not save the diagram. Please retry.';
+      setActionError(message);
+      throw error;
+    } finally {
+      actionInFlight.current = false;
+      setActionBusy(false);
+    }
+  }, [backendReadiness, graphEditBlocked, history.busy, history.preview, flushLayout, context, authSession, selectionReferenceActive, selectionSuggestion, graphData, handleNewChat, startThreadAndSend, sendMessage, clearGraphSelection]);
 
   const checkSubmission = useCallback(async (content: string) => {
     if (!authSession || !activeThreadId) throw new Error('Chat is not ready');
@@ -186,15 +231,16 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   // isGenerating: LLM is actively streaming — show Stop button
   const isGenerating = streamStatus === 'generating';
   // isStreaming: busy state used to disable sidebar/new-chat during loads
-  const isStreaming = isGenerating || loadingThread || graphEditBlocked;
+  const isStreaming = isGenerating || loadingThread || graphEditBlocked || actionBusy || history.busy;
   const composerLocked = loadingThread || isSavingGraphEdit;
-  const sendLocked = composerLocked || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
+  const sendLocked = composerLocked || actionBusy || history.busy || !!history.preview || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
   const readinessRetryDisabled = isGenerating || composerLocked || !authSession;
 
   const handleNodeClick = (node: GraphNode) => {
     // Useful actions appear immediately. The low-cost model request may refine
     // them asynchronously, but latency or a provider failure never leaves an
     // empty context bar.
+    if (history.preview || history.busy || actionBusy) return;
     selectNode(node);
     void trackEvent('node_selected', {
       thread_id: activeThreadId ?? undefined,
@@ -204,51 +250,49 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   };
 
   const handleTellMeMore = useCallback((node: GraphNode) => {
-    handleSend(
+    void handleSend(
       `Tell me more about ${node.label}. Walk me through how it fits into this architecture like I am a beginner, and use simple analogies.`,
-    );
+      'answer',
+    ).catch(() => {});
   }, [handleSend]);
 
   const handleExpandGraph = useCallback((node: GraphNode) => {
-    if (graphEditBlocked) return;
-    clearSelection();
-    clearSelectedNode();
-    void trackEvent('expand_graph_clicked', {
-      thread_id: activeThreadId ?? undefined,
-      node_id: node.id,
-      node_label: node.label,
-      complexity: 'auto',
-      graph_mode: 'on',
-      research_enabled: true,
-      backend_readiness_state: backendReadiness,
-    }, authSession);
-    sendMessage(
-      [
-        `Expand the current graph around ${node.label}.`,
-        '',
-        'Keep the same overall topic and build on the existing graph instead of replacing it.',
-        'Add only the most relevant nearby nodes, edges, and steps that help a beginner understand this part better.',
-        'Do not start a brand-new graph unless the topic has clearly changed.',
-        'Do not expand business-constraint or decision nodes unless they are central to the user request.',
-      ].join('\n'),
-      {
-        complexity: 'auto',
-        graphMode: 'on',
-        researchEnabled: true,
-        displayContent: `Expand graph around ${node.label}`,
-        backendReadinessState: backendReadiness,
-        hasSelectedTextContext: false,
-      },
-    );
-  }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, graphEditBlocked, sendMessage]);
+    if (graphEditBlocked || history.busy || history.preview || actionBusy) return;
+    void trackEvent('expand_graph_clicked', { thread_id: activeThreadId ?? undefined, node_id: node.id, node_label: node.label }, authSession);
+    void handleSend(`Expand the current graph around ${node.label}. Keep the same topic and build on the existing diagram.`, 'extend').catch(() => {});
+  }, [handleSend, graphEditBlocked, history.busy, history.preview, actionBusy, activeThreadId, authSession]);
 
-  const startNewChat = useCallback(() => {
-    if (!graphEditBlocked) void handleNewChat();
-  }, [graphEditBlocked, handleNewChat]);
+  const startNewChat = useCallback(async () => {
+    if (graphEditBlocked || isStreaming || actionInFlight.current) return;
+    actionInFlight.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await flushLayout();
+      if (mountedRef.current && currentContext.current === context) await handleNewChat();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not save the diagram. Please retry.');
+    } finally {
+      actionInFlight.current = false;
+      setActionBusy(false);
+    }
+  }, [graphEditBlocked, isStreaming, flushLayout, context, handleNewChat]);
 
-  const selectThread = useCallback((threadId: string) => {
-    if (!graphEditBlocked) handleSelectThread(threadId);
-  }, [graphEditBlocked, handleSelectThread]);
+  const selectThread = useCallback(async (threadId: string) => {
+    if (isStreaming || actionInFlight.current) return;
+    actionInFlight.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await flushLayout();
+      if (mountedRef.current && currentContext.current === context) handleSelectThread(threadId);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not save the diagram. Please retry.');
+    } finally {
+      actionInFlight.current = false;
+      setActionBusy(false);
+    }
+  }, [isStreaming, flushLayout, context, handleSelectThread]);
 
   const deleteThread = useCallback((threadId: string) => {
     if (!graphEditBlocked) handleDeleteThread(threadId);
@@ -307,9 +351,9 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   }
 
   // Component-only previews have no topology. Keep the connected diagram during edits.
-  const displayedGraphData = graphPreview?.edges.length === 0 && graphData?.edges.length
+  const displayedGraphData = history.preview?.graph_data ?? (graphPreview?.edges.length === 0 && graphData?.edges.length
     ? graphData
-    : graphPreview ?? graphData;
+    : graphPreview ?? graphData);
   const showGraphPane = !!displayedGraphData || !!graphCandidate || diagramRequested || isGenerating;
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
@@ -377,8 +421,22 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
             <SplitPane
               graphVisible={showGraphPane}
               left={
+                <div style={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+                  {graphData && <GraphHistoryControls
+                    history={history.history} previewId={history.preview?.revision_id ?? null}
+                    undoId={history.undoId} redoId={history.redoId}
+                    disabled={isGenerating || loadingThread || graphEditBlocked || actionBusy}
+                    busy={history.busy} error={history.error}
+                    onUndo={history.undo} onRedo={history.redo}
+                    onPreview={history.previewRevision} onRestore={history.restoreRevision}
+                    onReturn={history.returnToCurrent} onReload={() => void history.reload()}
+                  />}
+                <div style={{ display: 'flex', flex: 1, minHeight: 0, position: 'relative' }}>
                 <Suspense fallback={<div style={panelFallbackStyle}>Loading graph…</div>}>
                   <GraphCanvas
+                    ref={graphCanvasRef}
+                    historyPreview={!!history.preview}
+                    layoutLocked={history.busy || actionBusy || loadingThread}
                     graphData={displayedGraphData}
                     isPreview={graphPreview !== null}
                     isAcceptedGraph={displayedGraphData !== null && displayedGraphData === graphData}
@@ -388,7 +446,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     onNodeClick={handleNodeClick}
                     onSaveGraphEdit={saveGraphEdit}
                     onEditDraftChange={setHasUnsavedGraphEdit}
-                    editingDisabled={isGenerating || loadingThread || isSavingGraphEdit || graphPreview !== null || !authSession || !activeThreadId}
+                    editingDisabled={!!history.preview || history.busy || actionBusy || isGenerating || loadingThread || isSavingGraphEdit || graphPreview !== null || !authSession || !activeThreadId}
                     onTellMeMore={handleTellMeMore}
                     onExpandGraph={handleExpandGraph}
                     selectedNode={selectedNode}
@@ -398,6 +456,8 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     onGraphReady={acknowledgeGraphRendered}
                   />
                 </Suspense>
+                </div>
+                </div>
               }
               right={
                 <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
@@ -436,7 +496,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     </div>
                   )}
                   <Suspense fallback={<div style={panelFallbackStyle}>Loading conversation…</div>}>
-                    <MessageList messages={visibleMessages} />
+                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} onViewDiagram={history.previewRevision} historyDisabled={isStreaming} />
                   </Suspense>
                   <ThinkingIndicator
                     workflowProgress={workflowProgress}
@@ -451,7 +511,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                   />
                   <ContextBar
                     selectedNode={selectedNode}
-                    onSendMessage={handleSend}
+                    onSendMessage={content => { void handleSend(content, 'answer').catch(() => {}); }}
                     onClear={clearSelectedNode}
                   />
                   {graphEditBlocked && (
@@ -459,7 +519,9 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                       {isSavingGraphEdit ? 'Saving component edits…' : 'Save or cancel component edits to continue.'}
                     </p>
                   )}
+                  {actionError && <p role="alert" style={{ margin: '0 1rem 0.5rem', color: '#ffb4ad', fontSize: '0.8rem' }}>{actionError}</p>}
                   <ChatInput
+                    hasGraph={!!graphData}
                     onSend={handleSend}
                     checkSubmission={checkSubmission}
                     onStop={stopGeneration}

@@ -60,6 +60,12 @@ authorize a read-only replacement for the core diagram workflow.
   in the composer and use an upward arrow for sending. Release the completed answer
   after the graph renders, with a bounded wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
+- Extending a diagram retains saved components, connections, and positions. Uncertain
+  follow-ups ask whether to extend or start in a new chat. Separate designs open a
+  new conversation.
+- Undo/Redo and a version picker provide explicit history. Earlier answers link to
+  their diagram. Browsing history is read-only until Restore; scrolling the chat
+  never switches versions. Each version retains its saved layout.
 - Direct editing should let learners revise component names, types, subtitles, and
   descriptions, plus each directed connection's label and metadata. Selection reveals
   the relevant fields; double-clicking a node or pressing F2 focuses its name.

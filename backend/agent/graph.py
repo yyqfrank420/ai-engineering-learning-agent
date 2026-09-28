@@ -192,7 +192,26 @@ def build_agent_workflow(
     _ = node_detail_tools
 
     async def route(state: AgentState) -> AgentState:
-        return await orchestrator_route(state)
+        routed = await orchestrator_route(state)
+        existing = state.get("graph_data") or state.get("approved_graph_data")
+        if routed.get("graph_intent") == "create" and existing:
+            question = "Start a new chat for a different diagram, or extend the saved diagram?"
+            await state["send"]({"type": "response_delta", "delta": question})
+            return {
+                **state,
+                "graph_data": existing,
+                "graph_changed": False,
+                "graph_intent": None,
+                "graph_publication": "unchanged",
+                "response_text": question,
+                "clarification_questions": [question],
+                "graph_operation": {
+                    "kind": "create",
+                    "status": "needs_clarification",
+                    "failure_code": None,
+                },
+            }
+        return routed
 
     async def quick_answer(state: AgentState) -> AgentState:
         return await quick_synthesise(state)
@@ -732,7 +751,7 @@ def build_agent_workflow(
     workflow.add_conditional_edges(
         "route",
         _route_after_routing,
-        {"quick": "quick_answer", "context": "gather_context"},
+        {"quick": "quick_answer", "context": "gather_context", "end": END},
     )
     workflow.add_edge("quick_answer", END)
     # Resolve an optional weak-book web escalation before the canonical brief
@@ -807,7 +826,10 @@ def build_agent_workflow(
     return workflow.compile()
 
 
-def _route_after_routing(state: AgentState) -> Literal["quick", "context"]:
+def _route_after_routing(state: AgentState) -> Literal["quick", "context", "end"]:
+    operation = state.get("graph_operation") or {}
+    if operation.get("status") == "needs_clarification":
+        return "end"
     return "quick" if state.get("route") == "simple" else "context"
 
 
@@ -945,12 +967,33 @@ async def run_agent(
     node_detail_tools: list,
 ) -> AgentState:
     """Execute the request-scoped LangGraph workflow and return its final state."""
-    graph_intent = resolve_graph_operation(
-        state.get("user_message", ""),
-        state.get("graph_data"),
-        diagram_requested=state.get("diagram_requested", False)
-        and state.get("graph_mode") != "off",
-    )
+    action = state.get("graph_action")
+    if action == "answer":
+        state = {**state, "graph_mode": "off"}
+        graph_intent = None
+    elif action == "extend":
+        graph_intent = "edit"
+    elif action == "new":
+        graph_intent = "create"
+    else:
+        graph_intent = resolve_graph_operation(
+            state.get("user_message", ""), state.get("graph_data"),
+            diagram_requested=state.get("diagram_requested", False)
+            and state.get("graph_mode") != "off",
+        )
+    if (graph_intent == "create" and state.get("graph_data")) or (
+        action == "extend" and not state.get("graph_data")
+    ):
+        question = (
+            "Start a new chat for a different diagram, or extend the saved diagram?"
+            if state.get("graph_data") else "Create a diagram first, then add the new layer."
+        )
+        await state["send"]({"type": "response_delta", "delta": question})
+        return {**state, "graph_changed": False, "graph_intent": None,
+                "graph_publication": "unchanged" if state.get("graph_data") else "none",
+                "response_text": question, "clarification_questions": [question],
+                "graph_operation": {"kind": graph_intent, "status": "needs_clarification",
+                                    "failure_code": None}}
     graph_operation = state.get("graph_operation")
     if graph_intent == "edit" and state.get("graph_mode") == "off":
         graph_operation = {

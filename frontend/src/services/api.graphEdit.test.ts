@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession, GraphData } from '../types';
-import { GraphEditApiError, saveGraphContentEdit } from './api';
+import { GraphEditApiError, checkDiagramIntent, fetchGraphHistory, fetchGraphRevision, restoreGraphRevision, saveGraphContentEdit } from './api';
 
 const session: AuthSession = {
   access_token: 'access-token',
@@ -78,4 +78,43 @@ describe('graph content edit API', () => {
       .rejects.toThrow('Saving the diagram timed out. Your edit is still open; check the saved diagram before retrying.');
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+});
+
+describe('graph history API', () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => { fetchMock.mockReset(); vi.stubGlobal('fetch', fetchMock); });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('loads summaries and a selected revision through authenticated read endpoints', async () => {
+    const history = { current_revision_id: 'r1', revisions: [] };
+    const revision = { revision_id: 'r1', graph_data: graph };
+    fetchMock.mockResolvedValueOnce({ ok: true, json: async () => history })
+      .mockResolvedValueOnce({ ok: true, json: async () => revision });
+    await expect(fetchGraphHistory(session, 'thread-1')).resolves.toEqual(history);
+    await expect(fetchGraphRevision(session, 'thread-1', 'r1')).resolves.toEqual(revision);
+    expect(fetchMock.mock.calls.map(call => call[0])).toEqual([
+      '/api/threads/thread-1/graph/history', '/api/threads/thread-1/graph/history/r1',
+    ]);
+    expect(fetchMock.mock.calls[1][1].headers.Authorization).toBe('Bearer access-token');
+  });
+
+  it('restores with the current graph version as a precondition', async () => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ revision_id: 'r1', graph_data: graph }) });
+    await expect(restoreGraphRevision(session, 'thread-1', 'r1', 'current')).resolves.toEqual({ revision_id: 'r1', graph_data: graph });
+    expect(fetchMock).toHaveBeenCalledWith('/api/threads/thread-1/graph/restore', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ revision_id: 'r1', expected_version: 'current' }),
+    }));
+  });
+
+  it('rejects conflicting restores and malformed successful responses', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 409 })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ revision_id: 'r1' }) });
+    await expect(restoreGraphRevision(session, 'thread-1', 'r1', 'old')).rejects.toMatchObject({ status: 409 });
+    await expect(restoreGraphRevision(session, 'thread-1', 'r1', null)).rejects.toThrow('invalid diagram');
+  });
+  it.each(['extend', 'new_chat'] as const)('accepts the explicit %s preflight action', async (action) => {
+    fetchMock.mockResolvedValue({ ok: true, json: async () => ({ action }) });
+    await expect(checkDiagramIntent(session, 'thread-1', 'Next topic')).resolves.toBe(action);
+  });
+
 });

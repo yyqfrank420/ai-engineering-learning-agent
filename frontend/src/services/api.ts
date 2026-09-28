@@ -8,6 +8,9 @@ import type {
   DashboardOverviewResponse,
   DashboardTrendsResponse,
   GraphData,
+  GraphHistory,
+  GraphRevision,
+  DiagramIntentAction,
   GraphContentEdit,
   ThreadDetail,
   ThreadSummary,
@@ -37,13 +40,13 @@ export async function fetchThread(session: AuthSession, threadId: string): Promi
   return response.json();
 }
 
-export async function checkDiagramIntent(session: AuthSession, threadId: string, message: string): Promise<'send' | 'answer' | 'ask'> {
+export async function checkDiagramIntent(session: AuthSession, threadId: string, message: string): Promise<DiagramIntentAction> {
   const response = await authedFetch(`/api/threads/${threadId}/diagram-intent`, session, {
     method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(5000),
   });
   if (!response.ok) throw new Error('Could not check diagram intent');
   const data = await response.json();
-  if (!['send', 'answer', 'ask'].includes(data.action)) throw new Error('Invalid diagram intent');
+  if (!['send', 'answer', 'ask', 'extend', 'new_chat'].includes(data.action)) throw new Error('Invalid diagram intent');
   return data.action;
 }
 
@@ -93,6 +96,37 @@ export class GraphEditApiError extends Error {
     this.name = 'GraphEditApiError';
     this.status = status;
   }
+}
+
+export async function fetchGraphHistory(session: AuthSession, threadId: string): Promise<GraphHistory> {
+  const response = await authedFetch(`/api/threads/${threadId}/graph/history`, session);
+  if (!response.ok) throw new Error('Could not load diagram history.');
+  return response.json();
+}
+
+export async function fetchGraphRevision(session: AuthSession, threadId: string, revisionId: string): Promise<GraphRevision> {
+  const response = await authedFetch(`/api/threads/${threadId}/graph/history/${encodeURIComponent(revisionId)}`, session);
+  if (!response.ok) throw new Error('Could not load this diagram version.');
+  return response.json();
+}
+
+export async function restoreGraphRevision(
+  session: AuthSession, threadId: string, revisionId: string, expectedVersion: string | null,
+): Promise<GraphRevision> {
+  const response = await authedFetch(`/api/threads/${threadId}/graph/restore`, session, {
+    method: 'POST',
+    body: JSON.stringify({ revision_id: revisionId, expected_version: expectedVersion }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    throw new GraphEditApiError(response.status === 409
+      ? 'The diagram changed. Reload its history before restoring.'
+      : 'Could not restore this diagram version.', response.status);
+  }
+  const revision = await response.json() as GraphRevision;
+  if (!revision.revision_id || !revision.graph_data || !Array.isArray(revision.graph_data.nodes)
+    || !Array.isArray(revision.graph_data.edges)) throw new Error('The restore returned an invalid diagram.');
+  return revision;
 }
 
 export async function saveGraphContentEdit(

@@ -290,6 +290,8 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
                     "type": "start",
                     "thread_id": thread["id"],
                     "content": "Design a growth marketing agent system",
+                    "graph_action": "extend",
+                    "expected_graph_version": "approved-v1",
                     "complexity": "production",
                     "graph_mode": "on",
                     "research_enabled": False,
@@ -1589,6 +1591,8 @@ def test_blank_turn_requires_a_new_approved_nonempty_graph(
                     "type": "start",
                     "thread_id": thread["id"],
                     "content": "Create a diagram",
+                    "graph_action": "extend" if existing_graph else "new",
+                    "expected_graph_version": "old" if existing_graph else None,
                 }
             )
             events = _receive_until(socket, "done")

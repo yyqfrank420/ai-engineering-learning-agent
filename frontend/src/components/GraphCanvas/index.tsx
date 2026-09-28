@@ -4,7 +4,8 @@
 //          SequenceBar. Manages which node popup is open.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useState, useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useCallback } from 'react';
+import type { Ref } from 'react';
 import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode } from '../../types';
 import { useGraph } from '../../hooks/useGraph';
 import { graphStructureKey } from '../../utils/graphStructureKey';
@@ -15,7 +16,14 @@ import { NodeDetailPopup } from './NodeDetailPopup';
 import { SequenceBar } from './SequenceBar';
 import { updateThreadGraph } from '../../services/api';
 
+export interface GraphCanvasHandle {
+  flushPendingLayout(): Promise<void>;
+}
+
 interface GraphCanvasProps {
+  ref?: Ref<GraphCanvasHandle>;
+  historyPreview?: boolean;
+  layoutLocked?: boolean;
   graphData: GraphData | null;
   animateSequence: boolean;
   authSession: AuthSession | null;
@@ -61,6 +69,9 @@ function sameGraphViewState(a: GraphViewState | null | undefined, b: GraphViewSt
 }
 
 export function GraphCanvas({
+  ref,
+  historyPreview = false,
+  layoutLocked = false,
   graphData,
   animateSequence,
   authSession,
@@ -104,18 +115,23 @@ export function GraphCanvas({
     height: number;
   }>();
   const layoutWritesRef = useRef<Promise<void>>(Promise.resolve());
+  const layoutFlushRef = useRef<{ key: string | null; promise: Promise<void> } | null>(null);
   const latestViewStateRef = useRef<{
     threadId: string;
     graphKey: string;
     viewState: GraphViewState;
   } | null>(null);
-  const previousThreadIdRef = useRef(activeThreadId);
+  const previousGraphRef = useRef<string | null>(null);
+  const persistTimerRef = useRef<ReturnType<typeof window.setTimeout> | null>(null);
+  const pendingLayoutRef = useRef<{ graphKey: string; viewState: GraphViewState } | null>(null);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
   const graphContentKey = useMemo(() => graphStructureKey(graphData), [graphData]);
   const sequenceDismissed = sequenceDismissal?.key === graphContentKey && sequenceDismissal.dismissed;
   const graphViewKey = useMemo(() => {
     if (!graphData || !activeThreadId) return null;
     return [
       activeThreadId,
+      historyPreview ? 'history' : 'live',
       graphData.version ?? '',
       graphData.graph_type,
       graphData.title,
@@ -124,11 +140,17 @@ export function GraphCanvas({
       (graphData.groups ?? []).map((group) => `${group.id}:${group.kind ?? ''}:${group.nodeIds.join(',')}`).join('|'),
       graphData.sequence.map((step) => `${step.step}:${step.nodes.join(',')}`).join('|'),
     ].join('::');
-  }, [activeThreadId, graphData]);
-  const persistedViewState = graphViewKey ? viewStateCache[graphViewKey] ?? graphData?.view_state ?? null : null;
+  }, [activeThreadId, graphData, historyPreview]);
+  const currentGraphRef = useRef(graphViewKey);
+  useLayoutEffect(() => {
+    currentGraphRef.current = graphViewKey;
+    return () => { currentGraphRef.current = null; };
+  }, [graphViewKey]);
+  const persistedViewState = historyPreview ? graphData?.view_state ?? null
+    : graphViewKey ? viewStateCache[graphViewKey] ?? graphData?.view_state ?? null : null;
   const canEdit = Boolean(onSaveGraphEdit && authSession && activeThreadId
-    && !isPreview && !isBuilding && !editingDisabled && !isSavingGraphContent);
-  const inspectedNode = editTarget
+    && !historyPreview && !isPreview && !isBuilding && !editingDisabled && !isSavingGraphContent);
+  const inspectedNode = historyPreview ? undefined : editTarget
     ? graphData?.nodes.find(node => node.id === editTarget.nodeId)
     : selectedNode && (graphData?.nodes.find(node => node.id === selectedNode.node.id) ?? selectedNode.node);
   const inspectedNodeId = inspectedNode && graphData?.nodes.some(node => node.id === inspectedNode.id)
@@ -136,12 +158,51 @@ export function GraphCanvas({
   const visibleInspectionViewport = inspectionViewport?.nodeId === inspectedNodeId
     ? inspectionViewport : undefined;
 
-  const persistLayout = (session: AuthSession, threadId: string, data: GraphData, viewState: GraphViewState) => {
+  const persistLayout = useCallback((session: AuthSession, threadId: string, data: GraphData, viewState: GraphViewState) => {
     const write = layoutWritesRef.current.catch(() => undefined).then(() =>
       updateThreadGraph(session, threadId, { ...data, view_state: viewState }));
     layoutWritesRef.current = write;
     return write;
-  };
+  }, []);
+
+  const flushLayout = useCallback(() => {
+    const key = graphViewKey;
+    if (layoutFlushRef.current?.key === key) return layoutFlushRef.current.promise;
+    const run = async () => {
+      if (persistTimerRef.current !== null) window.clearTimeout(persistTimerRef.current);
+      persistTimerRef.current = null;
+      try {
+        await layoutWritesRef.current.catch(() => undefined);
+        if (currentGraphRef.current !== key) throw new Error('The diagram changed while saving its layout.');
+        while (pendingLayoutRef.current?.graphKey === key) {
+          if (historyPreview || isPreview || !authSession || !activeThreadId || !graphData) {
+            throw new Error('This diagram layout cannot be saved.');
+          }
+          const pending = pendingLayoutRef.current;
+          await persistLayout(authSession, activeThreadId, graphData, pending.viewState);
+          if (currentGraphRef.current !== key) throw new Error('The diagram changed while saving its layout.');
+          if (pendingLayoutRef.current === pending) pendingLayoutRef.current = null;
+        }
+        setLayoutError(null);
+      } catch (error) {
+        if (currentGraphRef.current === key) setLayoutError('Could not save the diagram layout. Retry before continuing.');
+        throw error;
+      }
+    };
+    const promise = run().finally(() => {
+      if (layoutFlushRef.current?.promise === promise) layoutFlushRef.current = null;
+    });
+    layoutFlushRef.current = { key, promise };
+    return promise;
+  }, [graphViewKey, historyPreview, isPreview, authSession, activeThreadId, graphData, persistLayout]);
+  useImperativeHandle(ref, () => ({
+    async flushPendingLayout() {
+      if (editDirtyRef.current || savingGraphContentRef.current) {
+        throw new Error('Save or cancel the diagram edit before continuing.');
+      }
+      await flushLayout();
+    },
+  }));
 
   const focusInspector = () => inspectorRef.current?.querySelector<HTMLElement>('input, textarea, select')?.focus();
   const focusCanvasNode = (nodeId: string) => {
@@ -169,6 +230,7 @@ export function GraphCanvas({
       requestId: ++editRequestCounterRef.current });
   };
   const handleNodeClick = (node: GraphNode) => {
+    if (historyPreview) return;
     if (editDirtyRef.current) { focusInspector(); return; }
     setEditTarget(null);
     onNodeClick(node);
@@ -195,8 +257,8 @@ export function GraphCanvas({
     const currentViewState = latest?.threadId === activeThreadId && latest.graphKey === graphViewKey
       ? latest.viewState : persistedViewState;
     try {
-      if (currentViewState) await persistLayout(authSession, activeThreadId, graphData, currentViewState);
-      else await layoutWritesRef.current;
+      if (currentViewState) pendingLayoutRef.current = { graphKey: graphViewKey, viewState: currentViewState };
+      await flushLayout();
       await onSaveGraphEdit(edit);
     } finally {
       savingGraphContentRef.current = false;
@@ -205,14 +267,16 @@ export function GraphCanvas({
   };
 
   useLayoutEffect(() => {
-    if (previousThreadIdRef.current === activeThreadId) return;
-    previousThreadIdRef.current = activeThreadId;
+    if (previousGraphRef.current === graphViewKey) return;
+    previousGraphRef.current = graphViewKey;
     setEditTarget(null);
     editDirtyRef.current = false;
     onEditDraftChange?.(false);
     latestViewStateRef.current = null;
+    pendingLayoutRef.current = null;
+    setLayoutError(null);
     setPendingPersistViewState(null);
-  }, [activeThreadId, onEditDraftChange]);
+  }, [graphViewKey, onEditDraftChange]);
 
   useLayoutEffect(() => {
     const canvas = canvasRef.current;
@@ -259,6 +323,7 @@ export function GraphCanvas({
   useEffect(() => {
     if (
       isPreview
+      || historyPreview
       || !authSession
       || !activeThreadId
       || !graphData
@@ -269,16 +334,16 @@ export function GraphCanvas({
     }
 
     const timer = window.setTimeout(() => {
+      persistTimerRef.current = null;
       if (savingGraphContentRef.current) return;
-      void persistLayout(authSession, activeThreadId, graphData, pendingPersistViewState.viewState).catch((error) => {
-        console.error('[graph] Failed to persist graph view state:', error);
-      });
+      void flushLayout().catch(() => undefined);
     }, 400);
+    persistTimerRef.current = timer;
 
     return () => {
       window.clearTimeout(timer);
     };
-  }, [activeThreadId, authSession, graphData, graphViewKey, isPreview, pendingPersistViewState]);
+  }, [activeThreadId, authSession, graphData, graphViewKey, isPreview, historyPreview, pendingPersistViewState, flushLayout]);
 
   if (!graphData) {
     return (
@@ -378,11 +443,16 @@ export function GraphCanvas({
         )}
       </div>
 
+      {layoutError && <div role="alert" style={{ padding: '8px 16px', color: '#ffc4cb' }}>
+        {layoutError} <button type="button" onClick={() => void flushLayout().catch(() => undefined)}>Retry layout save</button>
+      </div>}
       {/* D3 canvas */}
       <div ref={canvasRef} className="graph-canvas__surface" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
         <div inert={isSavingGraphContent} aria-busy={isSavingGraphContent}
           style={{ width: '100%', height: '100%', opacity: isBuilding ? 0.56 : 1, transition: 'opacity 180ms ease' }}>
           <D3Graph
+            key={`${graphViewKey ?? graphContentKey}:${historyPreview}`}
+            layoutReadOnly={historyPreview || layoutLocked}
             navigation
             onLayoutReady={onGraphReady}
             graphData={graphData}
@@ -394,7 +464,7 @@ export function GraphCanvas({
             onEditConnection={canEdit ? openEdgeEditor : undefined}
             initialViewState={persistedViewState ?? undefined}
             onViewStateChange={(viewState) => {
-              if (isPreview || !graphViewKey) return;
+              if (isPreview || historyPreview || layoutLocked || !graphViewKey) return;
               if (activeThreadId) latestViewStateRef.current = { threadId: activeThreadId, graphKey: graphViewKey, viewState };
               if (savingGraphContentRef.current) return;
               const existingViewState = viewStateCache[graphViewKey] ?? graphData.view_state ?? null;
@@ -402,7 +472,8 @@ export function GraphCanvas({
                 return;
               }
               setViewStateCache(prev => ({ ...prev, [graphViewKey]: viewState }));
-              setPendingPersistViewState({ graphKey: graphViewKey, viewState });
+              pendingLayoutRef.current = { graphKey: graphViewKey, viewState };
+              setPendingPersistViewState(pendingLayoutRef.current);
             }}
           />
         </div>

@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v31"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v27"
+_COMPONENT_PROMPT_VERSION = "staged_components_v32"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v28"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -250,9 +250,7 @@ def _component_create_response_schema(
     }
 
 
-def _parse_component_response(
-    text: str, *, component_limit: int, correction_delta: _EditDelta | None = None
-) -> dict[str, Any]:
+def _parse_candidate_outcome(text: str) -> dict[str, Any]:
     payload = _parse_json(text)
     _require_exact_keys(payload, {"candidate", "clarification_questions"})
     questions = payload["clarification_questions"]
@@ -271,6 +269,15 @@ def _parse_component_response(
         return {"clarification_questions": [question.strip() for question in questions]}
     if questions:
         raise StagedGenerationError("component_clarification_invalid")
+    return payload
+
+
+def _parse_component_response(
+    text: str, *, component_limit: int, correction_delta: _EditDelta | None = None
+) -> dict[str, Any]:
+    payload = _parse_candidate_outcome(text)
+    if "candidate" not in payload:
+        return payload
     return {
         "wire": _parse_component_wire(
             _canonical_json(
@@ -472,7 +479,9 @@ async def generate_component_candidate(
             stage="components",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema
+            schema=_component_create_response_schema(delta.schema)
+            if delta and edit_permissions.get("connection_addition_mode") == "extension"
+            else delta.schema
             if delta
             else _component_create_response_schema(
                 correction.schema if correction else schema
@@ -492,9 +501,9 @@ async def generate_component_candidate(
                     component_limit=component_limit,
                 )
             }
-            if delta
+            if delta and edit_permissions.get("connection_addition_mode") != "extension"
             else _parse_component_response(
-                response, component_limit=component_limit, correction_delta=correction
+                response, component_limit=component_limit, correction_delta=delta or correction
             )
         )
     except StagedGenerationError as exc:
@@ -593,7 +602,9 @@ async def generate_connection_candidate(
             stage="connections",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema
+            schema=_component_create_response_schema(delta.schema)
+            if delta and edit_permissions.get("connection_addition_mode") == "extension"
+            else delta.schema
             if delta
             else correction.schema
             if correction
@@ -606,6 +617,11 @@ async def generate_connection_candidate(
             max_output_tokens=max_output_tokens,
         )
         edge_limit = _write_limits(valid_write_set)["edge_limit"]
+        if delta and edit_permissions.get("connection_addition_mode") == "extension":
+            outcome = _parse_candidate_outcome(response)
+            if "candidate" not in outcome:
+                return {**outcome, "prompt_fingerprint": prompt_fingerprint}
+            response = _canonical_json(outcome["candidate"])
         if delta or correction:
             wire = _parse_connection_wire(
                 _canonical_json((delta or correction).assemble(response)),
@@ -990,6 +1006,17 @@ def _attempt_prompt(
                 "the detailed control contracts and failure outcomes; it cannot change "
                 "these component responsibilities."
             )
+        if connection_addition_plan and connection_addition_plan.get("mode") == "extension":
+            instructions += (
+                " This is an add-only extension of the saved architecture. Keep every existing "
+                "component, connection, group, root, title and assumption unchanged. Add the "
+                "complete requested layer within the stated ceilings; the ceiling is not a target "
+                "count. Place new components in new groups and connect them to appropriate saved "
+                "components without adding connections solely between existing components. "
+                "Return candidate containing only the authorized delta with clarification_questions=[]; "
+                "if the requested layer or its attachment is uncertain, return candidate=null and "
+                "1-3 clarification_questions instead of inventing scope."
+            )
         if edit_delta is None:
             instructions += (
                 " Return exactly one outcome: candidate containing the schema-defined object with "
@@ -1094,6 +1121,14 @@ def _attempt_prompt(
                 "accepted components and capabilities; do not invent extra components or "
                 "capabilities to complete this check."
             )
+    if stage == "connections" and connection_addition_plan and connection_addition_plan.get("mode") == "extension":
+        instructions += (
+            " Return candidate containing only the add-only connection delta with "
+            "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
+            "if attachment is uncertain. Existing connections stay unchanged; each new "
+            "connection must involve a new component, and every new component must attach "
+            "through the new layer to the saved graph."
+        )
     prompt = (
         instructions
         + maturity_rule
@@ -1531,6 +1566,8 @@ def _connection_addition_plan(
     edge_count = permissions.get("allowed_new_edge_count", 0)
     minimum = permissions.get("minimum_new_edge_count", edge_count)
     mode = permissions.get("connection_addition_mode", "exact")
+    if mode == "extension" and components_accepted:
+        node_count = len(set(component_indexes) - set(permissions.get("added_edge_anchor_node_ids", [])))
     anchors = _exact_ids(permissions.get("added_edge_anchor_node_ids", []))
     obligations = permissions.get("connection_addition_obligations", [])
     enforce_label = permissions.get("enforce_added_edge_contract_label", True)
@@ -1540,11 +1577,11 @@ def _connection_addition_plan(
         or not _nonnegative_limit(edge_count)
         or not _nonnegative_limit(minimum)
         or minimum > edge_count
-        or mode not in ("exact", "attachment")
+        or mode not in ("exact", "attachment", "extension")
         or anchors is None
         or not isinstance(enforce_label, bool)
         or not isinstance(obligations, list)
-        or len(obligations) != (1 if mode == "attachment" else edge_count)
+        or len(obligations) != (0 if mode == "extension" else 1 if mode == "attachment" else edge_count)
         or (mode == "exact" and minimum != edge_count)
         or (
             mode == "attachment"
@@ -1615,7 +1652,7 @@ def _connection_addition_plan(
                 "minimum_addition_count": minimum,
                 "maximum_addition_count": edge_count,
             }
-            if mode == "attachment"
+            if mode in ("attachment", "extension")
             else {"addition_count": edge_count}
         ),
         "anchor_component_indexes": [existing_indexes[node_id] for node_id in anchors],

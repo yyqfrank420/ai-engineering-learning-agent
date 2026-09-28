@@ -518,7 +518,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v27"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v28"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -739,7 +739,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v31"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v32"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -3514,3 +3514,21 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
     assert result["wire"]["edges"] == [
         {**original["edges"][0], "label": corrected_label}
     ]
+
+
+@pytest.mark.asyncio
+async def test_extension_delta_can_request_clarification_without_mutating_locked_base(monkeypatch):
+    permissions = _permissions(
+        kind="extension", connection_addition_mode="extension", allowed_new_node_count=3,
+        minimum_new_node_count=1, allowed_new_edge_count=6, minimum_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1", "n2"], enforce_added_edge_contract_label=False,
+    )
+    result, calls = await _generate_edit(monkeypatch,
+        {"candidate": None, "clarification_questions": ["Where should this layer attach?"]}, permissions)
+    assert result["clarification_questions"] == ["Where should this layer attach?"]
+    schema = calls[0]["schema"]
+    assert set(schema["properties"]) == {"candidate", "clarification_questions"}
+    candidate_schema = schema["properties"]["candidate"]["anyOf"][0]
+    assert candidate_schema["properties"]["additions"]["minItems"] == 1
+    assert candidate_schema["properties"]["additions"]["maxItems"] == 3
+    assert candidate_schema["properties"]["updates"]["properties"] == {}

@@ -27,6 +27,7 @@ from api.chat_guards import (
     check_prompt_injection,
     check_rate_limit,
     internal_test_stream_scope,
+    graph_continuity_error,
     is_production_traffic,
     knowledge_base_ready,
     truncate_utf8,
@@ -251,6 +252,17 @@ async def chat_websocket(websocket: WebSocket) -> None:
         base_graph, base_graph_contract = thread_store.get_graph_artifact(
             user_id, body.thread_id
         )
+        continuity_error = graph_continuity_error(
+            graph_action=body.graph_action,
+            expected_graph_version=body.expected_graph_version,
+            current_graph=base_graph,
+            content=body.content,
+            diagram_requested=body.diagram_requested,
+        )
+        if continuity_error:
+            await _send_error(websocket, continuity_error)
+            await websocket.send_json({"type": "done"})
+            return
         approved_graph_at_request_start = copy.deepcopy(base_graph)
         approved_graph_contract_at_request_start = copy.deepcopy(base_graph_contract)
         content = body.content
@@ -367,6 +379,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "complexity": body.complexity,
                 "graph_mode": body.graph_mode,
                 "diagram_requested": body.diagram_requested,
+                "graph_action": body.graph_action,
                 "research_enabled": body.research_enabled,
                 "route": "",
                 "rag_chunks": [],
@@ -613,9 +626,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         }
                     )
                 else:
-                    persisted_graph = final_state.get("graph_data")
-                    if persisted_graph is None:
-                        persisted_graph = approved_graph_at_request_start
+                    persisted_graph = thread_store.get_graph(user_id, body.thread_id)
                     await send_authoritative_graph(persisted_graph)
                     graph_preview_sent = False
             except ThreadMessageLimitExceeded:

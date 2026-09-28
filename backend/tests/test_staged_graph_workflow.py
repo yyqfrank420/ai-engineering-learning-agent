@@ -4406,3 +4406,84 @@ def test_review_snapshot_discards_missing_or_invalid_policy_identity(identity):
     if identity is not None:
         review["review_identity"] = identity
     assert workflow._review_snapshot("components", [], {}, review) is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_additive_layer_preserves_whole_saved_graph_with_several_new_nodes(monkeypatch):
+    _install_success_boundaries(monkeypatch)
+    saved = _accepted_staged_graph()
+    saved["nodes"][0]["position"] = {"x": 20, "y": 40}
+    saved["groups"][0]["color"] = "blue"
+    saved["view_state"] = {"zoom": 0.75}
+    wire = _components_wire()
+    for label in ["New layer planner", "New layer store"]:
+        wire["components"].append({"label": label, "type": 101,
+            "responsibility": "Owns a separate step in the added layer.", "group_label": "Added layer",
+            "group_kind": 600, "primary_flow_member": False})
+    connections = _connections_wire()
+    for source, target in [(0, 2), (2, 3)]:
+        connections["edges"].append({"source_index": source, "target_index": target,
+                                     "label": "invokes added layer", "flow": 400, "sync": 500})
+    async def components(**kwargs):
+        assert kwargs["edit_permissions"]["kind"] == "extension"
+        return {"wire": wire, "prompt_fingerprint": "component-extension"}
+    async def edges(**kwargs):
+        return {"wire": connections, "prompt_fingerprint": "connection-extension"}
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", edges)
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_intent="edit", graph_action="extend", user_message="What if we added a layer on top of this?",
+        graph_data=saved, approved_graph_data=saved,
+        approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+    ))
+    assert result["graph_publication"] == "approved", result["graph_operation"]
+    assert result["graph_data"]["nodes"][:2] == saved["nodes"]
+    assert result["graph_data"]["edges"][:1] == saved["edges"]
+    assert result["graph_data"]["groups"][:len(saved["groups"])] == saved["groups"]
+    assert result["graph_data"]["view_state"] == saved["view_state"]
+    assert len(result["graph_data"]["nodes"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_additive_layer_model_clarification_preserves_saved_diagram(monkeypatch):
+    saved = _accepted_staged_graph()
+    async def components(**kwargs):
+        return {"clarification_questions": ["Which saved path should the layer attach to?"],
+                "prompt_fingerprint": "extension-clarification"}
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_intent="edit", graph_action="extend", graph_data=saved, approved_graph_data=saved,
+        approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+    ))
+    assert result["graph_data"] == saved
+    assert result["graph_operation"]["status"] == "needs_clarification"
+    assert result["graph_changed"] is False
+
+
+@pytest.mark.parametrize("changed_field", [None, "label", "kind", "nodeIds"])
+def test_extension_preserves_group_metadata_without_masking_semantic_changes(changed_field):
+    saved = _accepted_staged_graph()
+    saved["groups"][0]["color"] = "blue"
+    saved["groups"][0]["custom_style"] = {"padding": 24}
+    candidate = copy.deepcopy(saved)
+    del candidate["groups"][0]["color"]
+    del candidate["groups"][0]["custom_style"]
+    if changed_field:
+        candidate["groups"][0][changed_field] = [] if changed_field == "nodeIds" else "changed"
+    _, permissions = workflow.staged_edit_scope(
+        "Add a monitoring layer", saved, resolved_complexity="prototype", add_only=True
+    )
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions=permissions
+    )
+    if changed_field:
+        assert preserved["groups"][0][changed_field] == candidate["groups"][0][changed_field]
+        with pytest.raises(ValueError, match="extension changed saved groups"):
+            workflow.admit_staged_graph_edit(
+                saved, preserved, resolved_complexity="prototype", repair_contract=None,
+                mutation_permissions=permissions,
+            )
+    else:
+        assert preserved["groups"] == saved["groups"]
+        preserved["groups"][0]["custom_style"]["padding"] = 99
+        assert saved["groups"][0]["custom_style"]["padding"] == 24

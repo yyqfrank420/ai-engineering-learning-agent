@@ -6539,3 +6539,59 @@ def test_component_attachment_does_not_treat_data_provenance_as_edge_direction()
     assert permissions["connection_addition_mode"] == "attachment"
     assert permissions["minimum_new_edge_count"] == 1
     assert permissions["allowed_new_edge_count"] == 2
+
+
+def _extension_fixture():
+    import copy
+    from agent.nodes.graph_worker import staged_edit_scope
+    base = {
+        "title": "Saved architecture", "design_origin": "applied", "version": "old",
+        "nodes": [{"id": "a", "label": "Saved service", "position": {"x": 12, "y": 34}}],
+        "edges": [], "groups": [{"id": "g", "label": "Saved", "nodeIds": ["a"]}],
+        "view_state": {"zoom": 0.8},
+    }
+    _, permissions = staged_edit_scope("Add a layer", base, resolved_complexity="prototype", add_only=True)
+    candidate = copy.deepcopy(base)
+    candidate["version"] = "new"
+    candidate["nodes"] += [{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}]
+    candidate["edges"] += [{"source": "a", "target": "b", "label": "Invoke"},
+                           {"source": "b", "target": "c", "label": "Persist"}]
+    candidate["groups"] += [{"id": "h", "label": "New layer", "nodeIds": ["b", "c"]}]
+    return base, candidate, permissions
+
+
+@pytest.mark.parametrize("title", ["Content publishing", "Forecasting", "Fraud review"])
+def test_additive_extension_preserves_saved_records_and_positions(title):
+    from agent.nodes.graph_worker import admit_graph_extension
+    base, candidate, permissions = _extension_fixture()
+    base["title"] = candidate["title"] = title
+    result = admit_graph_extension(base, candidate, permissions)
+    assert result == candidate
+    assert result["nodes"][0] == base["nodes"][0]
+    assert result["view_state"] == base["view_state"]
+
+
+@pytest.mark.parametrize("defect", ["delete", "rename", "id", "position", "group", "cap", "disconnected", "endpoint", "old_edge"])
+def test_additive_extension_rejects_changes_outside_add_only_authority(defect):
+    from agent.nodes.graph_worker import admit_graph_extension
+    base, candidate, permissions = _extension_fixture()
+    if defect == "delete":
+        candidate["nodes"].pop(0)
+    elif defect == "rename":
+        candidate["nodes"][0]["label"] = "Changed"
+    elif defect == "id":
+        candidate["nodes"][1]["id"] = "a"
+    elif defect == "position":
+        candidate["nodes"][0]["position"]["x"] = 0
+    elif defect == "group":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "cap":
+        permissions["allowed_new_node_count"] = 1
+    elif defect == "disconnected":
+        candidate["edges"] = [{"source": "b", "target": "c", "label": "Persist"}]
+    elif defect == "endpoint":
+        candidate["edges"][0]["source"] = "missing"
+    else:
+        candidate["edges"].append({"source": "a", "target": "a", "label": "Rewrite old flow"})
+    with pytest.raises(ValueError):
+        admit_graph_extension(base, candidate, permissions)

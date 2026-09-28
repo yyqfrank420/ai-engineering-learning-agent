@@ -804,6 +804,20 @@ def _preserve_existing_presentation(
         for field in ("technology", "tier", "detail", "layer"):
             if field in prior and field not in editable_fields:
                 node[field] = copy.deepcopy(prior[field])
+    group_fields = {"id", "label", "kind", "nodeIds"}
+    prior_groups = {
+        group.get("id"): group
+        for group in existing.get("groups") or []
+        if isinstance(group, Mapping)
+    }
+    for group in preserved.get("groups") or []:
+        prior = prior_groups.get(group.get("id"))
+        if prior is not None and all(
+            group.get(field) == prior.get(field) for field in group_fields
+        ):
+            for field, value in prior.items():
+                if field not in group_fields:
+                    group[field] = copy.deepcopy(value)
     semantic_fields = ("source", "target", "label", "sync", "flow")
     indexed_edges = [
         (_patch_edge_id(index), edge)
@@ -850,6 +864,28 @@ def _preserve_existing_presentation(
             edit_permissions.get("editable_composition_fields") or []
         ):
             preserved["sequence"] = copy.deepcopy(existing.get("sequence") or [])
+    if (edit_permissions or {}).get("kind") == "extension":
+        # Delta assembly locks semantics. Projection derives presentation again;
+        # copy saved metadata and collection order before additive admission.
+        for node in preserved.get("nodes") or []:
+            prior = existing_nodes.get(str(node.get("id")))
+            if prior is not None:
+                for key, value in prior.items():
+                    if key not in {"id", "label", "type", "description"}:
+                        node[key] = copy.deepcopy(value)
+        for index, prior in enumerate(existing.get("edges") or []):
+            edge = preserved["edges"][index]
+            if all(edge.get(field) == prior.get(field) for field in semantic_fields):
+                preserved["edges"][index] = copy.deepcopy(prior)
+        prior_groups = existing.get("groups") or []
+        prior_group_ids = {group["id"] for group in prior_groups}
+        retained_groups = {group["id"]: group for group in preserved.get("groups") or []}
+        preserved["groups"] = [retained_groups.get(group["id"], {}) for group in prior_groups] + [
+            group for group in preserved.get("groups") or [] if group["id"] not in prior_group_ids
+        ]
+        for field, value in existing.items():
+            if field not in {"nodes", "edges", "groups", "version"}:
+                preserved[field] = copy.deepcopy(value)
     if "view_state" in existing:
         preserved["view_state"] = copy.deepcopy(existing["view_state"])
     return preserved
@@ -1117,6 +1153,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 raw_request,
                 approved_graph,
                 resolved_complexity=maturity,
+                add_only=state.get("graph_action") == "extend",
             )
         except ValueError:
             if not _EXPLICIT_GRAPH_REBUILD.search(raw_request):
@@ -1224,7 +1261,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
             )
             if "clarification_questions" in generated:
-                if permissions is not None:
+                if permissions is not None and state.get("graph_action") != "extend":
                     raise StagedGenerationError("edit_clarification_not_allowed")
                 return {
                     **state,
@@ -1235,7 +1272,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "graph_changed": False,
                     "graph_publication": "unchanged" if approved_graph else "none",
                     "graph_operation": {
-                        "kind": "create",
+                        "kind": state.get("graph_intent") or "create",
                         "status": "needs_clarification",
                         "failure_code": None,
                     },
@@ -1326,6 +1363,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     path="components",
                 )
             if base_build is not None and permissions is not None:
+                addition_count = len(assigned["components"]) - len(base_build["components"]) + len(removable_node_ids)
+                minimum = permissions.get("minimum_new_node_count", permissions.get("allowed_new_node_count", 0))
+                maximum = permissions.get("allowed_new_node_count", 0)
+                if not minimum <= addition_count <= maximum:
+                    raise GraphContractError("component additions exceed authority", path="components")
                 validate_component_write_set(
                     base_build,
                     assigned,
@@ -1334,9 +1376,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                             set(permissions.get("editable_node_ids") or [])
                             | set(permissions.get("removable_node_ids") or [])
                         ),
-                        "addition_count": int(
-                            permissions.get("allowed_new_node_count", 0)
-                        ),
+                        "addition_count": addition_count,
                         "removal_count": len(
                             permissions.get("removable_node_ids") or []
                         ),
@@ -1561,6 +1601,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     attempt=attempt,
                 ),
             )
+            if "clarification_questions" in generated and state.get("graph_action") == "extend":
+                return {**state, "graph_data": copy.deepcopy(approved_graph),
+                        "graph_contract": copy.deepcopy(approved_contract), "graph_changed": False,
+                        "graph_publication": "unchanged", "clarification_questions": generated["clarification_questions"],
+                        "graph_operation": {"kind": "edit", "status": "needs_clarification", "failure_code": None}}
             rejected_connection_candidate = copy.deepcopy(generated["wire"])
             wire_fingerprint = _fingerprint(generated["wire"])
             if wire_fingerprint == previous_connection_wire:
@@ -1606,8 +1651,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             if (
                 base_build is not None
-                and repair_contract is not None
                 and permissions is not None
+                and (repair_contract is not None or permissions.get("kind") == "extension")
                 and isinstance(approved_graph, dict)
             ):
                 projected = _attach_graph_version(

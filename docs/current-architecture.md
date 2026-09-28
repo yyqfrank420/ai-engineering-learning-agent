@@ -238,7 +238,7 @@ description. The selected-connection inspector edits each underlying directed re
 technology, description, flow class, and sync mode. A bundled visual connection does not merge its
 directed records. Double-clicking a node, or pressing F2 while it is focused, focuses its name field.
 The existing D3 canvas, visual language, learning details, and chat expansion remain in place.
-This pass does not add freeform notes or an undo history.
+Freeform notes are outside the editor. Accepted edits append a durable graph revision.
 
 Edits are drafts until explicit Save. Cancel discards the draft. Closing or changing selection must
 not silently discard unsaved text. The UI distinguishes unsaved, saving, saved, and failed states;
@@ -256,7 +256,7 @@ learner's wording was source-authored or reviewed by the generation gates. Manua
 per record in `user_edited_fields`. Later scoped patches preserve unrelated manual fields and their
 markers; an explicit patch that changes a marked field replaces that value and removes its marker.
 Compatible canonical graph selection carries manual fields across only where record identity is
-unambiguous. An explicit new create starts fresh. Subsequent scoped edits use the edited canonical
+unambiguous. An explicit new create starts fresh in a new chat. Subsequent scoped edits use the edited canonical
 graph and follow their applicable validation and approval path.
 
 The interaction borrows the direct text editing, connector labeling, and selection-dependent
@@ -289,13 +289,35 @@ structure becomes the committed graph. Text-only mode continues streaming normal
 failure without a graph releases the available explanation instead of waiting for a missing graph.
 
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
-`POST /api/threads/{thread_id}/diagram-intent` endpoint. Existing intent rules identify explicit
-diagram requests and opt-outs. The composer always sends automatic depth, graph on, and research
-on. Ambiguous learning requests automatically send `diagram_requested: true` separately from the
-unchanged message; request admission resolves it to a create intent when no existing edit intent
-applies. Existing explanations and explicit opt-outs retain their server-owned routing. There is
-no mode popover or diagram-choice dialog. An unavailable intent check retains the draft and shows
-connection feedback. Draft edits and thread switches invalidate pending checks.
+`POST /api/threads/{thread_id}/diagram-intent` endpoint. The composer always sends automatic depth,
+graph on, and research on. A new conversation can generate immediately. With a saved diagram,
+clear additions extend it, explanations leave it unchanged, and ambiguous requests show an inline
+choice: Extend this diagram or Start a new chat. The separate option creates and opens a chat
+before sending. Unavailable intent checks and failed chat creation retain the draft with feedback.
+Typed `graph_action` and expected graph version travel through both transports. Server admission
+rejects fresh creation over a saved graph and rejects stale extension requests before model calls.
+
+## Diagram history
+
+`graph_revisions` retains accepted graph bodies with their server-only contracts, parent links and
+request labels. `chat_threads.active_graph_revision_id` identifies the working revision;
+`chat_messages.graph_revision_id` associates an answer with its result. Publication and manual
+content edits append revisions in the same transaction as their canonical state. A layout save
+updates the active revision and materialized graph together, without creating a content revision.
+
+Undo activates the parent; Redo returns along the path just undone. An explicit restore, a content
+change or a thread switch clears that session path; without one, Redo selects the newest child.
+All retained branches remain in the
+version picker. Picker entries and View diagram links open a read-only preview with Restore and
+Return to current controls. Chat scrolling never switches the graph. Before a transition, the
+canvas flushes pending layout saves. Failed saves keep the user in place. Existing positions remain
+fixed during extension; new components are placed around them.
+
+History endpoints are owner-scoped. Restore shares the generation lease and compares the current
+graph version, then assigns a fresh activation version. Repeating an already-active restore is a
+no-op. Old diagrams first become checkpoints when read or changed by this release; overwritten
+historical graphs cannot be recovered without another saved artifact. See
+[the continuity contract](graph-history-contract.md) for operation boundaries and rollout rules.
 
 Every production frontend turn includes a UUID `client_request_id`. Completed user/assistant
 pairs are unique on that key at the database boundary, and a network retry replays the stored

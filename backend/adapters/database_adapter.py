@@ -29,6 +29,7 @@ POSTGRES_REQUIRED_TABLES = (
     "profiles",
     "chat_threads",
     "chat_messages",
+    "graph_revisions",
     "request_events",
     "product_analytics_events",
     "search_tool_requests",
@@ -43,12 +44,13 @@ POSTGRES_REQUIRED_POLICIES = {
     "profiles": {"profiles_select_own", "profiles_update_own"},
     "chat_threads": {"threads_all_own"},
     "chat_messages": {"messages_all_own"},
+    "graph_revisions": {"graph_revisions_own"},
     "active_streams": {"active_streams_all_own"},
 }
 
 POSTGRES_REQUIRED_COLUMNS = {
-    "chat_threads": {"graph_contract"},
-    "chat_messages": {"client_request_id", "message_sequence"},
+    "chat_threads": {"graph_contract", "active_graph_revision_id"},
+    "chat_messages": {"client_request_id", "message_sequence", "graph_revision_id"},
     "rate_limit_events": {
         "key_hash",
         "event_type",
@@ -252,6 +254,26 @@ def init_db() -> None:
             row["name"]
             for row in conn.execute("PRAGMA table_info(chat_threads)").fetchall()
         }
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS graph_revisions (
+                id TEXT PRIMARY KEY,
+                thread_id TEXT NOT NULL REFERENCES chat_threads(id) ON DELETE CASCADE,
+                user_id TEXT NOT NULL REFERENCES profiles(id) ON DELETE CASCADE,
+                parent_revision_id TEXT,
+                revision_number INTEGER NOT NULL CHECK(revision_number > 0),
+                graph_data TEXT NOT NULL,
+                graph_contract TEXT,
+                label TEXT NOT NULL,
+                source TEXT NOT NULL CHECK(source IN ('generation', 'content_edit')),
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                UNIQUE(thread_id, revision_number),
+                UNIQUE(thread_id, id),
+                FOREIGN KEY(thread_id, parent_revision_id)
+                    REFERENCES graph_revisions(thread_id, id) DEFERRABLE INITIALLY DEFERRED
+            )
+        """)
+        if "active_graph_revision_id" not in thread_columns:
+            conn.execute("ALTER TABLE chat_threads ADD COLUMN active_graph_revision_id TEXT REFERENCES graph_revisions(id)")
         if "graph_contract" not in thread_columns:
             conn.execute("ALTER TABLE chat_threads ADD COLUMN graph_contract TEXT")
         if "client_request_id" not in message_columns:
@@ -270,6 +292,38 @@ def init_db() -> None:
                 """
             )
             conn.execute("DROP TABLE chat_messages_legacy")
+        if "graph_revision_id" not in message_columns:
+            conn.execute("ALTER TABLE chat_messages ADD COLUMN graph_revision_id TEXT REFERENCES graph_revisions(id) ON DELETE SET NULL")
+        conn.execute("""
+            CREATE TRIGGER IF NOT EXISTS graph_thread_owner_update
+            BEFORE UPDATE OF user_id ON chat_threads
+            WHEN EXISTS (SELECT 1 FROM graph_revisions WHERE thread_id = OLD.id AND user_id <> NEW.user_id)
+            BEGIN SELECT RAISE(ABORT, 'graph revision owner mismatch'); END
+        """)
+        # SQLite cannot add composite foreign keys with ALTER TABLE. Enforce
+        # the same owner/thread boundaries for its additive column upgrades.
+        # DDL identifiers use only these two static operation names.
+        for operation in ("INSERT", "UPDATE"):
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS graph_revision_owner_{operation_lower}
+                BEFORE {operation} ON graph_revisions
+                WHEN NOT EXISTS (SELECT 1 FROM chat_threads WHERE id = NEW.thread_id AND user_id = NEW.user_id)
+                BEGIN SELECT RAISE(ABORT, 'graph revision owner mismatch'); END
+            """.format(operation=operation, operation_lower=operation.lower()))  # nosec B608
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS graph_active_thread_{operation_lower}
+                BEFORE {operation} ON chat_threads
+                WHEN NEW.active_graph_revision_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM graph_revisions WHERE id = NEW.active_graph_revision_id AND thread_id = NEW.id)
+                BEGIN SELECT RAISE(ABORT, 'active graph thread mismatch'); END
+            """.format(operation=operation, operation_lower=operation.lower()))  # nosec B608
+            conn.execute("""
+                CREATE TRIGGER IF NOT EXISTS graph_message_thread_{operation_lower}
+                BEFORE {operation} ON chat_messages
+                WHEN NEW.graph_revision_id IS NOT NULL AND NOT EXISTS (
+                    SELECT 1 FROM graph_revisions WHERE id = NEW.graph_revision_id AND thread_id = NEW.thread_id)
+                BEGIN SELECT RAISE(ABORT, 'message graph thread mismatch'); END
+            """.format(operation=operation, operation_lower=operation.lower()))  # nosec B608
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_chat_messages_thread_created "
             "ON chat_messages(thread_id, created_at)"

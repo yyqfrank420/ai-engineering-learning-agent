@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   clearThreadSnapshot,
+  mapThreadMessages,
   readThreadSnapshot,
   shouldPersistThreadSnapshot,
   writeThreadSnapshot,
@@ -22,6 +23,7 @@ describe('thread snapshot helpers', () => {
     });
 
     expect(readThreadSnapshot('user-1', 'thread-1')).toEqual({
+      threadId: 'thread-1',
       title: 'Thread title',
       messages: [
         { id: 'm1', role: 'user', content: 'hello', isStreaming: false },
@@ -119,4 +121,12 @@ describe('thread snapshot helpers', () => {
       },
     )).toBe(true);
   });
+  it('retains durable message revision associations through mapping and local snapshots', () => {
+    const messages = mapThreadMessages([{ id: 'answer', role: 'assistant', content: 'Answer', created_at: '',
+      graph_revision_id: 'revision-2', client_request_id: 'request-2' }]);
+    expect(messages[0]).toMatchObject({ graphRevisionId: 'revision-2', clientRequestId: 'request-2' });
+    writeThreadSnapshot('user-1', 'thread-1', { title: 'Saved', messages, graphData: null });
+    expect(readThreadSnapshot('user-1', 'thread-1')?.messages).toEqual(messages);
+  });
+
 });

@@ -1,7 +1,7 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSession, GraphData, ServerEvent } from '../types';
+import type { AuthSession, GraphData, ServerEvent, ThreadDetail } from '../types';
 
 const mocks = vi.hoisted(() => ({
   eventHandler: null as null | ((event: ServerEvent, meta: { kind: 'chat' | 'node-selected'; clientRequestId: string }) => void),
@@ -14,10 +14,12 @@ const mocks = vi.hoisted(() => ({
   useSearchTool: vi.fn(),
   trackEvent: vi.fn(),
   saveGraphContentEdit: vi.fn(),
+  fetchThread: vi.fn(),
 }));
 
 vi.mock('../services/api', () => ({
   saveGraphContentEdit: mocks.saveGraphContentEdit,
+  fetchThread: mocks.fetchThread,
 }));
 
 vi.mock('../services/agentTransport', async importOriginal => ({
@@ -338,6 +340,7 @@ describe('useAgentStream', () => {
     mocks.steerGeneration.mockReturnValue(false);
     mocks.useSearchTool.mockResolvedValue({ ok: true, status: 'search_requested' });
     mocks.saveGraphContentEdit.mockReset();
+    mocks.fetchThread.mockResolvedValue({ messages: [] });
   });
 
   it('keeps canonical graph unchanged until an edit saves and retains the saved graph after a later stream error', async () => {
@@ -1077,4 +1080,95 @@ describe('useAgentStream', () => {
     expect(screen.getByTestId('messages').textContent).toContain('Error: You must be signed in with an active thread.');
     expect(mocks.sendMessage).not.toHaveBeenCalled();
   });
+
+  it('adopts a restored canonical graph without replacing messages', () => {
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.hydrateThread({ messages: [{ id: 'saved', role: 'assistant', content: 'Original answer' }], graphData: graph('1') }));
+    act(() => result.current.selectNode(graph('1').nodes[0]));
+    let accepted = false;
+    act(() => { accepted = result.current.adoptRestoredGraph(graph('restored'), 'thread-1', '1'); });
+    expect(accepted).toBe(true);
+    expect(result.current.graphData?.version).toBe('restored');
+    expect(result.current.selectedNode).toBeNull();
+    expect(result.current.messages[0].content).toBe('Original answer');
+    expect(result.current.adoptRestoredGraph(graph('stale'), 'thread-1', '1')).toBe(false);
+    expect(result.current.adoptRestoredGraph(graph('wrong'), 'other-thread', 'restored')).toBe(false);
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    act(() => result.current.sendMessage('new request'));
+    expect(result.current.adoptRestoredGraph(graph('busy'), 'thread-1', 'restored')).toBe(false);
+  });
+
+  it('starts a created thread synchronously and survives matching thread hydration', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const detail: ThreadDetail = { thread: { id: 'thread-new', title: 'New', graph_data: null,
+      created_at: '', updated_at: '', last_seen_at: '' }, messages: [] };
+    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), {
+      initialProps: { threadId: 'thread-old' },
+    });
+    let accepted = false;
+    act(() => { accepted = result.current.startThreadAndSend(detail, 'Fresh design', { graphAction: 'new' }); });
+    expect(accepted).toBe(true);
+    expect(mocks.sendMessage.mock.calls[0][1]).toBe('thread-new');
+    rerender({ threadId: 'thread-new' });
+    act(() => result.current.hydrateThread({ threadId: 'thread-new', messages: [], graphData: null }));
+    expect(mocks.stopGeneration).not.toHaveBeenCalled();
+    expect(result.current.messages.map(message => message.content)).toEqual(['Fresh design']);
+    expect(result.current.streamStatus).toBe('generating');
+  });
+
+  it('rejects stale fresh-thread handoffs after a newer selection or account change', () => {
+    const detail: ThreadDetail = { thread: { id: 'created', title: 'New', graph_data: null,
+      created_at: '', updated_at: '', last_seen_at: '' }, messages: [] };
+    const { result, rerender, unmount } = renderHook(({ auth, threadId }) => useAgentStream(auth, threadId), {
+      initialProps: { auth: session, threadId: 'original' },
+    });
+    const oldHandoff = result.current.startThreadAndSend;
+    rerender({ auth: session, threadId: 'selected' });
+    expect(oldHandoff(detail, 'ignored')).toBe(false);
+    const oldAccountHandoff = result.current.startThreadAndSend;
+    rerender({ auth: { ...session, user: { ...session.user, id: 'other-user' } }, threadId: 'selected' });
+    expect(oldAccountHandoff(detail, 'ignored')).toBe(false);
+    const lastHandoff = result.current.startThreadAndSend;
+    unmount();
+    expect(lastHandoff(detail, 'ignored')).toBe(false);
+    expect(mocks.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('decorates streamed cards with durable revision IDs without replacing content', async () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const persisted = deferred<ThreadDetail>();
+    mocks.fetchThread.mockReturnValueOnce(persisted.promise);
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.sendMessage('Question'));
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4];
+    act(() => {
+      mocks.eventHandler!({ type: 'explanation_block', block_id: 'block', title: 'Kept title', content: 'Styled text',
+        related_node_ids: ['agent'], evidence_refs: [], graph_version: '1' }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler!({ type: 'done' }, { kind: 'chat', clientRequestId });
+    });
+    const localId = result.current.messages[1].id;
+    await act(async () => { persisted.resolve({ messages: [{ id: 'durable-id', role: 'assistant', content: 'Stored flattened text',
+      created_at: '', client_request_id: clientRequestId, graph_revision_id: 'revision-1' }] } as ThreadDetail); });
+    expect(result.current.messages[1]).toMatchObject({ id: localId, title: 'Kept title', content: 'Styled text',
+      kind: 'explanation', graphRevisionId: 'revision-1' });
+  });
+
+  it('ignores metadata arriving after the next send', async () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const persisted = deferred<ThreadDetail>();
+    mocks.fetchThread.mockReturnValueOnce(persisted.promise);
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.sendMessage('First'));
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4];
+    act(() => {
+      mocks.eventHandler!({ type: 'response_delta', content: 'First answer' }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler!({ type: 'done' }, { kind: 'chat', clientRequestId });
+      result.current.sendMessage('Second');
+    });
+    await act(async () => { persisted.resolve({ messages: [{ id: 'old', role: 'assistant', content: 'Old', created_at: '',
+      client_request_id: clientRequestId, graph_revision_id: 'revision-old' }] } as ThreadDetail); });
+    expect(result.current.messages.map(message => message.content)).toEqual(['First', 'First answer', 'Second']);
+    expect(result.current.messages[1].graphRevisionId).toBeUndefined();
+  });
+
 });

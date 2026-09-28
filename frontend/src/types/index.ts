@@ -103,6 +103,41 @@ export interface GraphData {
   view_state?: GraphViewState;
 }
 
+export type GraphAction = 'extend' | 'new' | 'answer';
+export type DiagramIntentAction = 'send' | 'answer' | 'ask' | 'extend' | 'new_chat';
+
+export interface SendOptions {
+  complexity?: ComplexityLevel;
+  graphMode?: GraphMode;
+  diagramRequested?: boolean;
+  researchEnabled?: boolean;
+  graphAction?: GraphAction;
+  expectedGraphVersion?: string | null;
+  displayContent?: string;
+  backendReadinessState?: string;
+  hasSelectedTextContext?: boolean;
+}
+
+export interface GraphRevisionSummary {
+  id: string;
+  parent_revision_id: string | null;
+  revision_number: number;
+  label: string;
+  created_at: string;
+  node_count: number;
+  edge_count: number;
+}
+
+export interface GraphHistory {
+  current_revision_id: string | null;
+  revisions: GraphRevisionSummary[];
+}
+
+export interface GraphRevision {
+  revision_id: string;
+  graph_data: GraphData;
+}
+
 export interface GraphContentEdit {
   nodes?: Array<{
     id: string;
@@ -133,6 +168,8 @@ export interface Message {
   kind?: 'text' | 'explanation';
   title?: string;
   relatedNodeIds?: string[];
+  graphRevisionId?: string | null;
+  clientRequestId?: string | null;
 }
 
 export interface ThreadSummary {
@@ -148,6 +185,7 @@ export interface ThreadDetail {
     id: string;
     title: string;
     graph_data: GraphData | null;
+    active_graph_revision_id?: string | null;
     created_at: string;
     updated_at: string;
     last_seen_at: string;
@@ -157,6 +195,8 @@ export interface ThreadDetail {
     role: MessageRole;
     content: string;
     created_at: string;
+    graph_revision_id?: string | null;
+    client_request_id?: string | null;
   }>;
 }
 

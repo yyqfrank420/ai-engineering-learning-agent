@@ -158,7 +158,27 @@ describe('graph node activation', () => {
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
   });
 
-  it('restores asymmetric saved padding with centered contents and no frame drift', () => {
+  it('keeps historical node positions fixed while retaining view navigation', () => {
+    const save = vi.fn();
+    const saved = { layoutVersion: 17, nodePositions: { [graph.nodes[0].id]: { x: 200, y: 100 } }, viewport: { x: 0, y: 0, k: 1 } };
+    const view = render(<D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined}
+      navigation layoutReadOnly initialViewState={saved} onViewStateChange={save} />);
+    const node = view.container.querySelector('g.node')!;
+    const before = node.getAttribute('transform');
+    fireEvent.keyDown(node, { key: 'ArrowRight' });
+    expect(node.getAttribute('transform')).toBe(before);
+    const zoom = save.mock.lastCall![0].viewport.k;
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    expect(save.mock.lastCall![0].viewport.k).toBeGreaterThan(zoom);
+    const lockedView = save.mock.lastCall![0];
+    save.mockClear();
+    view.rerender(<D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined}
+      navigation layoutReadOnly={false} initialViewState={saved} onViewStateChange={save} />);
+    expect(save).toHaveBeenCalled();
+    expect(save.mock.lastCall![0]).toEqual(lockedView);
+  });
+
+  it('restores asymmetric saved padding and exact node positions without frame drift', () => {
     const props = { graphData: { ...graph, nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
       groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['a', 'b'] }] },
       currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: () => undefined, navigation: true, onViewStateChange: vi.fn() };
@@ -168,8 +188,8 @@ describe('graph node activation', () => {
     const bounds = (root: HTMLElement) => ['x', 'y', 'width', 'height'].map(attr => Number(root.querySelector('.group-box > rect')!.getAttribute(attr)));
     expect(bounds(view.container)).toEqual([-17, -6, 534, 270]);
     const normalized = props.onViewStateChange.mock.lastCall![0];
-    expect(normalized.nodePositions).toEqual({ a: { x: 150, y: 90 }, b: { x: 350, y: 190 } });
-    expect(normalized.zonePadding.zone).toEqual({ left: 50, right: 50, top: 20, bottom: 20 });
+    expect(normalized.nodePositions).toEqual(saved.nodePositions);
+    expect(normalized.zonePadding.zone).toEqual(saved.zonePadding.zone);
     view.unmount();
     const restored = render(<D3Graph {...props} initialViewState={normalized} />);
     expect(bounds(restored.container)).toEqual([-17, -6, 534, 270]);

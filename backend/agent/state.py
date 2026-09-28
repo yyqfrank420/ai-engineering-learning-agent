@@ -114,6 +114,7 @@ class AgentState(TypedDict):
     complexity: str  # "auto" | "low" | "prototype" | "production"
     graph_mode: str  # "on" | "off"
     diagram_requested: NotRequired[bool]
+    graph_action: NotRequired[Literal["extend", "new", "answer"] | None]
     research_enabled: bool  # True = run research_worker alongside rag_worker
 
     # ── Routing ───────────────────────────────────────────────────────────────

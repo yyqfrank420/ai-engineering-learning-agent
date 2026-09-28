@@ -1,0 +1,12 @@
+.graph-history { flex-shrink: 0; padding: 0.6rem 0.8rem; background: #101520; border-bottom: 1px solid #293140; color: #c9d1d9; font-size: 0.75rem; }
+.graph-history-toolbar, .graph-history-preview, .graph-history-error { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
+.graph-history button, .graph-history select, .message-diagram-link { border: 1px solid #394254; border-radius: 6px; padding: 0.4rem 0.6rem; background: #171d28; color: #d9e0eb; font: inherit; cursor: pointer; }
+.graph-history select { min-width: 0; max-width: min(100%, 22rem); }
+.graph-history button:hover:not(:disabled), .message-diagram-link:hover:not(:disabled) { background: #28223c; }
+.graph-history button:focus-visible, .graph-history select:focus-visible, .message-diagram-link:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+.graph-history button:disabled, .graph-history select:disabled, .message-diagram-link:disabled { opacity: 0.45; cursor: default; }
+.graph-history svg { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.graph-history-preview, .graph-history-error { margin-top: 0.6rem; }
+.graph-history-preview > span, .graph-history-error > span { margin-right: auto; }
+.graph-history-error { color: #ffb4ad; }
+.message-diagram-link { display: block; margin-top: 0.6rem; color: #c6b6fa; font-size: 0.75rem; }

@@ -312,7 +312,7 @@ def resolve_graph_operation(
     if not text:
         return None
     if diagram_requested and not requests_no_diagram(query):
-        return resolve_graph_operation(query, graph_data) or "create"
+        return resolve_graph_operation(query, graph_data) or ("create" if not graph_data else None)
     applied_design_requested = is_applied_system_design_request(query)
     authored_terms = tuple(
         term
@@ -408,15 +408,47 @@ def is_new_applied_graph_request(query: str, graph_data: dict | None) -> bool:
     return resolve_graph_operation(query, graph_data) == "create"
 
 
+def is_graph_extension_request(query: str, graph_data: dict | None) -> bool:
+    """Recognize contextual additions without guessing an authored target."""
+    if not graph_data or requests_no_diagram(query):
+        return False
+    text = _routing_intent_text(query)
+    clauses = _intent_clauses(text)
+    eligible = [clause for clause in clauses
+                if not _NEGATED_GRAPH_EDIT_CLAUSE.match(clause)
+                and not _GRAPH_ARTIFACT_CHANGE_FORBIDDEN.search(clause)
+                and not _EXPLANATION_REQUEST.match(clause)]
+    non_additive = re.compile(r"\b(?:remove|delete|rename|replace|rebuild|redesign|update|change|edit|disconnect|unlink)\w*\b")
+    if any(non_additive.search(clause) for clause in eligible):
+        return False
+    for clause in eligible:
+        if _NON_MUTATING_QUESTION.match(clause) and not re.match(r"^(?:what\s+if|could\s+we)\b", clause):
+            continue
+        if re.search(r"\b(?:add(?:ed|ing)?|expand|extend|include|augment)\b", clause) and (
+            re.search(r"\b(?:this|current|existing|original|our|my)\b|\bon\s+top\s+of\b|\balongside\b", clause)
+            or resolve_graph_operation(clause, graph_data) == "edit"
+        ):
+            return True
+    return False
+
+
 def diagram_submission_action(
     query: str, graph_data: dict | None
-) -> Literal["send", "answer", "ask"]:
-    """Ask before treating an ambiguous learning question as a diagram request."""
+) -> Literal["send", "answer", "ask", "extend", "new_chat"]:
+    """Separate additions, explanations and new subjects before submission."""
     if requests_no_diagram(query):
         return "answer"
-    if resolve_graph_operation(query, graph_data):
+    operation = resolve_graph_operation(query, graph_data)
+    if graph_data and operation == "create":
+        return "new_chat"
+    if is_graph_extension_request(query, graph_data):
+        return "extend"
+    if operation:
         return "send"
-    return "ask"
+    text = _routing_intent_text(query)
+    if graph_data and (_EXPLANATION_REQUEST.match(text) or _CONCEPT_QUESTION.match(text)):
+        return "answer"
+    return "ask" if graph_data else "send"
 
 
 def is_applied_system_design_request(query: str) -> bool:

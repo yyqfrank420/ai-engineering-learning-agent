@@ -15,9 +15,13 @@ import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 import type { Message } from '../../types';
+import '../GraphHistoryControls.css';
 
 interface MessageListProps {
   messages: Message[];
+  revisionIds?: string[];
+  onViewDiagram?: (id: string) => void;
+  historyDisabled?: boolean;
 }
 
 // ── LaTeX pre-processor ───────────────────────────────────────────────────────
@@ -197,7 +201,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   );
 }
 
-export function MessageList({ messages }: MessageListProps) {
+export function MessageList({ messages, revisionIds = [], onViewDiagram, historyDisabled = false }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -261,6 +265,9 @@ export function MessageList({ messages }: MessageListProps) {
               </div>
             )}
             <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
+            {msg.role === 'assistant' && msg.graphRevisionId && revisionIds.includes(msg.graphRevisionId) && onViewDiagram && (
+              <button className="message-diagram-link" disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
+            )}
             {msg.kind === 'explanation' && msg.relatedNodeIds && msg.relatedNodeIds.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: '0.45rem' }}>
                 {msg.relatedNodeIds.slice(0, 4).map(nodeId => (

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { MessageList } from './MessageList';
@@ -8,6 +8,21 @@ beforeAll(() => {
 });
 
 describe('MessageList', () => {
+  it('links only assistant diagrams with a real saved revision and respects busy state', () => {
+    const onViewDiagram = vi.fn();
+    const messages = [
+      { id: 'known', role: 'assistant' as const, content: 'Saved answer', graphRevisionId: 'r1' },
+      { id: 'unknown', role: 'assistant' as const, content: 'Unknown version', graphRevisionId: 'missing' },
+      { id: 'user', role: 'user' as const, content: 'User text', graphRevisionId: 'r1' },
+    ];
+    const view = render(<MessageList messages={messages} revisionIds={['r1']} onViewDiagram={onViewDiagram} />);
+    expect(screen.getAllByRole('button', { name: 'View diagram' })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'View diagram' }));
+    expect(onViewDiagram).toHaveBeenCalledWith('r1');
+    view.rerender(<MessageList messages={messages} revisionIds={['r1']} onViewDiagram={onViewDiagram} historyDisabled />);
+    expect((screen.getByRole('button', { name: 'View diagram' }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
   it('keeps inline code inline and renders fenced code in one valid pre block', () => {
     const { container } = render(
       <MessageList

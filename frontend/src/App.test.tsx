@@ -1,6 +1,8 @@
-import { useEffect, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useEffect, useImperativeHandle, useState } from 'react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { flushPendingLayout } = vi.hoisted(() => ({ flushPendingLayout: vi.fn().mockResolvedValue(undefined) }));
 
 vi.mock('./hooks/useAuthSession', () => ({ useAuthSession: vi.fn() }));
 vi.mock('./hooks/useBackendReadiness', () => ({ useBackendReadiness: vi.fn() }));
@@ -9,6 +11,7 @@ vi.mock('./hooks/useThreadSession', () => ({ useThreadSession: vi.fn() }));
 vi.mock('./hooks/useAgentStream', () => ({ useAgentStream: vi.fn() }));
 
 vi.mock('./services/analytics', () => ({ trackEvent: vi.fn().mockResolvedValue(undefined) }));
+vi.mock('./services/api', () => ({ checkDiagramIntent: vi.fn(), fetchGraphHistory: vi.fn().mockResolvedValue({current_revision_id: null, revisions: []}), fetchGraphRevision: vi.fn(), restoreGraphRevision: vi.fn() }));
 vi.mock('./services/auth', () => ({ signOut: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./utils/threadState', () => ({
   shouldPersistThreadSnapshot: vi.fn(() => true),
@@ -118,7 +121,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
     onClearSelectionReference,
     backendReadiness,
   }: {
-    onSend: (content: string, diagramRequested?: boolean) => void;
+    onSend: (content: string, action?: 'ask' | 'new_chat') => Promise<void>;
     onStop: () => void;
     onRetryReadiness: () => void;
     onUseSelection: () => void;
@@ -127,8 +130,9 @@ vi.mock('./components/Chat/ChatInput', () => ({
     backendReadiness: string;
   }) => (
     <div>
-      <button onClick={() => onSend('User question')}>Send message</button>
-      <button onClick={() => onSend('AI trading bot?', true)}>Send broad request</button>
+      <button onClick={() => { void onSend('User question').catch(() => {}); }}>Send message</button>
+      <button onClick={() => { void onSend('AI trading bot?', 'ask').catch(() => {}); }}>Send broad request</button>
+      <button onClick={() => { void onSend('Separate topic', 'new_chat').catch(() => {}); }}>Send in new chat</button>
       <button onClick={onStop}>Stop generation</button>
       {backendReadiness === 'error' && <button onClick={onRetryReadiness}>Retry connection</button>}
       <button onClick={onUseSelection}>Use selection</button>
@@ -139,7 +143,8 @@ vi.mock('./components/Chat/ChatInput', () => ({
 }));
 
 vi.mock('./components/GraphCanvas', () => ({
-  GraphCanvas: ({ graphData, isPreview, isAcceptedGraph, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
+  GraphCanvas: ({ ref, graphData, isPreview, isAcceptedGraph, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
+    ref?: React.Ref<{flushPendingLayout: () => Promise<void>}>;
     graphData: GraphData | null;
     isPreview?: boolean;
     isAcceptedGraph?: boolean;
@@ -150,6 +155,7 @@ vi.mock('./components/GraphCanvas', () => ({
     onEditDraftChange?: (dirty: boolean) => void;
     editingDisabled?: boolean;
   }) => {
+    useImperativeHandle(ref, () => ({ flushPendingLayout }), []);
     const node = {
       id: 'retrieval',
       label: 'Retrieval API',
@@ -193,7 +199,7 @@ import { useSelectionSuggestion } from './hooks/useSelectionSuggestion';
 import { useThreadSession } from './hooks/useThreadSession';
 import { trackEvent } from './services/analytics';
 import { signOut } from './services/auth';
-import type { AuthSession, GraphCandidate, GraphData } from './types';
+import type { AuthSession, GraphCandidate, GraphData, ThreadDetail } from './types';
 import { shouldPersistThreadSnapshot, writeThreadSnapshot } from './utils/threadState';
 
 
@@ -290,7 +296,9 @@ const agentState = {
   streamStatus: 'connected' as const,
   providerNotice: null,
   hydrateThread: vi.fn(),
-  sendMessage: vi.fn(),
+  sendMessage: vi.fn().mockReturnValue(true),
+  adoptRestoredGraph: vi.fn().mockReturnValue(true),
+  startThreadAndSend: vi.fn().mockReturnValue(true),
   saveGraphEdit: vi.fn().mockResolvedValue(undefined),
   requestSearchTool: vi.fn(),
   stopGeneration: vi.fn(),
@@ -300,6 +308,7 @@ const agentState = {
 describe('App coordination', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    flushPendingLayout.mockReset().mockResolvedValue(undefined);
     window.location.hash = '';
     localStorage.clear();
     localStorage.setItem('thread:user-1', 'cached');
@@ -333,7 +342,7 @@ describe('App coordination', () => {
       expect.objectContaining({ title: 'Architecture thread', graphData: graph }),
     );
 
-    fireEvent.click(screen.getByText('Send message'));
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
     expect(selectionState.clearSelection).toHaveBeenCalled();
     expect(agentState.sendMessage).toHaveBeenCalledWith(
       'User question',
@@ -345,8 +354,8 @@ describe('App coordination', () => {
     );
 
     fireEvent.click(screen.getByText('Choose node'));
-    fireEvent.click(screen.getByText('Tell me more'));
-    fireEvent.click(screen.getByText('Expand graph'));
+    await act(async () => { fireEvent.click(screen.getByText('Tell me more')); });
+    await act(async () => { fireEvent.click(screen.getByText('Expand graph')); });
     expect(agentState.selectNode).toHaveBeenCalled();
     expect(agentState.sendMessage).toHaveBeenCalledWith(
       expect.stringContaining('Tell me more about Retrieval API'),
@@ -368,15 +377,15 @@ describe('App coordination', () => {
       session,
     );
 
-    fireEvent.click(screen.getByText('Ask context'));
+    await act(async () => { fireEvent.click(screen.getByText('Ask context')); });
     fireEvent.click(screen.getByText('Clear context'));
     fireEvent.click(screen.getByText('Request search'));
     fireEvent.click(screen.getByText('Stop generation'));
     expect(agentState.requestSearchTool).toHaveBeenCalledTimes(1);
     expect(agentState.stopGeneration).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(screen.getByText('New chat'));
-    fireEvent.click(screen.getByText('Select thread'));
+    await act(async () => { fireEvent.click(screen.getByText('New chat')); });
+    await act(async () => { fireEvent.click(screen.getByText('Select thread')); });
     fireEvent.click(screen.getByText('Delete thread'));
     expect(threadState.handleNewChat).toHaveBeenCalledTimes(1);
     expect(threadState.handleSelectThread).toHaveBeenCalledWith('thread-2');
@@ -384,6 +393,46 @@ describe('App coordination', () => {
 
     fireEvent.click(screen.getByText('Toggle sidebar'));
     expect(screen.getByText('New chat').parentElement?.dataset.sidebarOpen).toBe('false');
+  });
+
+  it('keeps the current thread when pending layout cannot be saved', async () => {
+    flushPendingLayout.mockRejectedValue(new Error('Layout save failed'));
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await act(async () => { fireEvent.click(screen.getByText('Select thread')); });
+    expect(threadState.handleSelectThread).not.toHaveBeenCalled();
+    expect(screen.getByRole('alert').textContent).toBe('Layout save failed');
+  });
+
+  it('does not create a chat after unmount while waiting for layout persistence', async () => {
+    let resolve!: () => void;
+    flushPendingLayout.mockReturnValue(new Promise<void>(done => { resolve = done; }));
+    const view = render(<App />);
+    await screen.findByTestId('graph-canvas');
+    fireEvent.click(screen.getByText('New chat'));
+    view.unmount();
+    await act(async () => resolve());
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+  });
+
+  it('accepts its created thread when React commits that selection before creation resolves', async () => {
+    let resolve!: (thread: ThreadDetail) => void;
+    const create = vi.fn(() => new Promise<ThreadDetail>(done => { resolve = done; }));
+    vi.mocked(useThreadSession).mockReturnValue({ ...threadState, handleNewChat: create });
+    const view = render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
+    expect(create).toHaveBeenCalledWith({ preserveCurrentView: true });
+    const created: ThreadDetail = {
+      thread: { id: 'created-thread', title: 'New chat', graph_data: null, created_at: '', updated_at: '', last_seen_at: '' },
+      messages: [],
+    };
+    vi.mocked(useThreadSession).mockReturnValue({ ...threadState, activeThreadId: created.thread.id, handleNewChat: create });
+    view.rerender(<App />);
+    await act(async () => resolve(created));
+    expect(agentState.startThreadAndSend).toHaveBeenCalledExactlyOnceWith(created, 'Separate topic', expect.objectContaining({ graphAction: 'new' }));
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
+    expect(screen.queryByText('The conversation changed. Please try again.')).toBeNull();
   });
 
   it('blocks chat and thread changes while a graph edit draft is open', async () => {
@@ -395,11 +444,11 @@ describe('App coordination', () => {
     const unload = new Event('beforeunload', { cancelable: true });
     window.dispatchEvent(unload);
     expect(unload.defaultPrevented).toBe(true);
-    fireEvent.click(screen.getByText('Send message'));
-    fireEvent.click(screen.getByText('New chat'));
-    fireEvent.click(screen.getByText('Select thread'));
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
+    await act(async () => { fireEvent.click(screen.getByText('New chat')); });
+    await act(async () => { fireEvent.click(screen.getByText('Select thread')); });
     fireEvent.click(screen.getByText('Delete thread'));
-    fireEvent.click(screen.getByText('Expand graph'));
+    await act(async () => { fireEvent.click(screen.getByText('Expand graph')); });
     expect(agentState.sendMessage).not.toHaveBeenCalled();
     expect(threadState.handleNewChat).not.toHaveBeenCalled();
     expect(threadState.handleSelectThread).not.toHaveBeenCalled();
@@ -407,7 +456,7 @@ describe('App coordination', () => {
 
     fireEvent.click(screen.getByText('Cancel graph edit'));
     expect(screen.queryByText('Save or cancel component edits to continue.')).toBeNull();
-    fireEvent.click(screen.getByText('Send message'));
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
     expect(agentState.sendMessage).toHaveBeenCalledTimes(1);
   });
 
@@ -463,7 +512,7 @@ describe('App coordination', () => {
     fireEvent.click(screen.getByText('Use selection'));
     fireEvent.click(screen.getByText('Dismiss selection'));
     fireEvent.click(screen.getByText('Clear selection reference'));
-    fireEvent.click(screen.getByText('Send message'));
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
 
     expect(agentState.sendMessage).toHaveBeenLastCalledWith(
       expect.stringContaining('Highlighted text: "A selected architecture passage"'),
@@ -477,7 +526,7 @@ describe('App coordination', () => {
     expect(trackEvent).not.toHaveBeenCalledWith('mode_changed', expect.anything(), expect.anything());
   });
 
-  it('blocks sending and thread retry while the backend warms', () => {
+  it('blocks sending and thread retry while the backend warms', async () => {
     vi.mocked(useBackendReadiness).mockReturnValue({
       ...readinessState,
       backendReadiness: 'preparing',
@@ -489,7 +538,7 @@ describe('App coordination', () => {
     });
     render(<App />);
 
-    fireEvent.click(screen.getByText('Send message'));
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
     expect(agentState.sendMessage).not.toHaveBeenCalled();
     expect(screen.queryByText('Prepare backend')).toBeNull();
     expect(screen.queryByText('Retry connection')).toBeNull();
@@ -663,10 +712,12 @@ describe('App coordination', () => {
 
   it('requests a diagram for a broad learner message without a confirmation', async () => {
     vi.mocked(useSelectionSuggestion).mockReturnValue({ ...selectionState, selectionSuggestion: null, selectionReferenceActive: false });
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: null });
     render(<App />);
-    fireEvent.click(await screen.findByText('Send broad request'));
+    await screen.findByText('Send broad request');
+    await act(async () => { fireEvent.click(screen.getByText('Send broad request')); });
     expect(agentState.sendMessage).toHaveBeenCalledWith('AI trading bot?', expect.objectContaining({
-      diagramRequested: true, graphMode: 'on', complexity: 'auto', researchEnabled: true, displayContent: 'AI trading bot?',
+      graphAction: 'new', graphMode: 'on', complexity: 'auto', researchEnabled: true, displayContent: 'AI trading bot?',
     }));
   });
 

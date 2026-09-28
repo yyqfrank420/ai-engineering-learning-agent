@@ -27,3 +27,12 @@
     animation: none;
   }
 }
+
+.chat-graph-choice { margin-bottom: 0.75rem; color: #c9d1d9; font-size: 0.8rem; }
+.chat-graph-choice p { margin: 0 0 0.5rem; }
+.chat-graph-choice > div { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.chat-graph-choice button { padding: 0.45rem 0.6rem; border: 1px solid #504667; border-radius: 6px; background: #211b30; color: #e2d8ff; cursor: pointer; }
+.chat-graph-choice button:hover:not(:disabled) { background: #332647; }
+.chat-graph-choice button:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+.chat-graph-choice button:disabled { opacity: 0.45; cursor: default; }
+.chat-graph-choice small { display: block; margin-top: 0.5rem; color: #a7b2c3; }

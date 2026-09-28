@@ -20,7 +20,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { isSupportedDiagramEvaluationCriteria } from '../diagramEvaluationContract';
 import { agentTransport, ChatTurnTimeoutError, createClientRequestId } from '../services/agentTransport';
-import { saveGraphContentEdit } from '../services/api';
+import { fetchThread, saveGraphContentEdit } from '../services/api';
 import { trackEvent } from '../services/analytics';
 import type {
   AuthSession,
@@ -35,10 +35,13 @@ import type {
   RetrievalNotice,
   SelectedNode,
   ServerEvent,
+  SendOptions,
+  ThreadDetail,
   WorkerStatus,
   WorkflowProgress,
 } from '../types';
 import { graphStructureKey } from '../utils/graphStructureKey';
+import { mapThreadMessages, type ThreadSnapshot } from '../utils/threadState';
 import { normalizeGraphData } from '../utils/graphData';
 import { initialNodeSuggestions } from './nodeSuggestions';
 
@@ -65,6 +68,11 @@ const OPTIMISTIC_CHAT_STATUS: WorkerStatus = {
 // graphStructureKey imported from ../utils/graphStructureKey
 
 export function useAgentStream(authSession: AuthSession | null, activeThreadId: string | null) {
+  const mountedRef = useRef(false);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
   const [messages,     setMessages]     = useState<Message[]>([]);
   const [graphData,    setGraphData]    = useState<GraphData | null>(null);
   const [isSavingGraphEdit, setIsSavingGraphEdit] = useState(false);
@@ -153,9 +161,13 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   }, []);
 
   useEffect(() => {
-    activeThreadIdRef.current = activeThreadId;
-    resetThreadView();
+    if (activeThreadIdRef.current !== activeThreadId) {
+      activeThreadIdRef.current = activeThreadId;
+      resetThreadView();
+    }
     return () => {
+      // An explicit fresh-thread handoff may already own the next stream.
+      if (activeThreadIdRef.current !== activeThreadId) return;
       const chatRequestId = activeChatStreamIdRef.current;
       const nodeRequestId = activeNodeStreamIdRef.current;
       activeChatStreamIdRef.current = null;
@@ -177,7 +189,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     selectedNodeRef.current = selectedNode;
   }, [selectedNode]);
 
-  const hydrateThread = useCallback((thread: { messages: Message[]; graphData: GraphData | null }) => {
+  const hydrateThread = useCallback((thread: Pick<ThreadSnapshot, 'threadId' | 'messages' | 'graphData'>) => {
+    if (thread.threadId && thread.threadId === activeThreadIdRef.current && activeChatStreamIdRef.current) return;
     resetThreadView();
     setMessages(thread.messages);
     const nextGraph = normalizeGraphData(thread.graphData);
@@ -291,6 +304,32 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     }
   }, [activeThreadId, authSession, streamStatus]);
 
+  const adoptRestoredGraph = useCallback((nextGraph: GraphData, threadId: string, expectedVersion: string | null): boolean => {
+    const chatId = activeChatStreamIdRef.current;
+    if (!mountedRef.current || !authSession || authSessionRef.current?.user.id !== authSession.user.id
+      || activeThreadIdRef.current !== threadId || graphEditInFlightRef.current
+      || (chatId && activeChatTerminalRef.current !== chatId)
+      || (graphDataRef.current?.version ?? null) !== expectedVersion) return false;
+    const normalized = normalizeGraphData(nextGraph);
+    if (!normalized?.nodes.length) return false;
+    if (activeNodeStreamIdRef.current) agentTransport.cancelNodeSelection(activeNodeStreamIdRef.current);
+    activeNodeStreamIdRef.current = null;
+    graphEditEpochRef.current += 1;
+    graphDataRef.current = normalized;
+    durableGraphDataRef.current = normalized;
+    lastGraphKeyRef.current = graphStructureKey(normalized);
+    suggestionsCacheRef.current.clear();
+    selectedNodeRef.current = null;
+    setSelectedNode(null);
+    setGraphData(normalized);
+    setGraphPreview(null);
+    setGraphCandidate(null);
+    setGraphNotice(null);
+    setPublishedGraphKey(null);
+    setAnswerTurn(null);
+    return true;
+  }, [authSession]);
+
   const handleEvent = useCallback((event: ServerEvent, meta: { kind: 'chat' | 'node-selected'; clientRequestId: string }) => {
     if (meta.kind === 'chat' && activeChatStreamIdRef.current !== meta.clientRequestId) {
       return;
@@ -314,7 +353,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           const id = makeId();
           streamingIdRef.current = id;
           setMessages(prev => [...prev, {
-            id, role: 'assistant', content: event.content, isStreaming: true,
+            id, role: 'assistant', content: event.content, isStreaming: true, clientRequestId: meta.clientRequestId,
           }]);
         } else {
           // Append to the existing streaming message
@@ -396,6 +435,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           title: event.title,
           content: event.content,
           relatedNodeIds: event.related_node_ids,
+          clientRequestId: meta.clientRequestId,
         };
         activeExplanationMessageIdsRef.current.push(id);
         setMessages(prev => [...prev, {
@@ -467,6 +507,28 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
               },
               authSessionRef.current,
             );
+          }
+          const session = authSessionRef.current;
+          const threadId = activeThreadIdRef.current;
+          if (session && threadId) {
+            void fetchThread(session, threadId).then(detail => {
+              if (!mountedRef.current || activeThreadIdRef.current !== threadId
+                || authSessionRef.current?.user.id !== session.user.id
+                || activeChatTerminalRef.current !== meta.clientRequestId) return;
+              const persisted = detail.messages.find(message => message.role === 'assistant'
+                && message.client_request_id === meta.clientRequestId);
+              if (!persisted) return;
+              setMessages(previous => previous.map(message => message.role === 'assistant'
+                && message.clientRequestId === meta.clientRequestId
+                ? { ...message, graphRevisionId: persisted.graph_revision_id ?? null }
+                : message));
+            }).catch(() => {
+              if (mountedRef.current && activeThreadIdRef.current === threadId
+                && authSessionRef.current?.user.id === session.user.id
+                && activeChatTerminalRef.current === meta.clientRequestId) {
+                setGraphNotice({ message: 'Could not refresh diagram history links. Reopen this chat to retry.' });
+              }
+            });
           }
         }
         break;
@@ -591,24 +653,19 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
   const sendMessage = useCallback((
     content: string,
-    opts?: {
-      complexity?: ComplexityLevel;
-      graphMode?: GraphMode;
-      diagramRequested?: boolean;
-      researchEnabled?: boolean;
-      displayContent?: string;
-      backendReadinessState?: string;
-      hasSelectedTextContext?: boolean;
-    },
-  ) => {
-    if (graphEditInFlightRef.current) return;
-    if (!authSession || !activeThreadId) {
+    opts?: SendOptions,
+  ): boolean => {
+    const targetThreadId = activeThreadIdRef.current;
+    const session = authSessionRef.current;
+    if (!mountedRef.current) return false;
+    if (graphEditInFlightRef.current) return false;
+    if (!session || !targetThreadId) {
       setMessages(prev => [...prev, {
         id: makeId(), role: 'assistant', content: 'Error: You must be signed in with an active thread.', isStreaming: false,
       }]);
-      return;
+      return false;
     }
-    if (streamStatus === 'generating') {
+    if (activeChatStreamIdRef.current && activeChatTerminalRef.current !== activeChatStreamIdRef.current) {
       const displayContent = opts?.displayContent ?? content;
       if (agentTransport.steerGeneration(content)) {
         setMessages(prev => [...prev, {
@@ -621,7 +678,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           ...prev,
           orchestrator: 'Applying your follow-up…',
         }));
-        return;
+        return true;
       }
     }
     const userId = makeId();
@@ -647,7 +704,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     activeChatStreamIdRef.current = clientRequestId;
     activeChatTerminalRef.current = null;
     const analytics = {
-      threadId: activeThreadId,
+      threadId: targetThreadId,
       clientRequestId,
       complexity: opts?.complexity ?? 'auto',
       graphMode: opts?.graphMode ?? 'on',
@@ -667,7 +724,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         backend_readiness_state: analytics.backendReadinessState,
         has_selected_text_context: analytics.hasSelectedTextContext,
       },
-      authSession,
+      session,
     );
     void trackEvent(
       'chat_stream_started',
@@ -680,10 +737,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         backend_readiness_state: analytics.backendReadinessState,
         has_selected_text_context: analytics.hasSelectedTextContext,
       },
-      authSession,
+      session,
     );
 
-    agentTransport.sendMessage(authSession, activeThreadId, content, opts, clientRequestId).then(sawDone => {
+    agentTransport.sendMessage(session, targetThreadId, content, opts, clientRequestId).then(sawDone => {
       if (!sawDone && activeChatStreamIdRef.current === clientRequestId) {
         if (streamingIdRef.current) {
           const id = streamingIdRef.current;
@@ -719,7 +776,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
               has_selected_text_context: analytics.hasSelectedTextContext,
               error_code: 'stream_closed',
             },
-            authSession,
+            session,
           );
         }
       }
@@ -763,7 +820,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
             has_selected_text_context: analytics.hasSelectedTextContext,
             error_code: err.message,
           },
-          authSession,
+          session,
         );
       }
     }).finally(() => {
@@ -774,7 +831,23 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         activeChatAnalyticsRef.current = null;
       }
     });
-  }, [activeThreadId, authSession, publishGraph, streamStatus]);
+    return true;
+  }, [publishGraph]);
+
+  const startThreadAndSend = useCallback((thread: ThreadDetail, content: string, opts?: SendOptions): boolean => {
+    if (!mountedRef.current || !authSession || authSessionRef.current?.user.id !== authSession.user.id
+      || (activeThreadIdRef.current !== null && activeThreadIdRef.current !== activeThreadId
+        && activeThreadIdRef.current !== thread.thread.id)) return false;
+    resetThreadView();
+    activeThreadIdRef.current = thread.thread.id;
+    const graph = normalizeGraphData(thread.thread.graph_data);
+    graphDataRef.current = graph;
+    durableGraphDataRef.current = graph;
+    lastGraphKeyRef.current = graphStructureKey(graph);
+    setGraphData(graph);
+    setMessages(mapThreadMessages(thread.messages));
+    return sendMessage(content, opts);
+  }, [activeThreadId, authSession, resetThreadView, sendMessage]);
 
   const requestSearchTool = useCallback(async () => {
     if (!authSession || !activeThreadId || !retrievalNotice || retrievalNotice.requested) {
@@ -934,6 +1007,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     streamStatus,
     providerNotice,
     hydrateThread,
+    adoptRestoredGraph,
+    startThreadAndSend,
     sendMessage,
     saveGraphEdit,
     requestSearchTool,

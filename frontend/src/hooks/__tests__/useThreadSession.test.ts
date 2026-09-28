@@ -242,6 +242,7 @@ describe('useThreadSession', () => {
       expect(result.current.activeThreadId).toBe('thread-b');
       expect(result.current.threadTitle).toBe('Thread B');
       expect(result.current.threadSnapshot).toEqual({
+        threadId: 'thread-b',
         title: 'Thread B',
         messages: [],
         graphData: null,
@@ -298,6 +299,7 @@ describe('useThreadSession', () => {
     expect(result.current.activeThreadId).toBe('thread-b');
     expect(result.current.threadTitle).toBe('Thread B');
     expect(result.current.threadSnapshot).toEqual({
+      threadId: 'thread-b',
       title: 'Thread B',
       messages: [],
       graphData: null,
@@ -853,4 +855,38 @@ describe('useThreadSession', () => {
     expect(createThread).toHaveBeenCalledTimes(1);
     expect(result.current.threadError).toBeNull();
   });
+  it('returns created details for an explicit send handoff and preserves the old view on failure', async () => {
+    const original = makeThreadDetail('original', 'Original');
+    vi.mocked(createThread).mockResolvedValueOnce(original);
+    const { result } = renderHook(() => useThreadSession({ authSession: TEST_SESSION, backendReady: true, clearSelection: vi.fn() }));
+    await waitFor(() => expect(result.current.activeThreadId).toBe('original'));
+    vi.mocked(createThread).mockRejectedValueOnce(new Error('Unavailable'));
+    let created: Awaited<ReturnType<typeof result.current.handleNewChat>> = null;
+    await act(async () => { created = await result.current.handleNewChat({ preserveCurrentView: true }); });
+    expect(created).toBeNull();
+    expect(result.current.activeThreadId).toBe('original');
+    expect(localStorage.getItem(storageKeyForThread(TEST_SESSION.user.id))).toBe('original');
+    const next = makeThreadDetail('created', 'New');
+    vi.mocked(createThread).mockResolvedValueOnce(next);
+    await act(async () => { created = await result.current.handleNewChat({ preserveCurrentView: true }); });
+    expect(created).toEqual(next);
+    expect(result.current.threadSnapshot.threadId).toBe('created');
+  });
+
+  it('does not return a created thread after a newer thread selection wins', async () => {
+    vi.mocked(createThread).mockResolvedValueOnce(makeThreadDetail('original', 'Original'));
+    const { result } = renderHook(() => useThreadSession({ authSession: TEST_SESSION, backendReady: true, clearSelection: vi.fn() }));
+    await waitFor(() => expect(result.current.activeThreadId).toBe('original'));
+    const pending = deferred<ReturnType<typeof makeThreadDetail>>();
+    vi.mocked(createThread).mockReturnValueOnce(pending.promise);
+    let request!: ReturnType<typeof result.current.handleNewChat>;
+    act(() => { request = result.current.handleNewChat({ preserveCurrentView: true }); });
+    vi.mocked(fetchThread).mockResolvedValueOnce(makeThreadDetail('chosen', 'Chosen'));
+    act(() => result.current.handleSelectThread('chosen'));
+    await waitFor(() => expect(result.current.activeThreadId).toBe('chosen'));
+    await act(async () => { pending.resolve(makeThreadDetail('late', 'Late')); });
+    await expect(request).resolves.toBeNull();
+    expect(result.current.activeThreadId).toBe('chosen');
+  });
+
 });

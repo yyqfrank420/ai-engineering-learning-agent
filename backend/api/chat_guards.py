@@ -3,8 +3,41 @@ import time
 
 from starlette.requests import HTTPConnection
 
+from agent.complexity import resolve_graph_operation
 from config import settings
 from storage.rate_limit_store import RateLimitDimension, reserve_rate_limit
+
+
+def graph_continuity_error(
+    *,
+    graph_action: str | None,
+    expected_graph_version: str | None,
+    current_graph: dict | None,
+    content: str,
+    diagram_requested: bool,
+) -> str | None:
+    """Validate graph intent against the authoritative graph under the thread lease."""
+    if graph_action == "extend":
+        if current_graph is None:
+            return "There is no diagram to extend. Start a new diagram instead."
+        if not expected_graph_version or expected_graph_version != current_graph.get(
+            "version"
+        ):
+            return "The diagram changed. Reload this chat before extending it."
+    elif graph_action == "new" and current_graph is not None:
+        return "This chat already has a diagram. Start a new chat for a new diagram."
+    elif (
+        graph_action is None
+        and current_graph is not None
+        and resolve_graph_operation(
+            content, current_graph, diagram_requested=diagram_requested
+        )
+        == "create"
+    ):
+        return (
+            "This chat already has a diagram. Choose to extend it or start a new chat."
+        )
+    return None
 
 
 def _is_internal_test_user(user: dict) -> bool:
