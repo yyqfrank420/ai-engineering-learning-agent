@@ -304,7 +304,9 @@ async def test_accepted_overview_timeout_before_valid_block_keeps_diagram_ready(
 
 
 @pytest.mark.asyncio
-async def test_malformed_model_output_emits_server_authored_fallback(monkeypatch):
+async def test_malformed_model_output_emits_server_authored_fallback(
+    monkeypatch, caplog
+):
     async def fake_stream_response(**_kwargs):
         yield ("text", '{"block_id":"overview","content":"unsupported claim"}')
 
@@ -335,6 +337,11 @@ async def test_malformed_model_output_emits_server_authored_fallback(monkeypatch
     )
     assert fallback["evidence_refs"] == []
     assert "unsupported claim" not in response
+    assert [record.getMessage() for record in caplog.records] == [
+        "explanation_blocks reason_code=invalid_block_shape",
+        "explanation_blocks reason_code=no_valid_blocks",
+    ]
+    assert "unsupported claim" not in caplog.text
     assert any(
         event["type"] == "workflow_progress" and event["status"] == "degraded"
         for event in events
@@ -1064,3 +1071,50 @@ def test_book_location_boundaries_preserve_valid_citations(content, expected):
         "evidence_refs": [],
     }
     assert explanation_blocks._normalise_block(block, set(), {expected}) is not None
+
+
+@pytest.mark.parametrize(
+    ("changes", "reason_code"),
+    [
+        ({"unexpected": "private-sentinel"}, "invalid_block_shape"),
+        ({"content": "   "}, "empty_content"),
+        ({"content": "private-sentinel" * 300}, "overlong_content"),
+        (
+            {"content": "[Evidence](https://private-sentinel.example/source)"},
+            "unsupported_inline_references",
+        ),
+        ({"evidence_refs": "private-sentinel"}, "invalid_metadata_evidence_refs"),
+        (
+            {"evidence_refs": ["https://private-sentinel.example/source"]},
+            "invalid_metadata_evidence_refs",
+        ),
+    ],
+)
+def test_block_rejection_logs_only_fixed_reason_code(changes, reason_code, caplog):
+    block = {
+        "block_id": "private-sentinel",
+        "title": "private-sentinel",
+        "content": "private-sentinel",
+        "related_node_ids": [],
+        "evidence_refs": [],
+        **changes,
+    }
+    assert explanation_blocks._normalise_block(block, set(), set()) is None
+    assert [record.getMessage() for record in caplog.records] == [
+        f"explanation_blocks reason_code={reason_code}"
+    ]
+    assert "private-sentinel" not in caplog.text
+
+
+def test_valid_block_logs_no_rejection(caplog):
+    block = {
+        "block_id": "overview",
+        "title": "Overview",
+        "content": "A supported claim (Chapter 6, p.299).",
+        "related_node_ids": [],
+        "evidence_refs": ["Chapter 6, p.299"],
+    }
+    assert (
+        explanation_blocks._normalise_block(block, set(), {"Chapter 6, p.299"}) == block
+    )
+    assert not caplog.records

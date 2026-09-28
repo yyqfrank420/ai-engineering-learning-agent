@@ -122,3 +122,61 @@ and reopen; servers were then stopped. Documentation was updated afterward.
 The total across all local runs and the saved review is 30 actual calls. The
 earlier expansion evidence remains tied to its recorded source; routing and edit
 code did not change in this final citation fix.
+
+## Protected staging run 36432860930
+
+Head e599d166 and merge tree dc5c0aca failed three deterministic diagram cases. The eight journeys produced 53 application attempts and five semantic judge calls with complete usage, estimated at $2.108288. Five browser cases passed. Four semantic judgments passed and memory remained report-only for response formatting. The three rejected diagrams were not counted as fresh successes. No approval tag was published.
+
+Education correction added institutional operations to cover an existing candidate assumption. The reviewer inferred an external state mutation from scheduling and enrollment topics without a declared write or external target. The shared capability criterion now requires evidence of a responsible owner, mutation and external target when rejecting external_effects=false. Explicit external writes still require their controls.
+
+Research correction added entailment checks to three response contracts but dropped their existing provenance and absent-result outcomes. Its first review also contradicted its quoted failure-outcome evidence. Expansion correction added invalidation/revalidation ownership but dropped an existing empty-result outcome. Shared correction instructions now preserve valid clauses within edited contracts and recheck the complete applicable rule. Review feedback distinguishes witnessed clauses from remaining defects. These changes preserve schema authority, retry limits and admission criteria. Prompt identities advance to components v31, connections v27, component gate v20 and connection gate v26.
+
+Unit tests establish delivered instructions and scope preservation. Fresh model adherence requires the subsequent local and protected staging evidence.
+
+## Fresh local verification after correction changes
+
+Source head `e599d166ef58a0e533a2a2539d571feb19cd6679` plus binary diff
+`e1d0373ead8ec1b772386b01f16fb27eda418fffef21882ae236fbdd3bb43d61`
+passed 3,014 backend tests with two skips and 92% coverage. Ruff, Bandit and
+manifest checks passed. Full source hashes remained unchanged throughout the
+three real UI turns and both history reopens. The account was `dev@local`, using
+new empty SQLite storage, retrieval assets only and disabled production services.
+The shared attempt ceiling was 27.
+
+- Education produced 10 nodes, 26 connections and four sequence steps, version
+  `aa44323e-8232-44ee-8cf8-168b343b7a08`. Its explanation covered AI engineering
+  techniques and education applications with supplied sources.
+- Research produced a comparison of agent and fixed-workflow paths with 15 nodes,
+  35 connections and five steps, version `271bffcc-ac04-40ca-83b9-137c4ccec92b`.
+  The answer used retrieved references. A numerical claim attributed to Anthropic
+  came through a retrieved secondary source; this check did not independently
+  validate that primary attribution.
+- A typed request expanded "Telemetry and tracing" with exactly one directly
+  connected responsibility. All 15 original node objects and 35 original edge
+  objects remained identical. The accepted graph added "Alerting and SLO monitor"
+  and one asynchronous telemetry edge, version
+  `2398b052-5933-4b91-a800-0a4a3525be3a`.
+
+Both gates passed first time in all three turns. Each turn made five fresh calls.
+Complete usage totaled 130,751 input and 18,461 output tokens, including 1,792
+cached input tokens. These were provider prompt-prefix cache records, not reused
+generation outputs. The total across local checks and the saved review is now
+45 actual calls. Reopening both threads preserved graph content, versions,
+contracts, messages, telemetry and the provider ledger without new calls. Browser
+warnings/errors were empty. Both servers were stopped and the temporary tab closed.
+
+The third turn's explanation degraded to "The diagram is ready to inspect. I
+couldn't finish its explanation." The provider returned successfully in 7.55 seconds
+with 1,360 output characters. No valid explanation block survived parsing and
+validation. The existing records cannot distinguish a shape defect from a reference
+rejection because they contain neither the raw response nor rejection reasons.
+This is a diagram success and explanation degradation, not an all-output success.
+Fixed diagnostic codes were added afterward to distinguish future rejections
+without logging model text or reference values. This logging-only addition uses
+offline tests and does not justify repeating paid generation.
+
+PR 53 separately changes non-generation CI classification and verification policy.
+Its eleven offline groups passed and its protected paid evaluation was skipped.
+The tested merge and merged main commit `f31822de` share tree `4e7ec907`.
+No post-merge workflow appeared; this policy-only change needed no runtime rollout.
+These exemptions do not change PR 52's generation impact or its required live gate.

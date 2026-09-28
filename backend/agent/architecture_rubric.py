@@ -352,7 +352,16 @@ def staged_review_requirements(
         )
         requirements["capability_classification"] = (
             "Classify capabilities from the candidate responsibilities and assumptions: "
-            "external_effects means it can mutate an external system; retrieval_or_reuse "
+            "external_effects means a component owns a declared write to state in an "
+            "external system. Classify the behavior represented by the diagram. Topic "
+            "names, recommendations, drafts, internal bookkeeping, and read-only "
+            "provider calls do not establish an external write. When rejecting "
+            "external_effects=false, cite the responsible component, its mutation, "
+            "and the external target in the candidate responsibilities or assumptions. "
+            "Do not invent an external system or write from an ambiguous description. "
+            "An explicitly owned external write requires external_effects=true and "
+            "its applicable controls, including when a human approves the write. "
+            "retrieval_or_reuse "
             "means it retrieves or reuses stored artifacts; learning_or_release means "
             "this system owns an update or release of a model, prompt, ranking, or live "
             "configuration. Offline or batch training and human-approved updates or "

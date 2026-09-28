@@ -518,7 +518,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v26"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v27"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -691,6 +691,8 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
     )
 
     prompt = calls[0]["messages"][0]["content"]
+    assert "Within changed contracts, preserve valid existing payload" in prompt
+    assert "Repair the full applicable criterion" in prompt
     findings = json.loads(prompt.split("\nINPUT\n", 1)[1])["findings"]["gate"]
     assert findings == [
         {
@@ -737,7 +739,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v30"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v31"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1241,6 +1243,21 @@ async def test_component_correction_projects_rejected_wire_back_to_delta(monkeyp
     assert prompt_input["rejected_candidate"] == initial
     assert result["wire"]["components"][0]["label"] == "Request ingress"
     assert "Trace sink" not in json.dumps(prompt_input["rejected_candidate"])
+    prompt = calls[0]["prompt"]
+    assert "Within changed contracts, preserve valid existing payload" in prompt
+    assert "provenance, scope, conditions, and alternate outcomes" in prompt
+    assert (
+        "After adding or updating a component responsibility, reassess capabilities"
+        in prompt
+    )
+    assert "instead of retaining prior flags by default" in prompt
+    assert "do not expand the write set or supplied schema permissions" in prompt
+    assert set(
+        calls[0]["schema"]["properties"]["updates"]["properties"]["slot_0"][
+            "properties"
+        ]
+    ) == {"label"}
+    assert result["wire"]["components"][1:] == first["wire"]["components"][1:]
 
 
 @pytest.mark.asyncio
@@ -2837,6 +2854,13 @@ async def test_connection_recovery_removes_only_cited_edge_and_keeps_components(
     assert prompt_input["recovery_mode"] is True
     assert "simplest complete overview of the original request" in prompt
     assert "Connections cannot change the accepted components" in prompt
+    assert "Within changed contracts, preserve valid existing payload" in prompt
+    assert "provenance, scope, conditions, and alternate outcomes" in prompt
+    assert "unless an explicit finding requires their correction" in prompt
+    assert "Repair the full applicable criterion" in prompt
+    assert "do not expand the write set or supplied schema permissions" in prompt
+    assert set(calls[0]["schema"]["properties"]["updates"]["properties"]) == {"slot_0"}
+    assert "capabilities" not in calls[0]["schema"]["properties"]
 
 
 @pytest.mark.asyncio
@@ -3420,3 +3444,73 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
             "only when their slots and fields are explicitly editable" in instructions
         )
         assert json.loads(payload)["base"] == base
+
+
+@pytest.mark.asyncio
+async def test_scoped_connection_correction_preserves_contract_without_expanding_authority(
+    monkeypatch,
+):
+    original = _connection_wire()
+    original["edges"][0]["label"] = "Versioned records with provenance, or empty result"
+    permissions = _permissions(
+        editable_edges=[
+            {
+                "edge_id": "edge_1",
+                "source": "n1",
+                "target": "n2",
+                "label": original["edges"][0]["label"],
+            }
+        ],
+        editable_edge_fields={"edge_1": ["label"]},
+    )
+    calls = []
+    corrected_label = "Versioned records with provenance or empty; consumer invalidates and revalidates stale records"
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {"additions": [], "updates": {"slot_0": {"label": corrected_label}}}
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    write_set = _write_set()
+    result = await generation.generate_connection_candidate(
+        request="Correct the reuse contract.",
+        resolved_maturity="production",
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(),
+        base_connections=original["edges"],
+        edit_permissions=permissions,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        rejected_candidate=original,
+        gate_findings=[
+            {
+                "code": "retrieval_and_reuse_trust",
+                "path": "connections",
+                "rule": "semantic_gate",
+                "reason": "The contract lacks invalidation and revalidation ownership.",
+                "record_indexes": [0],
+            }
+        ],
+    )
+    prompt = calls[0]["prompt"]
+    prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert "Within changed contracts, preserve valid existing payload" in prompt
+    assert "provenance, scope, conditions, and alternate outcomes" in prompt
+    assert "Repair the full applicable criterion" in prompt
+    assert "do not expand the write set or supplied schema permissions" in prompt
+    assert (
+        prompt_input["rejected_candidate"]["updates"]["slot_0"]["label"]
+        == original["edges"][0]["label"]
+    )
+    properties = calls[0]["schema"]["properties"]
+    assert set(properties["updates"]["properties"]["slot_0"]["properties"]) == {"label"}
+    assert properties["additions"]["maxItems"] == 0
+    assert "capabilities" not in properties
+    assert result["wire"]["edges"] == [
+        {**original["edges"][0], "label": corrected_label}
+    ]

@@ -5,12 +5,15 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
+import logging
 from typing import Any, Literal
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
 from agent.source_references import book_references, canonical_source_url, source_urls
 
+
+logger = logging.getLogger(__name__)
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -128,6 +131,7 @@ async def stream_explanation_blocks(
             }
         )
     if not emitted:
+        logger.warning("explanation_blocks reason_code=no_valid_blocks")
         if not timed_out:
             await send(
                 {
@@ -189,6 +193,7 @@ def _normalise_payload(
     allowed_evidence_refs: set[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(value, dict):
+        logger.warning("explanation_blocks reason_code=invalid_block_shape")
         return []
     block = _normalise_block(value, allowed_node_ids, allowed_evidence_refs)
     return [block] if block else []
@@ -200,6 +205,7 @@ def _normalise_block(
     allowed_evidence_refs: set[str] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict) or set(value) != _BLOCK_KEYS:
+        logger.warning("explanation_blocks reason_code=invalid_block_shape")
         return None
     content = "\n".join(
         line.rstrip() for line in str(value.get("content") or "").splitlines()
@@ -208,13 +214,16 @@ def _normalise_block(
         canonical_source_url(reference) or reference
         for reference in allowed_evidence_refs or set()
     }
-    if (
-        not content
-        or len(content) > 4000
-        or not (
-            source_urls(content, include_bare=True) | book_references(content)
-        ).issubset(allowed_references)
-    ):
+    if not content:
+        logger.warning("explanation_blocks reason_code=empty_content")
+        return None
+    if len(content) > 4000:
+        logger.warning("explanation_blocks reason_code=overlong_content")
+        return None
+    if not (
+        source_urls(content, include_bare=True) | book_references(content)
+    ).issubset(allowed_references):
+        logger.warning("explanation_blocks reason_code=unsupported_inline_references")
         return None
     title = " ".join(str(value.get("title") or "Architecture note").split())[:100]
     title = title or "Architecture note"
@@ -235,6 +244,7 @@ def _normalise_block(
         and (canonical_source_url(reference) or reference) in allowed_references
         for reference in raw_evidence
     ):
+        logger.warning("explanation_blocks reason_code=invalid_metadata_evidence_refs")
         return None
     evidence = [
         canonical_source_url(reference) or reference for reference in raw_evidence[:6]

@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v30"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v26"
+_COMPONENT_PROMPT_VERSION = "staged_components_v31"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v27"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -965,6 +965,10 @@ def _attempt_prompt(
             "For a requested applied-system design, show the internal services that own the "
             "requested behavior. Reserve external groups for genuinely external dependencies; "
             "an internal adapter to an external API remains internal. "
+            "After adding or updating a component responsibility, reassess capabilities "
+            "against all resulting responsibilities instead of retaining prior flags by default. "
+            "Change only fields authorized by the write set and supplied schema; capability "
+            "reassessment does not authorize changes to frozen responsibilities or metadata. "
             f"Use these integer codes: {codebook}."
         )
         if base is not None or edit_delta is not None or correction_delta is not None:
@@ -1110,6 +1114,15 @@ def _attempt_prompt(
         + correction_rule
         + rejected_candidate_rule
         + recovery_rule
+        + (
+            " Within changed contracts, preserve valid existing payload, provenance, scope, "
+            "conditions, and alternate outcomes unless an explicit finding requires their "
+            "correction. Repair the full applicable criterion without regressing already "
+            "declared clauses. These preservation requirements do not expand the write set "
+            "or supplied schema permissions."
+            if attempt == 1
+            else ""
+        )
         + "\nINPUT\n"
         + _canonical_json(prompt_input)
     )
