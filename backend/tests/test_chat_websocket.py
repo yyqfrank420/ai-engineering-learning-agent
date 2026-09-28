@@ -1647,7 +1647,7 @@ def test_websocket_reports_provider_outage_without_exception_payload(
             )
             events = _receive_until(socket, "done")
     assert [event["content"] for event in events if event["type"] == "error"] == [
-        "The AI service is temporarily unavailable. Please try again."
+        "The external API service is unavailable. Please try again."
         if provider_failure
         else "Response failed — please try again"
     ]
@@ -1659,7 +1659,7 @@ def test_websocket_reports_provider_outage_without_exception_payload(
     [
         (
             "staged_generation_provider_unavailable",
-            "The AI service is temporarily unavailable. Please try again.",
+            "The external API service is unavailable. Please try again.",
         ),
         (
             "staged_generation_timeout",

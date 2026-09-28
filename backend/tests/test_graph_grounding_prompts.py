@@ -1203,3 +1203,21 @@ async def test_node_detail_spend_limit_does_not_limit_graph_size(monkeypatch):
 
     assert enriched_ids == ["node-0", "node-1", "node-2"]
     assert len(nodes) == 6
+
+
+def test_node_detail_book_reference_labels_keep_order_and_parentheses():
+    from agent.nodes import node_detail_worker
+
+    text = "Intro (Book, p.1), chapter (Chapter 6), precise (Chapter 6, p.299), unlocated (Book excerpt), repeated (Book, p.1)."
+    assert node_detail_worker._parse_book_refs(text) == [
+        "(Book, p.1)", "(Chapter 6)", "(Chapter 6, p.299)", "(Book excerpt)",
+    ]
+    assert "supplied book reference exactly" in node_detail_worker._SYSTEM
+    assert node_detail_worker._PROMPT_VERSION == "node_detail_v1"
+
+
+def test_node_detail_reference_list_omits_malformed_placeholder_locations():
+    from agent.nodes.node_detail_worker import _parse_book_refs
+
+    text = "Bad (Chapter None, p.1), (Chapter ?, p.1), (Book, p.None), (Book, p.?), (Chapter 0), (Chapter 6, p.0). Valid (Book, p.1)."
+    assert _parse_book_refs(text) == ["(Book, p.1)"]

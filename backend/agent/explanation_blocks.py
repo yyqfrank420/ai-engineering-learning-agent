@@ -1,15 +1,19 @@
-"""Stream one model call as complete, pausable explanation blocks."""
+"""Stream one model call as complete, validated explanation blocks."""
 
 from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
 import json
+import logging
 from typing import Any, Literal
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
+from agent.source_references import book_references, canonical_source_url, source_urls
 
+
+logger = logging.getLogger(__name__)
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 
@@ -46,11 +50,7 @@ async def stream_explanation_blocks(
     provider_attempt_limit: int | None = None,
     accepted_graph_detail: Literal["standard", "overview"] | None = None,
 ) -> str:
-    """Emit a block as soon as its compact JSON object is complete.
-
-    The provider still receives one request. UI pause only delays browser reveal;
-    it never restarts a paid model call.
-    """
+    """Validate each complete JSON block before emitting it from one model call."""
     parse_buffer = ""
     emitted: list[dict[str, Any]] = []
     emitted_ids: set[str] = set()
@@ -69,7 +69,7 @@ async def stream_explanation_blocks(
                 f"{_OVERVIEW_SENTENCE}\n\n{remainder}"
                 if remainder
                 else _OVERVIEW_SENTENCE
-            )[:4000]
+            )
         if required_completion_sentence is None:
             await emit(block)
             return
@@ -131,6 +131,7 @@ async def stream_explanation_blocks(
             }
         )
     if not emitted:
+        logger.warning("explanation_blocks reason_code=no_valid_blocks")
         if not timed_out:
             await send(
                 {
@@ -192,6 +193,7 @@ def _normalise_payload(
     allowed_evidence_refs: set[str],
 ) -> list[dict[str, Any]]:
     if not isinstance(value, dict):
+        logger.warning("explanation_blocks reason_code=invalid_block_shape")
         return []
     block = _normalise_block(value, allowed_node_ids, allowed_evidence_refs)
     return [block] if block else []
@@ -203,11 +205,25 @@ def _normalise_block(
     allowed_evidence_refs: set[str] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(value, dict) or set(value) != _BLOCK_KEYS:
+        logger.warning("explanation_blocks reason_code=invalid_block_shape")
         return None
     content = "\n".join(
         line.rstrip() for line in str(value.get("content") or "").splitlines()
     ).strip()
+    allowed_references = {
+        canonical_source_url(reference) or reference
+        for reference in allowed_evidence_refs or set()
+    }
     if not content:
+        logger.warning("explanation_blocks reason_code=empty_content")
+        return None
+    if len(content) > 4000:
+        logger.warning("explanation_blocks reason_code=overlong_content")
+        return None
+    if not (
+        source_urls(content, include_bare=True) | book_references(content)
+    ).issubset(allowed_references):
+        logger.warning("explanation_blocks reason_code=unsupported_inline_references")
         return None
     title = " ".join(str(value.get("title") or "Architecture note").split())[:100]
     title = title or "Architecture note"
@@ -224,15 +240,19 @@ def _normalise_block(
     ]
     raw_evidence = value.get("evidence_refs")
     if not isinstance(raw_evidence, list) or not all(
-        isinstance(reference, str) and reference in (allowed_evidence_refs or set())
+        isinstance(reference, str)
+        and (canonical_source_url(reference) or reference) in allowed_references
         for reference in raw_evidence
     ):
+        logger.warning("explanation_blocks reason_code=invalid_metadata_evidence_refs")
         return None
-    evidence = raw_evidence[:6]
+    evidence = [
+        canonical_source_url(reference) or reference for reference in raw_evidence[:6]
+    ]
     return {
         "block_id": block_id,
         "title": title,
-        "content": content[:4000],
+        "content": content,
         "related_node_ids": related,
         "evidence_refs": evidence,
     }
@@ -288,10 +308,7 @@ def _append_required_completion_sentence(
         return
     content = block["content"]
     if required_completion_sentence not in content:
-        available_content = 4000 - len(required_completion_sentence) - 2
-        block["content"] = (
-            f"{content[:available_content]}\n\n{required_completion_sentence}"
-        )
+        block["content"] = f"{content}\n\n{required_completion_sentence}"
 
 
 def _block_event(block: dict[str, Any], graph_version: str | None) -> dict[str, Any]:

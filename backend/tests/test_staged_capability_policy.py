@@ -56,6 +56,64 @@ def test_capability_policy_checks_each_owned_effect_in_one_review(maturity):
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_external_effect_classification_requires_an_owned_external_write(maturity):
+    criterion = staged_review_requirements("components", maturity)[
+        "capability_classification"
+    ]
+    for obligation in (
+        "external_effects means a component owns a declared write to state in an external system",
+        "Classify the behavior represented by the diagram",
+        "Topic names, recommendations, drafts, internal bookkeeping, and read-only provider calls do not establish an external write",
+        "When rejecting external_effects=false, cite the responsible component, its mutation, and the external target",
+        "Do not invent an external system or write from an ambiguous description",
+        "An explicitly owned external write requires external_effects=true and its applicable controls, including when a human approves the write",
+    ):
+        assert obligation in criterion
+
+
+@pytest.mark.parametrize(
+    "responsibility,external_effects",
+    [
+        ("Recommends scheduling and resource allocation options for administrators.", False),
+        ("Drafts enrollment plans and records internal review decisions.", False),
+        ("Reads a provider API to explain administrative task automation.", False),
+        ("Writes human-approved schedules to an external calendar service.", True),
+        ("Commits enrollment changes to the external registrar system.", True),
+    ],
+)
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_external_write_review_inputs_preserve_applicable_controls(
+    responsibility, external_effects, maturity
+):
+    # These fixtures verify prompt inputs and control applicability, not model judgments.
+    records = [{"id": "owner", "responsibility": responsibility}]
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=external_effects,
+        retrieval_or_reuse=False, learning_or_release=False,
+    )
+    prompt = gate._prompt(
+        gate="components", user_request="Explain this system's responsibilities.",
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity=maturity, candidate_records=records,
+        required_production_guarantees=(),
+    )
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    candidate = json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    )
+    assert evidence["candidate_context"] == context.prompt_value()
+    assert candidate == [{"record_index": 0, "record": records[0]}]
+    guarantees = production_proofs_for_capabilities(
+        context.prompt_value()["capabilities"], maturity=maturity,
+    )
+    for code in ("authorization_and_compensation", "state_effect_reconciliation"):
+        assert (code in guarantees) == (maturity == "production" and external_effects)
+    if maturity == "prototype":
+        criterion = staged_review_requirements("connections", maturity)["safe_action_boundary"]
+        assert "For a concrete declared external mutation, require appropriate authorization" in criterion
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
 def test_learning_capability_includes_owned_offline_and_reviewed_changes(maturity):
     criterion = staged_review_requirements("components", maturity)[
         "capability_classification"

@@ -267,12 +267,25 @@ def is_existing_graph_edit_request(query: str, graph_data: dict | None) -> bool:
     return resolve_graph_operation(query, graph_data) == "edit"
 
 
-def _intent_clauses(text: str) -> list[str]:
-    return [
-        clause.strip()
-        for clause in re.split(r"[,;\n]|\b(?:and|but|then)\b", text)
-        if clause.strip()
+def _intent_clauses(text: str, protected_terms: tuple[str, ...] = ()) -> list[str]:
+    # Authored names can contain conjunctions and punctuation that separate intents.
+    protected_spans = [
+        match.span()
+        for term in protected_terms
+        for match in re.finditer(rf"(?<!\w){re.escape(term)}(?!\w)", text)
     ]
+    clauses = []
+    start = 0
+    for separator in re.finditer(r"[,;\n]|\b(?:and|but|then)\b", text):
+        if any(left <= separator.start() < right for left, right in protected_spans):
+            continue
+        clause = text[start : separator.start()].strip()
+        if clause:
+            clauses.append(clause)
+        start = separator.end()
+    if clause := text[start:].strip():
+        clauses.append(clause)
+    return clauses
 
 
 def requests_no_diagram(query: str) -> bool:
@@ -301,7 +314,6 @@ def resolve_graph_operation(
     if diagram_requested and not requests_no_diagram(query):
         return resolve_graph_operation(query, graph_data) or "create"
     applied_design_requested = is_applied_system_design_request(query)
-    clauses = _intent_clauses(text)
     authored_terms = tuple(
         term
         for collection in (
@@ -311,11 +323,12 @@ def resolve_graph_operation(
         for record in collection
         if isinstance(record, dict)
         for term in (
-            str(record.get("label") or "").strip().lower(),
-            str(record.get("id") or "").strip().lower().replace("_", " "),
+            " ".join(str(record.get("label") or "").lower().split()),
+            " ".join(str(record.get("id") or "").lower().replace("_", " ").split()),
         )
         if len(term) >= 3
     )
+    clauses = _intent_clauses(text, authored_terms)
 
     def references_authored_record(clause: str) -> bool:
         return any(
@@ -395,7 +408,9 @@ def is_new_applied_graph_request(query: str, graph_data: dict | None) -> bool:
     return resolve_graph_operation(query, graph_data) == "create"
 
 
-def diagram_submission_action(query: str, graph_data: dict | None) -> Literal["send", "answer", "ask"]:
+def diagram_submission_action(
+    query: str, graph_data: dict | None
+) -> Literal["send", "answer", "ask"]:
     """Ask before treating an ambiguous learning question as a diagram request."""
     if requests_no_diagram(query):
         return "answer"

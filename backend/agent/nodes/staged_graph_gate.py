@@ -25,8 +25,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v18"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v25"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v20"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v26"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -264,7 +264,11 @@ def _prompt(
         "covers several producers or paths, assess each applicable path; a witness covering "
         "only a subset cannot satisfy it. "
         "When unsatisfied, identify all missing "
-        "obligations for that rule in the reason. Do not return a separate approval decision. "
+        "obligations for that rule in the reason. For a partly satisfied rule, distinguish "
+        "the clauses already witnessed in the records from the remaining defects. "
+        "A missing clause does not invalidate a different clause explicitly supplied by "
+        "the same contract. Do not report a quoted existing outcome as absent. "
+        "Do not return a separate approval decision. "
         "Copy the explicit record_index values into record_indexes; never infer indexes from "
         "record IDs or count the records yourself. Use [] for a global or inapplicable rule, "
         f"or when the affected scope cannot be localized within {_MAX_RECORD_INDEXES} records. "

@@ -662,7 +662,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
         with suppress(Exception):
             await _send_error(
                 websocket,
-                "The AI service is temporarily unavailable. Please try again."
+                "The external API service is unavailable. Please try again."
                 if is_provider_unavailable_error(exc)
                 else "Response failed — please try again",
             )

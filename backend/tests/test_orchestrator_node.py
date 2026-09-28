@@ -38,6 +38,28 @@ def test_synthesis_prompts_preserve_user_language():
     assert "same language as the user's latest message" in _QUICK_SYNTHESIS_SYSTEM
 
 
+def test_broad_teaching_uses_diagram_as_support_and_one_length_default():
+    from agent.nodes.orchestrator_node import _GRAPH_ANSWER_CONTRACT, _SYNTHESIS_SYSTEM
+
+    assert (
+        "For broad overviews, explain the subject and its main mechanisms first"
+        in _SYNTHESIS_SYSTEM
+    )
+    assert "never replace the subject with an unrequested product" in _SYNTHESIS_SYSTEM
+    assert _SYNTHESIS_SYSTEM.count("120 words") == 1
+    assert "150 words" not in _SYNTHESIS_SYSTEM
+    assert "It may map mechanisms or a lifecycle" in _GRAPH_ANSWER_CONTRACT
+    assert (
+        "For a requested\nsystem design, explain its workflow and directed exchanges"
+        in _GRAPH_ANSWER_CONTRACT
+    )
+    assert (
+        "explain the subject before using diagram details or an illustrative example"
+        in _GRAPH_ANSWER_CONTRACT
+    )
+    assert "The graph is a proposed design" not in _GRAPH_ANSWER_CONTRACT
+
+
 def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication():
     from agent.nodes.orchestrator_node import (
         _BLOCK_OUTPUT_CONTRACT,
@@ -48,7 +70,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v28"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v30"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -62,7 +84,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         "A citation supports only the immediately preceding claim",
         "cannot\nsupply missing evidence",
         'Do not label paragraphs "Engineering inference"',
-        'Default to at most 150 words and 1-3 blocks',
+        'Default to at most 120 words including citations and 1-3 blocks',
         'Teach the learner',
         "no book attribution or citation",
         "Never invent or alter",
@@ -98,6 +120,10 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
     )
     assert "target is ambiguous, explain your interpretation or ask" in (
         _GRAPH_ANSWER_CONTRACT
+    )
+    assert (
+        "Each model-authored block.content must contain at most 4000 characters, including citations"
+        in _BLOCK_OUTPUT_CONTRACT
     )
     assert "Use each required key exactly once" in _BLOCK_OUTPUT_CONTRACT
     assert "evidence_refs must always be an array" in _BLOCK_OUTPUT_CONTRACT
@@ -542,7 +568,7 @@ def test_format_graph_context_summarises_nodes_edges_and_sequence():
 
     summary = _format_graph_context(graph)
 
-    assert "Artifact role: proposed design" in summary
+    assert "Artifact role: generated diagram" in summary
     assert "Title: RAG pipeline" in summary
     assert "- retriever (Retriever): FAISS | Finds relevant passages" in summary
     assert "- Retriever -> LLM: passes context" in summary
@@ -904,10 +930,10 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
     assert not any(event["type"] == "done" for event in events)
 
     assert "<task>" in captured["system"]
-    assert "Use the shortest" in captured["system"]
+    assert "Stop when the answer is complete" in captured["system"]
     assert "primary runtime loop" in captured["system"]
     assert "for the requested parts" in captured["system"]
-    assert "exact domain node labels" in captured["system"]
+    assert "exact node labels" in captured["system"]
     assert "Do not invent graph positions or edge directions" in captured["system"]
     assert "<streaming_output_contract>" in captured["system"]
     assert captured["allowed_node_ids"] == {"retriever"}
@@ -2197,7 +2223,9 @@ async def test_text_task_preserves_history_without_design_contract(monkeypatch, 
     assert captured["messages"][:-1] == history
     message = captured["messages"][-1]["content"]
     assert "Question: " + question + "\n\n" in message
-    assert "TOTAL response under 120 words" in message
+    assert "Follow the system's scope and default length contract" in message
+    assert "120 words" in captured["system"]
+    assert "words" not in message
     assert depth.capitalize() + " depth:" in message
     assert "buildable design" not in message
     assert "useful words" not in message
@@ -2404,7 +2432,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v28",
+            "prompt_version": "architecture_blocks_v30",
             "book_context": context,
             "research_context": "",
         }
@@ -2444,12 +2472,12 @@ async def test_quick_answer_keeps_user_format_without_forced_sentence_count(monk
         (
             {"staged_gate": {"failure_code": "provider_unavailable"}},
             "staged_component_gate_unavailable",
-            "The AI service is temporarily unavailable. Please try again.",
+            "The external API service is unavailable. Please try again.",
         ),
         (
             {"staged_failure": {"code": "staged_generation_provider_unavailable"}},
             "staged_component_generation_unavailable",
-            "The AI service is temporarily unavailable. Please try again.",
+            "The external API service is unavailable. Please try again.",
         ),
         (
             {"staged_failure": {"code": "staged_generation_timeout"}},

@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v29"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v26"
+_COMPONENT_PROMPT_VERSION = "staged_components_v31"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v27"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -962,10 +962,24 @@ def _attempt_prompt(
             "Name each group for its concrete responsibility in language a learner can understand. "
             "Avoid vague group labels such as Runtime, Data, or Operations; use Data stores, "
             "Conversation services, Human review, or Logs and monitoring when those describe its members. "
-            "Show the internal services that own the requested behavior. Reserve external groups "
-            "for genuinely external dependencies; an internal adapter to an external API remains internal. "
+            "For a requested applied-system design, show the internal services that own the "
+            "requested behavior. Reserve external groups for genuinely external dependencies; "
+            "an internal adapter to an external API remains internal. "
+            "After adding or updating a component responsibility, reassess capabilities "
+            "against all resulting responsibilities instead of retaining prior flags by default. "
+            "Change only fields authorized by the write set and supplied schema; capability "
+            "reassessment does not authorize changes to frozen responsibilities or metadata. "
             f"Use these integer codes: {codebook}."
         )
+        if base is not None or edit_delta is not None or correction_delta is not None:
+            instructions += (
+                " When retaining existing components, choose a complementary responsibility "
+                "for each addition that is not already owned. An add-only edit cannot reassign "
+                "an existing owner's responsibility. During bounded correction, choose a "
+                "complement consistent with the frozen baseline instead of merely renaming "
+                "an overlapping function. Clarify retained responsibilities only when their "
+                "slots and fields are explicitly editable."
+            )
         if maturity == "production":
             instructions += (
                 " The downstream_controls are guidance for the completed graph. Choose "
@@ -984,8 +998,11 @@ def _attempt_prompt(
                 "admitted diagram request; do not ask whether a diagram is wanted. A named "
                 "educational, research, or comparison subject establishes diagram scope without "
                 "a concrete business use case. Depict that subject and its relevant mechanisms "
-                "or contrasting paths without inventing an application workflow; proceed with "
-                "a candidate for that subject. For an applied system design, establish the user's "
+                "or contrasting paths without inventing an application workflow. For a broad "
+                "teaching or overview request, preserve the subject's breadth in a mechanism, "
+                "lifecycle, or topic map. A concrete example may illustrate part of that map "
+                "but must not replace the requested subject with an unrequested product. "
+                "Proceed with a candidate for that subject. For an applied system design, establish the user's "
                 "business domain and goal from the request "
                 "or its accepted conversation context. Retrieved examples cannot choose the "
                 "user's business domain or goal. Assumptions may fill implementation details "
@@ -1097,6 +1114,15 @@ def _attempt_prompt(
         + correction_rule
         + rejected_candidate_rule
         + recovery_rule
+        + (
+            " Within changed contracts, preserve valid existing payload, provenance, scope, "
+            "conditions, and alternate outcomes unless an explicit finding requires their "
+            "correction. Repair the full applicable criterion without regressing already "
+            "declared clauses. These preservation requirements do not expand the write set "
+            "or supplied schema permissions."
+            if attempt == 1
+            else ""
+        )
         + "\nINPUT\n"
         + _canonical_json(prompt_input)
     )
