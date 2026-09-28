@@ -85,8 +85,11 @@ def classify_paths(paths: list[str], manifest: dict[str, Any]) -> dict[str, Any]
     rules = manifest["impact"]
     docs = [path for path in normalized if _matches(path, rules["documentation"])]
     visual = [path for path in normalized if _matches(path, rules["visual_only"])]
-    explicit_ai = [path for path in normalized if _matches(path, rules["ai"])]
-    classified_non_ai = set(docs) | set(visual)
+    non_generation = [path for path in normalized if _matches(path, rules["non_generation"])]
+    # Runtime prefixes also contain offline tests and documentation.
+    excluded = set(docs) | set(non_generation)
+    explicit_ai = [path for path in normalized if path not in excluded and _matches(path, rules["ai"])]
+    classified_non_ai = excluded | set(visual)
     fail_safe_ai = [path for path in normalized if path not in classified_non_ai and path not in explicit_ai]
     ai_paths = sorted(set(explicit_ai) | set(fail_safe_ai))
     return {
@@ -96,6 +99,7 @@ def classify_paths(paths: list[str], manifest: dict[str, Any]) -> dict[str, Any]
         "ai_impact": bool(ai_paths),
         "ai_paths": ai_paths,
         "reasons": {
+            "explicit_non_generation": sorted(excluded),
             "explicit_ai": explicit_ai,
             "unclassified_fail_safe": fail_safe_ai,
         },

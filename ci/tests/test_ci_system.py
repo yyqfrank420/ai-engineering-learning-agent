@@ -187,6 +187,87 @@ def test_change_classification_is_fail_safe(paths, expected):
         assert actual[key] is value
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backend/tests/test_orchestrator_node.py",
+        "frontend/src/hooks/useAgentStream.test.tsx",
+        "frontend/src/components/GraphCanvas/D3Graph.capacity.test.tsx",
+        "frontend/src/services/agentTransport.test.ts",
+        "ingestion/test_ingestion.py",
+        "ci/tests/test_ci_system.py",
+        "ci/quality.json",
+        "scripts/ci",
+        "scripts/ci_runner.py",
+        ".github/workflows/ci.yml",
+        "frontend/src/components/Chat/ThinkingIndicator.tsx",
+        "frontend/src/components/Layout/TitleBar.tsx",
+        "infra/terraform/gcp/README.md",
+    ],
+)
+def test_non_generation_owners_override_broad_runtime_patterns(path):
+    result = classify_paths([path], load_manifest())
+    assert result["ai_impact"] is False
+    assert result["ai_paths"] == []
+    assert result["reasons"]["explicit_non_generation"] == [path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "backend/agent/prompt.md",
+        "backend/agent/nodes/orchestrator_node.py",
+        "backend/api/chat_websocket.py",
+        "backend/requirements.txt",
+        "backend/eval/test_cases.py",
+        "backend/eval/corpus/v1/cases.json",
+        "backend/eval/judge_adapter.py",
+        "frontend/src/components/Chat/ChatInput.tsx",
+        "frontend/src/hooks/useAgentStream.ts",
+        "frontend/src/services/agentTransport.ts",
+        "frontend/src/components/GraphCanvas/D3Graph.tsx",
+        "frontend/src/components/GraphCanvas/D3Graph.css",
+        "frontend/src/components/GraphCanvas/HiddenGraphEvaluator.tsx",
+        ".github/workflows/live-eval.yml",
+        "unknown/readme.md",
+    ],
+)
+def test_generation_and_unknown_owners_still_require_live_evaluation(path):
+    result = classify_paths([path], load_manifest())
+    assert result["ai_impact"] is True
+    assert result["ai_paths"] == [path]
+
+
+def test_non_generation_changes_do_not_hide_a_mixed_generation_change():
+    generation_path = "backend/agent/nodes/staged_graph_generation.py"
+    result = classify_paths(
+        [
+            "docs/current-architecture.md",
+            "ci/quality.json",
+            "frontend/src/components/GraphCanvas/D3Graph.test.ts",
+            generation_path,
+        ],
+        load_manifest(),
+    )
+    assert result["ai_impact"] is True
+    assert result["ai_paths"] == [generation_path]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "ci/quality.json",
+        "scripts/ci",
+        "scripts/ci_runner.py",
+        ".github/workflows/ci.yml",
+    ],
+)
+def test_policy_changes_skip_paid_calls_but_keep_full_offline_matrix(path):
+    manifest = load_manifest()
+    assert classify_paths([path], manifest)["ai_impact"] is False
+    assert select_offline_groups([path], manifest) == manifest["offline_groups"]
+
+
 def test_same_repository_pr_is_trusted(monkeypatch):
     monkeypatch.setenv("GITHUB_EVENT_NAME", "pull_request")
     event = {
