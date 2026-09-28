@@ -1,166 +1,135 @@
 # AI Engineering Learning Agent
 
-Production-oriented, graph-guided study companion for *AI Engineering* by Chip Huyen.
+Learn how AI systems fit together through conversation and interactive architecture diagrams.
 
-## Current Stack
+Ask for a system, inspect its components, follow the walkthrough, and refine the design through chat. Built for people who can code and want to understand AI engineering, with *AI Engineering* by Chip Huyen as a reference source and optional web research for current context.
 
-- `frontend/`
-  - React + TypeScript + D3
-  - Vercel-targeted frontend
-- `backend/`
-  - FastAPI
-  - LangGraph state-machine orchestration
-  - steerable WebSocket chat transport
-  - Supabase-backed persistence
-  - FAISS-backed retrieval loaded in a non-blocking readiness task
-- `ingestion/`
-  - one-time PDF chunking / embedding / FAISS build
-- `infra/terraform/gcp/`
-  - Cloud Run + Artifact Registry + Secret Manager provisioning
-  - immutable, evaluated-image promotion to production
+[Getting started](#getting-started) · [How it works](#how-it-works) · [Development](#development) · [Documentation](#documentation)
 
-## Runtime Model
+## What you can do
 
-`backend/agent/graph.py` defines a request-scoped LangGraph workflow. Applied graph
-creation and edits use `GRAPH_PIPELINE_MODE=staged` by default:
+- **Learn through questions.** Ask about AI engineering concepts and discuss tradeoffs using book retrieval, conversation history, and web research.
+- **Build a visual understanding.** Generate architecture diagrams, inspect component responsibilities and connections, and follow a guided walkthrough.
+- **Refine a design.** Request targeted changes through chat. Scoped edits preserve retained component IDs and locked records; a rejected edit keeps the previously approved graph.
+- **Make the canvas your own.** Move components and zones, resize zone borders, and save diagram positions, pan, and zoom with the conversation.
+- **Steer an answer in progress.** Correct a request while it runs or stop generation from the chat interface.
 
-1. route the request
-2. restore terse follow-ups to the canonical design intent, then retrieve book evidence and optional current web context
-3. use Kimi K3 at low effort to propose component responsibilities, assumptions, and capabilities
-4. assign IDs, validate and render a reversible component preview, then run the Sonnet medium component gate
-5. generate connections against the accepted components, validate the full candidate and its browser render, then run the Sonnet medium connection gate
-6. allow one correction per stage; semantic corrections to new designs return targeted updates and bounded additions while the server retains existing records; a connection correction keeps the accepted components fixed
-7. write the walkthrough, atomically persist the accepted graph and its server-only contract, then publish the authoritative graph and completed response
+Try a prompt such as:
 
-When the requested workflow is unclear, the component planner can ask up to three
-questions and stop before connection generation or review. Replies continue the
-design using the prior user requirements. A failed creation retains its failure
-notice and can still answer independent explanatory questions within the remaining
-request deadline.
+> Design a customer-support assistant that retrieves answers from internal documentation. Explain the components and how they connect.
 
-Scoped edits generate additions and authorized field updates. The server preserves locked
-records, retained IDs, and unaffected presentation. Prior semantic approval is reused only
-when graph and reviewer fingerprints and accepted context still match. Review covers the
-edit and its effects on dependencies. Failure preserves the prior approved graph, or
-withholds a failed new graph.
-Set `GRAPH_PIPELINE_MODE=legacy` explicitly to roll back to the whole-graph review and repair
-pipeline. Concept diagrams keep their existing route.
+Then follow up:
 
-Chat runs over `/api/chat/ws`. The first frame authenticates the connection; subsequent
-`start`, `steer`, bounded diagram-evaluation frames, and `stop` commands share the same channel. A steer cancels the draft,
-clears partial output, and restarts the bounded workflow with the correction included.
-The old POST/SSE chat endpoint remains temporarily as a compatibility path; one-shot node
-suggestions still use HTTP streaming.
+> Add a human review step before the assistant sends a refund request.
 
-The orchestration decision and remaining checkpointing work are recorded in
-[docs/expansion-plans/langgraph-migration-later.md](docs/expansion-plans/langgraph-migration-later.md).
+## How it works
 
-## Deployment Direction
+The React frontend pairs chat with a D3 diagram canvas. A FastAPI backend runs a request-scoped LangGraph workflow and streams progress over an authenticated WebSocket connection.
 
-Cost-first deploy target:
+For an applied architecture request, the default staged pipeline:
 
-- frontend on Vercel
-- backend on Cloud Run with `min instances = 0`
-- explicit frontend `Prepare` flow before first send in a cold session
-- exact-tree image approval before production traffic promotion
+1. Interprets the request and retrieves relevant book passages and optional web context.
+2. Proposes components, checks their structure and browser rendering, and reviews their responsibilities.
+3. Builds connections against the accepted components and reviews the complete design.
+4. Writes the walkthrough, saves the accepted graph, and publishes the result.
 
-Relevant docs:
+Each stage allows one correction. Previews remain provisional until the graph passes its checks and is saved. If requirements are unclear, the agent can ask clarifying questions before building connections.
 
-- [docs/README.md](docs/README.md)
-- [docs/current-architecture.md](docs/current-architecture.md)
-- [docs/expansion-plans/cloud-run-cost-first.md](docs/expansion-plans/cloud-run-cost-first.md)
-- [docs/expansion-plans/prepare-flow-refactor.md](docs/expansion-plans/prepare-flow-refactor.md)
-- [docs/build-plan.md](docs/build-plan.md)
+See the [current architecture](docs/current-architecture.md) for routing, model roles, persistence, and failure handling. `GRAPH_PIPELINE_MODE=legacy` remains an explicit rollback option for the applied graph pipeline.
 
-## Shipped Features
+| Part | Technology | Location |
+| --- | --- | --- |
+| Browser app | React, TypeScript, Vite, D3 | [`frontend/`](frontend/) |
+| API and orchestration | Python, FastAPI, LangGraph | [`backend/`](backend/) |
+| Book retrieval | FAISS and a local embedding model | [`backend/rag/`](backend/rag/) |
+| PDF ingestion | Chunking, embeddings, index generation | [`ingestion/`](ingestion/) |
+| Authentication and persistence | Supabase Auth, Postgres; SQLite for local development | [`backend/adapters/`](backend/adapters/) |
+| Infrastructure | Cloud Run, Artifact Registry, Secret Manager, Terraform | [`infra/terraform/gcp/`](infra/terraform/gcp/) |
 
-- **Graph layout persistence** (2026-04-05): Pan/zoom + node positions saved per graph, restored on session reload. Debounced 400ms frontend cache → `PUT /api/threads/{id}/graph`.
-- **Cold-start UX contract**: Explicit `Prepare` button shows real server milestones and unlocks Send only after the retrieval index is ready.
-- **Three-way routing**: SIMPLE (Opus 5 high effort) / MEMORY (session history) / SEARCH (RAG + architecture workflow).
-- **Explicit design roles**: Kimi K3 low generates staged components and connections, Sonnet 5 medium reviews each stage, Opus 5 low writes the applied-design walkthrough, and Sonnet 5 high owns the protected semantic judge.
-- **D3 architecture diagram**: Interactive graph with step-by-step walkthrough and node detail enrichment.
-- **Protected live evaluation**: Browser journeys, deterministic graph contracts, and reviewed semantic rubrics run against isolated no-traffic Cloud Run revisions.
-- **Bounded graph publication**: Each stage permits at most two candidates. Both semantic gates and browser render checks must pass before publication. Scoped edits preserve graph identity and locked records; rejected edits retain the approved graph instead of creating a replacement.
-- **Selective evidence reuse**: Audited per-case evidence composition avoids repeating already-passing paid evaluations while requiring exact evidence for the unresolved case.
-- **Immutable production delivery**: Production deploys only the approved Artifact Registry digest for the exact Git tree, smokes it without traffic, then promotes that revision.
+## Getting started
 
-## Local Development
+You need Python 3.12, Node.js 20.19+ or 22.12+, and npm. Chat generation uses Anthropic and Moonshot API credentials. The normal sign-in flow uses Supabase Auth and Cloudflare Turnstile.
 
-Backend:
+### 1. Clone and configure
+
+```bash
+git clone https://github.com/yyqfrank420/ai-engineering-learning-agent.git
+cd ai-engineering-learning-agent
+cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env
+```
+
+Update the copied environment files before starting the app:
+
+| File | Configuration |
+| --- | --- |
+| `backend/.env` | Add `ANTHROPIC_API_KEY` and set `MOONSHOT_API_KEY`. Configure the Supabase URL, anon key, JWT issuer, and Turnstile secret for your development project. HS256 projects also need `SUPABASE_JWT_SECRET`. Set `FRONTEND_ORIGIN=http://localhost:5173`. |
+| `backend/.env` | Leave `SUPABASE_DB_URL` empty to use local SQLite. To use Postgres, configure a development database and apply the [repository migrations](scripts/apply_supabase_schema.sh) before startup. |
+| `frontend/.env` | Set `VITE_SUPABASE_URL`, `VITE_SUPABASE_ANON_KEY`, and `VITE_TURNSTILE_SITE_KEY` for the same development setup. Leave `VITE_API_URL` empty to use Vite's proxy to port 8000. |
+
+`ANTHROPIC_API_KEY` must be added explicitly; it is currently missing from the backend example file. Configure Supabase Auth to allow the local callback URL and use Turnstile keys that support localhost. Keep service credentials in the backend environment.
+
+The repository includes the FAISS index artifacts in [`data/faiss/`](data/faiss/), so an ordinary checkout does not need PDF ingestion. Clear the example `FAISS_ARTIFACT_URL` and `FAISS_ARTIFACT_SHA256` values when using these local files. The embedding model may need to download on first use.
+
+### 2. Start the backend
 
 ```bash
 cd backend
 python3.12 -m venv .venv
 ./.venv/bin/python -m pip install -r requirements-dev.txt
-./.venv/bin/python -m pytest -q
 ./.venv/bin/python -m uvicorn main:app --reload
 ```
 
-Frontend:
+### 3. Start the frontend
+
+In a second terminal, from the repository root:
 
 ```bash
 cd frontend
-npm run build
+npm ci
 npm run dev
 ```
 
-Pre-push sanity check:
+Open [localhost:5173](http://localhost:5173), sign in, and use **Prepare** when prompted. Sending a message becomes available once the retrieval index is ready.
+
+## Development
+
+Read the [engineering principles](docs/engineering-principles.md) before contributing. Run the shared offline verification entry point from the repository root:
 
 ```bash
 ./scripts/ci offline
 ```
 
-`scripts/prepush_check.sh` is a compatibility wrapper around that exact command.
-GitHub reads the same versioned manifest and partitions it with
-`./scripts/ci offline --group <name>`; test commands and path-impact policy are
-not duplicated in workflow YAML.
-
-The default ingestion checks use an injected fake embedder and the tracked FAISS artifacts.
-Set `AI_ENGINEERING_PDF_PATH` to exercise source-PDF parsing, and set
-`RUN_INGESTION_MODEL_TESTS=1` only when intentionally loading the real local model.
-
-If `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID` are set, that script also runs the same Vercel CLI build path the deploy workflow now gates on.
-
-Protected staging evaluation commands:
+For a focused check, select a group from [`ci/quality.json`](ci/quality.json):
 
 ```bash
-./scripts/ci browser --suite pr --target http://localhost:5173 \
-  --output artifacts/live-eval/browser-results.json
-./scripts/ci live --suite pr --target 'https://<candidate>.run.app' \
-  --input artifacts/live-eval/browser-results.json \
-  --output artifacts/live-eval/live-results.json
+./scripts/ci offline --group frontend
+./scripts/ci offline --group pipeline-policy
 ```
 
-The GitHub gate supplies the protected credentials, starts a frontend wired to the
-no-traffic candidate, captures the real WebSocket/browser journey, and then applies
-deterministic invariants plus anchored semantic rubrics. Human corpus review and judge
-calibration are optional. Automated failures block; borderline judgments stay visible
-as nonblocking findings. Diagnostic runs can select individual unresolved cases.
-Evaluation and release provenance binds the content commit, Git tree, and immutable
-image digest across synthetic PR merge refs and later squash merges. Selective semantic
-replay reuses only authenticated, successful graph-free cases; runtime-affected cases
-rerun as scheduled diagnostics. Scheduled evaluation now reports a missing image tag in
-preflight, while a manually dispatched full or diagnostic run can build an ephemeral
-image from the exact requested tree. The staged pipeline permits one correction per layer, and failed admission preserves
-the approved graph. The legacy whole-graph repair loop remains available through explicit rollback.
-These controls do not imply that paid validation or a pending production
-deployment has completed. See [docs/quality-system.md](docs/quality-system.md) for the
-full evidence, replay, and deployment procedures.
+The full suite also covers ingestion, security, migrations, infrastructure, and the backend container, and requires the corresponding tools such as Terraform and Docker. GitHub CI uses the same manifest. `scripts/prepush_check.sh` delegates to the offline command.
 
-The [2026-09-11 failure audit](docs/failure-audit-2026-09-11.md) reconciles all 55 failed
-single-case graph-expansion diagnostics with their available evidence. Scoped staged edits now
-generate additions and authorized field updates while the server preserves locked records.
-Generation and review share their acceptance criteria. Required live status follows automated
-evaluation results; offline success does not replace live evaluation.
-Scoped review verifies prior approvals against graph and reviewer fingerprints and checks each
-edit's effects on dependencies. Edge edits preserve authored presentation; node deletion cleans
-only affected sequence memberships. Scheduled failures stay failed and retain review evidence
-with deployment identity for 90 days.
+Ingestion checks use a fake embedder and the tracked index artifacts by default. Set `AI_ENGINEERING_PDF_PATH` to check source-PDF parsing; opt into real local-model tests with `RUN_INGESTION_MODEL_TESTS=1`.
 
-## Maintainer
+Live browser and model evaluations are separate protected checks. See the [quality and release guide](docs/quality-system.md) for commands, credentials, evaluation budgets, and evidence requirements.
+
+## Deployment
+
+The deployment target is Vercel for the frontend and Cloud Run for the backend, with zero minimum backend instances. The Prepare flow handles retrieval readiness after a cold start.
+
+Production promotion requires an approved immutable image for the exact Git tree and a successful smoke check before traffic moves. Check the release evidence for the validation and deployment status of a specific revision.
+
+See the [hosting plan](docs/expansion-plans/cloud-run-cost-first.md) and [Terraform guide](infra/terraform/gcp/README.md) for infrastructure details.
+
+## Documentation
+
+| Guide | Covers |
+| --- | --- |
+| [Product](PRODUCT.md) | Audience, learning goals, and interaction requirements |
+| [Current architecture](docs/current-architecture.md) | Runtime behavior, graph workflow, and data flow |
+| [Quality and releases](docs/quality-system.md) | Local checks, protected evaluation, and production promotion |
+| [Build plan](docs/build-plan.md) | Ongoing product and engineering work |
+| [Engineering principles](docs/engineering-principles.md) | Contributor standards and safety boundaries |
+| [Documentation index](docs/README.md) | Further design notes and historical references |
 
 Maintained by [Frank Yang](https://github.com/yyqfrank420).
-
-## Notes
-
-- `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is a historical design snapshot, not the current source of truth.
