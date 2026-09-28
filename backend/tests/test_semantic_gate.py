@@ -1130,10 +1130,10 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
     assert request["model"] == DEFAULT_ANTHROPIC_JUDGE_MODEL
-    assert request["max_tokens"] == judge_adapter._ANTHROPIC_OUTPUT_TOKEN_LIMIT == 8192
+    assert request["max_tokens"] == judge_adapter._ANTHROPIC_OUTPUT_TOKEN_LIMIT == 16384
     assert request["system"].startswith("You are an evaluation judge")
     assert (
-        "The 8192-token output budget includes reasoning and JSON; "
+        "The 16384-token output budget includes reasoning and JSON; "
         "leave enough tokens to complete every required schema field."
     ) in request["system"]
     assert request["messages"][0]["role"] == "user"
@@ -2672,15 +2672,15 @@ def test_judge_prompt_checks_payload_direction_and_component_ownership():
         provider="openai",
     )
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v11"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v17"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
     assert "actual request/response contracts" in system
     assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
     assert "Response prose cannot repair a contradictory graph contract" in system
-    assert "8192-token output budget" in system
-    assert "8192-token output budget" not in openai_system
+    assert "16384-token output budget" in system
+    assert "16384-token output budget" not in openai_system
 
 
 def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence():
