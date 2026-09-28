@@ -236,13 +236,6 @@
     ],
     "reviewed_presentation_changes": [
       {
-        "path": "frontend/src/App.tsx",
-        "before_blob": "68b0193e7646385b47e354778fb8ddf96d8490c2",
-        "after_blob": "a2de403df5807c4d8971c5d3541394e2dfb2d13e",
-        "reason": "Remove presentation-only workflow status props from the canvas call site.",
-        "verification": "docs/verification/2026-09-28-quiet-generation.md"
-      },
-      {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
         "before_blob": "6051f7ce48c0073ce9703d9b9fd8094c1c3f7d74",
         "after_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
@@ -271,18 +264,46 @@
         "verification": "docs/verification/2026-09-28-quiet-generation.md"
       },
       {
-        "path": "frontend/src/components/Chat/ChatInput.tsx",
-        "before_blob": "71735f56f6472da5f13e04cccb6631cd90d899f7",
-        "after_blob": "c59b41de58673be9406acf08c08b1bcbd3404868",
-        "reason": "Keep empty highlighted-context placeholders on one line and size the composer only from typed draft content.",
-        "verification": "docs/editor-sizing-verification.md"
-      },
-      {
         "path": "frontend/src/components/GraphCanvas/D3Graph.css",
         "before_blob": "7a21c2ec3ea8793126f97af9962e916231825b28",
         "after_blob": "4b92a8f81e867e6f7515b22874b48e76588cbfbd",
         "reason": "Size connection details text buttons to their labels while preserving the fixed close button and scrollable list.",
         "verification": "docs/editor-sizing-verification.md"
+      },
+      {
+        "path": "frontend/src/App.tsx",
+        "before_blob": "a2de403df5807c4d8971c5d3541394e2dfb2d13e",
+        "after_blob": "fbb4c1c7ff6d33baed69311a5fb6591611aeeb96",
+        "reason": "Wire automatic startup status and failure-only retry controls; generation send gates and request payloads are unchanged.",
+        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+      },
+      {
+        "path": "frontend/src/components/Chat/ChatInput.tsx",
+        "before_blob": "c59b41de58673be9406acf08c08b1bcbd3404868",
+        "after_blob": "0fc23599fd98c9af8462b4dfac5940acaace1fc2",
+        "reason": "Replace manual Prepare with startup feedback and failure-only Retry; preserve draft and submission semantics.",
+        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+      },
+      {
+        "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
+        "before_blob": "ce1d385b820f158a7ad6d11f75ae5cd1cfa27d59",
+        "after_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
+        "reason": "Show readiness-specific sidebar copy; history fetch and thread controls retain the same ready-state predicate.",
+        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+      },
+      {
+        "path": "frontend/src/hooks/useBackendReadiness.ts",
+        "before_blob": "63091575d2ed7a101b4a01b995298a307ebbfbae",
+        "after_blob": "45ea444c61ea4c9818143663acea705ca6c07505",
+        "reason": "Start GET /api/prepare automatically per authenticated workspace and cancel stale polling; no generation request or model settings are changed.",
+        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+      },
+      {
+        "path": "frontend/src/services/api.ts",
+        "before_blob": "77ac6627a5bc3845c94c12f3fc4f6c01fe6fecbf",
+        "after_blob": "ab6f1f67b68888dd9a79facc7f72657c7a9f9533",
+        "reason": "Forward an optional AbortSignal only to GET /api/prepare so workspace cleanup can cancel startup checks; all other endpoints are unchanged.",
+        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
       }
     ],
     "non_generation": [

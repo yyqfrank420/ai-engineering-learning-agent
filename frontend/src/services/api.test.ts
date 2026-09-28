@@ -131,6 +131,17 @@ describe('API service boundary', () => {
     await expect(prepareBackend()).resolves.toEqual({ status: 'ready', faiss_loaded: true });
   });
 
+  it('forwards preparation cancellation to fetch', async () => {
+    const controller = new AbortController();
+    fetchMock.mockImplementationOnce((_url, options) => new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')));
+    }));
+    const pending = prepareBackend(controller.signal);
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    expect(fetchMock.mock.calls[0][1].signal).toBe(controller.signal);
+  });
+
   it('reports plain and fallback prepare errors with an actionable step', async () => {
     fetchMock
       .mockResolvedValueOnce(response({ detail: 'Database unavailable', step: 'database' }, { ok: false }))

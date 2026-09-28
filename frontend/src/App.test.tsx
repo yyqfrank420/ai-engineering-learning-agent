@@ -112,25 +112,25 @@ vi.mock('./components/Chat/ChatInput', () => ({
   ChatInput: ({
     onSend,
     onStop,
-    onPrepare,
+    onRetryReadiness,
     onUseSelection,
     onDismissSelection,
     onClearSelectionReference,
-    showPrepare,
+    backendReadiness,
   }: {
     onSend: (content: string, diagramRequested?: boolean) => void;
     onStop: () => void;
-    onPrepare: () => void;
+    onRetryReadiness: () => void;
     onUseSelection: () => void;
     onDismissSelection: () => void;
     onClearSelectionReference: () => void;
-    showPrepare: boolean;
+    backendReadiness: string;
   }) => (
     <div>
       <button onClick={() => onSend('User question')}>Send message</button>
       <button onClick={() => onSend('AI trading bot?', true)}>Send broad request</button>
       <button onClick={onStop}>Stop generation</button>
-      {showPrepare && <button onClick={onPrepare}>Prepare backend</button>}
+      {backendReadiness === 'error' && <button onClick={onRetryReadiness}>Retry connection</button>}
       <button onClick={onUseSelection}>Use selection</button>
       <button onClick={onDismissSelection}>Dismiss selection</button>
       <button onClick={onClearSelectionReference}>Clear selection reference</button>
@@ -492,12 +492,25 @@ describe('App coordination', () => {
 
     fireEvent.click(screen.getByText('Send message'));
     expect(agentState.sendMessage).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByText('Prepare backend'));
+    expect(screen.queryByText('Prepare backend')).toBeNull();
+    expect(screen.queryByText('Retry connection')).toBeNull();
     const retry = screen.getByRole('button', { name: 'Retry' });
     expect((retry as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(retry);
-    expect(readinessState.prepareBackendNow).toHaveBeenCalledTimes(1);
+    expect(readinessState.prepareBackendNow).not.toHaveBeenCalled();
     expect(threadState.retryThread).not.toHaveBeenCalled();
+  });
+
+  it('connects the explicit readiness retry action only after startup fails', () => {
+    vi.mocked(useBackendReadiness).mockReturnValue({
+      ...readinessState,
+      backendReadiness: 'error',
+      isBackendReady: false,
+    });
+    render(<App />);
+    fireEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
+    expect(readinessState.prepareBackendNow).toHaveBeenCalledOnce();
+    expect(screen.queryByText('Prepare backend')).toBeNull();
   });
 
   it('shows a thread creation error with an available retry', () => {

@@ -190,8 +190,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const isStreaming = isGenerating || loadingThread || graphEditBlocked;
   const composerLocked = loadingThread || isSavingGraphEdit;
   const sendLocked = composerLocked || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
-  const showPrepare = !!authSession && backendReadiness !== 'ready';
-  const prepareDisabled = isGenerating || composerLocked || !authSession || backendReadiness === 'preparing';
+  const readinessRetryDisabled = isGenerating || composerLocked || !authSession;
 
   const handleNodeClick = (node: GraphNode) => {
     // Useful actions appear immediately. The low-cost model request may refine
@@ -369,7 +368,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
             <ThreadSidebar
               authSession={authSession}
               activeThreadId={activeThreadId}
-              backendReady={isBackendReady}
+              backendReadiness={backendReadiness}
               onNewChat={startNewChat}
               onSelectThread={selectThread}
               onDeleteThread={deleteThread}
@@ -465,15 +464,15 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     onSend={handleSend}
                     checkSubmission={checkSubmission}
                     onStop={stopGeneration}
-                    onPrepare={prepareBackendNow}
+                    onRetryReadiness={prepareBackendNow}
                     threadId={activeThreadId}
                     isGenerating={isGenerating}
                     disabled={composerLocked}
                     sendDisabled={sendLocked}
-                    showPrepare={showPrepare}
-                    prepareDisabled={prepareDisabled}
-                    prepareMessage={prepareMessage}
-                    prepareProgress={prepareProgress}
+                    backendReadiness={backendReadiness}
+                    retryDisabled={readinessRetryDisabled}
+                    readinessMessage={prepareMessage}
+                    readinessProgress={prepareProgress}
                     selectionSuggestion={selectionSuggestion}
                     selectionReferenceActive={selectionReferenceActive}
                     onUseSelection={activateSelectionReference}

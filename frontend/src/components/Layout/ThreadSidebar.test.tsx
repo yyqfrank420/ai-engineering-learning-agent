@@ -34,7 +34,7 @@ function renderSidebar(isLoading: boolean, onSelectThread = vi.fn()) {
     <ThreadSidebar
       authSession={session}
       activeThreadId="thread-1"
-      backendReady
+      backendReadiness="ready"
       onNewChat={vi.fn()}
       onSelectThread={onSelectThread}
       onDeleteThread={vi.fn()}
@@ -51,11 +51,31 @@ describe('ThreadSidebar active-work protection', () => {
     mocks.deleteThread.mockResolvedValue(undefined);
   });
 
+  it.each([
+    ['unknown', 'Connecting to your chats…'],
+    ['preparing', 'Connecting to your chats…'],
+    ['error', 'Could not connect to load chats'],
+  ] as const)('shows %s readiness without a manual startup instruction', (backendReadiness, message) => {
+    render(<ThreadSidebar authSession={session} activeThreadId={null} backendReadiness={backendReadiness}
+      onNewChat={vi.fn()} onSelectThread={vi.fn()} onDeleteThread={vi.fn()} isLoading={false} isOpen />);
+    expect(screen.getByRole('status').textContent).toBe(message);
+    expect(screen.queryByText(/Prepare backend/)).toBeNull();
+    expect((screen.getByRole('button', { name: 'New chat' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.listThreads).not.toHaveBeenCalled();
+  });
+
+  it('asks a signed-out user to sign in without starting a history request', () => {
+    render(<ThreadSidebar authSession={null} activeThreadId={null} backendReadiness="unknown"
+      onNewChat={vi.fn()} onSelectThread={vi.fn()} onDeleteThread={vi.fn()} isLoading={false} isOpen />);
+    expect(screen.getByRole('status').textContent).toBe('Sign in to view your chats');
+    expect(mocks.listThreads).not.toHaveBeenCalled();
+  });
+
   it('blocks selecting or deleting another thread while work is active', async () => {
     const onSelectThread = vi.fn();
     const view = renderSidebar(false, onSelectThread);
     const select = await screen.findByRole('button', { name: 'Open chat Support architecture' });
-    view.rerender(<ThreadSidebar authSession={session} activeThreadId="thread-1" backendReady
+    view.rerender(<ThreadSidebar authSession={session} activeThreadId="thread-1" backendReadiness="ready"
       onNewChat={vi.fn()} onSelectThread={onSelectThread} onDeleteThread={vi.fn()} isLoading isOpen />);
     const remove = screen.getByRole('button', { name: 'Delete chat Support architecture' });
     expect((select as HTMLButtonElement).disabled).toBe(true);
@@ -75,7 +95,7 @@ describe('ThreadSidebar active-work protection', () => {
       <ThreadSidebar
         authSession={session}
         activeThreadId="thread-1"
-        backendReady
+        backendReadiness="ready"
         onNewChat={vi.fn()}
         onSelectThread={onSelectThread}
         onDeleteThread={vi.fn()}
@@ -91,7 +111,7 @@ describe('ThreadSidebar active-work protection', () => {
 
   it('keeps empty drafts out of history and refreshes after their first completed turn', async () => {
     mocks.listThreads.mockResolvedValue([]);
-    const props = { authSession: session, activeThreadId: 'draft', backendReady: true,
+    const props = { authSession: session, activeThreadId: 'draft', backendReadiness: 'ready' as const,
       onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
     const view = render(<ThreadSidebar {...props} />);
     await screen.findByText('No chats yet');
@@ -108,7 +128,7 @@ describe('ThreadSidebar active-work protection', () => {
   it('ignores an older empty-history response after a completed chat has appeared', async () => {
     let finishOldRequest!: (value: typeof thread[]) => void;
     mocks.listThreads.mockReturnValueOnce(new Promise(resolve => { finishOldRequest = resolve; }));
-    const props = { authSession: session, activeThreadId: 'draft', backendReady: true,
+    const props = { authSession: session, activeThreadId: 'draft', backendReadiness: 'ready' as const,
       onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
     const view = render(<ThreadSidebar {...props} />);
     view.rerender(<ThreadSidebar {...props} isLoading />);
