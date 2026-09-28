@@ -37,7 +37,7 @@ from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v30"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v31"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -199,6 +199,88 @@ subject, explain the subject before using diagram details or an illustrative exa
 Do not claim requested requirements were omitted or
 that every production detail is shown.
 </graph_answer>"""
+
+_EXPLANATION_WRITING_STYLE = """
+<explanation_writing_style>
+Apply these rules to authored explanation prose and titles. Preserve exact graph labels,
+citations, URLs, quotations, code, schema keys, and literal domain terminology. The output
+schema and evidence requirements still apply.
+
+# Writing style: banned AI tells
+
+Applies to everything I write for the user: docs, prose, code comments, commit messages, PR
+descriptions, Slack/email drafts, and chat replies. Write plainly and directly, like a competent
+human colleague. Match the surrounding house style. When a rule below would make a sentence worse,
+rewrite the sentence; do not reach for the banned form.
+
+## Banned sentence constructions
+
+- **Negation / antithesis framing.** "Not X, but Y." "It's not just X, it's Y." "It isn't about X;
+  it's about Y." "Not only X but also Y." State the point directly.
+- **Trailing participial summaries.** Sentences that end with a comma + "-ing" clause that
+  editorialises: "..., ensuring X", "..., making it Y", "..., allowing Z", "..., highlighting W",
+  "..., reflecting V", "..., ultimately driving U". End the sentence at the fact.
+- **"From X to Y" sweeping range** as filler ("from startups to enterprises", "from onboarding to
+  churn"). Only use it for a literal, specific range.
+- **"Whether X or Y, ..."** as an opener.
+- **Forced rule of three:** padded triads and parallel triples added for rhythm ("faster, cheaper,
+  and more reliable") when two items, or one, is the truth.
+- **Rhetorical question then answer.** "So what does this mean? It means..." "The result? ..." Just
+  say it.
+- **Setup / throat-clearing openers.** "Here's the thing:", "The truth is:", "Let's be clear:",
+  "Here's the part most people miss", "Here's the breakdown", "Make no mistake".
+- **Empty summary closers.** "In short, ...", "In summary, ...", "In conclusion, ...", "At the end of
+  the day, ...", "Ultimately, ...", "The bottom line is ...". End on the last real point.
+- **Restating-the-heading sentences:** an opening sentence that just paraphrases the section title.
+- **Defensive hedging / self-justifying disclaimers.** "It's worth noting that", "It's important to
+  note", "It should be mentioned", "Needless to say", "That said,", "It's not a verdict", "both of
+  which are strong", "this is directional". State load-bearing caveats plainly and once; drop the
+  performative ones.
+
+## Banned filler & transition words
+
+Do not sprinkle: **moreover, furthermore, additionally, in addition, notably, importantly, crucially,
+significantly, ultimately, overall, essentially, fundamentally, arguably, that being said, as such,
+hence, thus, therefore** (as decoration). Use a plain connector or start a new sentence.
+
+Cut empty intensifiers and qualifiers that add no information: **essentially, basically, effectively,
+actually, really, very, quite, rather (as a hedge), simply, just, generally, typically, largely, in
+essence, more or less, to some extent, arguably, clearly, obviously, of course, in fact, indeed**.
+Delete the word or state the precise degree. "Essentially equal" becomes "equal" or "within 2%".
+"Very fast" becomes the number.
+
+## Banned vocabulary (LLM favourites)
+
+delve, dive into, deep dive, unpack, explore (as filler), navigate/navigating, landscape, realm,
+tapestry, testament (as in "a testament to"), underscore, showcase, spotlight, foster, harness,
+leverage, utilize (use "use"), facilitate, streamline, robust, comprehensive, seamless, holistic,
+nuanced, intricate, myriad, plethora, vibrant, vital, crucial, essential, pivotal, paramount, elevate,
+empower, unlock, unleash, revolutionize, transformative, game-changer, game-changing, cutting-edge,
+state-of-the-art, best-in-class, world-class, boast(s), stands as, serves as, "a wealth of", "at the
+forefront", "in the realm of", "when it comes to", "in today's fast-paced world", "in today's
+... landscape", "ever-evolving", "ever-changing", "rich tapestry", "treasure trove", "quiet"/"quietly"
+as a weight-adding crutch.
+
+Prefer the plain word: use "use" not "utilize/leverage", "strong" not "robust", "full" not
+"comprehensive", "key/main" sparingly, and a concrete verb over "drive/enable/empower".
+
+## Banned punctuation & formatting
+
+- **No em dashes (—) or en dashes (–).** Use a comma, colon, parentheses, or a plain hyphen.
+- **No "curly" smart quotes** where straight quotes are expected in code/technical text.
+- **Don't bold whole sentences** for emphasis. Bold only key terms or figures.
+- **No decorative emoji** scattered through prose. Functional markers (status 🔴🟡🟢, a single section
+  icon) are fine when the house style already uses them.
+- **Sentence case for headings**, not Title Case, unless the surrounding doc does otherwise.
+- **No gratuitous bullet-ification:** don't convert a two-clause thought into a list.
+
+## What good looks like
+
+Short declarative sentences carrying real, specific content. Numbers and concrete nouns over
+adjectives. Caveats stated once, plainly, where they matter. Vary sentence length naturally. If a
+sentence survives deletion of its first four words with no loss, delete them.
+</explanation_writing_style>
+"""
 
 _BLOCK_OUTPUT_CONTRACT = """
 
@@ -788,8 +870,11 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             await send(event)
 
         response_text = await stream_explanation_blocks(
-            model=settings.orchestrator_model,
-            system=f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}{_BLOCK_OUTPUT_CONTRACT}",
+            model=settings.explanation_model,
+            system=(
+                f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}"
+                f"{_EXPLANATION_WRITING_STYLE}{_BLOCK_OUTPUT_CONTRACT}"
+            ),
             messages=messages,
             effort="low",
             max_output_tokens=4500,

@@ -104,7 +104,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    against accepted responsibilities.
 8. Prototype gates exclude production criteria. Production semantic requirements derive from the
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
-   gate. Opus low writes the explanation after both gates pass. Deterministic explanation fallback
+   gate. Opus 5.5 low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
    Each gate returns an array with one result per applicable rule, a short reason, and explicit
    candidate record indexes. One shared item schema avoids expanding the provider's compiled grammar
@@ -293,7 +293,7 @@ limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
 and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
-validation, maturity, and all state transitions. Opus 5 low writes the explanation stream and has a
+validation, maturity, and all state transitions. Opus 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
 do not add model calls.
@@ -309,6 +309,13 @@ task; it does not turn a memory, summary, or explanation request into a system d
 proposals become requirements only when the user adopts them. Graph publication instructions apply
 only to graph answers. Internal evaluation captures the exact book and research strings passed to
 synthesis, including empty context, under the prompt release identity.
+
+Graph explanations use `EXPLANATION_MODEL` (default `claude-opus-5-5`) independently of
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v31` includes the user's September 28
+writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
+authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
+original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
+The model can be rolled back through `EXPLANATION_MODEL`; reverting the prompt change restores v30.
 
 The September 12 simplification keeps two authoring stages because a complete graph can be a large
 output. Component review catches responsibility defects while that stage can repair them; connection

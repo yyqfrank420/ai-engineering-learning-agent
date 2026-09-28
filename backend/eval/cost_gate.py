@@ -6,10 +6,11 @@ import re
 from typing import Any, Literal
 
 
-PRICE_RELEASE = "2026-08-07"
+PRICE_RELEASE = "2026-09-28"
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
     "claude-sonnet-5": (2.00, 10.00),
+    "claude-opus-5-5": (4.00, 20.00),
     "claude-opus-5": (5.00, 25.00),
     "claude-opus-4-8": (5.00, 25.00),
     "kimi-k3": (3.00, 15.00),
@@ -212,6 +213,12 @@ def account_application_cost(
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
                 continue
+            # Opus 5.5 cache reads cost 5% of input; older models retain 10%.
+            cache_read_multiplier = (
+                0.05
+                if _MODEL_VERSION_SUFFIX.sub("", model) == "claude-opus-5-5"
+                else CACHE_READ_INPUT_PRICE_MULTIPLIER
+            )
             estimated_usd = (
                 input_tokens * price[0] / 1_000_000
                 + cache_creation_input_tokens
@@ -220,7 +227,7 @@ def account_application_cost(
                 / 1_000_000
                 + cache_read_input_tokens
                 * price[0]
-                * CACHE_READ_INPUT_PRICE_MULTIPLIER
+                * cache_read_multiplier
                 / 1_000_000
                 + output_tokens * price[1] / 1_000_000
             )
