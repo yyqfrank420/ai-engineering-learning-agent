@@ -70,7 +70,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v30"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v31"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -845,6 +845,7 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
 ):
     import agent.nodes.orchestrator_node as orchestrator
 
+    monkeypatch.setattr(settings, "explanation_model", "explanation-model")
     captured = {}
 
     async def fake_stream_blocks(**kwargs):
@@ -957,6 +958,10 @@ async def test_orchestrator_synthesise_emits_status_and_includes_graph_context(
     )
     assert "<already_shown_untrusted_frame>" in captured["messages"][-1]["content"]
     assert "supplied Markdown" in captured["system"]
+    assert captured["model"] == "explanation-model"
+    assert orchestrator._EXPLANATION_WRITING_STYLE in captured["system"]
+    assert "Preserve exact graph labels" in captured["system"]
+    assert "citations, URLs, quotations, code, schema keys" in captured["system"]
     assert "a source URL, chapter, page, quotation" in captured["system"]
     assert captured["effort"] == "low"
     assert captured["max_output_tokens"] == 4500
@@ -1075,6 +1080,8 @@ async def test_graph_free_synthesis_stream_matches_persisted_early_response(
     import agent.nodes.orchestrator_node as orchestrator
 
     async def fake_stream_llm(**kwargs):
+        assert kwargs["model"] == settings.orchestrator_model
+        assert orchestrator._EXPLANATION_WRITING_STYLE not in kwargs["system"]
         await kwargs["send"]({"type": "response_delta", "content": "Final answer"})
         return "Final answer"
 
@@ -2432,7 +2439,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v30",
+            "prompt_version": "architecture_blocks_v31",
             "book_context": context,
             "research_context": "",
         }

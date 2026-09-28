@@ -40,6 +40,7 @@ class Settings(BaseSettings):
 
     # General conversation roles retain their independent fallback policy.
     orchestrator_model: str = "claude-opus-5"
+    explanation_model: str = "claude-opus-5-5"
     worker_model: str = "claude-opus-5"
     # Applied-design roles are explicit so quality and cost changes cannot drift
     # behind a shared model setting.
