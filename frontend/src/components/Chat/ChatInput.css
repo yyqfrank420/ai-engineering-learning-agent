@@ -1,0 +1,29 @@
+.chat-readiness-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.65rem;
+  color: #c9d1d9;
+  font-size: 0.72rem;
+  line-height: 1.45;
+}
+
+.chat-readiness-spinner {
+  width: 0.75rem;
+  height: 0.75rem;
+  flex-shrink: 0;
+  border: 2px solid rgba(167, 139, 250, 0.25);
+  border-top-color: #a78bfa;
+  border-radius: 50%;
+  animation: chat-readiness-spin 1s linear infinite;
+}
+
+@keyframes chat-readiness-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-readiness-spinner {
+    animation: none;
+  }
+}

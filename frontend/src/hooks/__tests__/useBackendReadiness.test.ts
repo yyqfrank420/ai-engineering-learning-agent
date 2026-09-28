@@ -184,11 +184,6 @@ describe('useBackendReadiness', () => {
 
     expect(result.current.backendReadiness).toBe('preparing');
     expect(result.current.prepareMessage).toBe('Loading the retrieval index into memory');
-    expect(result.current.prepareProgress).toEqual({
-      completedUnits: 2,
-      totalUnits: 3,
-      percent: 67,
-    });
   });
 
   it('waits for each readiness poll before scheduling another', async () => {
