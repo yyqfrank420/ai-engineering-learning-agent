@@ -268,6 +268,20 @@
         "after_blob": "0000000000000000000000000000000000000000",
         "reason": "Delete the unused workflow detail presentation component.",
         "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      },
+      {
+        "path": "frontend/src/components/Chat/ChatInput.tsx",
+        "before_blob": "71735f56f6472da5f13e04cccb6631cd90d899f7",
+        "after_blob": "c59b41de58673be9406acf08c08b1bcbd3404868",
+        "reason": "Keep empty highlighted-context placeholders on one line and size the composer only from typed draft content.",
+        "verification": "docs/editor-sizing-verification.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/D3Graph.css",
+        "before_blob": "7a21c2ec3ea8793126f97af9962e916231825b28",
+        "after_blob": "4b92a8f81e867e6f7515b22874b48e76588cbfbd",
+        "reason": "Size connection details text buttons to their labels while preserving the fixed close button and scrollable list.",
+        "verification": "docs/editor-sizing-verification.md"
       }
     ],
     "non_generation": [
