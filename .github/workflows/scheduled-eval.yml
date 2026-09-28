@@ -197,7 +197,7 @@ jobs:
           echo "IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
       - name: Deploy evaluation digest to a tagged staging revision
         env:
-          EVALUATION_PR_PROVIDER_ATTEMPT_LIMIT: 64
+          EVALUATION_PR_PROVIDER_ATTEMPT_LIMIT: 78
           EVALUATION_FULL_PROVIDER_ATTEMPT_LIMIT: 150
           COMMIT_SHA: ${{ steps.approved_image.outputs.commit_sha }}
           TREE_SHA: ${{ steps.approved_image.outputs.tree_sha }}

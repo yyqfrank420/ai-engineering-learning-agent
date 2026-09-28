@@ -281,7 +281,10 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -375,7 +378,10 @@ def test_websocket_steer_reuses_graph_review_budget_after_cancellation(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -458,7 +464,10 @@ def test_websocket_stop_restores_request_start_graph_without_exposing_contract(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -523,7 +532,10 @@ def test_websocket_replays_completed_idempotent_turn_without_running_agent(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -570,7 +582,10 @@ def test_websocket_replays_completed_idempotent_turn_with_graph_before_done(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -613,7 +628,10 @@ def test_internal_eval_websocket_acquires_a_thread_scoped_guard(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -656,7 +674,10 @@ def test_websocket_keeps_candidate_private_until_browser_evaluation(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -791,7 +812,10 @@ def test_websocket_persists_approved_overview_when_explanation_is_unavailable(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -889,7 +913,10 @@ def test_websocket_persists_approved_overview_after_explanation_provider_error(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -985,7 +1012,10 @@ def test_websocket_rejects_invalid_start_protocol(
             headers={"origin": "http://localhost:5173"},
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(start_message)
             assert socket.receive_json() == {
                 "type": "error",
@@ -1014,7 +1044,10 @@ def test_websocket_rechecks_draft_after_lease_admission(temp_data_dir, monkeypat
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1053,7 +1086,10 @@ def test_websocket_rejects_invalid_turns_before_model_work(
             headers={"origin": "http://localhost:5173"},
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1085,7 +1121,10 @@ def test_websocket_reports_an_incomplete_idempotent_turn(temp_data_dir, monkeypa
             headers={"origin": "http://localhost:5173"},
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1142,7 +1181,10 @@ def test_websocket_preflight_failures_do_not_start_model_work(
             headers={"origin": "http://localhost:5173"},
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1173,7 +1215,10 @@ def test_websocket_rejects_commands_then_stops_matching_work(
             headers={"origin": "http://localhost:5173"},
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1277,7 +1322,10 @@ def test_websocket_rechecks_completed_turn_after_thread_admission(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1323,7 +1371,10 @@ def test_chat_thread_serialization_allows_other_threads_with_user_capacity(
     with TestClient(app) as client:
         with client.websocket_connect("/api/chat/ws", headers=headers) as first:
             first.send_json({"type": "auth", "access_token": "test-token"})
-            assert first.receive_json() == {"type": "ready"}
+            assert first.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             first.send_json(
                 {
                     "type": "start",
@@ -1343,7 +1394,10 @@ def test_chat_thread_serialization_allows_other_threads_with_user_capacity(
                     "/api/chat/ws", headers=headers
                 ) as second:
                     second.send_json({"type": "auth", "access_token": "test-token"})
-                    assert second.receive_json() == {"type": "ready"}
+                    assert second.receive_json() == {
+                        "type": "ready",
+                        "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+                    }
                     second.send_json({"type": "start", **body})
                     rejected = _receive_until(second, "done")
             else:
@@ -1353,7 +1407,10 @@ def test_chat_thread_serialization_allows_other_threads_with_user_capacity(
             assert calls == [thread["id"]]
             with client.websocket_connect("/api/chat/ws", headers=headers) as other:
                 other.send_json({"type": "auth", "access_token": "test-token"})
-                assert other.receive_json() == {"type": "ready"}
+                assert other.receive_json() == {
+                    "type": "ready",
+                    "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+                }
                 other.send_json(
                     {
                         "type": "start",
@@ -1385,7 +1442,10 @@ def test_websocket_releases_both_leases_on_setup_failure(temp_data_dir, monkeypa
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",
@@ -1469,3 +1529,196 @@ async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
     assert released == ["chat-thread", "chat"]
     assert metric_changes == [1, -1]
     socket.close.assert_awaited_once()
+
+
+@pytest.mark.parametrize("existing_graph", [False, True])
+@pytest.mark.parametrize("new_graph", [False, True])
+def test_blank_turn_requires_a_new_approved_nonempty_graph(
+    temp_data_dir, monkeypatch, existing_graph, new_graph
+):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    old_graph = {"version": "old", "nodes": [{"id": "old"}], "edges": []}
+    if existing_graph:
+        persist_turn(
+            user["id"],
+            thread["id"],
+            title="Existing",
+            user_content="before",
+            assistant_content="before",
+            graph_data=old_graph,
+        )
+    previous_history = get_history(user["id"], thread["id"])
+    analytics = []
+    monkeypatch.setattr(
+        chat_websocket,
+        "enqueue_analytics_event",
+        lambda **event: analytics.append(event),
+    )
+    monkeypatch.setattr(settings, "agent_timeout_s", 123.5)
+    graph = (
+        {"version": "new", "nodes": [{"id": "new"}], "edges": []}
+        if new_graph
+        else old_graph
+        if existing_graph
+        else None
+    )
+
+    async def blank_agent(state, *_tools):
+        await state["send"](
+            {
+                "type": "graph_data",
+                "data": {"version": "draft", "nodes": [{"id": "draft"}]},
+            }
+        )
+        return {
+            **state,
+            "response_text": " \n",
+            "graph_data": graph,
+            "graph_publication": "approved" if new_graph else "unchanged",
+        }
+
+    monkeypatch.setattr(chat_websocket, "run_agent", blank_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json() == {"type": "ready", "turn_timeout_ms": 183500}
+            socket.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Create a diagram",
+                }
+            )
+            events = _receive_until(socket, "done")
+    assert (
+        any(event.get("event_name") == "stream_completed" for event in analytics)
+        is new_graph
+    )
+    assert [event["data"] for event in events if event["type"] == "graph_data"] == [
+        graph
+    ]
+    errors = [event["content"] for event in events if event["type"] == "error"]
+    if new_graph:
+        assert errors == []
+        assert len(get_history(user["id"], thread["id"])) == len(previous_history) + 2
+    else:
+        assert errors == ["No response was returned. Please try again."]
+        assert get_history(user["id"], thread["id"]) == previous_history
+
+
+@pytest.mark.parametrize("provider_failure", [False, True, "timeout"])
+def test_websocket_reports_provider_outage_without_exception_payload(
+    temp_data_dir, monkeypatch, provider_failure
+):
+    import httpx
+    import openai
+
+    app, _user, thread = _ready_app(temp_data_dir, monkeypatch)
+    failure = (
+        openai.APIConnectionError(
+            message="secret provider payload",
+            request=httpx.Request("POST", "https://example.invalid"),
+        )
+        if provider_failure
+        else ValueError("secret provider payload")
+    )
+
+    if provider_failure == "timeout":
+        failure = TimeoutError("secret provider payload")
+
+    async def failing_agent(*_args):
+        raise failure
+
+    monkeypatch.setattr(chat_websocket, "run_agent", failing_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Create a diagram",
+                }
+            )
+            events = _receive_until(socket, "done")
+    assert [event["content"] for event in events if event["type"] == "error"] == [
+        "The AI service is temporarily unavailable. Please try again."
+        if provider_failure
+        else "Response failed — please try again"
+    ]
+    assert "secret provider payload" not in str(events)
+
+
+@pytest.mark.parametrize(
+    "failure_code,expected",
+    [
+        (
+            "staged_generation_provider_unavailable",
+            "The AI service is temporarily unavailable. Please try again.",
+        ),
+        (
+            "staged_generation_timeout",
+            "Diagram generation timed out. Please try again.",
+        ),
+    ],
+)
+def test_failed_generation_notice_is_persisted_with_existing_graph(
+    temp_data_dir, monkeypatch, failure_code, expected
+):
+    from agent.nodes.orchestrator_node import orchestrator_synthesise
+
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    graph = {"version": "approved", "nodes": [{"id": "n1"}], "edges": []}
+    persist_turn(
+        user["id"],
+        thread["id"],
+        title="Existing",
+        user_content="before",
+        assistant_content="before",
+        graph_data=graph,
+    )
+
+    async def failed_agent(state, *_tools):
+        return await orchestrator_synthesise(
+            {
+                **state,
+                "graph_data": graph,
+                "approved_graph_data": graph,
+                "graph_publication": "preserved",
+                "graph_operation": {"kind": "edit", "status": "failed"},
+                "graph_review": {"staged_failure": {"code": failure_code}},
+            }
+        )
+
+    monkeypatch.setattr(chat_websocket, "run_agent", failed_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json(
+                {
+                    "type": "start",
+                    "thread_id": thread["id"],
+                    "content": "Update this diagram",
+                }
+            )
+            events = _receive_until(socket, "done")
+    expected += " Your existing diagram is unchanged."
+    assert [
+        event["content"] for event in events if event["type"] == "explanation_block"
+    ] == [expected]
+    assert (
+        get_history(user["id"], thread["id"])[-1]["content"]
+        == "## Diagram unchanged\n\n" + expected
+    )
+    assert (
+        chat_websocket.thread_store.get_graph_artifact(user["id"], thread["id"])[0]
+        == graph
+    )

@@ -2434,3 +2434,131 @@ async def test_quick_answer_keeps_user_format_without_forced_sentence_count(monk
     assert "2-4" not in captured["system"]
     assert "no retrieved book evidence" in captured["system"]
     assert result["response_text"] == "An embedding represents data as a vector."
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_graph", [False, True])
+@pytest.mark.parametrize(
+    "review,operation_code,expected",
+    [
+        (
+            {"staged_gate": {"failure_code": "provider_unavailable"}},
+            "staged_component_gate_unavailable",
+            "The AI service is temporarily unavailable. Please try again.",
+        ),
+        (
+            {"staged_failure": {"code": "staged_generation_provider_unavailable"}},
+            "staged_component_generation_unavailable",
+            "The AI service is temporarily unavailable. Please try again.",
+        ),
+        (
+            {"staged_failure": {"code": "staged_generation_timeout"}},
+            "staged_connection_attempts_exhausted",
+            "Diagram generation timed out. Please try again.",
+        ),
+        (
+            {},
+            "staged_component_deadline_admission_denied",
+            "Diagram generation timed out. Please try again.",
+        ),
+        (
+            {"staged_gate": {"diagnostics": ["provider response is not valid JSON"]}},
+            "staged_component_gate_unavailable",
+            "I couldn't create the diagram this time.",
+        ),
+        (
+            {"staged_failure": {"code": "staged_generation_unavailable"}},
+            "staged_component_generation_unavailable",
+            "I couldn't create the diagram this time.",
+        ),
+        (
+            {"staged_failure": {"code": "staged_generation_invalid_json"}},
+            "staged_component_generation_unavailable",
+            "I couldn't create the diagram this time.",
+        ),
+    ],
+)
+async def test_failed_graph_notice_distinguishes_availability_from_rejection(
+    monkeypatch, existing_graph, review, operation_code, expected
+):
+    from agent.nodes import orchestrator_node as orchestrator
+
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Failed turns must not spend another model call")
+
+    monkeypatch.setattr(orchestrator, "stream_llm", unexpected)
+    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", unexpected)
+    graph = (
+        {"version": "approved", "nodes": [{"id": "n1"}], "edges": []}
+        if existing_graph
+        else None
+    )
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    result = await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "graph_data": graph,
+            "approved_graph_data": graph,
+            "graph_publication": "preserved" if existing_graph else "withheld",
+            "graph_operation": {
+                "kind": "create",
+                "status": "failed",
+                "failure_code": operation_code,
+            },
+            "graph_review": review,
+        }
+    )
+    if existing_graph:
+        expected = (
+            expected.replace(
+                "I couldn't create the diagram this time.",
+                "I couldn't create the diagram.",
+            )
+            + " Your existing diagram is unchanged."
+        )
+    assert result["response_text"] == expected
+    assert events[0]["content"] == expected
+    assert result["graph_data"] == graph
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("existing_graph", [False, True])
+@pytest.mark.parametrize("failure_code", [
+    "diagram_evaluation_timeout",
+    "diagram_evaluation_missing",
+    "diagram_evaluation_error",
+    "diagram_evaluation_transport_unavailable",
+    "diagram_evaluation_layout_rejected",
+    None,
+])
+async def test_render_failure_notice_requires_current_explicit_availability_code(existing_graph, failure_code):
+    from agent.nodes import orchestrator_node as orchestrator
+
+    graph = {"version": "approved", "nodes": [{"id": "n1"}], "edges": []} if existing_graph else None
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    result = await orchestrator.orchestrator_synthesise({
+        "send": send,
+        "graph_data": graph,
+        "approved_graph_data": graph,
+        "graph_publication": "preserved" if existing_graph else "withheld",
+        "graph_operation": {"kind": "create", "status": "failed", "failure_code": "staged_component_render_rejected"},
+        "graph_review": {"render_failure_code": failure_code},
+        "graph_review_diagnostics": [{"failure_code": "diagram_evaluation_timeout"}],
+    })
+    if failure_code and failure_code != "diagram_evaluation_layout_rejected":
+        expected = "The browser could not finish checking the diagram. Please try again."
+        if existing_graph:
+            expected += " Your existing diagram is unchanged."
+    else:
+        expected = "I couldn't create the diagram. Your existing diagram is unchanged." if existing_graph else "I couldn't create the diagram this time."
+    assert result["response_text"] == expected
+    assert events[0]["content"] == expected
+    assert result["graph_data"] == graph

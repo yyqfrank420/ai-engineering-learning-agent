@@ -120,6 +120,7 @@ interface D3GraphProps {
   initialViewState?: GraphViewState;
   onViewStateChange?: (state: GraphViewState) => void;
   onLayoutReady?: (structureKey: string) => void;
+  layoutReadiness?: 'paint' | 'geometry';
   minimumTitlePx?: number;
   navigation?: boolean;
   inspectionViewport?: { nodeId: string; width: number; height: number };
@@ -199,6 +200,7 @@ export function D3Graph({
   initialViewState,
   onViewStateChange,
   onLayoutReady,
+  layoutReadiness = 'paint',
   minimumTitlePx = MIN_PUBLISHED_TITLE_PX,
   navigation = false,
   inspectionViewport,
@@ -2191,19 +2193,25 @@ export function D3Graph({
     let cancelled = false;
     let firstFrame = 0;
     let secondFrame = 0;
+    const notifyReady = () => {
+      if (cancelled) return;
+      svg.attr('data-rendered-graph-version', renderGraphData.version ?? '');
+      onLayoutReadyRef.current?.(structureKey);
+    };
     const signalReady = () => {
+      if (cancelled) return;
       firstFrame = window.requestAnimationFrame(() => {
-        secondFrame = window.requestAnimationFrame(() => {
-          if (!cancelled) {
-            svg.attr('data-rendered-graph-version', renderGraphData.version ?? '');
-            onLayoutReadyRef.current?.(structureKey);
-          }
-        });
+        if (cancelled) return;
+        secondFrame = window.requestAnimationFrame(notifyReady);
       });
     };
-    const fonts = document.fonts?.ready;
-    if (fonts) void fonts.then(signalReady, signalReady);
-    else signalReady();
+    // Private measurement forces layout itself. Background tabs may never paint.
+    if (layoutReadiness === 'geometry') notifyReady();
+    else {
+      const fonts = document.fonts?.ready;
+      if (fonts) void fonts.then(signalReady, signalReady);
+      else signalReady();
+    }
 
     return () => {
       cancelled = true;
@@ -2218,7 +2226,7 @@ export function D3Graph({
       window.cancelAnimationFrame(secondFrame);
       renderStateRef.current = null;
     };
-  }, [minimumTitlePx, navigation, structureKey, viewportRevision]);
+  }, [layoutReadiness, minimumTitlePx, navigation, structureKey, viewportRevision]);
 
   useEffect(() => {
     const exists = renderStateRef.current?.nodeSel.data().some(node => node.id === inspectedNodeId);

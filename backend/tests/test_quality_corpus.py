@@ -1,6 +1,5 @@
 import asyncio
 import json
-import re
 import time
 
 import pytest
@@ -49,30 +48,156 @@ def test_empty_and_oversized_inputs_are_not_live_model_cases():
     assert all(len(prompt.encode("utf-8")) <= 12_000 for prompt in prompts)
 
 
-def test_corpus_graph_modes_are_selectable_in_browser():
-    chat_input = (
-        CORPUS_PATH.parents[4]
-        / "frontend"
-        / "src"
-        / "components"
-        / "Chat"
-        / "ChatInput.tsx"
-    ).read_text(encoding="utf-8")
-    graph_row = chat_input.split('label="GRAPH"', 1)[1].split("value={graphMode}", 1)[0]
-    browser_graph_modes = set(
-        re.findall(r"value:\s*'([^']+)'\s+as GraphMode", graph_row)
-    )
+def test_corpus_uses_fixed_product_settings_and_explicit_answer_only_requests():
     corpus = load_corpus()
-    selected_graph_modes = {
-        step.ui.graph_mode for case in corpus.cases for step in case.steps
-    }
-
-    assert browser_graph_modes == {"on", "off"}
-    assert selected_graph_modes == browser_graph_modes
-    assert corpus.by_id["research"].steps[0].ui.graph_mode == "on"
-    assert corpus.by_id["research"].deterministic.graph_emitted is True
-    assert corpus.by_id["ambiguity"].steps[0].ui.graph_mode == "on"
+    assert all(
+        (step.ui.complexity, step.ui.graph_mode, step.ui.research_enabled)
+        == ("auto", "on", True)
+        for case in corpus.cases
+        for step in case.steps
+    )
+    assert all(
+        "No diagram." in step.prompt
+        for case in corpus.cases
+        if case.deterministic.graph_emitted is False
+        for step in case.steps
+    )
+    education = corpus.by_id["education-diagram"]
+    assert education.steps[0].prompt == "tell me about ai engineering in education"
+    assert education.deterministic.graph_emitted is True
+    assert education.deterministic.graph_renderable is True
+    assert education.deterministic.persistence is True
     assert corpus.by_id["ambiguity"].deterministic.graph_emitted is None
+
+
+@pytest.mark.parametrize(
+    "case_id,diagram_requested",
+    [
+        ("education-diagram", True),
+        ("graph-expansion", False),
+        ("memory", False),
+    ],
+)
+def test_browser_submission_uses_fixed_settings_and_canonical_intent(
+    case_id, diagram_requested
+):
+    from eval.browser_runner import _assert_turn_submission
+
+    case = load_corpus().by_id[case_id]
+    start = {
+        "type": "start",
+        "content": case.steps[0].prompt,
+        "complexity": "auto",
+        "graph_mode": "on",
+        "research_enabled": True,
+        "diagram_requested": diagram_requested,
+    }
+    _assert_turn_submission(case, 0, [{"direction": "sent", "message": start}], None)
+
+
+@pytest.mark.parametrize(
+    "case_id,intent_fields,accepted",
+    [
+        pytest.param("memory", {}, True, id="omitted-false"),
+        pytest.param("education-diagram", {}, False, id="omitted-true"),
+        pytest.param(
+            "education-diagram",
+            {"diagram_requested": False},
+            False,
+            id="explicit-false-expected-true",
+        ),
+        pytest.param(
+            "memory",
+            {"diagram_requested": True},
+            False,
+            id="explicit-true-expected-false",
+        ),
+        pytest.param(
+            "memory",
+            {"diagram_requested": None},
+            False,
+            id="null-expected-false",
+        ),
+        pytest.param(
+            "education-diagram",
+            {"diagram_requested": None},
+            False,
+            id="null-expected-true",
+        ),
+    ],
+)
+def test_browser_submission_normalizes_only_omitted_false_intent(
+    case_id, intent_fields, accepted
+):
+    from eval.browser_runner import BrowserQualityError, _assert_turn_submission
+
+    case = load_corpus().by_id[case_id]
+    start = {
+        "type": "start",
+        "content": case.steps[0].prompt,
+        "complexity": "auto",
+        "graph_mode": "on",
+        "research_enabled": True,
+        **intent_fields,
+    }
+    frames = [{"direction": "sent", "message": start}]
+    if accepted:
+        _assert_turn_submission(case, 0, frames, None)
+    else:
+        with pytest.raises(BrowserQualityError) as error:
+            _assert_turn_submission(case, 0, frames, None)
+        assert error.value.code == "browser_submission_mismatch"
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "duplicate", "prompt", "mode", "intent"]
+)
+def test_browser_submission_rejects_missing_duplicate_or_changed_payload(mutation):
+    from eval.browser_runner import BrowserQualityError, _assert_turn_submission
+
+    case = load_corpus().by_id["education-diagram"]
+    start = {
+        "type": "start",
+        "content": case.steps[0].prompt,
+        "complexity": "auto",
+        "graph_mode": "on",
+        "research_enabled": True,
+        "diagram_requested": True,
+    }
+    frames = [{"direction": "sent", "message": start}]
+    if mutation == "missing":
+        frames = []
+    elif mutation == "duplicate":
+        frames = frames * 2
+    elif mutation == "prompt":
+        start["content"] = "Different question"
+    elif mutation == "mode":
+        start["research_enabled"] = False
+    else:
+        start["diagram_requested"] = False
+    with pytest.raises(BrowserQualityError) as error:
+        _assert_turn_submission(case, 0, frames, None)
+    assert error.value.code == "browser_submission_mismatch"
+
+
+def test_browser_driver_rejects_unsupported_corpus_modes():
+    from eval.browser_runner import BrowserQualityError, _validate_product_modes
+
+    case = load_corpus().by_id["education-diagram"]
+    incompatible = case.model_copy(
+        update={
+            "steps": [
+                case.steps[0].model_copy(
+                    update={
+                        "ui": case.steps[0].ui.model_copy(update={"graph_mode": "off"})
+                    }
+                )
+            ]
+        }
+    )
+    with pytest.raises(BrowserQualityError) as error:
+        _validate_product_modes(incompatible, 0)
+    assert error.value.code == "unsupported_browser_modes"
 
 
 def test_corpus_rejects_removed_graph_auto_mode(tmp_path):
@@ -119,8 +244,8 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
     case = corpus.by_id["graph-expansion"]
     first_turn, second_turn = case.steps
 
-    assert corpus.corpus_version == "2026-09-25.v1"
-    assert corpus.release_identity == "browser-rubric-v4"
+    assert corpus.corpus_version == "2026-09-28.v1"
+    assert corpus.release_identity == "browser-rubric-v5"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
@@ -163,7 +288,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         "Expand the Serving Monitor component while preserving the original graph topic "
         "and existing components. Add exactly one directly connected responsibility."
     )
-    assert first_turn.ui.complexity == "prototype"
+    assert first_turn.ui.complexity == "auto"
     assert second_turn.ui.complexity == "auto"
     assert first_turn.graph_output_max_latency_ms == 180_000
     assert second_turn.graph_output_max_latency_ms == 180_000
@@ -178,7 +303,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         first_turn.ui.complexity,
         first_turn.prompt,
     ).resolved
-    assert stored_maturity == "prototype"
+    assert stored_maturity == "production"
 
     contract, permissions = graph_worker._user_edit_scope(
         second_turn.prompt,
@@ -236,7 +361,7 @@ def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
         manifest["live"]["budgets"]["browser_suite_base_timeout_seconds"]
         + graph_lane_batches * application_turn_timeout_seconds()
     )
-    assert browser_suite_timeout_seconds(corpus.cases * 10) == 3600
+    assert browser_suite_timeout_seconds(corpus.cases * 10) == 4200
     assert browser_case_concurrency() == 4
     assert staging_request_concurrency() == 16
     assert browser_graph_case_concurrency() == 2
@@ -302,7 +427,7 @@ async def test_browser_cases_run_with_bounded_concurrency_and_keep_corpus_order(
     from eval.browser_runner import _run_cases_bounded
 
     corpus = load_corpus()
-    case_ids = ("rag-grounding", "research", "memory", "graph-off")
+    case_ids = ("rag-grounding", "research", "memory", "prompt-injection")
     cases = [corpus.by_id[case_id] for case_id in case_ids]
     active = 0
     maximum_active = 0
@@ -327,7 +452,7 @@ async def test_browser_cases_run_with_bounded_concurrency_and_keep_corpus_order(
                 "rag-grounding": 0.03,
                 "research": 0.01,
                 "memory": 0.02,
-                "graph-off": 0.0,
+                "prompt-injection": 0.0,
             }[case.id]
         )
         if is_graph:
@@ -639,7 +764,7 @@ def test_graph_dom_inspection_is_only_enabled_for_renderable_graph_cases():
 
     cases = load_corpus().by_id
     graph_case = cases["graph-expansion"]
-    non_renderable_case = cases["graph-off"]
+    non_renderable_case = cases["memory"]
     ambiguous_case = cases["ambiguity"]
     graph_data = {"nodes": [{"id": "n1"}], "edges": []}
 
@@ -1325,9 +1450,6 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
     stop_clicks = 0
     completion_cancelled = False
 
-    async def skip_modes(*_args):
-        return None
-
     class Control:
         def __init__(self, name):
             self.name = name
@@ -1371,31 +1493,23 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
         def get_by_label(self, name):
             return Control(name)
 
-        def get_by_role(self, role, *, name):
-            assert role == "dialog" and name == "Include a diagram?"
-            return Control("dialog")
-
-    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
     with pytest.raises(BrowserQualityError) as raised:
         await _send_step(Page(), case, 0, [], timeout_seconds=390)
 
     assert raised.value.code == "required_graph_slow"
     assert stop_clicks == 1
-    assert completion_cancelled is True
+    assert not any(
+        task.get_coro().__name__ == "wait_for_completion"
+        for task in asyncio.all_tasks()
+    )
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("confirm_diagram", [False, True])
-async def test_send_step_accepts_done_before_composer_stop_is_observed(
-    monkeypatch, confirm_diagram
-):
+async def test_send_step_accepts_done_before_composer_stop_is_observed(monkeypatch):
     from eval.browser_runner import _send_step
 
     case = load_corpus().by_id["graph-expansion"]
     frames = []
-
-    async def skip_modes(*_args):
-        return None
 
     class Control:
         def __init__(self, name):
@@ -1414,16 +1528,25 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(
             return None
 
         async def click(self):
-            if (self.name == "Send message" and not confirm_diagram) or (
-                self.name == "Generate a diagram" and confirm_diagram
-            ):
+            if self.name == "Send message":
+                frames.append(
+                    {
+                        "direction": "sent",
+                        "message": {
+                            "type": "start",
+                            "content": case.steps[0].prompt,
+                            "complexity": "auto",
+                            "graph_mode": "on",
+                            "research_enabled": True,
+                            "diagram_requested": False,
+                        },
+                    }
+                )
                 frames.append({"direction": "received", "message": {"type": "done"}})
 
         async def wait_for(self, *, state, timeout):
             del timeout
             if self.name == "Stop generation" and state == "hidden":
-                return None
-            if self.name == "dialog" and confirm_diagram and state == "visible":
                 return None
             await asyncio.Future()
 
@@ -1438,11 +1561,6 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(
         def get_by_label(self, name):
             return Control(name)
 
-        def get_by_role(self, role, *, name):
-            assert role == "dialog" and name == "Include a diagram?"
-            return Control("dialog")
-
-    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
     events = await asyncio.wait_for(
         _send_step(Page(), case, 0, frames, timeout_seconds=1), timeout=2
     )
@@ -1458,9 +1576,6 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
     placeholder_changed = asyncio.Event()
     stop_seen = asyncio.Event()
     stop_hidden = asyncio.Event()
-
-    async def skip_modes(*_args):
-        return None
 
     class Control:
         def __init__(self, name):
@@ -1479,6 +1594,19 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
 
         async def click(self):
             if self.name == "Send message":
+                frames.append(
+                    {
+                        "direction": "sent",
+                        "message": {
+                            "type": "start",
+                            "content": case.steps[0].prompt,
+                            "complexity": "auto",
+                            "graph_mode": "on",
+                            "research_enabled": True,
+                            "diagram_requested": False,
+                        },
+                    }
+                )
                 placeholder_changed.set()
 
         async def wait_for(self, *, state, timeout):
@@ -1502,11 +1630,6 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
         def get_by_label(self, name):
             return Control(name)
 
-        def get_by_role(self, role, *, name):
-            assert role == "dialog" and name == "Include a diagram?"
-            return Control("dialog")
-
-    monkeypatch.setattr("eval.browser_runner._set_modes", skip_modes)
     turn = asyncio.create_task(_send_step(Page(), case, 0, frames, timeout_seconds=2))
     await asyncio.wait_for(stop_seen.wait(), timeout=1)
     assert not turn.done()

@@ -15,12 +15,6 @@ const defaultProps = {
   prepareMessage: null as string | null,
   prepareProgress: null,
   isGenerating: false,
-  complexity: 'auto' as const,
-  graphMode: 'on' as const,
-  researchEnabled: false,
-  onComplexityChange: vi.fn(),
-  onGraphModeChange: vi.fn(),
-  onResearchChange: vi.fn(),
   selectionSuggestion: null as string | null,
   selectionReferenceActive: false,
 };
@@ -36,87 +30,53 @@ function renderInput(threadId: string | null, overrides = {}) {
 }
 
 describe('ChatInput', () => {
-  it.each(['Generate a diagram', 'Answer only'] as const)('asks before sending an ambiguous request and honors %s', async choice => {
+  it('sends broad requests immediately without options or a diagram-choice dialog', () => {
     const onSend = vi.fn();
-    renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
-    const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'AI trading bot?' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    expect(onSend).not.toHaveBeenCalled();
-    await screen.findByRole('dialog', { name: 'Include a diagram?' });
-    expect((input as HTMLTextAreaElement).value).toBe('AI trading bot?');
-    fireEvent.click(screen.getByRole('button', { name: choice }));
-    expect(onSend).toHaveBeenCalledExactlyOnceWith('AI trading bot?', choice === 'Answer only' ? 'off' : 'on');
+    renderInput('thread-1', { onSend });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'AI trading bot?' } });
+    const send = screen.getByRole('button', { name: 'Send message' });
+    expect(send.querySelector('svg')).toBeTruthy();
+    expect(send.textContent).toBe('');
+    fireEvent.click(send);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('AI trading bot?');
     expect(screen.queryByRole('dialog')).toBeNull();
-    expect((input as HTMLTextAreaElement).value).toBe('');
+    expect(screen.queryByRole('button', { name: 'Message options' })).toBeNull();
   });
 
-  it('sends explicit requests directly and uses answer-only for explicit opt-outs', async () => {
+  it.each(['ask', 'send', 'answer'] as const)('automatically submits the server intent %s without a dialog', async action => {
     const onSend = vi.fn();
-    const checkSubmission = vi.fn().mockResolvedValueOnce('send').mockResolvedValueOnce('answer');
-    renderInput('thread-1', { onSend, checkSubmission });
-    const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Draw a diagram of RAG' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('Draw a diagram of RAG'));
-    fireEvent.change(input, { target: { value: 'Explain RAG. No diagram.' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledWith('Explain RAG. No diagram.', 'off'));
+    renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockResolvedValue(action) });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My request' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action === 'ask'));
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('preserves the draft on Escape and asks safely when the intent check fails', async () => {
+  it('keeps the draft and reports a connection failure when intent checking fails', async () => {
     const onSend = vi.fn();
     renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockRejectedValue(new Error('offline')) });
-    const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'RAG?' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.keyDown(await screen.findByRole('dialog'), { key: 'Escape' });
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect((input as HTMLTextAreaElement).value).toBe('RAG?');
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my question' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect((await screen.findByRole('alert')).textContent).toContain('Could not connect');
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep my question');
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('ignores an intent result after the draft changes', async () => {
-    let resolve!: (action: 'send') => void;
+  it.each(['draft', 'disabled', 'sendDisabled', 'thread', 'unmount'] as const)('ignores an intent response after %s changes', async change => {
+    let resolve!: (action: 'ask') => void;
     const onSend = vi.fn();
-    renderInput('thread-1', { onSend, checkSubmission: () => new Promise<'send'>(done => { resolve = done; }) });
-    const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Old request' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    fireEvent.change(input, { target: { value: 'New request' } });
-    await act(async () => resolve('send'));
-    expect(onSend).not.toHaveBeenCalled();
-    expect((input as HTMLTextAreaElement).value).toBe('New request');
-  });
-
-  it.each(['disabled', 'sendDisabled'] as const)('keeps a pending draft when %s starts during intent checking', async blockedProp => {
-    let resolve!: (action: 'send') => void;
-    const onSend = vi.fn();
-    const checkSubmission = () => new Promise<'send'>(done => { resolve = done; });
+    const checkSubmission = () => new Promise<'ask'>(done => { resolve = done; });
     const view = renderInput('thread-1', { onSend, checkSubmission });
-    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
-    fireEvent.change(input, { target: { value: 'Keep my question' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-
-    view.rerender(<ChatInput {...defaultProps} onSend={onSend} checkSubmission={checkSubmission} {...{ [blockedProp]: true }} />);
-    await act(async () => resolve('send'));
-    expect(onSend).not.toHaveBeenCalled();
-    expect(input.value).toBe('Keep my question');
-    expect(screen.queryByRole('dialog')).toBeNull();
-  });
-
-  it('does not send after the composer unmounts during an intent check', async () => {
-    let resolve!: (action: 'send') => void;
-    const onSend = vi.fn();
-    const view = renderInput('thread-1', { onSend, checkSubmission: () => new Promise<'send'>(done => { resolve = done; }) });
-    const input = screen.getByRole('textbox');
-    fireEvent.change(input, { target: { value: 'Pending question' } });
-    fireEvent.keyDown(input, { key: 'Enter' });
-    view.unmount();
-    await act(async () => resolve('send'));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Old question' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    if (change === 'draft') fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New question' } });
+    else if (change === 'unmount') view.unmount();
+    else view.rerender(<ChatInput {...defaultProps} onSend={onSend} checkSubmission={checkSubmission}
+      disabled={change === 'disabled'} sendDisabled={change === 'sendDisabled'} threadId={change === 'thread' ? 'thread-2' : 'thread-1'} />);
+    await act(async () => resolve('ask'));
     expect(onSend).not.toHaveBeenCalled();
   });
+
   it('preserves the draft when bootstrapping from no thread to the first active thread', () => {
     const view = renderInput(null);
     const input = screen.getByPlaceholderText('Ask a question…');
@@ -233,23 +193,13 @@ describe('ChatInput', () => {
     expect(screen.getByRole('button', { name: 'Stop generation' })).toBeTruthy();
   });
 
-  it('applies hover focus blur handlers and closes the popover on outside click', () => {
-    renderInput('thread-1', {
-      complexity: 'production',
-      graphMode: 'on',
-      researchEnabled: true,
-    });
-    const input = screen.getByPlaceholderText('Ask a question…');
-
+  it('preserves focus feedback', () => {
+    renderInput('thread-1');
+    const input = screen.getByRole('textbox');
     fireEvent.focus(input);
-    expect((input as HTMLTextAreaElement).style.borderColor).toBe('rgba(167, 139, 250, 0.5)');
+    expect(input.style.borderColor).toBe('rgba(167, 139, 250, 0.5)');
     fireEvent.blur(input);
-    expect((input as HTMLTextAreaElement).style.borderColor).toBe('rgba(255, 255, 255, 0.08)');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Message options' }));
-    expect(screen.getByText('COMPLEXITY')).toBeTruthy();
-    fireEvent.mouseDown(document.body);
-    expect(screen.queryByText('COMPLEXITY')).toBeNull();
+    expect(input.style.borderColor).toBe('rgba(255, 255, 255, 0.08)');
   });
 
   it('shows prepare button and notice while backend is warming', () => {
@@ -281,27 +231,6 @@ describe('ChatInput', () => {
     expect(button.textContent).toBe('Prepare');
     fireEvent.click(button);
     expect(onPrepare).not.toHaveBeenCalled();
-  });
-
-  it('opens mode popover and updates complexity graph mode and research toggle', () => {
-    const onComplexityChange = vi.fn();
-    const onGraphModeChange = vi.fn();
-    const onResearchChange = vi.fn();
-    renderInput('thread-1', {
-      onComplexityChange,
-      onGraphModeChange,
-      onResearchChange,
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Message options' }));
-    fireEvent.click(screen.getByText('prod'));
-    expect(screen.getAllByText('auto')).toHaveLength(1);
-    fireEvent.click(screen.getByText('on'));
-    fireEvent.click(screen.getByRole('switch', { name: 'research' }));
-
-    expect(onComplexityChange).toHaveBeenCalledWith('production');
-    expect(onGraphModeChange).toHaveBeenCalledWith('on');
-    expect(onResearchChange).toHaveBeenCalledWith(true);
   });
 
   it('handles highlighted text suggestion lifecycle', () => {

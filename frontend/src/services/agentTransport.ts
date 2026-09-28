@@ -16,6 +16,17 @@ import { API_BASE } from './config';
 
 const PRE_START_CONNECT_RETRIES = 1;
 const PRE_START_RETRY_DELAY_MS = 250;
+const CHAT_HANDSHAKE_TIMEOUT_MS = 30_000;
+// Older servers use a 940-second workflow deadline. Allow another minute
+// for delivery when they do not advertise their configured deadline.
+const DEFAULT_CHAT_TURN_TIMEOUT_MS = 1_000_000;
+
+export class ChatTurnTimeoutError extends Error {
+  constructor() {
+    super('The connection timed out after the turn started.');
+    this.name = 'ChatTurnTimeoutError';
+  }
+}
 
 export interface StreamMeta {
   kind: 'chat' | 'node-selected';
@@ -93,6 +104,7 @@ export class AgentTransport {
   private _chatClientRequestId: string | null = null;
   private _chatCommandsReady = false;
   private _pendingSteers: string[] = [];
+  private _cancelChatRequest: (() => void) | null = null;
   private _cancelPendingChatRetry: (() => void) | null = null;
   private _nodeAbortController: AbortController | null = null;
   private _nodeClientRequestId: string | null = null;
@@ -117,11 +129,18 @@ export class AgentTransport {
 
     return await new Promise<boolean>((resolve, reject) => {
       let settled = false;
+      let watchdog: number | null = null;
+      const clearWatchdog = () => {
+        if (watchdog !== null) window.clearTimeout(watchdog);
+        watchdog = null;
+      };
 
       const settle = (socket: WebSocket, value: boolean, error?: Error) => {
         if (settled) return;
         settled = true;
+        clearWatchdog();
         if (this._chatSocket === socket) {
+          this._cancelChatRequest = null;
           this._chatSocket = null;
           this._chatClientRequestId = null;
           this._chatCommandsReady = false;
@@ -133,6 +152,7 @@ export class AgentTransport {
       const connect = (attempt: number) => {
         const socket = new WebSocket(websocketUrl('/api/chat/ws'));
         this._chatSocket = socket;
+        this._cancelChatRequest = () => settle(socket, false);
         this._chatCommandsReady = false;
         let sawDone = false;
         let startSent = false;
@@ -149,6 +169,7 @@ export class AgentTransport {
             return false;
           }
           retryScheduled = true;
+          clearWatchdog();
           socket.onerror = null;
           socket.onclose = null;
           socket.close(1000, 'Retrying pre-start connection');
@@ -172,16 +193,38 @@ export class AgentTransport {
           return true;
         };
 
+        const armWatchdog = (delay: number) => {
+          clearWatchdog();
+          watchdog = window.setTimeout(() => {
+            if (settled || retryScheduled || this._chatSocket !== socket) return;
+            if (!startSent && retryBeforeStart()) return;
+            settle(socket, false, startSent
+              ? new ChatTurnTimeoutError()
+              : new Error('Connection timed out before the response could start. Please try again.'));
+            socket.close(1000, 'Connection timed out');
+          }, delay);
+        };
+        armWatchdog(CHAT_HANDSHAKE_TIMEOUT_MS);
+
         socket.onopen = () => {
+          if (settled || retryScheduled || this._chatSocket !== socket) return;
           socket.send(JSON.stringify({ type: 'auth', access_token: session.access_token }));
         };
         socket.onmessage = (message) => {
-          if (this._chatSocket !== socket) return;
+          if (settled || retryScheduled || this._chatSocket !== socket) return;
           try {
-            const event = JSON.parse(String(message.data)) as ServerEvent | { type: 'ready' };
+            const event = JSON.parse(String(message.data)) as ServerEvent | { type: 'ready'; turn_timeout_ms?: unknown };
             if (event.type === 'ready') {
               if (!startSent && this._chatSocket === socket) {
                 startSent = true;
+                const advertisedTimeout = event.turn_timeout_ms;
+                const turnTimeout = typeof advertisedTimeout === 'number'
+                  && Number.isSafeInteger(advertisedTimeout)
+                  && advertisedTimeout > 0
+                  && advertisedTimeout <= 2_147_483_647
+                  ? advertisedTimeout
+                  : DEFAULT_CHAT_TURN_TIMEOUT_MS;
+                armWatchdog(turnTimeout);
                 socket.send(JSON.stringify({
                   type: 'start',
                   thread_id: threadId,
@@ -214,9 +257,14 @@ export class AgentTransport {
           }
         };
         socket.onerror = () => {
-          if (!retryBeforeStart()) settle(socket, false, new Error('WebSocket connection failed'));
+          if (settled || retryScheduled || this._chatSocket !== socket) return;
+          if (!retryBeforeStart()) {
+            settle(socket, false, new Error('WebSocket connection failed'));
+            socket.close(1000, 'Connection failed');
+          }
         };
         socket.onclose = () => {
+          if (settled || retryScheduled || this._chatSocket !== socket) return;
           if (!retryBeforeStart()) settle(socket, sawDone);
         };
       };
@@ -252,6 +300,8 @@ export class AgentTransport {
     if (!socket) return false;
     if (clientRequestId && this._chatClientRequestId !== clientRequestId) return false;
     const activeRequestId = this._chatClientRequestId;
+    const cancelRequest = this._cancelChatRequest;
+    this._cancelChatRequest = null;
     const commandsReady = this._chatCommandsReady;
     const cancelPendingRetry = this._cancelPendingChatRetry;
     this._cancelPendingChatRetry = null;
@@ -260,6 +310,7 @@ export class AgentTransport {
     this._chatCommandsReady = false;
     this._pendingSteers = [];
     cancelPendingRetry?.();
+    cancelRequest?.();
     if (socket.readyState === WebSocket.OPEN && commandsReady) {
       socket.send(JSON.stringify({ type: 'stop', client_request_id: activeRequestId }));
       window.setTimeout(() => socket.close(1000, 'Stopped by user'), 750);

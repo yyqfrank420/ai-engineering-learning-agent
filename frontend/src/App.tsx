@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { GraphNode } from './types';
 import { trackEvent } from './services/analytics';
@@ -24,8 +24,9 @@ import {
   writeThreadSnapshot,
 } from './utils/threadState';
 
-import type { ComplexityLevel, GraphMode } from './types';
-
+const HiddenGraphEvaluator = lazy(() =>
+  import('./components/GraphCanvas/HiddenGraphEvaluator').then(module => ({ default: module.HiddenGraphEvaluator })),
+);
 const GraphCanvas = lazy(() =>
   import('./components/GraphCanvas').then(module => ({ default: module.GraphCanvas })),
 );
@@ -98,7 +99,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     graphPreview,
     graphCandidate,
     workflowProgress,
-    explanationPaused,
     workerStatus,
     retrievalNotice,
     graphNotice,
@@ -112,16 +112,8 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     saveGraphEdit,
     requestSearchTool,
     stopGeneration,
-    toggleExplanationPause,
   } = useAgentStream(authSession, activeThreadId);
 
-  const [complexity,      setComplexity]      = useState<ComplexityLevel>('auto');
-  const [graphMode,       setGraphMode]       = useState<GraphMode>('on');
-  // Architecture prompts should arrive at the design roles with both the book
-  // and current functional context. Users can still disable web research for
-  // a deliberately book-only or lower-latency answer.
-  const [researchEnabled, setResearchEnabled] = useState(true);
-  const previousModeKeyRef = useRef<string | null>(null);
   const graphEditBlocked = hasUnsavedGraphEdit || isSavingGraphEdit;
 
   useEffect(() => {
@@ -162,7 +154,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setAuthSession(null);
   }, [authSession, clearPreparedCache, graphEditBlocked, setAuthSession]);
 
-  const handleSend = useCallback((content: string, diagramChoice?: GraphMode) => {
+  const handleSend = useCallback((content: string, diagramRequested?: boolean) => {
     if (backendReadiness !== 'ready' || graphEditBlocked) {
       return;
     }
@@ -178,18 +170,18 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
 
     clearSelection();
     sendMessage(requestContent, {
-      complexity,
-      graphMode: diagramChoice ?? graphMode,
-      ...(diagramChoice === 'on' ? { diagramRequested: true } : {}),
-      researchEnabled,
+      complexity: 'auto',
+      graphMode: 'on',
+      diagramRequested,
+      researchEnabled: true,
       displayContent: content,
       backendReadinessState: backendReadiness,
       hasSelectedTextContext: selectionReferenceActive && !!selectionSuggestion,
     });
-  }, [backendReadiness, clearSelection, complexity, graphEditBlocked, graphMode, researchEnabled, selectionReferenceActive, selectionSuggestion, sendMessage]);
+  }, [backendReadiness, clearSelection, graphEditBlocked, selectionReferenceActive, selectionSuggestion, sendMessage]);
 
   const checkSubmission = useCallback(async (content: string) => {
-    if (!authSession || !activeThreadId) return 'ask' as const;
+    if (!authSession || !activeThreadId) throw new Error('Chat is not ready');
     return checkDiagramIntent(authSession, activeThreadId, content);
   }, [authSession, activeThreadId]);
 
@@ -228,9 +220,9 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       thread_id: activeThreadId ?? undefined,
       node_id: node.id,
       node_label: node.label,
-      complexity,
+      complexity: 'auto',
       graph_mode: 'on',
-      research_enabled: researchEnabled,
+      research_enabled: true,
       backend_readiness_state: backendReadiness,
     }, authSession);
     sendMessage(
@@ -243,15 +235,15 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
         'Do not expand business-constraint or decision nodes unless they are central to the user request.',
       ].join('\n'),
       {
-        complexity,
+        complexity: 'auto',
         graphMode: 'on',
-        researchEnabled,
+        researchEnabled: true,
         displayContent: `Expand graph around ${node.label}`,
         backendReadinessState: backendReadiness,
         hasSelectedTextContext: false,
       },
     );
-  }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, complexity, graphEditBlocked, researchEnabled, sendMessage]);
+  }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, graphEditBlocked, sendMessage]);
 
   const startNewChat = useCallback(() => {
     if (!graphEditBlocked) void handleNewChat();
@@ -313,23 +305,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setAppRoute('chat');
   }, [graphEditBlocked]);
 
-  useEffect(() => {
-    const modeKey = `${complexity}|${graphMode}|${researchEnabled ? 'research-on' : 'research-off'}`;
-    const previousModeKey = previousModeKeyRef.current;
-    previousModeKeyRef.current = modeKey;
-    if (previousModeKey === null || previousModeKey === modeKey) {
-      return;
-    }
-    void trackEvent(
-      'mode_changed',
-      {
-        mode: 'composer',
-        value: modeKey,
-      },
-      authSession,
-    );
-  }, [authSession, complexity, graphMode, researchEnabled]);
-
   if (!authReady) {
     return <div style={loadingScreenStyle}>Loading session…</div>;
   }
@@ -338,11 +313,14 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const displayedGraphData = graphPreview?.edges.length === 0 && graphData?.edges.length
     ? graphData
     : graphPreview ?? graphData;
-  const showGraphPane = !!displayedGraphData || !!graphCandidate || diagramRequested || (isGenerating && graphMode !== 'off');
+  const showGraphPane = !!displayedGraphData || !!graphCandidate || diagramRequested || isGenerating;
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
   return (
     <div style={{ position: 'relative', height: '100vh', overflow: 'hidden' }}>
+    <Suspense fallback={null}>
+      <HiddenGraphEvaluator candidate={graphCandidate} />
+    </Suspense>
     {/* Auth overlay — sits above blurred app when unauthenticated */}
     {!authSession && <AuthScreen onAuthenticated={handleAuthenticated} />}
     <div style={{
@@ -407,7 +385,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     graphData={displayedGraphData}
                     isPreview={graphPreview !== null}
                     isAcceptedGraph={displayedGraphData !== null && displayedGraphData === graphData}
-                    animateSequence={!isGenerating && !explanationPaused && publishedGraphKey === graphStructureKey(displayedGraphData)}
+                    animateSequence={!isGenerating && publishedGraphKey === graphStructureKey(displayedGraphData)}
                     authSession={authSession}
                     activeThreadId={activeThreadId}
                     onNodeClick={handleNodeClick}
@@ -421,9 +399,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     sourceTexts={[latestAssistantText]}
                     isBuilding={isGenerating}
                     onGraphReady={acknowledgeGraphRendered}
-                    onStopGeneration={stopGeneration}
                     workflowProgress={workflowProgress}
-                    graphCandidate={graphCandidate}
                   />
                 </Suspense>
               }
@@ -470,8 +446,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     workerStatus={workerStatus}
                     workflowProgress={workflowProgress}
                     isGenerating={isGenerating || answerPending}
-                    explanationPaused={explanationPaused}
-                    onTogglePause={toggleExplanationPause}
                   />
                   <RetrievalNoticeBar
                     notice={retrievalNotice}
@@ -503,12 +477,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     prepareDisabled={prepareDisabled}
                     prepareMessage={prepareMessage}
                     prepareProgress={prepareProgress}
-                    complexity={complexity}
-                    graphMode={graphMode}
-                    researchEnabled={researchEnabled}
-                    onComplexityChange={setComplexity}
-                    onGraphModeChange={setGraphMode}
-                    onResearchChange={setResearchEnabled}
                     selectionSuggestion={selectionSuggestion}
                     selectionReferenceActive={selectionReferenceActive}
                     onUseSelection={activateSelectionReference}

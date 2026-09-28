@@ -932,6 +932,7 @@ async def _failed(
     *,
     diagnostic: Mapping[str, Any] | None = None,
     revision_instruction: str | None = None,
+    render_failure_code: str | None = None,
 ) -> AgentState:
     if diagnostic:
         state = await _retain_staged_diagnostic(state, diagnostic)
@@ -1007,6 +1008,11 @@ async def _failed(
             "approved": False,
             "terminal": True,
             "failure_code": code,
+            **(
+                {"render_failure_code": render_failure_code}
+                if render_failure_code
+                else {}
+            ),
             **({"staged_gate": copy.deepcopy(dict(review))} if review else {}),
             **({"staged_failure": safe_diagnostic} if safe_diagnostic else {}),
             **(
@@ -1319,7 +1325,13 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 working_state, preview, preview_count=preview_count
             )
             if not rendered.get("graph_render_admitted"):
-                return await _failed(rendered, "staged_component_render_rejected")
+                return await _failed(
+                    rendered,
+                    "staged_component_render_rejected",
+                    render_failure_code=(rendered.get("graph_review") or {}).get(
+                        "failure_code"
+                    ),
+                )
             preview_count += 1
             component_evidence = {
                 "architecture_context": architecture_context,
@@ -1426,7 +1438,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             if not previous_prompt:
                 return await _failed(
-                    working_state, "staged_component_generation_unavailable"
+                    working_state,
+                    "staged_component_generation_unavailable",
+                    diagnostic=_failure_diagnostic(
+                        exc,
+                        stage="components",
+                        attempt=attempt + 1,
+                        candidate=rejected_component_candidate,
+                    ),
                 )
     if component_build is None:
         return await _failed(
@@ -1578,7 +1597,13 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 working_state, projected, preview_count=preview_count
             )
             if not rendered.get("graph_render_admitted"):
-                return await _failed(rendered, "staged_connection_render_rejected")
+                return await _failed(
+                    rendered,
+                    "staged_connection_render_rejected",
+                    render_failure_code=(rendered.get("graph_review") or {}).get(
+                        "failure_code"
+                    ),
+                )
             preview_count += 1
             evidence: dict[str, Any] = {"architecture_context": architecture_context}
             evidence["candidate_components"] = [
@@ -1761,7 +1786,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             if not previous_prompt:
                 return await _failed(
-                    working_state, "staged_connection_generation_unavailable"
+                    working_state,
+                    "staged_connection_generation_unavailable",
+                    diagnostic=_failure_diagnostic(
+                        exc,
+                        stage="connections",
+                        attempt=attempt + 1,
+                        candidate=rejected_connection_candidate,
+                    ),
                 )
     return await _failed(
         working_state,

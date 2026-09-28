@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession, ServerEvent } from '../types';
-import { AgentTransport, createClientRequestId } from './agentTransport';
+import { AgentTransport, ChatTurnTimeoutError, createClientRequestId } from './agentTransport';
 
 
 class MockWebSocket {
@@ -274,6 +274,138 @@ describe('AgentTransport WebSocket protocol', () => {
     await rejected;
     expect(MockWebSocket.instances).toHaveLength(1);
     vi.useRealTimers();
+  });
+
+  it.each([false, true])('bounds the entire handshake, including ready (opened=%s)', async (opened) => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'design');
+    const rejected = expect(completed).rejects.toThrow('Connection timed out before the response could start');
+    if (opened) MockWebSocket.instances[0].open();
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(MockWebSocket.instances).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(250);
+    expect(MockWebSocket.instances).toHaveLength(2);
+    if (opened) MockWebSocket.instances[1].open();
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejected;
+    expect(MockWebSocket.instances.every(socket => socket.readyState === MockWebSocket.CLOSED)).toBe(true);
+    expect(MockWebSocket.instances.flatMap(socket => socket.sent).some(frame => JSON.parse(frame).type === 'start')).toBe(false);
+    expect(transport.isChatActive()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('uses an absolute advertised turn deadline without replay or extension by progress', async () => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'design');
+    const rejected = expect(completed).rejects.toBeInstanceOf(ChatTurnTimeoutError);
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'ready', turn_timeout_ms: 5_000 });
+    await vi.advanceTimersByTimeAsync(4_000);
+    socket.receive({ type: 'response_delta', content: 'working' });
+    socket.receive({ type: 'ready', turn_timeout_ms: 100_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await rejected;
+    expect(MockWebSocket.instances).toHaveLength(1);
+    expect(socket.sent.filter(frame => JSON.parse(frame).type === 'start')).toHaveLength(1);
+    expect(socket.readyState).toBe(MockWebSocket.CLOSED);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it.each([undefined, null, 0, -1, 1.5, '5000', 2_147_483_648])(
+    'uses the compatibility deadline for missing or invalid timeout %s', async (timeout) => {
+      vi.useFakeTimers();
+      const transport = new AgentTransport();
+      const completed = transport.sendMessage(session, 'thread-1', 'design');
+      const rejected = expect(completed).rejects.toBeInstanceOf(ChatTurnTimeoutError);
+      const socket = MockWebSocket.instances[0];
+      socket.open();
+      socket.receive({ type: 'ready', turn_timeout_ms: timeout });
+      await vi.advanceTimersByTimeAsync(999_999);
+      expect(transport.isChatActive()).toBe(true);
+      await vi.advanceTimersByTimeAsync(1);
+      await rejected;
+      expect(vi.getTimerCount()).toBe(0);
+    },
+  );
+
+  it.each(['done', 'close', 'error', 'stop'] as const)('cleans up the watchdog after %s', async (terminal) => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'design');
+    const result = terminal === 'error'
+      ? expect(completed).rejects.toThrow('WebSocket connection failed')
+      : expect(completed).resolves.toBe(terminal === 'done');
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'ready', turn_timeout_ms: 5_000 });
+    if (terminal === 'done') socket.receive({ type: 'done' });
+    if (terminal === 'close') socket.close();
+    if (terminal === 'error') socket.onerror?.();
+    if (terminal === 'stop') {
+      // Cancellation must settle even if the browser never delivers close.
+      socket.onclose = null;
+      transport.stopGeneration();
+    }
+    await result;
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(transport.isChatActive()).toBe(false);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(MockWebSocket.instances).toHaveLength(1);
+  });
+
+  it('clears a replaced turn deadline without letting old callbacks settle the new turn', async () => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const firstCompleted = transport.sendMessage(session, 'thread-1', 'first');
+    const first = MockWebSocket.instances[0];
+    first.open();
+    first.receive({ type: 'ready', turn_timeout_ms: 1_000 });
+    const oldError = first.onerror;
+    const oldClose = first.onclose;
+    const secondCompleted = transport.sendMessage(session, 'thread-1', 'second');
+    await expect(firstCompleted).resolves.toBe(false);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    second.receive({ type: 'ready', turn_timeout_ms: 5_000 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    oldError?.();
+    oldClose?.();
+    expect(transport.isChatActive()).toBe(true);
+    expect(vi.getTimerCount()).toBe(1);
+    second.receive({ type: 'done' });
+    await expect(secondCompleted).resolves.toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('ignores old callbacks during the retry delay and after reconnection', async () => {
+    vi.useFakeTimers();
+    const transport = new AgentTransport();
+    const events: ServerEvent[] = [];
+    transport.onEvent(event => events.push(event));
+    const completed = transport.sendMessage(session, 'thread-1', 'design');
+    const first = MockWebSocket.instances[0];
+    const oldError = first.onerror;
+    const oldClose = first.onclose;
+    first.onerror?.();
+    first.open();
+    first.receive({ type: 'ready', turn_timeout_ms: 1 });
+    oldError?.();
+    oldClose?.();
+    expect(first.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(250);
+    const second = MockWebSocket.instances[1];
+    second.open();
+    second.receive({ type: 'ready', turn_timeout_ms: 5_000 });
+    oldError?.();
+    oldClose?.();
+    first.receive({ type: 'response_delta', content: 'stale' });
+    second.receive({ type: 'done' });
+    await expect(completed).resolves.toBe(true);
+    expect(events).toEqual([{ type: 'done' }]);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('uploads a rendered diagram in bounded idempotent chunks', () => {
