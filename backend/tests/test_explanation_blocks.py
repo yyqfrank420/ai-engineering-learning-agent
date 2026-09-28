@@ -1006,3 +1006,61 @@ def test_reference_parser_does_not_treat_chapter_discussion_as_location_citation
         book_references("Chapter 6 discusses agents. The book excerpt explains it.")
         == set()
     )
+
+
+@pytest.mark.parametrize(
+    "location", ["299.5", "-299", "+299", "299-300", "299e2", "299abc", "299,5"]
+)
+@pytest.mark.parametrize(
+    "shape", ["Chapter 6, p.{}", "Book, p.{}", "Chapter {}, p.299", "Chapter {}"]
+)
+def test_entire_book_location_token_must_match_source_identity(location, shape):
+    from agent.source_references import book_references
+
+    citation = shape.format(location)
+    content = f"Claim ({citation})."
+    assert book_references(content) == {citation}
+    assert book_references(content, include_malformed=False) == set()
+    block = {
+        "block_id": "claim",
+        "title": "Claim",
+        "content": content,
+        "related_node_ids": [],
+        "evidence_refs": [],
+    }
+    assert (
+        explanation_blocks._normalise_block(
+            block,
+            set(),
+            {"Chapter 6, p.299", "Book, p.299", "Chapter 299, p.299", "Chapter 299"},
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        ("Claim (Chapter 6, p.299).", "Chapter 6, p.299"),
+        ("Claim [Chapter 6, p.299].", "Chapter 6, p.299"),
+        ("Claim Chapter 6, p.299.", "Chapter 6, p.299"),
+        ("Claim (Book, p.299).", "Book, p.299"),
+        ("Claim [Book, p.299].", "Book, p.299"),
+        ("Claim [Chapter 6].", "Chapter 6"),
+        ("Claim (Chapter 6.)", "Chapter 6"),
+        ("Claim [Book excerpt].", "Book excerpt"),
+    ],
+)
+def test_book_location_boundaries_preserve_valid_citations(content, expected):
+    from agent.source_references import book_references
+
+    assert book_references(content) == {expected}
+    assert book_references(content, include_malformed=False) == {expected}
+    block = {
+        "block_id": "claim",
+        "title": "Claim",
+        "content": content,
+        "related_node_ids": [],
+        "evidence_refs": [],
+    }
+    assert explanation_blocks._normalise_block(block, set(), {expected}) is not None

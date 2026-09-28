@@ -11,10 +11,10 @@ from markdown_it import MarkdownIt
 _MARKDOWN = MarkdownIt("commonmark")
 _BARE_URL = re.compile(r"(?:https?://|www\.)[^\s<>]+", re.IGNORECASE)
 _BOOK_REFERENCE = re.compile(
-    r"\bChapter\s+(?P<chapter>\d+|None|\?)\s*,\s*p\.\s*(?P<page>\d+|None|\?)(?!\w)"
-    r"|\bBook\s*,\s*p\.\s*(?P<book_page>\d+|None|\?)(?!\w)"
-    r"|\(\s*Chapter\s+(?P<chapter_only>\d+|None|\?)\s*\)"
-    r"|\(\s*(?P<excerpt>Book\s+excerpt)\s*\)",
+    r"\bChapter\s+(?P<chapter>[^\s()\[\]{}]+)\s*,\s*p\.\s*(?P<page>[^\s()\[\]{}]+)"
+    r"|\bBook\s*,\s*p\.\s*(?P<book_page>[^\s()\[\]{}]+)"
+    r"|[\[(]\s*Chapter\s+(?P<chapter_only>[^\s()\[\]{}]+)\s*[\])]"
+    r"|[\[(]\s*(?P<excerpt>Book\s+excerpt)\s*[\])]",
     re.IGNORECASE,
 )
 
@@ -90,22 +90,23 @@ def book_references(text: str, *, include_malformed: bool = True) -> set[str]:
             if token.type in {"text", "code_inline", "softbreak", "hardbreak"}
         )
         for match in _BOOK_REFERENCE.finditer(prose):
-            if not include_malformed and any(
-                value is not None
-                and (
-                    value.casefold() in {"none", "?"}
-                    or (value.isdigit() and int(value) < 1)
-                )
+            # Retain the whole location token: 299.5 must never match page 299.
+            locations = {
+                name: value.rstrip(".,;:!")
                 for name, value in match.groupdict().items()
-                if name != "excerpt"
+                if name != "excerpt" and value is not None
+            }
+            if not include_malformed and any(
+                re.fullmatch(r"[1-9][0-9]*", value) is None
+                for value in locations.values()
             ):
                 continue
-            if match.group("chapter") is not None:
-                reference = f"Chapter {match.group('chapter')}, p.{match.group('page')}"
-            elif match.group("book_page") is not None:
-                reference = f"Book, p.{match.group('book_page')}"
-            elif match.group("chapter_only") is not None:
-                reference = f"Chapter {match.group('chapter_only')}"
+            if "chapter" in locations:
+                reference = f"Chapter {locations['chapter']}, p.{locations['page']}"
+            elif "book_page" in locations:
+                reference = f"Book, p.{locations['book_page']}"
+            elif "chapter_only" in locations:
+                reference = f"Chapter {locations['chapter_only']}"
             else:
                 reference = "Book excerpt"
             references.add(reference)

@@ -87,8 +87,38 @@ new calls. Browser warnings/errors were empty. Local servers were stopped after
 verification. Including the failed local run and saved review, 25 actual provider
 attempts were used across these local checks.
 
-The final backend suite passed 2,965 tests with two skips and 92% coverage, above
+At that source, the backend suite passed 2,965 tests with two skips and 92% coverage, above
 the 90% floor. Whole-Python Ruff and Bandit passed. Dependency audits had already
 passed for the unchanged final pins. These checks establish the recorded journeys;
 they do not establish a universal generation success rate or citation entailment.
 Protected PR CI and live evaluation remain separate release requirements.
+
+## Complete citation locations
+
+Independent review found that an integer-only citation pattern could parse page
+`299.5` as page `299`. The parser now retains complete location tokens before
+allowlist comparison. Decimal, signed, ranged, exponent and alphanumeric tokens
+cannot alias a supplied integer location. Sentence punctuation and supported
+parenthesized or bracketed references remain valid.
+
+CI run 36431201213 passed all eleven offline groups at commit
+`3034a318b44c7abf68e848b6a743ea05f085859c`. Its live companion 36431201181 was
+cancelled after this review finding, before image build, deployment, browser
+generation or judging. It supplied no generation evidence and made no model calls.
+
+The numeric-token fix was verified on that commit plus binary diff SHA256
+`dc7998dc1ec938a14af698b5dacfa05fda8b7a057afd9f2e80550d68e0590610`.
+The full backend suite passed 3,001 tests with two skips and 92% coverage. Ruff,
+Bandit and manifest checks passed. A new empty local database and `dev@local`
+account ran one fresh education request through the real UI with a nine-attempt
+ceiling. It produced 14 nodes, 30 connections and three steps; both reviews passed
+on their first attempts. The answer used supplied book and web references.
+Version: `969e9705-303f-484a-b892-856b58abc37b`.
+
+Five fresh calls recorded 35,114 input and 5,520 output tokens, zero cached input
+tokens and no fallback. Reopening preserved the answer, graph, contract and call
+count. Browser warnings/errors were empty. Source hashes matched after the turn
+and reopen; servers were then stopped. Documentation was updated afterward.
+The total across all local runs and the saved review is 30 actual calls. The
+earlier expansion evidence remains tied to its recorded source; routing and edit
+code did not change in this final citation fix.
