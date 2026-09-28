@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v17"
+        "staged_component_gate_v18"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -1978,3 +1978,55 @@ def test_previous_keyed_provider_schema_is_rejected():
     )
     assert result["terminal"] is True
     assert result["approved"] is False
+
+
+@pytest.mark.parametrize(
+    "failure_kind", ["outage", "invalid_request", "invalid_json", "rejected"]
+)
+def test_gate_labels_only_recognized_provider_availability_failures(
+    monkeypatch, failure_kind
+):
+    import httpx
+    import openai
+
+    async def fake_stream(**kwargs):
+        if failure_kind == "outage":
+            raise openai.APIConnectionError(
+                request=httpx.Request("POST", "https://example.invalid")
+            )
+        if failure_kind == "invalid_request":
+            raise ValueError("invalid request")
+        if failure_kind == "invalid_json":
+            return StructuredLLMResponse(
+                text="invalid",
+                finish_reason="end_turn",
+                input_tokens=1,
+                output_tokens=1,
+                provider="test",
+                model="test",
+            )
+        return _response(
+            _rule_reviews(
+                gate.COMPONENT_RULE_CODES,
+                [
+                    {
+                        "rule_code": gate.COMPONENT_RULE_CODES[0],
+                        "reason": "Missing requested component",
+                    }
+                ],
+            )
+        )
+
+    monkeypatch.setattr(gate, "stream_structured_llm", fake_stream)
+    result = asyncio.run(
+        gate.review_components(
+            user_request="Create a design",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[],
+        )
+    )
+    assert result["approved"] is False
+    assert result.get("failure_code") == (
+        "provider_unavailable" if failure_kind == "outage" else None
+    )

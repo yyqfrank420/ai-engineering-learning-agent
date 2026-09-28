@@ -1,68 +1,49 @@
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
-
+import { render, screen } from '@testing-library/react';
+import { describe, expect, it } from 'vitest';
 import { ThinkingIndicator } from './ThinkingIndicator';
 
+const idleWorkers = { rag: null, graph: null, critic: null, orchestrator: null, research: null };
 
 describe('ThinkingIndicator', () => {
   it('keeps completed activity collapsed and available', () => {
-    render(<ThinkingIndicator
-      workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
-      workflowProgress={[{ phase: 'explain', status: 'complete', title: 'Done', detail: 'Finished.' }]}
-    />);
+    render(<ThinkingIndicator workerStatus={idleWorkers}
+      workflowProgress={[{ phase: 'explain', status: 'complete', title: 'Walkthrough ready', detail: 'Finished.' }]} />);
     expect(screen.getByText('View activity').closest('details')?.open).toBe(false);
     expect(screen.getByText('Walkthrough ready')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
   });
 
-  it('does not promise a diagram while gathering evidence', () => {
-    render(<ThinkingIndicator
-      workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
+  it('shows actual progress and deduplicated worker feedback without hidden details or controls', () => {
+    const { container } = render(<ThinkingIndicator
+      workerStatus={{ ...idleWorkers, rag: 'Searching book…', research: 'Searching book…', graph: 'Sources collected.' }}
       workflowProgress={[{ phase: 'evidence', status: 'complete', title: 'Evidence ready', detail: 'Sources collected.' }]}
-      isGenerating
-    />);
-    expect(screen.getByRole('status').textContent).toBe('Working…');
-    expect(screen.getByText('Details').closest('details')?.open).toBe(false);
-    expect(screen.queryByText('Designing your system')).toBeNull();
+      isGenerating />);
+    expect(screen.getByRole('status').textContent).toContain('Working…');
+    expect(screen.getByText('Evidence ready')).toBeTruthy();
+    expect(screen.getAllByText('Sources collected.')).toHaveLength(1);
+    expect(screen.getAllByText('Searching book…')).toHaveLength(1);
+    expect(container.querySelector('details')).toBeNull();
+    expect(screen.queryByRole('button')).toBeNull();
   });
 
-  it('shows a bounded diagram repair clearly', () => {
-    render(
-      <ThinkingIndicator
-        workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
-        workflowProgress={[{
-          phase: 'revise',
-          status: 'retry',
-          title: 'Refining the diagram',
-          detail: 'Applying the clarity review once.',
-        }]}
-        isGenerating
-      />,
-    );
-
-    expect(screen.getByRole('status').textContent).toBe('Working…');
-    expect(screen.getByText(/Applying the clarity review/).closest('details')?.open).toBe(false);
+  it('updates visible activity through repair, failure, and completed history', () => {
+    const { rerender, container } = render(<ThinkingIndicator workerStatus={idleWorkers}
+      workflowProgress={[{ phase: 'revise', status: 'retry', title: 'Refining the diagram', detail: 'Applying the clarity review once.' }]}
+      isGenerating />);
+    expect(screen.getByText('Applying the clarity review once.')).toBeTruthy();
+    expect(container.querySelector('details')).toBeNull();
+    const failedProgress = [{ phase: 'revise' as const, status: 'rejected' as const, title: 'Diagram could not be completed', detail: 'The provider is unavailable. Please try again.' }];
+    rerender(<ThinkingIndicator workerStatus={idleWorkers} workflowProgress={failedProgress} isGenerating />);
+    expect(screen.queryByText('Applying the clarity review once.')).toBeNull();
+    expect(screen.getByRole('status').textContent).toContain('The provider is unavailable. Please try again.');
+    expect(container.querySelector('details')).toBeNull();
+    rerender(<ThinkingIndicator workerStatus={idleWorkers} workflowProgress={failedProgress} />);
+    expect(screen.getByText('View activity').closest('details')?.open).toBe(false);
   });
 
-  it('keeps resume available after generation finishes with queued blocks', () => {
-    const onTogglePause = vi.fn();
-
-    render(
-      <ThinkingIndicator
-        workerStatus={{ rag: null, graph: null, critic: null, orchestrator: null, research: null }}
-        workflowProgress={[{
-          phase: 'explain',
-          status: 'complete',
-          title: 'Walkthrough complete',
-          detail: 'Explanation blocks are ready.',
-        }]}
-        isGenerating={false}
-        explanationPaused
-        onTogglePause={onTogglePause}
-      />,
-    );
-
-    fireEvent.click(screen.getByRole('button', { name: 'Resume reveal' }));
-
-    expect(onTogglePause).toHaveBeenCalledOnce();
+  it('renders no invented activity before any progress arrives', () => {
+    render(<ThinkingIndicator workerStatus={idleWorkers} isGenerating />);
+    expect(screen.getByRole('status').textContent).toBe('Working…');
+    expect(screen.queryByRole('list')).toBeNull();
   });
 });

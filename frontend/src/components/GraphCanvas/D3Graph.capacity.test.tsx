@@ -1178,3 +1178,56 @@ describe('dense production graph rendering', () => {
     expect(renderedEdge?.getAttribute('data-edge-label')).toBe('sends bounded event');
   });
 });
+
+
+describe('private geometry readiness', () => {
+  it('signals completed SVG geometry with unresolved fonts and paused animation frames', () => {
+    const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { ready: new Promise(() => undefined) },
+    });
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1);
+    const ready = vi.fn();
+    try {
+      const view = render(
+        <D3Graph graphData={modelServingPaidCandidate} currentStep={-1}
+          activeNodeIds={new Set()} onNodeClick={() => undefined}
+          layoutReadiness="geometry" onLayoutReady={ready} />,
+      );
+      expect(ready).toHaveBeenCalledTimes(1);
+      expect(view.container.querySelectorAll('g.node').length).toBe(modelServingPaidCandidate.nodes.length);
+      expect(view.container.querySelectorAll('path.edge-vis').length).toBe(modelServingPaidCandidate.edges.length);
+      view.unmount();
+    } finally {
+      frame.mockRestore();
+      if (originalFonts) Object.defineProperty(document, 'fonts', originalFonts);
+      else delete (document as unknown as { fonts?: unknown }).fonts;
+    }
+  });
+
+  it('does not schedule stale frames when fonts finish after unmount', async () => {
+    const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+    let resolveFonts: () => void = () => undefined;
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { ready: new Promise<void>(resolve => { resolveFonts = resolve; }) },
+    });
+    const frame = vi.spyOn(window, 'requestAnimationFrame').mockReturnValue(1);
+    const ready = vi.fn();
+    try {
+      const view = render(<D3Graph graphData={modelServingPaidCandidate} currentStep={-1}
+        activeNodeIds={new Set()} onNodeClick={() => undefined} onLayoutReady={ready} />);
+      view.unmount();
+      frame.mockClear();
+      resolveFonts();
+      await Promise.resolve();
+      expect(frame).not.toHaveBeenCalled();
+      expect(ready).not.toHaveBeenCalled();
+    } finally {
+      frame.mockRestore();
+      if (originalFonts) Object.defineProperty(document, 'fonts', originalFonts);
+      else delete (document as unknown as { fonts?: unknown }).fonts;
+    }
+  });
+});

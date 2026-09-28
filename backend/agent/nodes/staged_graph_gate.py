@@ -14,7 +14,7 @@ from hashlib import sha256
 from math import isfinite
 from typing import Any
 
-from adapters.llm_adapter import build_telemetry
+from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
     STAGED_REVIEW_STANDARD,
@@ -25,7 +25,7 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v17"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v18"
 _CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v25"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
@@ -597,6 +597,8 @@ async def _review(
         )
     except Exception as exc:
         result = _terminal_result(f"provider call failed: {type(exc).__name__}")
+        if is_provider_unavailable_error(exc):
+            result["failure_code"] = "provider_unavailable"
         finish_reason = None
     else:
         result = _review_result(

@@ -2,7 +2,6 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ContextBar } from './Chat/ContextBar';
-import { ModeBar } from './Chat/ModeBar';
 import { RetrievalNoticeBar } from './Chat/RetrievalNoticeBar';
 import { TitleBar } from './Layout/TitleBar';
 
@@ -58,34 +57,6 @@ describe('application chrome', () => {
     fireEvent.click(screen.getByLabelText('Show chat history'));
     fireEvent.click(screen.getByText('Back to chat'));
     expect(actions.chat).toHaveBeenCalledTimes(1);
-  });
-
-  it('changes complexity, graph, and research controls', () => {
-    const onComplexityChange = vi.fn();
-    const onGraphModeChange = vi.fn();
-    const onResearchChange = vi.fn();
-    render(
-      <ModeBar
-        complexity="auto"
-        graphMode="on"
-        researchEnabled={false}
-        onComplexityChange={onComplexityChange}
-        onGraphModeChange={onGraphModeChange}
-        onResearchChange={onResearchChange}
-      />,
-    );
-
-    fireEvent.click(screen.getByText('prod'));
-    fireEvent.click(screen.getByText('off'));
-    const research = screen.getByText('research').parentElement as HTMLElement;
-    fireEvent.mouseEnter(research);
-    fireEvent.mouseLeave(research);
-    fireEvent.click(research);
-
-    expect(onComplexityChange).toHaveBeenCalledWith('production');
-    expect(onGraphModeChange).toHaveBeenCalledWith('off');
-    expect(onResearchChange).toHaveBeenCalledWith(true);
-    expect(screen.getAllByText('auto')).toHaveLength(1);
   });
 
   it('sends and dismisses selected-node suggestions', () => {

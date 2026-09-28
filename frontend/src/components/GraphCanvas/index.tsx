@@ -5,12 +5,11 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import type { AuthSession, GraphCandidate, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode, WorkflowProgress } from '../../types';
+import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode, WorkflowProgress } from '../../types';
 import { useGraph } from '../../hooks/useGraph';
 import { graphStructureKey } from '../../utils/graphStructureKey';
 import { D3Graph } from './D3Graph';
 import { architectureRegions } from './architectureRegions';
-import { HiddenGraphEvaluator } from './HiddenGraphEvaluator';
 import { GlossaryDrawer } from './GlossaryDrawer';
 import { NodeDetailPopup } from './NodeDetailPopup';
 import { SequenceBar } from './SequenceBar';
@@ -32,8 +31,6 @@ interface GraphCanvasProps {
   isAcceptedGraph?: boolean;
   isBuilding?: boolean;
   workflowProgress?: WorkflowProgress[];
-  graphCandidate?: GraphCandidate | null;
-  onStopGeneration?: () => void;
   onGraphReady?: (key: string) => void;
   onSaveGraphEdit?: (edit: GraphContentEdit) => Promise<void>;
   editingDisabled?: boolean;
@@ -80,8 +77,6 @@ export function GraphCanvas({
   isAcceptedGraph = !isPreview,
   isBuilding = false,
   workflowProgress = [],
-  graphCandidate = null,
-  onStopGeneration,
   onGraphReady,
   onSaveGraphEdit,
   editingDisabled = false,
@@ -290,7 +285,6 @@ export function GraphCanvas({
 
   if (!graphData) {
     return (
-      <>
       <div style={{
         flex: 1,
         display: 'flex',
@@ -304,11 +298,9 @@ export function GraphCanvas({
         padding: '2rem',
       }}>
         {isBuilding ? (
-          <GraphGenerationStatus progress={workflowProgress} hasGraph={false} isPreview={false} onStop={onStopGeneration} />
-        ) : <p role="status">No diagram was generated. Try asking for a smaller system or a specific workflow.</p>}
+          <GraphGenerationStatus progress={workflowProgress} hasGraph={false} isPreview={false} />
+        ) : <p role="status">No diagram is available yet.</p>}
       </div>
-      <HiddenGraphEvaluator candidate={graphCandidate} />
-      </>
     );
   }
 
@@ -318,7 +310,6 @@ export function GraphCanvas({
     : (graphData.groups?.length ?? 0);
 
   return (
-    <>
     <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
       {/* Graph title */}
       <div style={{
@@ -422,7 +413,7 @@ export function GraphCanvas({
         </div>
 
         {isBuilding && (
-          <GraphGenerationStatus progress={workflowProgress} hasGraph isPreview={isPreview} onStop={onStopGeneration} />
+          <GraphGenerationStatus progress={workflowProgress} hasGraph isPreview={isPreview} />
         )}
 
         {/* Node detail popup — resolve live node from graphData so enrichment
@@ -469,8 +460,6 @@ export function GraphCanvas({
         />
       )}
     </div>
-    <HiddenGraphEvaluator candidate={graphCandidate} />
-    </>
   );
 }
 

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession, GraphData, ServerEvent } from '../types';
 
@@ -20,7 +20,8 @@ vi.mock('../services/api', () => ({
   saveGraphContentEdit: mocks.saveGraphContentEdit,
 }));
 
-vi.mock('../services/agentTransport', () => ({
+vi.mock('../services/agentTransport', async importOriginal => ({
+  ...await importOriginal<typeof import('../services/agentTransport')>(),
   createClientRequestId: () => crypto.randomUUID(),
   agentTransport: {
     onEvent: vi.fn((handler: NonNullable<typeof mocks.eventHandler>) => {
@@ -42,6 +43,7 @@ vi.mock('../services/analytics', () => ({
 }));
 
 import { useAgentStream } from './useAgentStream';
+import { ChatTurnTimeoutError } from '../services/agentTransport';
 import { graphStructureKey } from '../utils/graphStructureKey';
 
 const session: AuthSession = {
@@ -109,7 +111,6 @@ function Harness({
       <div data-testid="candidate-node-type">{agent.graphCandidate?.data.nodes[0]?.type ?? ''}</div>
       <div data-testid="candidate-criteria">{JSON.stringify(agent.graphCandidate?.criteria ?? null)}</div>
       <div data-testid="progress">{JSON.stringify(agent.workflowProgress)}</div>
-      <div data-testid="paused">{agent.explanationPaused ? 'yes' : 'no'}</div>
       <div data-testid="node-detail">{agent.graphData?.nodes[0]?.detail ?? ''}</div>
       <div data-testid="selected">{agent.selectedNode ? `${agent.selectedNode.node.id}:${agent.selectedNode.suggestions.join(',')}` : ''}</div>
       <button onClick={() => agent.sendMessage('hello', { complexity: 'production', graphMode: 'on', researchEnabled: true })}>send</button>
@@ -121,7 +122,6 @@ function Harness({
         }
       }}>preview node</button>
       <button onClick={() => agent.stopGeneration()}>stop</button>
-      <button onClick={() => agent.toggleExplanationPause()}>pause</button>
       <button onClick={() => agent.hydrateThread({ messages: [{ id: 'm1', role: 'user', content: 'old' }], graphData: graph('2') })}>hydrate</button>
     </div>
   );
@@ -140,6 +140,125 @@ describe('useAgentStream', () => {
     emit({ type: 'graph_data', data: { ...graph(), detail_level: 'overview' } });
     expect(result.current.graphData?.detail_level).toBe('overview');
     expect(result.current.publishedGraphKey).toBe(graphStructureKey(result.current.graphData));
+  });
+
+  it.each(['none', 'whitespace', 'reset', 'preview', 'existing', 'empty-graph'] as const)(
+    'rejects an empty completed turn with %s output', scenario => {
+      mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+      const { result } = renderHook(() => useAgentStream(session, 'empty-response'));
+      act(() => result.current.hydrateThread({ messages: [], graphData: graph('previous') }));
+      act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphData)));
+      act(() => result.current.sendMessage('Draw the next system'));
+      const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+      const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+      if (scenario === 'whitespace') emit({ type: 'response_delta', content: ' \n ' });
+      if (scenario === 'reset') {
+        emit({ type: 'response_delta', content: 'Discarded answer' });
+        emit({ type: 'response_reset' });
+      }
+      if (scenario === 'preview') emit({ type: 'graph_preview', data: graph('preview') });
+      if (scenario === 'existing') emit({ type: 'graph_data', data: graph('previous') });
+      if (scenario === 'empty-graph') {
+        emit({ type: 'graph_data', data: { ...graph('empty'), nodes: [] } });
+        emit({ type: 'graph_data', data: null });
+      }
+      emit({ type: 'done' });
+      emit({ type: 'done' });
+      expect(result.current.visibleMessages.filter(message => message.content.includes('could not be completed'))).toHaveLength(1);
+      expect(result.current.graphData).toEqual(graph('previous'));
+      expect(result.current.streamStatus).toBe('connected');
+      expect(mocks.trackEvent).toHaveBeenCalledWith('chat_stream_failed', expect.objectContaining({ error_code: 'empty_response' }), session);
+      expect(mocks.trackEvent).not.toHaveBeenCalledWith('chat_stream_completed', expect.anything(), expect.anything());
+      expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('does not count output preceding a response reset as a successful new turn', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'reset-output'));
+    act(() => result.current.sendMessage('Draw a system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    act(() => {
+      mocks.eventHandler?.({ type: 'graph_data', data: graph() }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'response_delta', content: 'Superseded answer' }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'response_reset' }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
+    });
+    expect(result.current.messages.map(message => message.content)).not.toContain('Superseded answer');
+    expect(result.current.messages.map(message => message.content)).toContain('The response could not be completed. Please try again.');
+    expect(result.current.graphData).toEqual(graph());
+    expect(mocks.trackEvent).toHaveBeenCalledWith('chat_stream_failed', expect.objectContaining({ error_code: 'empty_response' }), session);
+    expect(mocks.trackEvent).not.toHaveBeenCalledWith('chat_stream_completed', expect.anything(), expect.anything());
+  });
+
+  it.each(['text', 'explanation', 'graph'] as const)('accepts useful current-turn %s output', output => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'useful-response'));
+    act(() => result.current.sendMessage('Draw a system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    act(() => {
+      if (output === 'graph') mocks.eventHandler?.({ type: 'graph_data', data: graph() }, { kind: 'chat', clientRequestId });
+      else if (output === 'text') mocks.eventHandler?.({ type: 'response_delta', content: 'Available answer' }, { kind: 'chat', clientRequestId });
+      else mocks.eventHandler?.({ type: 'explanation_block', block_id: 'one', title: 'Overview', content: 'Available explanation', related_node_ids: [], evidence_refs: [] }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
+    });
+    expect(result.current.messages.some(message => message.content.includes('could not be completed'))).toBe(false);
+    expect(mocks.trackEvent).toHaveBeenCalledWith('chat_stream_completed', expect.anything(), session);
+  });
+
+  describe('graph paint grace period', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it.each(['done', 'error', 'stop', 'disconnect'] as const)('reveals text after %s even if the canvas never acknowledges', async terminal => {
+      const pending = deferred<boolean>();
+      mocks.sendMessage.mockReturnValue(pending.promise);
+      const { result } = renderHook(() => useAgentStream(session, 'missing-paint'));
+      act(() => result.current.sendMessage('Draw a system'));
+      const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+      act(() => {
+        mocks.eventHandler?.({ type: 'graph_data', data: graph() }, { kind: 'chat', clientRequestId });
+        mocks.eventHandler?.({ type: 'response_delta', content: 'Available answer' }, { kind: 'chat', clientRequestId });
+        vi.advanceTimersByTime(10000);
+      });
+      expect(result.current.answerPending).toBe(true);
+      await act(async () => {
+        if (terminal === 'stop') result.current.stopGeneration();
+        else if (terminal === 'disconnect') pending.resolve(false);
+        else mocks.eventHandler?.(terminal === 'error' ? { type: 'error', content: 'Unavailable' } : { type: 'done' }, { kind: 'chat', clientRequestId });
+      });
+      act(() => vi.advanceTimersByTime(2999));
+      expect(result.current.answerPending).toBe(true);
+      act(() => vi.advanceTimersByTime(1));
+      expect(result.current.answerPending).toBe(false);
+      expect(result.current.visibleMessages.map(message => message.content)).toContain('Available answer');
+      expect(result.current.graphData).toEqual(graph());
+      expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['thread', 'hydrate', 'unmount', 'acknowledge', 'next-turn'] as const)('cleans up the pending paint timer on %s', cleanup => {
+      mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+      const { result, rerender, unmount } = renderHook(({ threadId }) => useAgentStream(session, threadId), { initialProps: { threadId: 'one' } });
+      act(() => result.current.sendMessage('Draw a system'));
+      const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+      act(() => {
+        mocks.eventHandler?.({ type: 'graph_data', data: graph() }, { kind: 'chat', clientRequestId });
+        mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
+      });
+      expect(vi.getTimerCount()).toBe(1);
+      act(() => {
+        if (cleanup === 'thread') rerender({ threadId: 'two' });
+        if (cleanup === 'hydrate') result.current.hydrateThread({ messages: [], graphData: graph() });
+        if (cleanup === 'unmount') unmount();
+        if (cleanup === 'acknowledge') result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphData));
+        if (cleanup === 'next-turn') result.current.sendMessage('Draw another system');
+      });
+      expect(vi.getTimerCount()).toBe(0);
+      if (cleanup === 'next-turn') {
+        act(() => vi.advanceTimersByTime(10000));
+        expect(result.current.answerPending).toBe(true);
+      }
+    });
   });
 
   it('holds the answer through stream completion until the committed graph paints', () => {
@@ -427,6 +546,7 @@ describe('useAgentStream', () => {
       mocks.eventHandler?.({ type: 'error', content: 'rejected' }, { kind: 'chat', clientRequestId });
       mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
     });
+    expect(screen.getByTestId('messages').textContent).not.toContain('could not be completed');
 
     expect(mocks.trackEvent).toHaveBeenCalledWith(
       'chat_stream_failed',
@@ -453,8 +573,27 @@ describe('useAgentStream', () => {
     fireEvent.click(screen.getByText('send'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('messages').textContent).toContain('Connection error: offline');
+      expect(screen.getByTestId('messages').textContent).toContain('Connection lost. Please try again.');
+      expect(screen.getByTestId('messages').textContent).not.toContain('offline');
     });
+  });
+
+  it('directs users to reopen a timed-out started turn without exposing error details', async () => {
+    const timeout = new ChatTurnTimeoutError();
+    timeout.message = 'private transport diagnostic';
+    mocks.sendMessage.mockRejectedValueOnce(timeout);
+    render(<Harness />);
+    fireEvent.click(screen.getByText('send'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('messages').textContent).toContain(
+        'The connection timed out. Reopen this chat before retrying; your diagram may already be saved.',
+      );
+      expect(screen.getByTestId('messages').textContent).not.toContain('private transport diagnostic');
+      expect(screen.getByTestId('messages').textContent).not.toContain('Connection lost. Please try again.');
+      expect(screen.getByTestId('status').textContent).toBe('connected');
+    });
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('requests the optional search tool', async () => {
@@ -501,7 +640,8 @@ describe('useAgentStream', () => {
     fireEvent.click(screen.getByText('search'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('messages').textContent).toContain('Connection error: offline');
+      expect(screen.getByTestId('messages').textContent).toContain('Connection lost. Please try again.');
+      expect(screen.getByTestId('messages').textContent).not.toContain('offline');
       expect(screen.getByTestId('retrieval').textContent).toBe('');
     });
   });
@@ -851,92 +991,34 @@ describe('useAgentStream', () => {
     expect(screen.getByTestId('selected').textContent).toBe('');
   });
 
-  it('publishes a queued authoritative graph on next send after paused explanation', () => {
+  it('publishes accepted output immediately and resets only the active explanation', () => {
     render(<Harness />);
     fireEvent.click(screen.getByText('send'));
-    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
-
-    fireEvent.click(screen.getByText('pause'));
+    const firstRequestId = mocks.sendMessage.mock.calls[0][4] as string;
     act(() => {
       mocks.eventHandler?.({
-        type: 'graph_data',
-        data: { ...graph('committed'), title: 'Published graph' },
-      }, { kind: 'chat', clientRequestId });
+        type: 'explanation_block', block_id: 'old', title: 'Earlier',
+        content: 'Earlier explanation', related_node_ids: [], evidence_refs: [],
+      }, { kind: 'chat', clientRequestId: firstRequestId });
+      mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId: firstRequestId });
     });
-    expect(screen.getByTestId('graph-title').textContent).toBe('');
-
-    act(() => {
-      mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
-    });
-    expect(screen.getByTestId('graph-title').textContent).toBe('');
-
     fireEvent.click(screen.getByText('send'));
-    expect(screen.getByTestId('graph-title').textContent).toBe('Published graph');
-  });
-
-  it('keeps candidates hidden and queues explanation blocks while reveal is paused', () => {
-    render(<Harness />);
-    fireEvent.click(screen.getByText('send'));
-    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
-
+    const clientRequestId = mocks.sendMessage.mock.calls[1][4] as string;
     act(() => {
+      mocks.eventHandler?.({ type: 'graph_data', data: graph('accepted') }, { kind: 'chat', clientRequestId });
       mocks.eventHandler?.({
-        type: 'workflow_progress',
-        phase: 'architect',
-        status: 'complete',
-        title: 'Primary design ready',
-        detail: 'Runtime loop identified.',
-      }, { kind: 'chat', clientRequestId });
-      mocks.eventHandler?.({
-        type: 'graph_candidate',
-        evaluation_id: 'eval-1',
-        graph_version: 'candidate-v1',
-        criteria: {
-          viewport_width: 1440,
-          viewport_height: 960,
-          minimum_text_px: 11,
-        },
-        data: graph('candidate-v1'),
+        type: 'explanation_block', block_id: 'new', title: 'Current',
+        content: 'Current explanation', related_node_ids: ['agent'], evidence_refs: [],
       }, { kind: 'chat', clientRequestId });
     });
-
-    expect(screen.getByTestId('candidate-title').textContent).toBe('Agent Map');
-    expect(screen.getByTestId('candidate-criteria').textContent).toBe(
-      '{"viewport_width":1440,"viewport_height":960,"minimum_text_px":11}',
-    );
-    expect(screen.getByTestId('graph-title').textContent).toBe('');
-    expect(screen.getByTestId('progress').textContent).toContain('Primary design ready');
-
-    fireEvent.click(screen.getByText('pause'));
-    expect(screen.getByTestId('paused').textContent).toBe('yes');
-    act(() => {
-      mocks.eventHandler?.({
-        type: 'graph_data',
-        data: graph('candidate-v1'),
-      }, { kind: 'chat', clientRequestId });
-      mocks.eventHandler?.({
-        type: 'explanation_block',
-        block_id: 'overview',
-        title: 'In one minute',
-        content: 'A queued explanation.',
-        related_node_ids: ['agent'],
-        evidence_refs: [],
-        graph_version: 'candidate-v1',
-      }, { kind: 'chat', clientRequestId });
-    });
-    expect(screen.getByTestId('graph-title').textContent).toBe('');
-    expect(screen.getByTestId('messages').textContent).not.toContain('A queued explanation.');
-
-    act(() => {
-      mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId });
-    });
-    expect(screen.getByTestId('status').textContent).toBe('connected');
-    expect(screen.getByTestId('progress').textContent).toContain('Primary design ready');
-
-    fireEvent.click(screen.getByText('pause'));
     expect(screen.getByTestId('graph-title').textContent).toBe('Agent Map');
-    expect(screen.getByTestId('messages').textContent).toContain('A queued explanation.');
-    expect(screen.getByTestId('progress').textContent).toContain('Primary design ready');
+    expect(screen.getByTestId('messages').textContent).toContain('Current explanation');
+    act(() => {
+      mocks.eventHandler?.({ type: 'response_reset' }, { kind: 'chat', clientRequestId });
+    });
+    expect(screen.getByTestId('messages').textContent).not.toContain('Current explanation');
+    expect(screen.getByTestId('messages').textContent).toContain('Earlier explanation');
+    expect(screen.getByTestId('graph-title').textContent).toBe('Agent Map');
   });
 
   it('renders the exact private candidate without legacy node-type normalization', () => {

@@ -347,13 +347,18 @@ def staged_review_requirements(
             "Classify capabilities from the candidate responsibilities and assumptions: "
             "external_effects means it can mutate an external system; retrieval_or_reuse "
             "means it retrieves or reuses stored artifacts; learning_or_release means "
-            "feedback can change a model, prompt, ranking, or live configuration. "
+            "this system owns an update or release of a model, prompt, ranking, or live "
+            "configuration. Offline or batch training and human-approved updates or "
+            "releases count; automatic feedback and immediate live deployment are not "
+            "required. A no-automatic-loop assumption does not negate an explicitly "
+            "owned update or release. "
             "Check each flag independently against named component responsibilities "
             "and assumptions, and report every unsupported flag in the same review. "
             "Internal dataset curation or publication and a passive downstream consumer "
             "alone do not imply external_effects or learning_or_release. Require an "
-            "owner in this system for the external write or the feedback-driven change "
-            "to a model, prompt, ranking, or live configuration, respectively."
+            "owner in this system for the external write or the update or release, "
+            "respectively. Frozen inference without an owned update or release does "
+            "not imply learning_or_release."
         )
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (

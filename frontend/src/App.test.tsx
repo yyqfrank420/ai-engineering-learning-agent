@@ -16,6 +16,10 @@ vi.mock('./utils/threadState', () => ({
   writeThreadSnapshot: vi.fn(),
 }));
 
+vi.mock('./components/GraphCanvas/HiddenGraphEvaluator', () => ({
+  HiddenGraphEvaluator: ({ candidate }: { candidate: GraphCandidate | null }) => <div data-testid="hidden-evaluator">{candidate?.evaluationId}</div>,
+}));
+
 vi.mock('./components/Auth/AuthScreen', () => ({
   AuthScreen: ({ onAuthenticated }: { onAuthenticated: (session: unknown) => void }) => (
     <button onClick={() => onAuthenticated({ user: { id: 'new-user' } })}>Authenticate</button>
@@ -77,11 +81,7 @@ vi.mock('./components/Layout/ThreadSidebar', () => ({
   ),
 }));
 
-vi.mock('./components/Chat/ThinkingIndicator', () => ({
-  ThinkingIndicator: ({ onTogglePause }: { onTogglePause: () => void }) => (
-    <button onClick={onTogglePause}>Toggle explanation</button>
-  ),
-}));
+vi.mock('./components/Chat/ThinkingIndicator', () => ({ ThinkingIndicator: () => <div>Live activity</div> }));
 
 vi.mock('./components/Chat/RetrievalNoticeBar', () => ({
   RetrievalNoticeBar: ({ notice, onUseSearchTool }: {
@@ -98,7 +98,7 @@ vi.mock('./components/Chat/RetrievalNoticeBar', () => ({
 vi.mock('./components/Chat/ContextBar', () => ({
   ContextBar: ({ selectedNode, onSendMessage, onClear }: {
     selectedNode: unknown;
-    onSendMessage: (content: string) => void;
+    onSendMessage: (content: string, diagramRequested?: boolean) => void;
     onClear: () => void;
   }) => selectedNode ? (
     <div>
@@ -113,20 +113,14 @@ vi.mock('./components/Chat/ChatInput', () => ({
     onSend,
     onStop,
     onPrepare,
-    onComplexityChange,
-    onGraphModeChange,
-    onResearchChange,
     onUseSelection,
     onDismissSelection,
     onClearSelectionReference,
     showPrepare,
   }: {
-    onSend: (content: string, diagramChoice?: 'on' | 'off') => void;
+    onSend: (content: string, diagramRequested?: boolean) => void;
     onStop: () => void;
     onPrepare: () => void;
-    onComplexityChange: (value: 'production') => void;
-    onGraphModeChange: (value: 'off') => void;
-    onResearchChange: (value: boolean) => void;
     onUseSelection: () => void;
     onDismissSelection: () => void;
     onClearSelectionReference: () => void;
@@ -134,12 +128,9 @@ vi.mock('./components/Chat/ChatInput', () => ({
   }) => (
     <div>
       <button onClick={() => onSend('User question')}>Send message</button>
-      <button onClick={() => onSend('AI trading bot?', 'on')}>Confirm diagram</button>
+      <button onClick={() => onSend('AI trading bot?', true)}>Send broad request</button>
       <button onClick={onStop}>Stop generation</button>
       {showPrepare && <button onClick={onPrepare}>Prepare backend</button>}
-      <button onClick={() => onComplexityChange('production')}>Use production</button>
-      <button onClick={() => onGraphModeChange('off')}>Disable graph</button>
-      <button onClick={() => onResearchChange(false)}>Disable research</button>
       <button onClick={onUseSelection}>Use selection</button>
       <button onClick={onDismissSelection}>Dismiss selection</button>
       <button onClick={onClearSelectionReference}>Clear selection reference</button>
@@ -202,7 +193,7 @@ import { useSelectionSuggestion } from './hooks/useSelectionSuggestion';
 import { useThreadSession } from './hooks/useThreadSession';
 import { trackEvent } from './services/analytics';
 import { signOut } from './services/auth';
-import type { AuthSession, GraphData } from './types';
+import type { AuthSession, GraphCandidate, GraphData } from './types';
 import { shouldPersistThreadSnapshot, writeThreadSnapshot } from './utils/threadState';
 
 
@@ -275,7 +266,6 @@ const agentState = {
     graphPreview: null,
   graphCandidate: null,
   workflowProgress: [],
-  explanationPaused: false,
   workerStatus: {
     rag: null,
     graph: null,
@@ -305,7 +295,6 @@ const agentState = {
   saveGraphEdit: vi.fn().mockResolvedValue(undefined),
   requestSearchTool: vi.fn(),
   stopGeneration: vi.fn(),
-  toggleExplanationPause: vi.fn(),
 };
 
 
@@ -336,6 +325,7 @@ describe('App coordination', () => {
     render(<App />);
 
     await screen.findByTestId('graph-canvas');
+    expect(screen.getAllByTestId('hidden-evaluator')).toHaveLength(1);
     expect(screen.getByTestId('split-pane').dataset.graphVisible).toBe('true');
     expect(agentState.hydrateThread).toHaveBeenCalledWith(threadState.threadSnapshot);
     expect(writeThreadSnapshot).toHaveBeenCalledWith(
@@ -382,10 +372,8 @@ describe('App coordination', () => {
     fireEvent.click(screen.getByText('Ask context'));
     fireEvent.click(screen.getByText('Clear context'));
     fireEvent.click(screen.getByText('Request search'));
-    fireEvent.click(screen.getByText('Toggle explanation'));
     fireEvent.click(screen.getByText('Stop generation'));
     expect(agentState.requestSearchTool).toHaveBeenCalledTimes(1);
-    expect(agentState.toggleExplanationPause).toHaveBeenCalledTimes(1);
     expect(agentState.stopGeneration).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByText('New chat'));
@@ -464,7 +452,7 @@ describe('App coordination', () => {
     expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
   });
 
-  it('grounds a selected-text request and records mode changes', async () => {
+  it('grounds a selected-text request with fixed generation settings', async () => {
     vi.mocked(useSelectionSuggestion).mockReturnValue({
       ...selectionState,
       selectionSuggestion: 'A selected architecture passage',
@@ -473,9 +461,6 @@ describe('App coordination', () => {
     render(<App />);
     await screen.findByTestId('graph-canvas');
 
-    fireEvent.click(screen.getByText('Use production'));
-    fireEvent.click(screen.getByText('Disable graph'));
-    fireEvent.click(screen.getByText('Disable research'));
     fireEvent.click(screen.getByText('Use selection'));
     fireEvent.click(screen.getByText('Dismiss selection'));
     fireEvent.click(screen.getByText('Clear selection reference'));
@@ -484,17 +469,13 @@ describe('App coordination', () => {
     expect(agentState.sendMessage).toHaveBeenLastCalledWith(
       expect.stringContaining('Highlighted text: "A selected architecture passage"'),
       expect.objectContaining({
-        complexity: 'production',
-        graphMode: 'off',
-        researchEnabled: false,
+        complexity: 'auto',
+        graphMode: 'on',
+        researchEnabled: true,
         hasSelectedTextContext: true,
       }),
     );
-    await waitFor(() => expect(trackEvent).toHaveBeenCalledWith(
-      'mode_changed',
-      { mode: 'composer', value: 'production|off|research-off' },
-      session,
-    ));
+    expect(trackEvent).not.toHaveBeenCalledWith('mode_changed', expect.anything(), expect.anything());
   });
 
   it('blocks sending and thread retry while the backend warms', () => {
@@ -619,19 +600,47 @@ describe('App coordination', () => {
       .every(([, , snapshot]) => snapshot.graphData === null && snapshot.messages.length === 0)).toBe(true);
   });
 
+  it('keeps the private candidate evaluator mounted across routes with no published graph', async () => {
+    vi.mocked(useAgentStream).mockReturnValue({
+      ...agentState,
+      graphData: null,
+      graphPreview: null,
+      graphCandidate: {
+        evaluationId: 'candidate-1',
+        graphVersion: 'version-1',
+        criteria: { viewport_width: 1440, viewport_height: 960, minimum_text_px: 11 },
+        data: graph,
+      },
+    });
+    window.location.hash = '#/internal/dashboard';
+    render(<App />);
+    await screen.findByTestId('internal-dashboard');
+    const evaluator = screen.getByTestId('hidden-evaluator');
+    expect(evaluator.textContent).toBe('candidate-1');
+    fireEvent.click(screen.getByText('Back to chat'));
+    await screen.findByTestId('graph-canvas');
+    expect(screen.getAllByTestId('hidden-evaluator')).toEqual([evaluator]);
+    fireEvent.click(screen.getByText('Open dashboard'));
+    await screen.findByTestId('internal-dashboard');
+    expect(screen.getAllByTestId('hidden-evaluator')).toEqual([evaluator]);
+  });
+
   it('moves between dashboard and chat and clears local state on logout', async () => {
     window.location.hash = '#/internal/dashboard';
     render(<App />);
 
     await screen.findByTestId('internal-dashboard');
+    const evaluator = screen.getByTestId('hidden-evaluator');
     expect(screen.getByText('Internal dashboard')).toBeTruthy();
     fireEvent.click(screen.getByText('Back to chat'));
     await screen.findByTestId('split-pane');
     expect(window.location.hash).toBe('');
+    expect(screen.getByTestId('hidden-evaluator')).toBe(evaluator);
 
     fireEvent.click(screen.getByText('Open dashboard'));
     await screen.findByTestId('internal-dashboard');
     expect(window.location.hash).toBe('#/internal/dashboard');
+    expect(screen.getAllByTestId('hidden-evaluator')).toEqual([evaluator]);
 
     fireEvent.click(screen.getByText('Log out'));
     await waitFor(() => expect(signOut).toHaveBeenCalledTimes(1));
@@ -640,12 +649,12 @@ describe('App coordination', () => {
     expect(authState.setAuthSession).toHaveBeenCalledWith(null);
   });
 
-  it('sends diagram confirmation separately from the unchanged learner message', async () => {
+  it('requests a diagram for a broad learner message without a confirmation', async () => {
     vi.mocked(useSelectionSuggestion).mockReturnValue({ ...selectionState, selectionSuggestion: null, selectionReferenceActive: false });
     render(<App />);
-    fireEvent.click(await screen.findByText('Confirm diagram'));
+    fireEvent.click(await screen.findByText('Send broad request'));
     expect(agentState.sendMessage).toHaveBeenCalledWith('AI trading bot?', expect.objectContaining({
-      diagramRequested: true, graphMode: 'on', displayContent: 'AI trading bot?',
+      diagramRequested: true, graphMode: 'on', complexity: 'auto', researchEnabled: true, displayContent: 'AI trading bot?',
     }));
   });
 

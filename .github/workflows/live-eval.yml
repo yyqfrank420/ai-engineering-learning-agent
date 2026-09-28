@@ -114,14 +114,14 @@ jobs:
     if: needs.classify.outputs.ai-impact == 'true' && needs.classify.outputs.trusted == 'true' && needs.resolve-approved-tree.result == 'success' && needs.resolve-approved-tree.outputs.approved == 'false'
     # Browser time scales with reviewed corpus turns and is independently capped.
     # This outer timeout also covers setup, deployment, judging, and cleanup.
-    timeout-minutes: 90
+    timeout-minutes: 100
     environment: staging-eval
     concurrency:
       group: staging-live-eval-global
       cancel-in-progress: false
     env:
       EVALUATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-      EVALUATION_PROVIDER_ATTEMPT_LIMIT: 64
+      EVALUATION_PROVIDER_ATTEMPT_LIMIT: 78
       OTEL_ENVIRONMENT: staging
     permissions:
       contents: read

@@ -328,7 +328,10 @@ def test_next_chat_turn_reads_the_edited_graph_as_its_baseline(
             "/api/chat/ws", headers={"origin": "http://localhost:5173"}
         ) as socket:
             socket.send_json({"type": "auth", "access_token": "test-token"})
-            assert socket.receive_json() == {"type": "ready"}
+            assert socket.receive_json() == {
+                "type": "ready",
+                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
+            }
             socket.send_json(
                 {
                     "type": "start",

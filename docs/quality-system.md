@@ -77,9 +77,20 @@ inside `staging`, and exposes the fixed reset function. Store its URL as
 
 ## Browser evidence and budgets
 
-The PR suite contains eight journeys: grounded RAG, memory, graph-off, research,
+The PR suite contains eight journeys: grounded RAG, memory, education, research,
 node follow-up, graph expansion, an applied domain, and prompt injection. Empty and
 oversized input stay in deterministic API tests and spend no model calls.
+
+The education journey replaces the removed graph-off control journey. The seven
+graph-bearing turns need four batches at the two-case graph concurrency limit.
+Four 970-second turn deadlines plus 180 seconds of setup require 4,060 seconds;
+the browser suite cap is 4,200 seconds. The application attempt cap is 78, covering
+70 logical calls plus the allowed adapter retries on complete successful paths.
+The first-pass path uses 42 calls. Additional failure recovery can exhaust the cap
+and must fail the run. Judge calls remain capped at 16; infrastructure retries stay
+disabled. These are ceilings, not target spending.
+The staging job allows 100 minutes: 70 for browser work, 20 for semantic review,
+and 10 for setup and evidence upload.
 
 Playwright uses the real frontend and production WebSocket protocol. The eight PR
 cases run with total concurrency four and a separate two-case graph lane, so two
@@ -88,12 +99,37 @@ attempt receives its own authenticated browser context and thread. Turns within 
 multi-turn case remain sequential on that context, and result ordering remains the
 canonical corpus ordering even when cases finish out of order.
 
-Browser corpus `2026-09-25.v1` selects the visible on/off diagram modes and answers
-the optional diagram-choice dialog. Completion requires the composer to leave its
-generating state and a captured WebSocket `done` event; the follow-up Send button
-can remain visible during generation. Diagram paths expose their underlying
+Browser corpus `2026-09-28.v1` uses the product's fixed automatic depth, enabled
+diagrams, and enabled research. It verifies these settings on each outgoing start
+message. The composer resolves the server's intent check without a choice dialog.
+Completion requires the composer to leave its generating state and a captured
+WebSocket `done` event; the follow-up send arrow can remain visible during generation.
+Diagram paths expose their underlying
 directed connection members so the browser can verify every connection, including
 duplicates and replies, when the canvas bundles several records into one path.
+
+A completed transport is not evidence that a new diagram was generated. Empty
+turns are rejected unless they contain a newly approved, nonempty graph. Keeping a
+previous graph, replaying a completed request, or showing a failure notice does not
+count as fresh generation. Provider failures and invalid model output remain
+failures; the application does not substitute a reference diagram or bypass review.
+
+The WebSocket `ready` event advertises `turn_timeout_ms`, derived from the server's
+workflow deadline plus 60 seconds for delivery. The client bounds connection setup
+to 30 seconds per attempt, retains one pre-start retry, and never retries started
+work automatically. A started-turn timeout asks the user to reopen the chat before
+retrying because the result may already be saved. Terminal answers stop waiting for
+a missing canvas acknowledgement after three seconds. These bounds prevent silent
+waiting; they do not establish a 100% model-generation success rate.
+
+Private diagram evaluation stays mounted across chat and dashboard navigation.
+It measures the completed SVG geometry without waiting for animation frames or
+font promises, since background tabs can defer painting. The renderer uses system
+fonts; adding asynchronous fonts requires a bounded readiness policy. Image capture
+has a three-second deadline and submission retries have a single 2.5-second budget.
+Capture failures produce rejection reports. No failure image can approve a diagram.
+The server retains its 15-second evaluation deadline for suspended or disconnected
+browsers.
 
 Staging request concurrency is 16, owned by
 `ci/quality.json` at `live.budgets.staging_request_concurrency`. Terraform and both
@@ -159,31 +195,31 @@ original/derived hashes, source run/head/tested commit/tree/digest, selection,
 artifact digest, replay commit/actor, reviewer, and reason. Selective replay is
 review evidence only and does not itself publish an image approval or deploy.
 
-PR evaluation limits are eight cases, 64 application provider attempts, and 16
-judge provider attempts. The current PR corpus has 62 logical application calls on
-its complete one-repair paths. Provider retry and fallback paths have a theoretical
-144-attempt first-pass ceiling. The tagged staging revision atomically reserves one
-shared quota record before each provider request and rejects attempt 65 before it is
-sent. This leaves two attempts for transient provider failures while placing a hard
-cost boundary below the failure envelope. Production traffic does not set this
+PR evaluation limits are eight cases, 78 application provider attempts, and 16
+judge provider attempts. The current PR corpus has 42 first-pass calls and up to 70
+logical application calls on its complete repair paths. Allowed retries and fallbacks
+raise the successful-path allowance to 78 provider attempts. The tagged staging
+revision atomically reserves one shared quota record before each provider request
+and rejects attempt 79 before it is sent. Failed-turn recovery can exhaust this
+quota. Production traffic does not set this
 evaluation-only quota. The timeout chain is deliberately nested: the backend
 agent envelope is 940 seconds, with model work stopping at 910 seconds to retain persistence
 headroom. The Playwright turn waits at most 970 seconds so it can capture the typed terminal event,
 and Cloud Run accepts a request for at most 1000
 seconds. The browser-suite timeout scales with the number of turns and the two-wide
-graph lane, with a 60-minute hard ceiling. Semantic judging is capped at 20 minutes
+graph lane, with a 70-minute hard ceiling. Semantic judging is capped at 20 minutes
 for PR/smoke/diagnostic suites and 60 minutes for full suites. Each semantic judge
 request has a 120-second deadline and at most one transport retry. This request
 deadline shares the suite's existing wall-clock and provider-attempt budgets;
 it does not extend either limit. Exhausted retries record a safe exception class
 and HTTP status when available, without provider messages or request data.
 The outer GitHub jobs
-allow 90 minutes for the PR gate and 150 minutes for scheduled evaluation, including
+allow 100 minutes for the PR gate and 150 minutes for scheduled evaluation, including
 installation, deployment, judging, artifact upload, and cleanup; the former 15/30
 minute limits no longer apply.
 
 Scheduled nightly and full suites use the same pre-request quota with a 150-attempt
-cap. Diagnostic dispatches use the 64-attempt PR cap.
+cap. Diagnostic dispatches use the 78-attempt PR cap.
 Every scheduled browser failure or blocking semantic outcome fails the workflow.
 Borderline semantic findings are retained as nonblocking review information. Scheduled artifacts retain evidence for 90 days. `deployment.json`
 binds the run to its commit, Git tree, immutable image digest, tagged Cloud Run revision,

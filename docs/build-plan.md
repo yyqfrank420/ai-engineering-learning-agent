@@ -85,14 +85,14 @@ React + TS + D3. Build inside-out: types → services → hooks → components �
   - _Accepts `authSession` + `activeThreadId`; exposes `hydrateThread`_
 - [~] **3.5** `frontend/src/components/Layout/` — SplitPane + TitleBar
   - _TitleBar: `'generating'` status with violet pulsing dot; `userEmail`, `onLogout`, `onNewChat` props_
-- [~] **3.6** `frontend/src/components/Chat/` — MessageList, ChatInput, ContextBar, ThinkingIndicator, **ModeBar**
-  - _ThinkingIndicator: full rewrite — labeled worker rows (orchestrator/rag/research/graph) with per-worker colors_
-  - _ModeBar (NEW): complexity pills (auto/low/proto/prod), graph toggle (auto/on/off), research toggle (○/◉)_
+- [~] **3.6** `frontend/src/components/Chat/`: MessageList, ChatInput, ContextBar, ThinkingIndicator
+  - _ThinkingIndicator shows current workflow and worker activity directly._
+  - _ChatInput uses a send arrow and one Stop control. Modes are fixed to auto, graph on, research on._
 - [~] **3.7** `frontend/src/components/GraphCanvas/` — D3Graph, NodeDetailPopup, SequenceBar
   - _AWS-style outlined cards, edge hover tooltip, glassmorphism popup_
 - [~] **3.8** `frontend/src/App.tsx` — full auth flow
   - _Auth: `AuthScreen` when logged out, loading screen while resolving_
-  - _Mode state: `complexity`, `graphMode`, `researchEnabled` — passed to `handleSend`_
+  - _Fixed mode settings are passed to `handleSend`; server intent checks resolve diagram requests._
   - _Thread management: `loadThread`, `handleNewChat`, `handleLogout`_
 - [x] **3.9** `frontend/vercel.json` — Vercel config
 - [~] **3.10** `frontend/src/index.css` — design tokens + `@keyframes pulse` for generating dot

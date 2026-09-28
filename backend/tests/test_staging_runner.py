@@ -266,7 +266,9 @@ def test_pr_live_eval_is_globally_serial_with_optional_manual_review():
     assert "environment: staging-eval" in workflow
     assert "EVALUATION_RUN_ID=$EVALUATION_RUN_ID" in workflow
     assert "OTEL_ENVIRONMENT: staging" in workflow
-    assert "EVALUATION_PROVIDER_ATTEMPT_LIMIT: 64" in workflow
+    manifest = json.loads(Path("ci/quality.json").read_text(encoding="utf-8"))
+    attempt_limit = manifest["live"]["budgets"]["application_calls"]
+    assert f"EVALUATION_PROVIDER_ATTEMPT_LIMIT: {attempt_limit}" in workflow
     assert "resolve-approved-tree:" in workflow
     assert "needs: [classify, resolve-approved-tree]" in workflow
     assert "needs.resolve-approved-tree.outputs.approved == 'false'" in workflow
