@@ -233,6 +233,44 @@ describe('ChatInput', () => {
     expect(onPrepare).not.toHaveBeenCalled();
   });
 
+  it('keeps an empty composer at one row when highlighted context changes', () => {
+    const view = renderInput('thread-1');
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    view.rerender(<ChatInput {...defaultProps} selectionSuggestion="Selected paragraph" selectionReferenceActive />);
+    expect(input.placeholder).toBe('Ask a question about the highlighted text…');
+    expect(input.rows).toBe(1);
+    expect(input.style.whiteSpace).toBe('nowrap');
+    expect(input.style.textOverflow).toBe('ellipsis');
+    expect(input.style.height).toBe('auto');
+    Object.defineProperty(input, 'scrollHeight', { configurable: true, get: () => 100 });
+    fireEvent.change(input, { target: { value: 'A draft' } });
+    expect(input.style.height).toBe('100px');
+    fireEvent.change(input, { target: { value: '' } });
+    expect(input.style.height).toBe('auto');
+    expect(input.style.whiteSpace).toBe('nowrap');
+    expect(input.style.overflow).toBe('hidden');
+  });
+
+  it('grows for draft content with borders and caps long drafts with scrolling', () => {
+    renderInput('thread-1', { selectionSuggestion: 'Selected paragraph', selectionReferenceActive: true });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    Object.defineProperties(input, {
+      scrollHeight: { configurable: true, get: () => input.style.whiteSpace === 'nowrap' ? 37 : 58 },
+      offsetHeight: { configurable: true, get: () => 39 },
+      clientHeight: { configurable: true, get: () => 37 },
+    });
+    fireEvent.change(input, { target: { value: 'Line one\nLine two' } });
+    expect(input.style.height).toBe('60px');
+    expect(input.style.whiteSpace).toBe('');
+    expect(input.style.overflow).toBe('auto');
+    Object.defineProperty(input, 'scrollHeight', { get: () => 180 });
+    fireEvent.change(input, { target: { value: 'Line one\nLine two\nLine three' } });
+    expect(input.style.height).toBe('120px');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(input.value).toBe('');
+    expect(input.style.height).toBe('auto');
+  });
+
   it('handles highlighted text suggestion lifecycle', () => {
     const onUseSelection = vi.fn();
     const onDismissSelection = vi.fn();

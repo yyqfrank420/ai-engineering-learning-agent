@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import type { BackendPrepareProgress } from '../../hooks/useBackendReadiness';
 
@@ -57,8 +57,15 @@ export function ChatInput({
 
   const resizeTextarea = useCallback((element: HTMLTextAreaElement) => {
     element.style.height = 'auto';
-    element.style.height = `${Math.min(element.scrollHeight, 120)}px`;
+    // Empty placeholders can wrap, but only the draft should grow the composer.
+    if (!element.value) return;
+    const borderHeight = element.offsetHeight - element.clientHeight;
+    element.style.height = `${Math.min(element.scrollHeight + borderHeight, 120)}px`;
   }, []);
+
+  useLayoutEffect(() => {
+    if (textareaRef.current) resizeTextarea(textareaRef.current);
+  }, [resizeTextarea, value]);
 
   const seedSelection = useCallback(() => {
     if (!selectionSuggestion) return;
@@ -105,7 +112,6 @@ export function ChatInput({
       onUseSelection?.();
     }
     setValue(e.target.value);
-    resizeTextarea(e.target);
   };
 
   useEffect(() => {
@@ -233,7 +239,7 @@ export function ChatInput({
           placeholder={placeholder}
           disabled={disabled}
           rows={1}
-          style={textareaStyle}
+          style={{ ...textareaStyle, ...(!value ? emptyTextareaStyle : {}) }}
           onFocusCapture={e => {
             setContainerHovered(true);
             e.currentTarget.style.borderColor = 'rgba(167,139,250,0.5)';
@@ -372,6 +378,8 @@ const prepareProgressFillStyle = (percent: number): CSSProperties => ({
 
 const textareaStyle: CSSProperties = {
   flex:                1,
+  minWidth:            0,
+  boxSizing:           'border-box',
   resize:              'none',
   background:          'rgba(255,255,255,0.04)',
   backdropFilter:      'blur(8px)',
@@ -389,6 +397,12 @@ const textareaStyle: CSSProperties = {
   overflow:            'auto',
   transition:          'border-color 0.15s, box-shadow 0.15s',
   boxShadow:           'inset 0 1px 0 rgba(255,255,255,0.04)',
+};
+
+const emptyTextareaStyle: CSSProperties = {
+  whiteSpace: 'nowrap',
+  overflow: 'hidden',
+  textOverflow: 'ellipsis',
 };
 
 const stopButtonStyle: CSSProperties = {
