@@ -233,6 +233,43 @@
       "AGENTS.md", "CLAUDE.md", "PRODUCT.md", "README.md", "plan.md",
       "docs/**", ".cursor/**", "infra/terraform/gcp/README.md"
     ],
+    "reviewed_presentation_changes": [
+      {
+        "path": "frontend/src/App.tsx",
+        "before_blob": "68b0193e7646385b47e354778fb8ddf96d8490c2",
+        "after_blob": "a2de403df5807c4d8971c5d3541394e2dfb2d13e",
+        "reason": "Remove presentation-only workflow status props from the canvas call site.",
+        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/index.tsx",
+        "before_blob": "6051f7ce48c0073ce9703d9b9fd8094c1c3f7d74",
+        "after_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
+        "reason": "Remove the canvas status overlay and its presentation-only progress prop.",
+        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/GraphGenerationStatus.tsx",
+        "before_blob": "39928c6aef0479405902e4090d1f645b84f39e1b",
+        "after_blob": "0000000000000000000000000000000000000000",
+        "reason": "Delete the unused canvas status presentation component.",
+        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/GraphGenerationStatus.css",
+        "before_blob": "6a21eca4e17aade6648d7cea6c9915b22e340337",
+        "after_blob": "0000000000000000000000000000000000000000",
+        "reason": "Delete styles used only by the removed canvas status component.",
+        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      },
+      {
+        "path": "frontend/src/components/WorkflowActivity.tsx",
+        "before_blob": "0628fd739994b69b050183191df8faee7ca9f07f",
+        "after_blob": "0000000000000000000000000000000000000000",
+        "reason": "Delete the unused workflow detail presentation component.",
+        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+      }
+    ],
     "non_generation": [
       "backend/tests/test_*.py", "frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx",
       "ingestion/test_*.py", "ci/**", "scripts/ci", "scripts/ci_runner.py",

@@ -5,7 +5,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
-import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode, WorkflowProgress } from '../../types';
+import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode } from '../../types';
 import { useGraph } from '../../hooks/useGraph';
 import { graphStructureKey } from '../../utils/graphStructureKey';
 import { D3Graph } from './D3Graph';
@@ -14,7 +14,6 @@ import { GlossaryDrawer } from './GlossaryDrawer';
 import { NodeDetailPopup } from './NodeDetailPopup';
 import { SequenceBar } from './SequenceBar';
 import { updateThreadGraph } from '../../services/api';
-import { GraphGenerationStatus } from './GraphGenerationStatus';
 
 interface GraphCanvasProps {
   graphData: GraphData | null;
@@ -30,7 +29,6 @@ interface GraphCanvasProps {
   isPreview?: boolean;
   isAcceptedGraph?: boolean;
   isBuilding?: boolean;
-  workflowProgress?: WorkflowProgress[];
   onGraphReady?: (key: string) => void;
   onSaveGraphEdit?: (edit: GraphContentEdit) => Promise<void>;
   editingDisabled?: boolean;
@@ -76,7 +74,6 @@ export function GraphCanvas({
   isPreview = false,
   isAcceptedGraph = !isPreview,
   isBuilding = false,
-  workflowProgress = [],
   onGraphReady,
   onSaveGraphEdit,
   editingDisabled = false,
@@ -297,9 +294,7 @@ export function GraphCanvas({
         gap: '1.1rem',
         padding: '2rem',
       }}>
-        {isBuilding ? (
-          <GraphGenerationStatus progress={workflowProgress} hasGraph={false} isPreview={false} />
-        ) : <p role="status">No diagram is available yet.</p>}
+        {!isBuilding && <p role="status">No diagram is available yet.</p>}
       </div>
     );
   }
@@ -411,10 +406,6 @@ export function GraphCanvas({
             }}
           />
         </div>
-
-        {isBuilding && (
-          <GraphGenerationStatus progress={workflowProgress} hasGraph isPreview={isPreview} />
-        )}
 
         {/* Node detail popup — resolve live node from graphData so enrichment
             updates (node_detail events) are reflected without a re-click */}

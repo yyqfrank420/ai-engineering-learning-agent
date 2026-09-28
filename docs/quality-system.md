@@ -47,7 +47,18 @@ for changes to the manifest, runner, or CI workflow. Relevant live harness check
 can be run deliberately; a policy-only edit does not require a paid generation run.
 
 Classification uses paths and cannot determine the meaning of individual edits
-within a shared runtime file. Keep stable presentation code in separate owners
+within a shared runtime file. An audited presentation-only modification or deletion
+in a shared frontend source file can be recorded in
+`impact.reviewed_presentation_changes`: each record contains `path`, full Git
+`before_blob` and `after_blob` hashes, a `reason`, and completed offline/UI
+`verification` evidence. Use forty zeroes for a deletion's `after_blob`. CI matches
+the exact base/head content transition and the checked-out HEAD blob and mode.
+A synthetic merge that changes the reviewed content receives no exception.
+Stale records, renames, file type or mode
+changes, and path-only classification receive no exception. Malformed records fail
+validation. Other generation-affecting paths in the same change still require paid
+checks. These records never exempt backend runtime. Remove obsolete records when
+updating this ledger. Keep stable presentation code in separate owners
 when practical. A future runtime prompt stored in Markdown remains
 generation-impacting. Chat submission, transport, and private renderer geometry
 remain protected because they can affect generation or diagram publication.

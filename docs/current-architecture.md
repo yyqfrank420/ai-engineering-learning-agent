@@ -261,8 +261,9 @@ a background thread. `GET /api/prepare` reports the current server-owned milesto
 units; the frontend renders that exact progress and never advances it with an elapsed-time animation.
 
 Diagram-enabled turns retain the canvas after completion, including a clear empty state when no
-diagram is published. The canvas and conversation show brief activity labels derived from server
-workflow events. Completed activity remains available in a collapsed disclosure until the next turn.
+diagram is published. The conversation shows one short status derived from the latest server
+workflow event while generation runs. The canvas has no progress overlay. Internal event titles,
+details, and completed activity logs are omitted; terminal errors remain in the conversation.
 The frontend stores response messages as they arrive but withholds the current turn's assistant
 messages until the stream terminates and the committed graph has painted. D3 reports readiness
 after fonts and two animation frames, with a three-second terminal grace period in the hook.
