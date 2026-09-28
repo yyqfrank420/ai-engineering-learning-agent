@@ -518,11 +518,11 @@ def test_internal_dataset_writes_keep_idempotence_and_ambiguous_commit_review():
     assert "authorization_and_compensation" not in requirements
     reconciliation = requirements["state_effect_reconciliation"]
     for obligation in (
-        "internal durable mutations",
-        "deduplicate atomically",
-        "same-key",
-        "freshness",
-        "fencing before execution",
+        "Assess each write separately",
+        "atomic durable commit of the effect and same-operation deduplication",
+        "safe same-key replay",
+        "freshness, fencing",
+        "read back authoritative status",
     ):
         assert obligation in reconciliation
 
@@ -535,21 +535,23 @@ def test_reconciliation_scope_requires_evidence_for_each_write():
     assert criterion == STAGED_PRODUCTION_REQUIREMENTS["state_effect_reconciliation"]
     for scope in (
         "Assess each write separately",
-        "Identify the retry, redelivery, competing delivery, or uncertain-commit recovery",
-        "declared by the request or candidate before requiring its reconciliation protocol",
-        "A durable datastore or a committed/rejected response alone does not establish that behavior",
-        "an explicitly requested guarantee or a declared unsafe retry remains blocking",
+        "declared retry, redelivery, competing delivery, or uncertain-commit recovery",
+        "A datastore or committed/rejected reply alone does not declare retries",
+        "Missing implementation detail is advisory unless it contradicts an explicitly requested guarantee or establishes unsafe behavior",
     ):
         assert scope in criterion
     for control in (
-        "including internal durable mutations",
-        "reserve a stable operation identity durably before the effect",
-        "Revalidate applicable authorization, policy, freshness, and fencing before execution",
-        "deduplicate atomically at the writer",
+        "atomic durable commit of the effect and same-operation deduplication with safe same-key replay",
+        "separate pre-effect reservation and read-back are unnecessary within that boundary",
+        "A key alone proves neither atomicity nor safe replay",
+        "Effects outside that atomic boundary require durable identity and safe target-side idempotency or reconciliation before retry",
+        "For uncertain non-idempotent effects, reserve identity durably before execution",
+        "authorization, policy, freshness, fencing",
+        "atomic writer deduplication across delivery paths",
         "COMMITTED records success",
-        "NOT_FOUND permits same-key retry under valid authorization",
-        "STILL_UNKNOWN has a bounded escalation",
-        "Correlate late anomalies with bounded compensation",
+        "NOT_FOUND permits safe same-key retry",
+        "STILL_UNKNOWN has bounded escalation",
+        "bounded compensation for late anomalies",
     ):
         assert control in criterion
 

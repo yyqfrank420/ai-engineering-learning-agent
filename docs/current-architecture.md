@@ -113,6 +113,11 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    rules or malformed results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
+   A repair review receives the previous validated rule evidence and the exact changed records
+   and context. This history stays within its stage and request. Current complete rule results
+   determine admission; prior approval cannot override a blocker or incomplete response.
+   Reviewers retain evidence for unchanged paths unless changed dependencies or a concrete
+   overlooked defect invalidate it.
    Prototype action review preserves explicitly requested controls and requires authorization
    and failure handling for concrete external mutations. Generic educational tools do not
    require a separate approval, audit, or rollback workflow. An existing component may own
@@ -144,7 +149,11 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    identifies the retry, redelivery, competing delivery, or uncertain-commit behavior declared
    for the specific write before requiring its reconciliation protocol. A datastore or a
    committed/rejected response alone does not establish that behavior. Explicitly requested
-   guarantees and declared unsafe retries remain blocking. Compensation uses the same controls
+   guarantees and declared unsafe retries remain blocking. A declared atomic durable commit of
+   the effect and same-operation deduplication with safe same-key replay satisfies reconciliation
+   within that boundary. A key alone, race-prone check-before-write, or separately committed marker
+   does not. Effects outside that boundary still need safe target-side idempotency or authoritative
+   reconciliation before retry. Compensation uses the same controls
    as normal actions; existing validation and approval contracts must explicitly cover it.
    Its producer must invoke those controls directly or through a declared delegation; another
    producer's validation path does not establish that coverage.
