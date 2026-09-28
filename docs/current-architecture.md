@@ -267,7 +267,9 @@ surface; they do not define this application's persistence or approval contract.
 
 FastAPI becomes available after database initialisation, then loads the FAISS artifacts and index in
 a background thread. `GET /api/prepare` reports the current server-owned milestone and completed/total
-units; the frontend renders that exact progress and never advances it with an elapsed-time animation.
+units. The frontend shows the current milestone with an indeterminate loading indicator. Milestone
+counts do not predict elapsed time, so startup has no percentage or determinate progress bar.
+The indicator stops animating when reduced motion is requested.
 Authenticated workspaces start this check automatically, including after a page refresh. Checks run
 serially and stop on failure until the user chooses Retry. Workspace teardown cancels requests and
 polling; late responses cannot update a different account or a newer attempt. A token refresh for the

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
-import type { BackendPrepareProgress, BackendReadiness } from '../../hooks/useBackendReadiness';
+import type { BackendReadiness } from '../../hooks/useBackendReadiness';
+import './ChatInput.css';
 
 interface ChatInputProps {
   onSend:        (content: string, diagramRequested?: boolean) => void;
@@ -15,7 +16,6 @@ interface ChatInputProps {
   retryDisabled?: boolean;
   isGenerating?: boolean;   // LLM actively streaming; keep steering and Stop available
   readinessMessage?: string | null; // non-null while backend is warming up or failed
-  readinessProgress?: BackendPrepareProgress | null;
   selectionSuggestion?: string | null;
   selectionReferenceActive?: boolean;
   onUseSelection?: () => void;
@@ -36,7 +36,6 @@ function clearDraft(
 export function ChatInput({
   onSend, checkSubmission, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating,
   sendDisabled, backendReadiness = 'ready', retryDisabled, readinessMessage,
-  readinessProgress,
   selectionSuggestion, selectionReferenceActive, onUseSelection, onDismissSelection, onClearSelectionReference,
 }: ChatInputProps) {
   const [value, setValue]         = useState('');
@@ -202,23 +201,16 @@ export function ChatInput({
       )}
 
       {readinessNotice && (
-        <div role={backendReadiness === 'error' ? 'alert' : 'status'} aria-atomic="true" style={prepareNoticeStyle}>
-          <div style={prepareNoticeHeaderStyle}>
-            <span>{readinessNotice}</span>
-            {readinessProgress && <span>{readinessProgress.percent}%</span>}
-          </div>
-          {readinessProgress && (
-            <div
-              role="progressbar"
-              aria-label="Backend preparation progress"
-              aria-valuemin={0}
-              aria-valuemax={100}
-              aria-valuenow={readinessProgress.percent}
-              style={readinessProgressTrackStyle}
-            >
-              <div style={readinessProgressFillStyle(readinessProgress.percent)} />
-            </div>
+        <div
+          role={backendReadiness === 'error' ? 'alert' : 'status'}
+          aria-atomic="true"
+          className={backendReadiness === 'error' ? undefined : 'chat-readiness-status'}
+          style={backendReadiness === 'error' ? prepareNoticeStyle : undefined}
+        >
+          {(backendReadiness === 'unknown' || backendReadiness === 'preparing') && (
+            <span className="chat-readiness-spinner" aria-hidden="true" />
           )}
+          <span>{readinessNotice}</span>
         </div>
       )}
 
@@ -353,29 +345,6 @@ const prepareNoticeStyle: CSSProperties = {
   fontSize: '0.72rem',
   lineHeight: 1.45,
 };
-
-const prepareNoticeHeaderStyle: CSSProperties = {
-  display: 'flex',
-  alignItems: 'center',
-  justifyContent: 'space-between',
-  gap: '0.75rem',
-};
-
-const readinessProgressTrackStyle: CSSProperties = {
-  height: '4px',
-  marginTop: '0.5rem',
-  overflow: 'hidden',
-  borderRadius: '999px',
-  background: 'rgba(96,165,250,0.14)',
-};
-
-const readinessProgressFillStyle = (percent: number): CSSProperties => ({
-  width: `${percent}%`,
-  height: '100%',
-  borderRadius: 'inherit',
-  background: 'linear-gradient(90deg, #3b82f6, #a78bfa)',
-  transition: 'width 220ms ease',
-});
 
 const textareaStyle: CSSProperties = {
   flex:                1,

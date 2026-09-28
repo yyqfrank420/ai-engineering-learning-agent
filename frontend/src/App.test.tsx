@@ -230,7 +230,6 @@ const selectionState = {
 const readinessState = {
   backendReadiness: 'ready' as const,
   prepareMessage: null,
-  prepareProgress: null,
   isBackendReady: true,
   prepareBackendNow: vi.fn(),
   clearPreparedCache: vi.fn(),

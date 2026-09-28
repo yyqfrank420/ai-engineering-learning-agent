@@ -272,17 +272,17 @@
       },
       {
         "path": "frontend/src/App.tsx",
-        "before_blob": "a2de403df5807c4d8971c5d3541394e2dfb2d13e",
-        "after_blob": "fbb4c1c7ff6d33baed69311a5fb6591611aeeb96",
-        "reason": "Wire automatic startup status and failure-only retry controls; generation send gates and request payloads are unchanged.",
-        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+        "before_blob": "fbb4c1c7ff6d33baed69311a5fb6591611aeeb96",
+        "after_blob": "c91c5a89fc2b529278662455adf6658a8bea3931",
+        "reason": "Remove the unused startup percentage prop; generation behavior is unchanged.",
+        "verification": "docs/verification/2026-09-28-startup-status.md"
       },
       {
         "path": "frontend/src/components/Chat/ChatInput.tsx",
-        "before_blob": "c59b41de58673be9406acf08c08b1bcbd3404868",
-        "after_blob": "0fc23599fd98c9af8462b4dfac5940acaace1fc2",
-        "reason": "Replace manual Prepare with startup feedback and failure-only Retry; preserve draft and submission semantics.",
-        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+        "before_blob": "0fc23599fd98c9af8462b4dfac5940acaace1fc2",
+        "after_blob": "99c8953cc094c11deb39193d989ae47555ba4adc",
+        "reason": "Replace the startup percentage bar with an indeterminate status indicator; preserve errors, retry and submission behavior.",
+        "verification": "docs/verification/2026-09-28-startup-status.md"
       },
       {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
@@ -293,10 +293,10 @@
       },
       {
         "path": "frontend/src/hooks/useBackendReadiness.ts",
-        "before_blob": "63091575d2ed7a101b4a01b995298a307ebbfbae",
-        "after_blob": "45ea444c61ea4c9818143663acea705ca6c07505",
-        "reason": "Start GET /api/prepare automatically per authenticated workspace and cancel stale polling; no generation request or model settings are changed.",
-        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+        "before_blob": "45ea444c61ea4c9818143663acea705ca6c07505",
+        "after_blob": "a47bc08f43ba5dcd84b310e5066ce5a2b10de30d",
+        "reason": "Remove unused frontend percentage normalization and state; polling, lifecycle and generation behavior are unchanged.",
+        "verification": "docs/verification/2026-09-28-startup-status.md"
       },
       {
         "path": "frontend/src/services/api.ts",

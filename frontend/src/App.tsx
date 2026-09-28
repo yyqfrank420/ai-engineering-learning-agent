@@ -65,7 +65,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const {
     backendReadiness,
     prepareMessage,
-    prepareProgress,
     isBackendReady,
     prepareBackendNow,
     clearPreparedCache,
@@ -472,7 +471,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     backendReadiness={backendReadiness}
                     retryDisabled={readinessRetryDisabled}
                     readinessMessage={prepareMessage}
-                    readinessProgress={prepareProgress}
                     selectionSuggestion={selectionSuggestion}
                     selectionReferenceActive={selectionReferenceActive}
                     onUseSelection={activateSelectionReference}

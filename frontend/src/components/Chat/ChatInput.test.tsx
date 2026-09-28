@@ -13,7 +13,6 @@ const defaultProps = {
   backendReadiness: 'ready' as const,
   retryDisabled: false,
   readinessMessage: null as string | null,
-  readinessProgress: null,
   isGenerating: false,
   selectionSuggestion: null as string | null,
   selectionReferenceActive: false,
@@ -207,12 +206,13 @@ describe('ChatInput', () => {
     renderInput('thread-1', {
       backendReadiness: 'preparing',
       readinessMessage: 'Loading the retrieval index…',
-      readinessProgress: { completedUnits: 2, totalUnits: 3, percent: 67 },
       onSend,
     });
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my draft' } });
     expect(screen.getByRole('status').textContent).toContain('Loading the retrieval index…');
-    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('67');
+    expect(screen.queryByRole('progressbar')).toBeNull();
+    expect(screen.getByRole('status').textContent).not.toContain('%');
+    expect(screen.getByRole('status').querySelector('.chat-readiness-spinner')?.getAttribute('aria-hidden')).toBe('true');
     expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: /prepare|retry/i })).toBeNull();
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
@@ -224,12 +224,16 @@ describe('ChatInput', () => {
     const view = renderInput('thread-1', { backendReadiness: 'error', readinessMessage: 'Connection failed.', onRetryReadiness });
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Saved draft' } });
     expect(screen.getByRole('alert').textContent).toBe('Connection failed.');
+    expect(view.container.querySelector('.chat-readiness-spinner')).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Retry connection' }));
     expect(onRetryReadiness).toHaveBeenCalledOnce();
     view.rerender(<ChatInput {...defaultProps} backendReadiness="preparing" />);
     expect(screen.queryByRole('button', { name: 'Retry connection' })).toBeNull();
     expect(screen.getByRole('status').textContent).toBe('Connecting…');
+    expect(view.container.querySelector('.chat-readiness-spinner')).not.toBeNull();
     view.rerender(<ChatInput {...defaultProps} />);
+    expect(view.container.querySelector('.chat-readiness-spinner')).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Saved draft');
     expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(false);
   });
