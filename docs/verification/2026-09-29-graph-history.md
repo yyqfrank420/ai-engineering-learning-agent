@@ -18,10 +18,15 @@ existing diagram through transport admission, agent entry, or late model routing
 ## Offline evidence
 
 - Backend: 3,163 tests passed, two skipped; coverage exceeded the 90% requirement.
-- Frontend before the final transition layout lock: 527 tests passed; lint, TypeScript
-  and production build passed. The lock passed 71 focused tests, lint and TypeScript, including pending-save flush and
-  layout emission after unlocking.
+- Frontend: 528 tests passed after the transition layout lock and dependency patch; lint,
+  TypeScript, production build and dependency audit passed. Coverage: 93.35% statements
+  and 85.68% branches. Focused checks cover pending-save flush and layout emission
+  after unlocking.
 - Pipeline policy: 368 passed, five skipped; manifest validation passed.
+- The first PR frontend audit found GHSA-3wwx-pv8p-q78v in transitive development
+  dependency undici 7.29.0. Its lockfile entry was updated to patched 7.29.1. A clean
+  isolated install and full frontend checks passed with zero audit vulnerabilities.
+  Paid staging execution was held during the fix.
 - Scoped and repository Ruff checks passed. Bandit found no security issue; its existing
   `ci_runner.py` suppression warnings are unrelated to this change.
 - Impeccable found one unchanged Markdown blockquote border. It is a semantic quote
@@ -44,9 +49,10 @@ revoked client grants, same-thread constraints, versioned restore retries, retai
 transaction rollback, duplicate-request concurrency, layout saves, and deletion cascades.
 An existing-data upgrade retained graphs and messages without historical backfill.
 
-Production Auth and production table lock duration were not simulated. Migration DDL has
-five-second lock and sixty-second statement limits. Review the production table sizes before
-applying. The new code reconciles older writers' current graphs before history operations;
+Production Auth and production table lock duration were not simulated. A read-only
+production inventory on September 29 reported approximately 8 chat threads (352,256 bytes)
+and 20 messages (229,376 bytes), including indexes and TOAST storage. Migration DDL has
+five-second lock and sixty-second statement limits. The new code reconciles older writers' current graphs before history operations;
 intermediate writes from old code cannot be reconstructed after they have been overwritten.
 Drain old writers if complete history is required across the rollout itself.
 
