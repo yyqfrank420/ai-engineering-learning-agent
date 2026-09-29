@@ -280,6 +280,29 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     )
 
     assert generated_criteria == reviewed_criteria
+    brief = generated_criteria["brief_coverage"]
+    if maturity == "production":
+        for obligation in (
+            "before component responsibilities freeze",
+            "curated versioned evidence including hostile traces",
+            "offline evaluation", "reviewed immutable release", "canary",
+            "promotion", "rollback", "recorded outcomes",
+            "Compatible controls may share an existing executable owner",
+            "explicitly declared external dependency",
+            "metrics-only monitor", "passive artifact store", "word 'reviewed' alone",
+            "do not require edges or transition proof",
+            "Frozen inference without an owned update or release",
+            "For every producer of model-proposed actions",
+            "deterministic validation of proposal structure and allowed constraints",
+            "independently of external_effects and learning_or_release",
+            "model-selected read-only tools, internal tools, and code execution",
+            "compatible existing owner may perform this validation internally",
+            "without requiring edges or transition proof",
+            "Answer-only inference without model-proposed actions does not require this per-action validation",
+        ):
+            assert obligation in brief
+    else:
+        assert brief == RUBRIC_CRITERIA["brief_coverage"][1]
     assert STAGED_REVIEW_STANDARD in generated_prompt
     assert STAGED_REVIEW_STANDARD in gate._GATE_SYSTEM
     assert generated_criteria == staged_review_requirements("components", maturity)
@@ -292,7 +315,7 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= set(
         generated_criteria
     )
-    schema = gate._response_schema(rule_codes=tuple(reviewed_criteria))
+    schema = gate._response_schema(rule_codes=tuple(reviewed_criteria), record_count=0)
     codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
         "enum"
     ]
@@ -1032,7 +1055,7 @@ def test_streaming_guidance_is_absent_from_staged_blocking_schema(stage, maturit
         maturity=maturity,
     )
     requirements = staged_review_requirements(stage, maturity, guarantees)
-    schema = gate._response_schema(rule_codes=tuple(requirements))
+    schema = gate._response_schema(rule_codes=tuple(requirements), record_count=0)
     codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
         "enum"
     ]
@@ -1126,3 +1149,217 @@ def test_retrieval_applicability_is_shared_by_generation_and_review(stage, behav
         "fresh generation through the same validation and approval controls",
     ):
         assert boundary in rule
+
+@pytest.mark.parametrize("ownership", ["missing", "internal", "external", "frozen"])
+def test_production_release_review_preserves_control_ownership_evidence(ownership):
+    # Prompt evidence and criteria are tested here, not an uncalled model's verdict.
+    records = [
+        {"id": "serving", "responsibility": "Serves the active model version."},
+        {"id": "monitor", "responsibility": "Reports latency and quality metrics."},
+        {"id": "artifacts", "responsibility": "Stores reviewed model artifacts."},
+    ]
+    owns_release = ownership != "frozen"
+    if owns_release:
+        records.append(
+            {
+                "id": "release",
+                "responsibility": "Owns reviewed immutable model release, canary, promotion, rollback, and recorded outcomes.",
+            }
+        )
+    evidence_responsibility = "Curates versioned evidence including hostile traces and performs offline evaluation."
+    if ownership == "internal":
+        records[-1]["responsibility"] += " " + evidence_responsibility
+    elif ownership == "external":
+        records.append(
+            {
+                "id": "evidence",
+                "responsibility": "External upstream dependency: "
+                + evidence_responsibility,
+            }
+        )
+    context = generation.AcceptedContext(
+        assumptions=(
+            () if owns_release else ("Frozen inference; no owned update or release.",)
+        ),
+        external_effects=False,
+        retrieval_or_reuse=True,
+        learning_or_release=owns_release,
+    )
+    prompt = gate._prompt(
+        gate="components",
+        user_request="Design model serving with the declared release scope.",
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity="production",
+        candidate_records=records,
+        required_production_guarantees=(),
+    )
+    assert json.loads(
+        prompt.split("Immutable candidate records: ")[1].split("\n", 1)[0]
+    ) == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    assert json.loads(prompt.split("Evidence bundle: ")[1].split("\n", 1)[0]) == {
+        "candidate_context": context.prompt_value()
+    }
+    criteria = json.loads(prompt.split("Acceptance criteria: ")[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements("components", "production")
+    assert "When this system owns an update or release" in criteria["brief_coverage"]
+    guarantees = production_proofs_for_capabilities(
+        context.prompt_value()["capabilities"], maturity="production"
+    )
+    assert ("learning_and_release" in guarantees) is owns_release
+
+
+def test_production_component_ownership_changes_only_component_review_policy(
+    monkeypatch,
+):
+    guarantees = tuple(TOPOLOGY_PROOF_REQUIREMENTS)
+    before = {
+        (stage, maturity): gate.review_identity(stage, maturity, guarantees)
+        for stage in ("components", "connections")
+        for maturity in ("prototype", "production")
+    }
+
+    def previous_requirements(stage, maturity, required=()):
+        requirements = staged_review_requirements(stage, maturity, required)
+        if stage == "components":
+            requirements["brief_coverage"] = RUBRIC_CRITERIA["brief_coverage"][1]
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    for (stage, maturity), identity in before.items():
+        assert (gate.review_identity(stage, maturity, guarantees) != identity) is (
+            stage == "components" and maturity == "production"
+        )
+    for maturity in ("prototype", "production"):
+        current = staged_review_requirements("connections", maturity, guarantees)
+        assert current == previous_requirements("connections", maturity, guarantees)
+    assert set(staged_review_requirements("components", "production")) == set(
+        staged_review_requirements("components", "prototype")
+    )
+
+
+@pytest.mark.parametrize(
+    "evidence_location", ["responsibility", "contract", "vague_label"]
+)
+def test_shared_validation_review_preserves_owner_and_contract_evidence(
+    evidence_location,
+):
+    from agent.staged_graph_workflow import _decode_connections
+
+    # Synthetic evidence exercises the wire boundary, not semantic model acceptance.
+    control = "For planner and recovery proposals, executor deterministically validates proposal structure and allowed constraints before approval or execution."
+    components = [
+        {"id": "0", "label": "Planner", "responsibility": "Proposes bounded tool calls."},
+        {"id": "1", "label": "Recovery", "responsibility": "Proposes recovery tool calls."},
+        {"id": "2", "label": "Executor", "responsibility": "Executes accepted bounded tool calls."},
+    ]
+    wire = {
+        "edges": [
+            {
+                "source_index": index,
+                "target_index": 2,
+                "label": "Submit proposed tool call",
+                "flow": 400,
+                "sync": 500,
+            }
+            for index in (0, 1)
+        ]
+    }
+    if evidence_location == "responsibility":
+        components[-1]["responsibility"] += " " + control
+    elif evidence_location == "contract":
+        for edge, producer in zip(wire["edges"], ("Planner", "Recovery"), strict=True):
+            edge["label"] = (
+                f"Executor deterministically checks {producer} call schema and allowed tool args before execution"
+            )
+    else:
+        for edge in wire["edges"]:
+            edge["label"] = "Validate"
+    accepted = [
+        {"index": index, **component} for index, component in enumerate(components)
+    ]
+    parsed = generation._parse_connection_wire(
+        json.dumps(wire),
+        accepted_components=accepted,
+        edge_limit=2,
+    )
+    assert parsed == wire
+    records = [
+        {
+            "source": edge["source_id"],
+            "target": edge["target_id"],
+            "label": edge["label"],
+            "flow": edge["flow"],
+            "sync": edge["sync"],
+        }
+        for edge in _decode_connections(parsed)
+    ]
+    assert [record["label"] for record in records] == [
+        edge["label"] for edge in wire["edges"]
+    ]
+    assert all(
+        len(record["label"]) <= generation.CONNECTION_LABEL_MAX_CHARS
+        for record in records
+    )
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Review the tool execution contracts.",
+        evidence_bundle={"candidate_components": components},
+        resolved_maturity="production",
+        candidate_records=records,
+        required_production_guarantees=("audit_and_provenance",),
+    )
+    assert json.loads(prompt.split("Evidence bundle: ")[1].split("\n", 1)[0]) == {
+        "candidate_components": components
+    }
+    assert json.loads(
+        prompt.split("Immutable candidate records: ")[1].split("\n", 1)[0]
+    ) == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    criterion = json.loads(prompt.split("Acceptance criteria: ")[1].split("\n", 1)[0])[
+        "audit_and_provenance"
+    ]
+    assert criterion == STAGED_PRODUCTION_REQUIREMENTS["audit_and_provenance"]
+    for obligation in (
+        "named compatible owner may perform this deterministic validation internally",
+        "responsibility or a connection contract",
+        "covered producer, proposal structure and allowed constraints",
+        "validation before approval or execution",
+        "does not need duplicate wording in the owner's responsibility",
+        "vague 'validate' label without an executable owner, deterministic checks, and pre-execution order is insufficient",
+        "Validation of one producer does not establish validation of another",
+    ):
+        assert obligation in criterion
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_action_validation_policy_changes_production_identity_only(
+    monkeypatch, stage, maturity
+):
+    guarantees = ("audit_and_provenance",)
+    current = gate.review_identity(stage, maturity, guarantees)
+
+    def previous_requirements(stage, maturity, required=()):
+        requirements = staged_review_requirements(stage, maturity, required)
+        if stage == "components" and maturity == "production":
+            requirements["brief_coverage"] = requirements["brief_coverage"].split(
+                " For every producer of model-proposed actions", 1
+            )[0]
+        if stage == "connections" and "audit_and_provenance" in requirements:
+            requirements["audit_and_provenance"] = requirements[
+                "audit_and_provenance"
+            ].replace(
+                "A named compatible owner may perform this deterministic validation internally. ",
+                "",
+            )
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    assert (gate.review_identity(stage, maturity, guarantees) != current) is (
+        maturity == "production"
+    )

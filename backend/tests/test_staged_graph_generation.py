@@ -653,7 +653,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v29"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v30"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -874,7 +874,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v36"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v37"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2917,6 +2917,13 @@ async def test_component_recovery_uses_one_provider_call_and_keeps_output_limit(
     assert calls[0]["telemetry"]["metadata"]["schema_version"] == (
         "staged_components_recovery_response_v1"
     )
+    prompt = calls[0]["messages"][0]["content"]
+    assert "Cited record indexes define repair scope, not mandatory rewrites" in prompt
+    assert (
+        "witness records may remain null when additions resolve a missing control"
+        in prompt
+    )
+    assert "provide replacement directed paths" not in prompt
 
 
 def test_recovery_addition_without_removal_cannot_exceed_original_limit():
@@ -3804,3 +3811,109 @@ async def test_extension_delta_can_request_clarification_without_mutating_locked
     assert candidate_schema["properties"]["additions"]["minItems"] == 1
     assert candidate_schema["properties"]["additions"]["maxItems"] == 3
     assert candidate_schema["properties"]["updates"]["properties"] == {}
+@pytest.mark.parametrize("remove_entries", [False, True])
+async def test_connection_recovery_preserves_cited_tool_paths_and_root_reachability(
+    monkeypatch, remove_entries
+):
+    accepted = [
+        {
+            **_accepted_components()[1],
+            "index": index,
+            "id": f"n{index + 1}",
+            "label": label,
+            "is_root": index == 0,
+            "primary_flow_member": index in {0, 3},
+        }
+        for index, label in enumerate(
+            ["Caller", "Planner", "Executor", "Primary tool", "Input validation"]
+        )
+    ]
+    original = {
+        "edges": [
+            {
+                **_connection_wire()["edges"][0],
+                "source_index": source,
+                "target_index": target,
+                "label": label,
+            }
+            for source, target, label in [
+                (0, 1, "Submit planning request"),
+                (0, 2, "Submit execution request"),
+                (1, 3, "Request tool planning context"),
+                (3, 1, "Return tool planning context"),
+                (2, 3, "Request tool execution"),
+                (3, 2, "Return tool execution outcome"),
+                (1, 0, "Return final plan"),
+                (2, 0, "Return final execution result"),
+            ]
+        ]
+    }
+    original_snapshot = json.loads(json.dumps(original))
+    additions = [
+        {
+            **_connection_wire()["edges"][0],
+            "source_index": source,
+            "target_index": target,
+            "label": label,
+        }
+        for source, target, label in [
+            (2, 4, "Validate tool arguments before execution"),
+            (4, 2, "Return validated arguments or rejection"),
+        ]
+    ]
+    write_set = generation.create_write_set(component_limit=5, edge_limit=10)
+    calls = []
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {
+                "additions": additions,
+                "updates": {f"slot_{index}": None for index in range(8)},
+                "removals": [0, 1] if remove_entries else [],
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    kwargs = dict(
+        request="Keep tool request and result paths and add argument validation.",
+        resolved_maturity="prototype",
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        accepted_components=accepted,
+        accepted_context=_accepted_context(),
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        gate_findings=[
+            {
+                "code": "safe_action_boundary",
+                "path": "connections",
+                "rule": "semantic_gate",
+                "record_indexes": list(range(8)),
+                "reason": "Tool requests and results lack argument validation contracts.",
+            }
+        ],
+        rejected_candidate=original,
+        recovery_mode=True,
+    )
+    if remove_entries:
+        with pytest.raises(
+            generation.StagedGenerationError, match="connection_wire_unreachable"
+        ):
+            await generation.generate_connection_candidate(**kwargs)
+    else:
+        result = await generation.generate_connection_candidate(**kwargs)
+        assert result["wire"]["edges"] == [*original["edges"], *additions]
+    assert original == original_snapshot
+    assert len(calls) == 1
+    prompt = calls[0]["prompt"]
+    assert "Cited record indexes define repair scope, not mandatory rewrites" in prompt
+    assert (
+        "witness records may remain null when additions resolve a missing control"
+        in prompt
+    )
+    assert (
+        "preserve reachability from the root to every primary-flow component" in prompt
+    )
+    assert "provide replacement directed paths" in prompt

@@ -256,3 +256,26 @@ CI pass. Artifact directory: research-v36/fresh in local verification work.
 Run: local-research-v36-da610f2f-333c-4859-b1ab-9867963742ea.
 Thread: dbfcbf1f-1703-4c63-84d5-293c8d358d35.
 Runtime180fileSHA256:19c34d27fa6c88d69e8b5bd3dac84bb629fac404083f17672431ce0ed9e3bae7.
+
+## Main integration and judge transport diagnostics
+
+Merged main26676cc into PR61 without dropping its candidate-index schema bounds,
+connection repair path preservation, production control ownership, or node-details
+interaction fixes. PR61 retains graph history, saved layout protection, capability
+classification, and per-behavior retrieval obligations. Combined prompt versions
+are components37, connections30, componentgate25 and connectiongate30.
+934 staged/recovery offline tests and all558 frontend tests passed. TypeScript,
+focused ESLint, Ruff and diff checks passed. Sol extra-high review found no
+actionable integration defect. Existing Node experimental localStorage warnings
+come from the test runtime; the suite supplies its own browser environment.
+
+Two approved saved-case reruns exhausted four attempts with APIConnectionError.
+After explicit approval for one further call per case, education failed at60.09s
+with cause chain APIConnectionError/RemoteProtocolError/RemoteProtocolError.
+The one-call budget blocked a second request, although the runner's budget counter
+increments before rejecting it. Prompt injection returned correctness, relevance,
+instruction-following and safety pass; grounding borderline because the exact
+synthesis evidence was empty. Its cost was$0.01373; education usage is unknown.
+No new application generation occurred. Model listing and a tiny synthetic Sonnet
+request succeeded, so a broad provider outage is not established. These are local
+diagnostic judgments, not protected CI approval. Original evidence is retained.

@@ -1,4 +1,5 @@
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
+import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { GraphEdge, GraphNode } from '../../types';
@@ -17,6 +18,12 @@ const serviceNode: GraphNode = {
   book_refs: ['Chapter 6', 'Chapter 8'],
   tier: 'public',
 };
+
+const nodes: GraphNode[] = [
+  serviceNode,
+  { ...serviceNode, id: 'store', label: 'Vector index', type: 'datastore' },
+  { ...serviceNode, id: 'client', label: 'Question input', type: 'client' },
+];
 
 const edges: GraphEdge[] = [
   {
@@ -50,12 +57,13 @@ describe('graph detail controls', () => {
     vi.useRealTimers();
   });
 
-  it('renders node evidence and connection metadata and invokes its actions', () => {
+  it('shows compact named connections and reveals their metadata on demand', () => {
     const onClose = vi.fn();
     const onTellMeMore = vi.fn();
     const onExpandGraph = vi.fn();
     render(
       <NodeDetailPopup
+        nodes={nodes}
         node={serviceNode}
         edges={edges}
         onClose={onClose}
@@ -67,9 +75,16 @@ describe('graph detail controls', () => {
     expect(screen.getByText('SERVICE')).toBeTruthy();
     expect(screen.getByText('PUBLIC')).toBeTruthy();
     expect(screen.getByText('Chapter 6')).toBeTruthy();
-    expect(screen.getByText('queries vector index')).toBeTruthy();
-    expect(screen.getByText('submits question')).toBeTruthy();
-    expect(screen.getByText('ASYNC')).toBeTruthy();
+    const connections = screen.getByRole('region', { name: 'Connections' });
+    const rows = Array.from(connections.querySelectorAll('summary'));
+    expect(rows.map(row => row.textContent)).toEqual(['From Question input', 'To Vector index']);
+    expect(screen.getByText('queries vector index')).not.toBeVisible();
+    expect(screen.getByText('submits question')).not.toBeVisible();
+    expect(screen.getByText('Asynchronous')).not.toBeVisible();
+    for (const row of rows) fireEvent.click(row);
+    expect(screen.getByText('queries vector index')).toBeVisible();
+    expect(screen.getByText('submits question')).toBeVisible();
+    expect(screen.getByText('Asynchronous')).toBeVisible();
 
     fireEvent.click(screen.getByText('Tell me more'));
     fireEvent.click(screen.getByText('Expand graph'));
@@ -83,9 +98,54 @@ describe('graph detail controls', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('groups both directions without losing parallel exchanges, self-loops or unnamed peers', () => {
+    const allEdges: GraphEdge[] = [
+      ...edges,
+      { ...edges[0], source: 'store', target: 'service', label: 'returns ranked chunks', technology: '', sync: 'sync' },
+      { ...edges[0], label: 'records index usage', technology: 'Kafka' },
+      { ...edges[0], target: 'service', label: 'retries retrieval' },
+      { ...edges[0], target: 'missing-peer', label: 'exports evidence' },
+    ];
+    render(<NodeDetailPopup node={serviceNode} nodes={nodes} edges={allEdges}
+      onClose={vi.fn()} onTellMeMore={vi.fn()} onExpandGraph={vi.fn()} />);
+
+    const connections = screen.getByRole('region', { name: 'Connections' });
+    const rows = Array.from(connections.querySelectorAll('summary'));
+    expect(rows).toHaveLength(4);
+    expect(rows.map(row => row.textContent)).toEqual(expect.arrayContaining([
+      'To and from Vector index', 'From Question input', 'Within this component', 'To missing-peer',
+    ]));
+    const exchange = rows.find(row => row.textContent === 'To and from Vector index')!;
+    fireEvent.click(exchange);
+    const group = within(exchange.closest('details')!);
+    expect(group.getByText('queries vector index')).toBeVisible();
+    expect(group.getByText('returns ranked chunks')).toBeVisible();
+    expect(group.getByText('records index usage')).toBeVisible();
+    expect(group.getAllByText('To Vector index')).toHaveLength(2);
+    expect(group.getByText('From Vector index')).toBeVisible();
+    expect(group.getByText('Kafka')).toBeVisible();
+    expect(screen.getByText('retries retrieval')).not.toBeVisible();
+    expect(screen.getByText('exports evidence')).not.toBeVisible();
+  });
+
+  it('keeps disclosures open for enrichment but closes them when inspecting a different node', () => {
+    const props = { nodes, edges, onClose: vi.fn(), onTellMeMore: vi.fn(), onExpandGraph: vi.fn() };
+    const view = render(<NodeDetailPopup {...props} node={serviceNode} />);
+    fireEvent.click(screen.getByText('queries vector index').closest('details')!.querySelector('summary')!);
+    expect(screen.getByText('queries vector index')).toBeVisible();
+
+    view.rerender(<NodeDetailPopup {...props} node={{ ...serviceNode, detail: 'Updated source detail.' }} />);
+    expect(screen.getByText('queries vector index')).toBeVisible();
+    view.rerender(<NodeDetailPopup {...props} node={nodes[1]} />);
+    expect(screen.getByText('queries vector index')).not.toBeVisible();
+    expect(screen.getByText('queries vector index').closest('details')!.querySelector('summary')!.textContent)
+      .toBe('From Retrieval API');
+  });
+
   it('does not claim network accessibility for applied architecture nodes', () => {
     render(
       <NodeDetailPopup
+        nodes={nodes}
         node={{ ...serviceNode, design_origin: 'applied' }}
         edges={[]}
         onClose={vi.fn()}
@@ -101,6 +161,7 @@ describe('graph detail controls', () => {
   it('keeps decision nodes bounded to explanation', () => {
     render(
       <NodeDetailPopup
+        nodes={nodes}
         node={{
           ...serviceNode,
           id: 'gate',
@@ -121,8 +182,8 @@ describe('graph detail controls', () => {
 
     expect(screen.getByText('PRIVATE')).toBeTruthy();
     expect(screen.queryByText('Expand graph')).toBeNull();
-    expect(screen.getByText('Ask the chat to explain this constraint more clearly.')).toBeTruthy();
-    expect(screen.queryByText('CONNECTIONS')).toBeNull();
+    expect(screen.queryByText('Ask the chat to explain this constraint more clearly.')).toBeNull();
+    expect(screen.queryByRole('region', { name: 'Connections' })).toBeNull();
   });
 
   it('opens, resizes, drags, and closes a glossary derived from response text', () => {
