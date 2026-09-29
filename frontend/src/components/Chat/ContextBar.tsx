@@ -22,8 +22,8 @@ export function ContextBar({ selectedNode, onSendMessage, onClear }: ContextBarP
           className="context-bar__dismiss"
           type="button"
           onClick={onClear}
-          aria-label="Clear selected component"
-          title="Clear selected component"
+          aria-label="Clear selected node"
+          title="Clear selected node"
         >
           <X size={16} aria-hidden="true" />
         </button>

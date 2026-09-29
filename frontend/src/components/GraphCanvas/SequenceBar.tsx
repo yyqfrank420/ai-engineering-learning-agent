@@ -11,6 +11,7 @@
 import { useEffect, useState } from 'react';
 import type React from 'react';
 import type { CSSProperties } from 'react';
+import './SequenceBar.css';
 
 interface SequenceBarProps {
   currentStep:     number;   // -1 = overview / not started
@@ -92,9 +93,9 @@ export function SequenceBar({
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div style={barStyle}>
+    <div className="sequence-bar">
       {/* Controls row */}
-      <div style={rowStyle}>
+      <div className="sequence-bar__row">
 
         {/* ◀ Back */}
         <IconButton
@@ -111,6 +112,7 @@ export function SequenceBar({
         <button
           onClick={togglePlay}
           aria-label={playing ? 'Pause' : 'Play'}
+          className="sequence-bar__control"
           style={playButtonStyle(playing)}
         >
           {playing
@@ -138,15 +140,16 @@ export function SequenceBar({
         </IconButton>
 
         {/* Dot progress scrubber */}
-        <div style={dotsRowStyle}>
+        <div className="sequence-bar__progress">
           {totalSteps <= 12
             ? Array.from({ length: totalSteps }, (_, i) => (
                 <button
                   key={i}
                   onClick={() => { setIsPlaying(false); onStepChange(i); }}
                   aria-label={`Go to step ${i + 1}`}
-                  style={dotStyle(i === currentStep, i < currentStep)}
-                />
+                  className="sequence-bar__step"
+                  style={dotButtonStyle}
+                ><span aria-hidden="true" style={dotStyle(i === currentStep, i < currentStep)} /></button>
               ))
             : <span style={counterStyle}>{stepLabel}</span>
           }
@@ -154,7 +157,7 @@ export function SequenceBar({
 
         {/* Step label (hidden if dots show the count already) */}
         {totalSteps <= 12 && (
-          <span style={stepLabelStyle}>{stepLabel}</span>
+          <span className="sequence-bar__label">{stepLabel}</span>
         )}
 
         {/* ✕ Exit */}
@@ -162,6 +165,7 @@ export function SequenceBar({
           onClick={onDismiss}
           aria-label="Exit walkthrough"
           title="Exit walkthrough"
+          className="sequence-bar__control"
           style={exitButtonStyle}
         >
           ✕
@@ -170,7 +174,7 @@ export function SequenceBar({
 
       {/* Step description */}
       {stepDescription && !atOverview && (
-        <div style={descStyle}>{stepDescription}</div>
+        <div className="sequence-bar__description">{stepDescription}</div>
       )}
     </div>
   );
@@ -191,6 +195,7 @@ function IconButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
+      className="sequence-bar__control"
       style={{
         display:         'flex',
         alignItems:      'center',
@@ -226,21 +231,6 @@ function IconButton({
 
 // ── Styles ─────────────────────────────────────────────────────────────────
 
-const barStyle: CSSProperties = {
-  padding:             '0.55rem 1rem',
-  borderTop:           '1px solid rgba(255,255,255,0.06)',
-  background:          'rgba(10,13,19,0.88)',
-  backdropFilter:      'blur(24px) saturate(160%)',
-  WebkitBackdropFilter:'blur(24px) saturate(160%)',
-  flexShrink:          0,
-};
-
-const rowStyle: CSSProperties = {
-  display:    'flex',
-  alignItems: 'center',
-  gap:        '0.5rem',
-};
-
 function playButtonStyle(playing: boolean): CSSProperties {
   return {
     display:             'flex',
@@ -260,12 +250,17 @@ function playButtonStyle(playing: boolean): CSSProperties {
   };
 }
 
-const dotsRowStyle: CSSProperties = {
-  display:    'flex',
-  alignItems: 'center',
-  gap:        '5px',
-  flex:       1,
-  justifyContent: 'center',
+const dotButtonStyle: CSSProperties = {
+  display: 'grid',
+  placeItems: 'center',
+  width: 24,
+  height: 24,
+  flexShrink: 0,
+  border: 0,
+  borderRadius: 6,
+  padding: 0,
+  background: 'transparent',
+  cursor: 'pointer',
 };
 
 function dotStyle(active: boolean, past: boolean): CSSProperties {
@@ -282,7 +277,7 @@ function dotStyle(active: boolean, past: boolean): CSSProperties {
     padding:      0,
     cursor:       'pointer',
     flexShrink:   0,
-    transition:   'background 0.15s, width 0.15s, height 0.15s',
+    transition:   'background 0.15s',
   };
 }
 
@@ -290,14 +285,6 @@ const counterStyle: CSSProperties = {
   fontSize:   '0.7rem',
   color:      '#6e7681',
   whiteSpace: 'nowrap',
-};
-
-const stepLabelStyle: CSSProperties = {
-  fontSize:   '0.7rem',
-  color:      '#6e7681',
-  whiteSpace: 'nowrap',
-  minWidth:   '5rem',
-  textAlign:  'right',
 };
 
 const exitButtonStyle: CSSProperties = {
@@ -316,13 +303,4 @@ const exitButtonStyle: CSSProperties = {
   flexShrink:      0,
   transition:      'color 0.12s, background 0.12s',
   marginLeft:      '0.25rem',
-};
-
-const descStyle: CSSProperties = {
-  fontSize:    '0.7rem',
-  color:       '#8b949e',
-  marginTop:   '0.35rem',
-  paddingLeft: '0.5rem',
-  borderLeft:  '2px solid rgba(167,139,250,0.3)',
-  lineHeight:  1.4,
 };

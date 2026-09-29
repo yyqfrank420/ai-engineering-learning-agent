@@ -25,9 +25,11 @@ backdrop blur while preserving readable text and visible focus.
 
 ## Interaction and layout
 
-The desktop header is 48px high and the history rail is 240px wide. Preserve the
-existing stacked workspace at 1023px and below. Diagram editing remains available.
-Use dynamic viewport height and scroll within the individual panes.
+The desktop header is 48px high and the history rail is 240px wide. Below 1280px,
+the header has a minimum height of 56px and history opens as a modal. Panes sit side
+by side when the measured workspace width is at least 960px. Below 960px, full-height
+Chat and Diagram tabs share the workspace. Diagram editing remains available. Use
+dynamic viewport height and scroll within the individual panes.
 
 Every action has a readable disabled state and immediate visible keyboard focus.
 Use at least 36px compact controls, 44px primary composer controls, and larger touch

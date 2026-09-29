@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useState } from 'react';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const { flushPendingLayout } = vi.hoisted(() => ({ flushPendingLayout: vi.fn().mockResolvedValue(undefined) }));
 
@@ -70,6 +70,7 @@ vi.mock('./components/Layout/SplitPane', () => ({
 }));
 
 vi.mock('./components/Layout/ThreadSidebar', () => ({
+  HISTORY_OVERLAY_QUERY: '(max-width: 1279px)',
   ThreadSidebar: ({ onNewChat, onSelectThread, onDeleteThread, isOpen }: {
     onNewChat: () => void;
     onSelectThread: (threadId: string) => void;
@@ -319,6 +320,7 @@ const agentState = {
 
 
 describe('App coordination', () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     vi.clearAllMocks();
     flushPendingLayout.mockReset().mockResolvedValue(undefined);
@@ -354,6 +356,52 @@ describe('App coordination', () => {
     expect(agentState.sendMessage).not.toHaveBeenCalled();
   });
 
+  it.each(['Select thread', 'New chat'])('closes compact history after saving layout for %s', async (action) => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    })));
+    let resolveLayout!: () => void;
+    flushPendingLayout.mockReturnValue(new Promise<void>(resolve => { resolveLayout = resolve; }));
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false));
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('false');
+    fireEvent.click(screen.getByText('Toggle sidebar'));
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('true');
+    fireEvent.click(screen.getByText(action));
+    expect(threadState.handleSelectThread).not.toHaveBeenCalled();
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('true');
+    await act(async () => { resolveLayout(); });
+    if (action === 'Select thread') expect(threadState.handleSelectThread).toHaveBeenCalledWith('thread-2');
+    else expect(threadState.handleNewChat).toHaveBeenCalledOnce();
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('false');
+  });
+
+  it('tracks the visible keyboard viewport while preserving pinch zoom and cleaning up listeners', () => {
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    const remove = vi.spyOn(viewport, 'removeEventListener');
+    vi.stubGlobal('visualViewport', viewport);
+    const { container, unmount } = render(<App />);
+    const shell = container.querySelector<HTMLElement>('.app-viewport')!;
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('844px');
+    act(() => {
+      viewport.height = 410;
+      viewport.offsetTop = 30;
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('410px');
+    expect(shell.style.getPropertyValue('--workspace-top')).toBe('30px');
+    act(() => {
+      viewport.scale = 2;
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('');
+    expect(shell.style.getPropertyValue('--workspace-top')).toBe('');
+    unmount();
+    expect(remove.mock.calls.map(([name]) => name)).toEqual(['resize', 'scroll']);
+  });
+
   it('renders a bounded loading state before authentication initializes', () => {
     vi.mocked(useAuthSession).mockReturnValue({ ...authState, authReady: false });
 
@@ -367,6 +415,7 @@ describe('App coordination', () => {
     render(<App />);
 
     await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
     expect(screen.getAllByTestId('hidden-evaluator')).toHaveLength(1);
     expect(screen.getByTestId('split-pane').dataset.graphVisible).toBe('true');
     expect(agentState.hydrateThread).toHaveBeenCalledWith(threadState.threadSnapshot);

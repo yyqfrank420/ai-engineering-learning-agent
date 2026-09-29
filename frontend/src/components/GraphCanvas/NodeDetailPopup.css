@@ -204,7 +204,7 @@
 .node-inspector__save-actions,
 .node-inspector__actions { display: flex; justify-content: flex-end; gap: 8px; }
 .node-inspector__save-actions,
-.node-inspector__form > .node-inspector .node-inspector__done {
+.node-inspector__form > .node-inspector__done {
   position: sticky;
   bottom: -14px;
   z-index: 1;
@@ -213,7 +213,7 @@
   border-top: 1px solid var(--border-subtle);
   background: var(--bg-overlay);
 }
-.node-inspector__form > .node-inspector .node-inspector__done { width: calc(100% + 28px); text-align: center; }
+.node-inspector__form > .node-inspector__done { width: calc(100% + 28px); text-align: center; }
 .node-inspector__save-actions button,
 .node-inspector__actions button {
   border: 1px solid var(--border-default);
@@ -245,4 +245,14 @@
 @media (prefers-reduced-motion: reduce) {
   .node-inspector button { transition: none; }
   .node-inspector button:active:not(:disabled):not(:focus-visible) { transform: none; }
+}
+
+@media (pointer: coarse) {
+  .node-inspector__form :is(input, select, textarea) { font-size: 16px; }
+}
+
+@container graph-canvas (max-width: 359px) {
+  .node-inspector__form-row { grid-template-columns: 1fr; }
+  .node-inspector__save-actions,
+  .node-inspector__actions { flex-wrap: wrap; }
 }
