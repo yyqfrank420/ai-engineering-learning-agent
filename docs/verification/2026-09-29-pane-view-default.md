@@ -17,8 +17,9 @@ The inspector reset key also restarts its ResizeObserver subscription. Existing
 save, cancel, validation, graph persistence and generation protocols are unchanged.
 Selection invokes the existing callback immediately instead of after 350 ms.
 Private graph capture disables pointer interaction, so these handlers do not alter
-capture geometry or model evaluation. No migration or backend deployment is needed.
-Reverting the frontend patch restores the prior interaction.
+capture geometry or model evaluation. Reverting the frontend patch restores the
+prior interaction. The backend changes added below use a normal deployment rollback;
+no database migration is included.
 
 ## Compact connections
 
@@ -86,3 +87,44 @@ dependency directory used by other worktrees was left unchanged.
 The lockfile change requires the existing protected staging evaluation before
 merge. The presentation review records do not exempt dependencies. The Node test
 runner still emits its existing experimental localStorage warning.
+
+## Backend review and recovery
+
+Review response schemas constrain record indexes to an enum of current candidate
+positions. This bound survives the provider schema sanitizer. The parser retains
+type, range and 32-citation limits, including the requirement that empty candidates
+have no cited indexes. Empty-array cardinality remains a runtime check because the
+provider removes maxItems. A fixed schema template keeps the review policy identity
+stable when a correction changes the number of records. Component and connection
+review prompt versions are v22 and v28.
+
+Recovery prompts preserve cited witness records when additions can resolve a
+finding. Connection corrections must preserve root-to-primary directed paths when
+removing or retargeting records. Component corrections receive only instructions
+within their stage's authority. Generation prompt versions are v32 and v28.
+The final reachability validator, correction permissions, attempt limits and
+provider budgets remain unchanged.
+
+Focused verification passes 310 gate, policy and review-regression tests and
+192 generation tests. Cases cover zero/one/38-record schemas, invalid indexes,
+correction identity stability, retained witness connections, and rejection of
+a repair that removes both entry paths to a primary tool. Ruff and whitespace
+checks pass.
+
+Runtime revision b6911940c78519c43e28ac2ae3c079f032b7799b passed fresh local
+browser verification on 2026-09-29. The dev account used isolated SQLite storage,
+local retrieval artifacts and real providers at 127.0.0.1:5212. Both the education
+and research requests produced a rendered diagram and completed answer. A bounded
+component correction completed successfully. The parent inspected the outputs,
+opened normal node details, expanded a connection group, edited and saved a name,
+then reloaded and reopened both conversations. The diagram, saved edit and answers
+persisted. Browser error and warning logs were empty. The local run retained a
+24-provider-attempt cap.
+
+The full backend suite passed 3,106 tests with two environment-dependent skips and
+91.85% statement coverage. Ruff, Bandit, and backend/evaluation/ingestion dependency
+audits passed. CI policy passed 368 tests with five environment-dependent skips;
+the manifest validates. Independent review found no outstanding defects. Existing
+Starlette BlockingPortal and LangChain import deprecations remain; neither
+dependency nor import was changed. Bandit also reports two existing redundant
+suppressions in the CI runner, with no security findings.
