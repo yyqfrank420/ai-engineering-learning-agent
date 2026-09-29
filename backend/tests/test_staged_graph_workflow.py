@@ -19,6 +19,44 @@ from agent.staged_graph_contract import (
 )
 
 
+def test_wire_diagnostic_fingerprints_rejected_wire_without_changing_repair_input():
+    wire = {"edges": [{"source_index": 0, "target_index": 9,
+                       "label": "private output", "flow": 400, "sync": 500}]}
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}], edge_limit=5,
+        )
+    error = caught.value
+    prior = {"edges": []}
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="connections", attempt=2, candidate=prior,
+    )
+    assert diagnostic["reason"] == "endpoint_missing"
+    assert diagnostic["path"] == "edges.0.target_index"
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    assert diagnostic["candidate_fingerprint"] != workflow._fingerprint(prior)
+    assert "private output" not in json.dumps(diagnostic)
+    assert workflow._safe_finding(error, stage="connections") == {
+        "code": "connection_wire_invalid", "path": "connections",
+        "rule": "contract_validation", "reason": "connection_wire_invalid",
+    }
+
+
+def test_failure_diagnostic_rejects_unsafe_optional_details():
+    error = generation.StagedGenerationError(
+        "connection_wire_invalid", diagnostic_reason="private output",
+        diagnostic_path="edges.private_output.label",
+        rejected_wire_fingerprint="private output",
+    )
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="connections", attempt=1, candidate={"edges": []},
+    )
+    assert "reason" not in diagnostic
+    assert diagnostic["path"] == "connections"
+    assert diagnostic["candidate_fingerprint"] == workflow._fingerprint({"edges": []})
+    assert "private" not in json.dumps(diagnostic)
+
+
 def test_captured_gate_reason_reaches_correction_without_losing_route_context():
     capture = json.loads(
         (
@@ -516,7 +554,10 @@ async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch)
         return json.dumps(
             {
                 "additions": [],
-                "updates": {"slot_0": {**edge, "label": "submits approved payment"}},
+                "updates": {"slot_0": {
+                    "label": "submits approved payment", "response_label": None,
+                    "flow": edge["flow"], "sync": edge["sync"],
+                }},
                 "removals": [],
             }
         )
@@ -558,12 +599,14 @@ async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch)
     assert [
         generation._generation_schema_version("connections", call["schema"])
         for call in generation_calls
-    ] == ["staged_connections_exchanges_v1", "staged_connections_recovery_delta_v1"]
+    ] == ["staged_connections_exchanges_v1", "staged_connections_exchange_correction_v1"]
     assert [call["attempt"] for call in generation_calls] == [0, 1]
     assert connection_reviews[0]["evidence_bundle"]["connection_exchanges"] == [
         {"request_record_index": 0, "response_record_index": None}
     ]
-    assert "connection_exchanges" not in connection_reviews[1]["evidence_bundle"]
+    assert connection_reviews[1]["evidence_bundle"]["connection_exchanges"] == [
+        {"request_record_index": 0, "response_record_index": None}
+    ]
     assert [
         review["evidence_bundle"]["candidate_context"]["detail_level"]
         for review in connection_reviews
@@ -887,7 +930,7 @@ async def test_rejected_recovery_withholds_unapproved_graph_and_safe_progress(
         for event in analytics
         if event["event_name"] == "staged_graph_admission"
     ] == ["withheld"]
-    progress = [event for event in events if event["type"] == "workflow_progress"]
+    progress = [event for event in events if event["type"] == "workflow_progress" and event.get("detail")]
     assert [event["status"] for event in progress] == ["retry", "rejected"]
     assert all("diagnostic" not in event for event in progress)
     assert all(
@@ -1279,7 +1322,7 @@ async def test_identical_component_correction_is_not_reviewed_twice(monkeypatch)
         next(
             event["diagnostic"]
             for event in events
-            if event["type"] == "workflow_progress"
+            if event["type"] == "workflow_progress" and event.get("detail")
         ),
         diagnostic,
     ]
@@ -1372,7 +1415,7 @@ async def test_final_component_gate_rejection_returns_review_and_safe_gate_diagn
     assert [item["attempt"] for item in diagnostics] == [1, 2]
     assert diagnostics[-1] == diagnostic
     progress_events = [
-        event for event in events if event["type"] == "workflow_progress"
+        event for event in events if event["type"] == "workflow_progress" and event.get("detail")
     ]
     assert [event.get("diagnostic") for event in progress_events] == diagnostics
     assert [event["status"] for event in progress_events] == ["retry", "rejected"]
@@ -2213,7 +2256,7 @@ async def test_final_connection_gate_rejection_returns_review_and_safe_gate_diag
     assert [item["attempt"] for item in result["graph_review_diagnostics"]] == [1, 2]
     assert result["graph_review_diagnostics"][-1] == diagnostic
     progress_events = [
-        event for event in events if event["type"] == "workflow_progress"
+        event for event in events if event["type"] == "workflow_progress" and event.get("detail")
     ]
     assert [event["status"] for event in progress_events] == ["retry", "rejected"]
     assert all("diagnostic" not in event for event in progress_events)
@@ -4406,3 +4449,379 @@ def test_review_snapshot_discards_missing_or_invalid_policy_identity(identity):
     if identity is not None:
         review["review_identity"] = identity
     assert workflow._review_snapshot("components", [], {}, review) is None
+
+
+@pytest.mark.asyncio
+async def test_explicit_additive_layer_preserves_whole_saved_graph_with_several_new_nodes(monkeypatch):
+    _install_success_boundaries(monkeypatch)
+    saved = _accepted_staged_graph()
+    saved["nodes"][0]["position"] = {"x": 20, "y": 40}
+    saved["groups"][0]["color"] = "blue"
+    saved["view_state"] = {"zoom": 0.75}
+    wire = _components_wire()
+    for label in ["New layer planner", "New layer store"]:
+        wire["components"].append({"label": label, "type": 101,
+            "responsibility": "Owns a separate step in the added layer.", "group_label": "Added layer",
+            "group_kind": 600, "primary_flow_member": False})
+    connections = _connections_wire()
+    for source, target in [(0, 2), (2, 3)]:
+        connections["edges"].append({"source_index": source, "target_index": target,
+                                     "label": "invokes added layer", "flow": 400, "sync": 500})
+    async def components(**kwargs):
+        assert kwargs["edit_permissions"]["kind"] == "extension"
+        return {"wire": wire, "prompt_fingerprint": "component-extension"}
+    async def edges(**kwargs):
+        return {"wire": connections, "prompt_fingerprint": "connection-extension"}
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", edges)
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_intent="edit", graph_action="extend", user_message="What if we added a layer on top of this?",
+        graph_data=saved, approved_graph_data=saved,
+        approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+    ))
+    assert result["graph_publication"] == "approved", result["graph_operation"]
+    assert result["graph_data"]["nodes"][:2] == saved["nodes"]
+    assert result["graph_data"]["edges"][:1] == saved["edges"]
+    assert result["graph_data"]["groups"][:len(saved["groups"])] == saved["groups"]
+    assert result["graph_data"]["view_state"] == saved["view_state"]
+    assert len(result["graph_data"]["nodes"]) == 4
+
+
+@pytest.mark.asyncio
+async def test_additive_layer_model_clarification_preserves_saved_diagram(monkeypatch):
+    saved = _accepted_staged_graph()
+    async def components(**kwargs):
+        return {"clarification_questions": ["Which saved path should the layer attach to?"],
+                "prompt_fingerprint": "extension-clarification"}
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_intent="edit", graph_action="extend", graph_data=saved, approved_graph_data=saved,
+        approved_graph_contract={"maturity": "prototype", "capabilities": {}},
+    ))
+    assert result["graph_data"] == saved
+    assert result["graph_operation"]["status"] == "needs_clarification"
+    assert result["graph_changed"] is False
+
+
+@pytest.mark.parametrize("changed_field", [None, "label", "kind", "nodeIds"])
+def test_extension_preserves_group_metadata_without_masking_semantic_changes(changed_field):
+    saved = _accepted_staged_graph()
+    saved["groups"][0]["color"] = "blue"
+    saved["groups"][0]["custom_style"] = {"padding": 24}
+    candidate = copy.deepcopy(saved)
+    del candidate["groups"][0]["color"]
+    del candidate["groups"][0]["custom_style"]
+    if changed_field:
+        candidate["groups"][0][changed_field] = [] if changed_field == "nodeIds" else "changed"
+    _, permissions = workflow.staged_edit_scope(
+        "Add a monitoring layer", saved, resolved_complexity="prototype", add_only=True
+    )
+    permissions["minimum_new_node_count"] = 0
+    permissions["minimum_new_edge_count"] = 0
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions=permissions
+    )
+    if changed_field:
+        assert preserved["groups"][0][changed_field] == candidate["groups"][0][changed_field]
+        with pytest.raises(ValueError, match="extension changed saved groups"):
+            workflow.admit_staged_graph_edit(
+                saved, preserved, resolved_complexity="prototype", repair_contract=None,
+                mutation_permissions=permissions,
+            )
+    else:
+        assert preserved["groups"] == saved["groups"]
+        preserved["groups"][0]["custom_style"]["padding"] = 99
+        assert saved["groups"][0]["custom_style"]["padding"] == 24
+
+
+@pytest.mark.parametrize("change", ["append", "remove", "reorder", "duplicate", "unknown", "move", "label", "kind"])
+def test_extension_existing_zone_append_preserves_metadata_only_for_valid_membership(change):
+    saved = _accepted_staged_graph()
+    saved["groups"] = [
+        {"id": "zone", "label": "Runtime", "kind": "runtime", "nodeIds": ["n1", "n2"],
+         "color": "blue", "custom_style": {"padding": 24}},
+        {"id": "other", "label": "Other", "kind": "runtime", "nodeIds": ["n3"]},
+    ]
+    saved["nodes"].append({**saved["nodes"][0], "id": "n3"})
+    candidate = copy.deepcopy(saved)
+    candidate["nodes"].append({**saved["nodes"][0], "id": "n4"})
+    group = candidate["groups"][0]
+    del group["color"]
+    del group["custom_style"]
+    group["nodeIds"] = {
+        "append": ["n1", "n2", "n4"], "remove": ["n1", "n4"],
+        "reorder": ["n2", "n1", "n4"], "duplicate": ["n1", "n2", "n4", "n4"],
+        "unknown": ["n1", "n2", "missing"], "move": ["n1", "n2", "n3"],
+        "label": ["n1", "n2", "n4"], "kind": ["n1", "n2", "n4"],
+    }[change]
+    if change in {"label", "kind"}:
+        group[change] = "changed"
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions={"kind": "extension"},
+    )
+    actual = preserved["groups"][0]
+    assert actual["nodeIds"] == group["nodeIds"]
+    assert actual["label"] == group["label"]
+    assert actual["kind"] == group["kind"]
+    if change == "append":
+        assert actual["color"] == "blue"
+        assert actual["custom_style"] == {"padding": 24}
+        actual["custom_style"]["padding"] = 99
+        assert saved["groups"][0]["custom_style"]["padding"] == 24
+    else:
+        assert "color" not in actual
+        assert "custom_style" not in actual
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("accepted_stage", ["components", "connections"])
+async def test_explicit_preview_acceptance_finishes_valid_graph_without_remaining_reviews(
+    monkeypatch, accepted_stage
+):
+    import asyncio
+
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+    events = []
+    calls = []
+    _install_success_boundaries(monkeypatch, events=calls)
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def pending_review(**_kwargs):
+        started.set()
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async def send(event):
+        events.append(event)
+        if event.get("type") == "graph_review_status" and event["status"] == "reviewing":
+            assert not control.accept("stale-version")
+            if event["stage"] == accepted_stage:
+                await started.wait()
+                assert control.accept(event["graph_version"])
+                assert control.accept(event["graph_version"])
+
+    monkeypatch.setattr(workflow, f"review_{accepted_stage}", pending_review)
+    if accepted_stage == "components":
+        async def forbidden(**_kwargs):
+            raise AssertionError("accepted components must skip the connection reviewer")
+        monkeypatch.setattr(workflow, "review_connections", forbidden)
+    result = await workflow.run_staged_graph_pipeline(_state(
+        send=send, _graph_review_control=control,
+    ))
+    assert cancelled.is_set()
+    assert calls.count("components") == 1
+    assert calls.count("connections") == 1
+    assert result["graph_data"]["edges"]
+    assert result["graph_render_admitted"] is True
+    assert result["graph_publication"] == "user_accepted"
+    assert result["graph_review"]["approved"] is False
+    contract = result["graph_contract"]
+    assert contract["connection_gate"]["skipped_by_user"] is True
+    assert contract["connection_gate"]["approved"] is False
+    assert contract["acceptance"] == {
+        "source": "user", "graph_version": result["graph_data"]["version"],
+        "semantic_review": "skipped", "stage": accepted_stage,
+        "preview_graph_version": control.accepted_version,
+    }
+    assert not workflow._has_current_approval(result["graph_data"], contract, result["staged_graph_build"])
+    statuses = [e for e in events if e["type"] == "graph_review_status"]
+    assert statuses[-1]["status"] == "accepted"
+    assert statuses[-1]["stage"] == accepted_stage
+    assert control.accept(control.accepted_version)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["structure", "render"])
+async def test_accepted_components_still_require_valid_complete_connections(monkeypatch, failure):
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+    _install_success_boundaries(monkeypatch)
+
+    async def send(event):
+        if event.get("type") == "graph_review_status" and event["status"] == "reviewing":
+            assert event["stage"] == "components"
+            assert control.accept(event["graph_version"])
+
+    if failure == "structure":
+        async def invalid_connections(**_kwargs):
+            return {"wire": {"edges": [{"source_index": 999, "target_index": 0,
+                    "label": "invalid", "flow": 400, "sync": 500}]},
+                    "prompt_fingerprint": "invalid-connections"}
+        monkeypatch.setattr(workflow, "generate_connection_candidate", invalid_connections)
+    else:
+        async def render(state, graph, *, preview_count, stage):
+            result = await _render_ok(state, graph, preview_count=preview_count)
+            return {**result, "graph_render_admitted": stage == "components"}
+        monkeypatch.setattr(workflow, "_render", render)
+    result = await workflow.run_staged_graph_pipeline(_state(send=send, _graph_review_control=control))
+    assert result["graph_publication"] == "withheld"
+    assert result["graph_data"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("termination", ["approved", "error", "cancelled"])
+async def test_review_control_closes_without_acceptance_on_terminal_paths(monkeypatch, termination):
+    import asyncio
+
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+    events = []
+    started = asyncio.Event()
+    cancelled = asyncio.Event()
+
+    async def reviewer(**_kwargs):
+        started.set()
+        if termination == "approved":
+            return _approved_gate()
+        if termination == "error":
+            raise RuntimeError("review unavailable")
+        try:
+            await asyncio.Future()
+        finally:
+            cancelled.set()
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(workflow, "review_connections", reviewer)
+    task = asyncio.create_task(workflow._review_stage(
+        {"send": send, "_graph_review_control": control}, "connections",
+        graph={"version": "candidate-v1"},
+    ))
+    if termination == "cancelled":
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert cancelled.is_set()
+    elif termination == "error":
+        with pytest.raises(RuntimeError, match="review unavailable"):
+            await task
+    else:
+        assert (await task)["approved"] is True
+    assert not control.accept("candidate-v1")
+    assert [e["status"] for e in events if e["type"] == "graph_review_status"] == ["reviewing", "closed"]
+
+
+def test_review_control_is_request_scoped_and_rejects_stale_versions():
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+    assert not control.accept("v1")
+    control.open("v1", "components")
+    control.close("v1")
+    assert not control.accept("v1")
+    control.open("v2", "connections")
+    control.close("v1")
+    assert not control.accept("v1")
+    assert control.accept("v2")
+    control.close("v2")
+    assert control.accept("v2")
+    assert not GraphReviewControl().accept("v2")
+
+
+@pytest.mark.asyncio
+async def test_failed_component_render_never_opens_acceptance(monkeypatch):
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+    _install_success_boundaries(monkeypatch)
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def render(state, graph, **_kwargs):
+        assert not control.accept(graph["version"])
+        return {**state, "graph_render_admitted": False}
+
+    monkeypatch.setattr(workflow, "_render", render)
+    result = await workflow.run_staged_graph_pipeline(_state(send=send, _graph_review_control=control))
+    assert result["graph_publication"] == "withheld"
+    assert not any(e["type"] == "graph_review_status" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_explicit_acceptance_wins_same_tick_review_completion(monkeypatch):
+    from agent.graph_review_control import GraphReviewControl
+
+    control = GraphReviewControl()
+
+    async def send(event):
+        if event.get("type") == "graph_review_status" and event["status"] == "reviewing":
+            assert control.accept(event["graph_version"])
+
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+    result = await workflow._review_stage(
+        {"send": send, "_graph_review_control": control}, "connections",
+        graph={"version": "same-tick-v1"},
+    )
+    assert result["approved"] is False
+    assert result["skipped_by_user"] is True
+
+
+@pytest.mark.asyncio
+async def test_generation_feedback_completes_before_render_and_review(monkeypatch):
+    _install_success_boundaries(monkeypatch)
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def render(state, graph, *, preview_count, stage):
+        phase_events = [e for e in events if e.get("phase") == stage]
+        assert [e["status"] for e in phase_events] == ["active", "complete"]
+        events.append({"type": "render_started", "stage": stage})
+        return await _render_ok(state, graph, preview_count=preview_count)
+
+    monkeypatch.setattr(workflow, "_render", render)
+    result = await workflow.run_staged_graph_pipeline(_state(send=send))
+    assert result["graph_publication"] == "approved"
+    for stage in ("components", "connections"):
+        phase_events = [e for e in events if e.get("phase") == stage]
+        assert [e["status"] for e in phase_events] == ["active", "complete"]
+        completed = events.index(phase_events[-1])
+        rendered = next(i for i, e in enumerate(events)
+                        if e["type"] == "render_started" and e["stage"] == stage)
+        reviewed = next(i for i, e in enumerate(events)
+                        if e.get("phase") == "review" and e.get("title") == f"Checking {stage}")
+        assert completed < rendered < reviewed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capacity", ["nodes", "edges"])
+@pytest.mark.parametrize("user_request", [
+    "Add a monitoring layer; do not rebuild the graph.",
+    "Rebuild the graph with a monitoring layer.",
+])
+async def test_typed_extension_at_capacity_never_falls_back_to_rebuild(
+    monkeypatch, capacity, user_request
+):
+    calls = []
+    _install_success_boundaries(monkeypatch, events=calls)
+    saved = _accepted_staged_graph()
+    contract = {"maturity": "prototype", "capabilities": {}}
+    monkeypatch.setattr(workflow.settings, f"graph_safety_max_{capacity}", len(saved[capacity]))
+
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_action="extend", graph_intent="edit", user_message=user_request, design_query=user_request,
+        graph_data=saved, approved_graph_data=saved,
+        graph_contract=contract, approved_graph_contract=contract,
+    ))
+
+    assert calls == []
+    assert result["graph_data"] == saved
+    assert result["graph_contract"] == contract
+    assert result["graph_changed"] is False
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_operation"]["failure_code"] == "staged_extension_scope_unavailable"
+    assert result["graph_review"]["revision_instruction"] == (
+        "I couldn't extend the saved diagram. Start a new chat for a separate diagram."
+    )

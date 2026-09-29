@@ -290,6 +290,8 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
                     "type": "start",
                     "thread_id": thread["id"],
                     "content": "Design a growth marketing agent system",
+                    "graph_action": "extend",
+                    "expected_graph_version": "approved-v1",
                     "complexity": "production",
                     "graph_mode": "on",
                     "research_enabled": False,
@@ -1589,6 +1591,8 @@ def test_blank_turn_requires_a_new_approved_nonempty_graph(
                     "type": "start",
                     "thread_id": thread["id"],
                     "content": "Create a diagram",
+                    "graph_action": "extend" if existing_graph else "new",
+                    "expected_graph_version": "old" if existing_graph else None,
                 }
             )
             events = _receive_until(socket, "done")
@@ -1722,3 +1726,82 @@ def test_failed_generation_notice_is_persisted_with_existing_graph(
         chat_websocket.thread_store.get_graph_artifact(user["id"], thread["id"])[0]
         == graph
     )
+
+
+def test_accept_preview_keeps_turn_alive_rejects_steering_and_persists(temp_data_dir, monkeypatch):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    finish = asyncio.Event()
+    cancelled = False
+
+    async def agent(state, *_args):
+        nonlocal cancelled
+        control = state["_graph_review_control"]
+        control.open("preview-v1")
+        await state["send"]({"type": "graph_review_status", "status": "reviewing", "graph_version": "preview-v1", "stage": "connections"})
+        try:
+            await control.wait()
+            await state["send"]({"type": "graph_review_status", "status": "accepted", "graph_version": "preview-v1", "stage": "connections"})
+            control.close("preview-v1")
+            await finish.wait()
+            await state["send"]({"type": "response_delta", "content": "Finished accepted answer"})
+            return {**state, "response_text": "Finished accepted answer", "graph_publication": "user_accepted", "graph_data": {"version": "preview-v1", "nodes": [{"id": "accepted", "label": "Accepted node"}], "edges": []}}
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    monkeypatch.setattr("api.chat_websocket.run_agent", agent)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/chat/ws", headers={"origin": "http://localhost:5173"}) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            socket.receive_json()
+            socket.send_json({"type": "start", "thread_id": thread["id"], "content": "design", "client_request_id": "accept-test"})
+            _receive_until(socket, "graph_review_status")
+            for request_id, version in [("other", "preview-v1"), ("accept-test", "old")]:
+                socket.send_json({"type": "accept_preview", "client_request_id": request_id, "graph_version": version})
+                assert _receive_until(socket, "command_rejected")[-1]["command_type"] == "accept_preview"
+            command = {"type": "accept_preview", "client_request_id": "accept-test", "graph_version": "preview-v1"}
+            socket.send_json(command)
+            assert _receive_until(socket, "graph_review_status")[-1]["status"] == "accepted"
+            socket.send_json(command)
+            socket.send_json({"type": "steer", "client_request_id": "accept-test", "content": "restart"})
+            assert "finishing" in _receive_until(socket, "command_rejected")[-1]["reason"]
+            client.portal.call(finish.set)
+            events = _receive_until(socket, "done")
+    assert not cancelled
+    assert chat_websocket.thread_store.get_graph(user["id"], thread["id"])["version"] == "preview-v1"
+    assert any(event.get("content") == "Finished accepted answer" for event in events)
+    assert any(message["content"] == "Finished accepted answer" for message in get_history(user["id"], thread["id"]))
+
+
+@pytest.mark.parametrize("termination", ["stop", "disconnect"])
+def test_accepted_preview_still_cancels_on_cleanup(temp_data_dir, monkeypatch, termination):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    cancelled = False
+
+    async def agent(state, *_args):
+        nonlocal cancelled
+        control = state["_graph_review_control"]
+        control.open("preview-v1")
+        await state["send"]({"type": "graph_review_status", "status": "reviewing", "graph_version": "preview-v1", "stage": "connections"})
+        try:
+            await control.wait()
+            await state["send"]({"type": "graph_review_status", "status": "accepted", "graph_version": "preview-v1", "stage": "connections"})
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
+
+    monkeypatch.setattr("api.chat_websocket.run_agent", agent)
+    with TestClient(app) as client:
+        with client.websocket_connect("/api/chat/ws", headers={"origin": "http://localhost:5173"}) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            socket.receive_json()
+            socket.send_json({"type": "start", "thread_id": thread["id"], "content": "design", "client_request_id": "cleanup-test"})
+            _receive_until(socket, "graph_review_status")
+            socket.send_json({"type": "accept_preview", "client_request_id": "cleanup-test", "graph_version": "preview-v1"})
+            _receive_until(socket, "graph_review_status")
+            if termination == "stop":
+                socket.send_json({"type": "stop", "client_request_id": "cleanup-test"})
+                _receive_until(socket, "stopped")
+    assert cancelled
+    assert get_history(user["id"], thread["id"]) == []

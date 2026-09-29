@@ -123,6 +123,7 @@ interface D3GraphProps {
   layoutReadiness?: 'paint' | 'geometry';
   minimumTitlePx?: number;
   navigation?: boolean;
+  layoutReadOnly?: boolean;
   inspectionViewport?: { nodeId: string; width: number; height: number };
 }
 
@@ -203,6 +204,7 @@ export function D3Graph({
   layoutReadiness = 'paint',
   minimumTitlePx = MIN_PUBLISHED_TITLE_PX,
   navigation = false,
+  layoutReadOnly = false,
   inspectionViewport,
 }: D3GraphProps) {
   const svgRef = useRef<SVGSVGElement>(null);
@@ -475,7 +477,7 @@ export function D3Graph({
     }
 
     const groups = navigation && renderGraphData.design_origin === 'applied'
-      ? architectureRegions(nodes, renderGraphData.groups ?? [])
+      ? architectureRegions(nodes, renderGraphData.groups ?? [], Object.keys(restoreViewState?.zonePadding ?? {}))
       : renderGraphData.groups ?? [];
     for (const group of groups) {
       const saved = restoreViewState?.zonePadding?.[group.id];
@@ -725,6 +727,18 @@ export function D3Graph({
       node.y = persistedPosition.y;
     }
 
+    // Saved nodes are fixed anchors. Only new nodes move out of occupied space.
+    if (navigation && restoreViewState) {
+      const occupied = nodes.filter(node => restoreViewState.nodePositions[node.id]);
+      for (const node of nodes.filter(node => !restoreViewState.nodePositions[node.id])) {
+        while (occupied.some(other => Math.abs(other.x - node.x) < NODE_W + 24
+          && Math.abs(other.y - node.y) < NODE_H + 24)) {
+          node.x += NODE_W + 24;
+        }
+        occupied.push(node);
+      }
+    }
+
     const membersOf = (group: typeof groups[number]) => [...new Set(group.nodeIds)]
       .map(id => nodeById[id]).filter((node): node is RenderNode => Boolean(node));
     const contentBounds = (members: RenderNode[]): Box => {
@@ -742,13 +756,6 @@ export function D3Graph({
       for (const node of members) { node.x += centered.contentOffset.x; node.y += centered.contentOffset.y; }
       zonePadding[group.id] = centered.padding;
     };
-    // Older saved frames can have all their spare space on one side.
-    // Keep those frame boundaries while restoring centered contents.
-    if (navigation) for (const group of groups) {
-      const padding = zonePadding[group.id];
-      if (padding && (padding.left !== padding.right || padding.top !== padding.bottom)) centerMembers(group);
-    }
-
     // Total layout dimensions (used for auto-fit zoom below)
     const layoutW = orientation === 'vertical'
       ? verticalLayoutW
@@ -1187,7 +1194,11 @@ export function D3Graph({
       return { grp, grpEl, rect, labelBackground, labelText, handles };
     });
 
-    if (navigation) {
+    if (layoutReadOnly) groupEls.forEach(({ rect, handles }) => {
+      rect.attr('tabindex', null).attr('role', null);
+      handles.attr('display', 'none').attr('tabindex', -1);
+    });
+    if (navigation && !layoutReadOnly) {
       let activeZoneId: string | null = null;
       const activateZone = (id: string | null) => {
         activeZoneId = id;
@@ -1469,15 +1480,16 @@ export function D3Graph({
       .data(nodes).enter().append('g')
       .attr('class', 'node')
       .attr('data-node-id', (d: RenderNode) => d.id)
-      .attr('role', 'button')
-      .attr('tabindex', 0)
-      .attr('aria-label', (d: RenderNode) => `Explore ${d.label}`)
+      .attr('role', layoutReadOnly ? 'img' : 'button')
+      .attr('tabindex', layoutReadOnly ? -1 : 0)
+      .attr('aria-label', (d: RenderNode) => layoutReadOnly ? d.label : `Explore ${d.label}`)
       .attr('aria-description', onNodeEditRef.current ? 'Press F2 to edit.' : null)
       .attr('data-grouped', (d: RenderNode) => groupStyleByNodeId.has(d.id) ? 'true' : null)
       .attr('opacity', 1)
-      .style('cursor', 'pointer')
+      .style('cursor', layoutReadOnly ? 'default' : 'pointer')
       .call(
         d3.drag<SVGGElement, RenderNode>()
+          .filter(event => !layoutReadOnly && !event.ctrlKey && !event.button)
           .on('start', function(event, node) {
             trackDrag(event);
             d3.select(this).style('cursor', 'grabbing');
@@ -1537,7 +1549,7 @@ export function D3Graph({
           onNodeEditRef.current(d);
           return;
         }
-        if (navigation && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        if (navigation && !layoutReadOnly && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
           event.preventDefault();
           event.stopPropagation();
           stopCameraFollow();
@@ -2208,7 +2220,7 @@ export function D3Graph({
       window.cancelAnimationFrame(secondFrame);
       renderStateRef.current = null;
     };
-  }, [layoutReadiness, minimumTitlePx, navigation, structureKey, viewportRevision]);
+  }, [layoutReadiness, layoutReadOnly, minimumTitlePx, navigation, structureKey, viewportRevision]);
 
   useEffect(() => {
     const exists = renderStateRef.current?.nodeSel.data().some(node => node.id === inspectedNodeId);
@@ -2383,7 +2395,7 @@ export function D3Graph({
     // One owner controls live edge visibility, hit targets, and walkthroughs.
     state.nodeSel.interrupt().attr('opacity', node => !revealed(node) ? 0
       : overview || activeNodeIds.has(node.id) ? 1 : 0.45)
-      .attr('tabindex', node => revealed(node) ? 0 : -1)
+      .attr('tabindex', node => !layoutReadOnly && revealed(node) ? 0 : -1)
       .attr('aria-hidden', node => String(!revealed(node)))
       .style('pointer-events', node => revealed(node) ? 'auto' : 'none');
     state.link.interrupt().attr('opacity', 1)
@@ -2393,7 +2405,7 @@ export function D3Graph({
     state.linkHit.interrupt().attr('opacity', 1).attr('tabindex', edge => visible(edge) ? 0 : -1)
       .attr('aria-hidden', edge => String(!visible(edge)))
       .style('pointer-events', edge => visible(edge) ? 'stroke' : 'none');
-  }, [navigation, focusedNodeId, hoveredNodeId, selectedConnectionId, showConnections, activeNodeIds, currentStep, structureKey, viewportRevision]);
+  }, [navigation, layoutReadOnly, focusedNodeId, hoveredNodeId, selectedConnectionId, showConnections, activeNodeIds, currentStep, structureKey, viewportRevision]);
 
   return (
     <div style={{ position: 'relative', width: '100%', height: '100%' }}>

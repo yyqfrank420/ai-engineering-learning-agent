@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v34"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v29"
+_COMPONENT_PROMPT_VERSION = "staged_components_v37"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v30"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -108,10 +108,22 @@ class AcceptedContext:
 class StagedGenerationError(ValueError):
     """A safe, stable error for a rejected generation boundary."""
 
-    def __init__(self, code: str, *, prompt_fingerprint: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        prompt_fingerprint: str | None = None,
+        diagnostic_reason: str | None = None,
+        diagnostic_path: str | None = None,
+        rejected_wire_fingerprint: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.prompt_fingerprint = prompt_fingerprint
+        # Separate telemetry from the findings sent back to the model for repair.
+        self.diagnostic_reason = diagnostic_reason
+        self.diagnostic_path = diagnostic_path
+        self.rejected_wire_fingerprint = rejected_wire_fingerprint
 
 
 def create_write_set(*, component_limit: int, edge_limit: int) -> dict[str, Any]:
@@ -250,9 +262,7 @@ def _component_create_response_schema(
     }
 
 
-def _parse_component_response(
-    text: str, *, component_limit: int, correction_delta: _EditDelta | None = None
-) -> dict[str, Any]:
+def _parse_candidate_outcome(text: str) -> dict[str, Any]:
     payload = _parse_json(text)
     _require_exact_keys(payload, {"candidate", "clarification_questions"})
     questions = payload["clarification_questions"]
@@ -271,6 +281,15 @@ def _parse_component_response(
         return {"clarification_questions": [question.strip() for question in questions]}
     if questions:
         raise StagedGenerationError("component_clarification_invalid")
+    return payload
+
+
+def _parse_component_response(
+    text: str, *, component_limit: int, correction_delta: _EditDelta | None = None
+) -> dict[str, Any]:
+    payload = _parse_candidate_outcome(text)
+    if "candidate" not in payload:
+        return payload
     return {
         "wire": _parse_component_wire(
             _canonical_json(
@@ -472,7 +491,9 @@ async def generate_component_candidate(
             stage="components",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema
+            schema=_component_create_response_schema(delta.schema)
+            if delta and edit_permissions.get("connection_addition_mode") == "extension"
+            else delta.schema
             if delta
             else _component_create_response_schema(
                 correction.schema if correction else schema
@@ -492,9 +513,9 @@ async def generate_component_candidate(
                     component_limit=component_limit,
                 )
             }
-            if delta
+            if delta and edit_permissions.get("connection_addition_mode") != "extension"
             else _parse_component_response(
-                response, component_limit=component_limit, correction_delta=correction
+                response, component_limit=component_limit, correction_delta=delta or correction
             )
         )
     except StagedGenerationError as exc:
@@ -523,6 +544,7 @@ async def generate_connection_candidate(
     gate_findings: Sequence[Mapping[str, Any]] = (),
     base_connections: Mapping[str, Any] | Sequence[Any] | None = None,
     rejected_candidate: Mapping[str, Any] | None = None,
+    prior_connection_exchanges: list[ConnectionExchange] | None = None,
     edit_permissions: Mapping[str, Any] | None = None,
     recovery_mode: bool = False,
     state: Mapping[str, Any] | None = None,
@@ -556,6 +578,7 @@ async def generate_connection_candidate(
             accepted_components=accepted,
             accepted_context=context,
             recovery_mode=recovery_mode,
+            connection_exchanges=prior_connection_exchanges,
         )
         if edit_permissions is None
         else None
@@ -593,7 +616,9 @@ async def generate_connection_candidate(
             stage="connections",
             prompt=prompt,
             prompt_fingerprint=prompt_fingerprint,
-            schema=delta.schema
+            schema=_component_create_response_schema(delta.schema)
+            if delta and edit_permissions.get("connection_addition_mode") == "extension"
+            else delta.schema
             if delta
             else correction.schema
             if correction
@@ -606,7 +631,18 @@ async def generate_connection_candidate(
             max_output_tokens=max_output_tokens,
         )
         edge_limit = _write_limits(valid_write_set)["edge_limit"]
-        if delta or correction:
+        if delta and edit_permissions.get("connection_addition_mode") == "extension":
+            outcome = _parse_candidate_outcome(response)
+            if "candidate" not in outcome:
+                return {**outcome, "prompt_fingerprint": prompt_fingerprint}
+            response = _canonical_json(outcome["candidate"])
+        if correction and correction.record_key == "exchanges":
+            wire, connection_exchanges = _parse_connection_response(
+                _canonical_json(correction.assemble(response)),
+                accepted_components=accepted,
+                edge_limit=edge_limit,
+            )
+        elif delta or correction:
             wire = _parse_connection_wire(
                 _canonical_json((delta or correction).assemble(response)),
                 accepted_components=accepted,
@@ -631,6 +667,8 @@ async def generate_connection_candidate(
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
     properties = schema["properties"]
     if "additions" in properties:
+        if "response_label" in properties["additions"]["items"].get("properties", {}):
+            return "staged_connections_exchange_correction_v1"
         if "removals" in properties:
             return f"staged_{stage}_recovery_delta_v1"
         nullable_updates = any(
@@ -706,6 +744,8 @@ async def _run_generation(
                 else settings.graph_builder_max_completion_tokens
             ),
             provider_attempt_limit=1,
+            send=state.get("send"),
+            thinking_phase=stage,
         )
     except TimeoutError as exc:
         raise StagedGenerationError("staged_generation_timeout") from exc
@@ -812,6 +852,8 @@ def _attempt_prompt(
         "findings": findings if attempt == 1 else None,
         "prior_prompt_fingerprint": prior_prompt_fingerprint if attempt == 1 else None,
     }
+    if stage == "components":
+        prompt_input["acceptance_criteria_order"] = list(acceptance_criteria)
     if stage == "components" and maturity == "production":
         prompt_input["downstream_controls"] = STAGED_PRODUCTION_REQUIREMENTS
     if stage == "connections" and maturity == "production":
@@ -825,6 +867,19 @@ def _attempt_prompt(
         )
     if correction_delta is not None:
         prompt_input["correction_slots"] = correction_delta.schema["properties"]
+        if correction_delta.record_key == "exchanges":
+            prompt_input["correction_exchanges"] = correction_delta.base["exchanges"]
+            _, exchange_map = _parse_connection_response(
+                _canonical_json(correction_delta.base),
+                accepted_components=accepted_components or [],
+                edge_limit=_write_limits(write_set)["edge_limit"],
+            )
+            prompt_input["original_edge_to_exchange_slot"] = {
+                str(edge_index): f"slot_{slot}"
+                for slot, exchange in enumerate(exchange_map)
+                for edge_index in exchange.values()
+                if edge_index is not None
+            }
     codebook = " ".join(
         f"{name}: " + ",".join(f"{code}={value}" for code, value in values.items())
         for name, values in (
@@ -950,6 +1005,19 @@ def _attempt_prompt(
             if stage == "components"
             else " The rejected_candidate is diagnostic context; return the correction delta."
         )
+        if correction_delta.record_key == "exchanges":
+            edit_rule += (
+                " Each slot_N refers to original exchange N in correction_exchanges. "
+                "Finding record indexes refer to original canonical edges; use "
+                "original_edge_to_exchange_slot to locate their exchange. Repair the request "
+                "and reply together, preserving every valid contract in that exchange. "
+                "Updates retain original endpoints and any existing reply. To change "
+                "participants, direction, or remove a reply, explicitly remove the cited "
+                "exchange and add its complete replacement. "
+                "A removal removes the whole exchange. Each exchange counts as one edge "
+                "plus one when response_label is nonnull; the final expanded graph must "
+                "fit the edge_limit."
+            )
     recovery_rule = (
         " Recovery mode applies only to this new graph's second generation attempt. "
         "Produce the simplest complete overview of the original request at the selected "
@@ -978,6 +1046,11 @@ def _attempt_prompt(
             "an internal adapter to an external API remains internal. "
             "After adding or updating a component responsibility, reassess capabilities "
             "against all resulting responsibilities instead of retaining prior flags by default. "
+            "When correcting capabilities, reassess affected required owners in the same "
+            "authorized delta. A prior satisfied coverage review that depended on the old "
+            "flags does not establish those owners. Apply only the control clauses required "
+            "by declared behavior; do not introduce capabilities or unrelated controls to "
+            "satisfy a checkbox. Preserve unrelated content. "
             "Change only fields authorized by the write set and supplied schema; capability "
             "reassessment does not authorize changes to frozen responsibilities or metadata. "
             f"Use these integer codes: {codebook}."
@@ -1000,6 +1073,18 @@ def _attempt_prompt(
                 "Keep compatible work in existing components. Connection generation supplies "
                 "the detailed control contracts and failure outcomes; it cannot change "
                 "these component responsibilities."
+            )
+        if connection_addition_plan and connection_addition_plan.get("mode") == "extension":
+            instructions += (
+                " This is an add-only extension of the saved architecture. Keep every existing "
+                "component, connection, root, title and assumption unchanged. Add the "
+                "complete requested layer within the stated ceilings; the ceiling is not a target "
+                "count. Place new components in compatible existing groups or new groups; "
+                "preserve saved group labels, kinds, and existing member order. Connect them to appropriate saved "
+                "components without adding connections solely between existing components. "
+                "Return candidate containing only the authorized delta with clarification_questions=[]; "
+                "if the requested layer or its attachment is uncertain, return candidate=null and "
+                "1-3 clarification_questions instead of inventing scope."
             )
         if edit_delta is None:
             instructions += (
@@ -1030,7 +1115,9 @@ def _attempt_prompt(
         connection_format = (
             "Propose canonical edges in the delta. Represent both directions of a synchronous "
             "request-response as distinct edges. "
-            if edit_delta is not None or correction_delta is not None
+            if edit_delta is not None or (
+                correction_delta is not None and correction_delta.record_key != "exchanges"
+            )
             else "Propose exchanges only. Author each request and its actual reply once in the "
             "same exchange: label describes the outbound contract and response_label describes "
             "the return contract. Expected read payloads and replies belong in response_label, "
@@ -1105,6 +1192,14 @@ def _attempt_prompt(
                 "accepted components and capabilities; do not invent extra components or "
                 "capabilities to complete this check."
             )
+    if stage == "connections" and connection_addition_plan and connection_addition_plan.get("mode") == "extension":
+        instructions += (
+            " Return candidate containing only the add-only connection delta with "
+            "clarification_questions=[], or candidate=null with 1-3 clarification_questions "
+            "if attachment is uncertain. Existing connections stay unchanged; each new "
+            "connection must involve a new component, and every new component must attach "
+            "through the new layer to the saved graph."
+        )
     prompt = (
         instructions
         + maturity_rule
@@ -1181,6 +1276,10 @@ class _EditDelta:
                         else update_fields[slot]
                     )
                     _require_exact_keys(update, set(slot_schema["properties"]))
+                    if self.record_key == "exchanges" and record["response_label"] is not None and (
+                        not isinstance(update["response_label"], str) or not update["response_label"].strip()
+                    ):
+                        raise StagedGenerationError("connection_exchange_reply_required")
                     record.update(update)
             records.append(record)
         return {
@@ -1224,6 +1323,10 @@ class _EditDelta:
             if slot in update_fields and update is not None:
                 slot_schema = update_fields[slot]["anyOf"][0]
                 _require_exact_keys(update, set(slot_schema["properties"]))
+                if self.record_key == "exchanges" and record["response_label"] is not None and (
+                    not isinstance(update["response_label"], str) or not update["response_label"].strip()
+                ):
+                    raise StagedGenerationError("connection_exchange_reply_required")
                 record.update(update)
             records.append(record)
         result = {
@@ -1377,6 +1480,44 @@ def _edit_delta(
     )
 
 
+def _connection_exchange_base(
+    wire: Mapping[str, Any],
+    provenance: list[ConnectionExchange],
+    *,
+    accepted_components: list[dict[str, Any]],
+    edge_limit: int,
+) -> dict[str, Any]:
+    """Recover exchange authoring units only from exact validated provenance."""
+    edges = wire["edges"]
+    if not isinstance(provenance, list):
+        raise StagedGenerationError("invalid_connection_exchange_provenance")
+    exchanges = []
+    for pair in provenance:
+        if not isinstance(pair, Mapping) or set(pair) != {
+            "request_record_index", "response_record_index"
+        }:
+            raise StagedGenerationError("invalid_connection_exchange_provenance")
+        request = pair["request_record_index"]
+        response = pair["response_record_index"]
+        if not _is_integer(request) or not 0 <= request < len(edges) or (
+            response is not None and (
+                not _is_integer(response) or not 0 <= response < len(edges)
+            )
+        ):
+            raise StagedGenerationError("invalid_connection_exchange_provenance")
+        exchanges.append({
+            **edges[request],
+            "response_label": edges[response]["label"] if response is not None else None,
+        })
+    base = {"exchanges": exchanges}
+    expanded, checked = _parse_connection_response(
+        _canonical_json(base), accepted_components=accepted_components, edge_limit=edge_limit,
+    )
+    if expanded != wire or checked != provenance:
+        raise StagedGenerationError("invalid_connection_exchange_provenance")
+    return base
+
+
 def _semantic_correction_delta(
     *,
     stage: str,
@@ -1389,6 +1530,7 @@ def _semantic_correction_delta(
     accepted_components: list[dict[str, Any]] | None = None,
     accepted_context: AcceptedContext | None = None,
     recovery_mode: bool = False,
+    connection_exchanges: list[ConnectionExchange] | None = None,
 ) -> _EditDelta | None:
     """Scope semantic create repairs to cited records in the rejected wire."""
     semantic_findings = [
@@ -1455,6 +1597,24 @@ def _semantic_correction_delta(
     if global_finding:
         targets = set(range(count))
         metadata.update(("title", "assumptions", "root_index", "capabilities"))
+    # Global findings have no removal authority, so keep their existing endpoint edits.
+    if stage == "connections" and connection_exchanges is not None and recovery_mode and not global_finding:
+        exchange_base = _connection_exchange_base(
+            base, connection_exchanges,
+            accepted_components=accepted_components or [], edge_limit=capacity,
+        )
+        targets = {
+            index for index, exchange in enumerate(connection_exchanges)
+            if any(edge in targets for edge in exchange.values() if edge is not None)
+        }
+        deletion_targets = {
+            index for index, exchange in enumerate(connection_exchanges)
+            if any(edge in deletion_targets for edge in exchange.values() if edge is not None)
+        }
+        base = exchange_base
+        record_key = "exchanges"
+        count = len(base[record_key])
+        schema = _connection_create_response_schema(schema)
     fields = schema["properties"][record_key]["items"]["properties"]
     delta = _edit_delta(
         base=base,
@@ -1462,7 +1622,10 @@ def _semantic_correction_delta(
         selectors=[str(index) for index in range(count)],
         permissions={
             f"editable_{kind}_fields": {
-                str(index): list(fields) for index in sorted(targets)
+                str(index): [
+                    field for field in fields
+                    if record_key != "exchanges" or field not in {"source_index", "target_index"}
+                ] for index in sorted(targets)
             },
             f"allowed_new_{kind}_count": capacity - count,
             f"minimum_new_{kind}_count": 0,
@@ -1477,6 +1640,13 @@ def _semantic_correction_delta(
         return delta
     recovery_schema = deepcopy(delta.schema)
     properties = recovery_schema["properties"]
+    if record_key == "exchanges":
+        for index in targets:
+            if base[record_key][index]["response_label"] is not None:
+                slot = properties["updates"]["properties"][f"slot_{index}"]["anyOf"][0]
+                slot["properties"]["response_label"] = deepcopy(
+                    schema["properties"][record_key]["items"]["properties"]["label"]
+                )
     properties["removals"] = {
         "type": "array",
         "minItems": 0,
@@ -1542,6 +1712,8 @@ def _connection_addition_plan(
     edge_count = permissions.get("allowed_new_edge_count", 0)
     minimum = permissions.get("minimum_new_edge_count", edge_count)
     mode = permissions.get("connection_addition_mode", "exact")
+    if mode == "extension" and components_accepted:
+        node_count = len(set(component_indexes) - set(permissions.get("added_edge_anchor_node_ids", [])))
     anchors = _exact_ids(permissions.get("added_edge_anchor_node_ids", []))
     obligations = permissions.get("connection_addition_obligations", [])
     enforce_label = permissions.get("enforce_added_edge_contract_label", True)
@@ -1551,11 +1723,11 @@ def _connection_addition_plan(
         or not _nonnegative_limit(edge_count)
         or not _nonnegative_limit(minimum)
         or minimum > edge_count
-        or mode not in ("exact", "attachment")
+        or mode not in ("exact", "attachment", "extension")
         or anchors is None
         or not isinstance(enforce_label, bool)
         or not isinstance(obligations, list)
-        or len(obligations) != (1 if mode == "attachment" else edge_count)
+        or len(obligations) != (0 if mode == "extension" else 1 if mode == "attachment" else edge_count)
         or (mode == "exact" and minimum != edge_count)
         or (
             mode == "attachment"
@@ -1626,7 +1798,7 @@ def _connection_addition_plan(
                 "minimum_addition_count": minimum,
                 "maximum_addition_count": edge_count,
             }
-            if mode == "attachment"
+            if mode in ("attachment", "extension")
             else {"addition_count": edge_count}
         ),
         "anchor_component_indexes": [existing_indexes[node_id] for node_id in anchors],
@@ -1763,82 +1935,79 @@ def _connection_edit_delta(
 
 def _parse_component_wire(text: str, *, component_limit: int) -> dict[str, Any]:
     payload = _parse_json(text)
-    _require_exact_keys(
-        payload,
-        {"title", "assumptions", "root_index", "capabilities", "components"},
-    )
-    if not isinstance(payload["title"], str) or not (
-        0 < len(payload["title"].strip()) <= TITLE_MAX_CHARS
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+
+    def rejected(reason: str, path: str, *, schema: bool = False) -> StagedGenerationError:
+        return StagedGenerationError(
+            "staged_generation_schema_invalid" if schema else "component_wire_invalid",
+            diagnostic_reason=reason,
+            diagnostic_path=path,
+            rejected_wire_fingerprint=_fingerprint(payload),
+        )
+
+    if set(payload) != {"title", "assumptions", "root_index", "capabilities", "components"}:
+        raise rejected("component_wire_keys", "components", schema=True)
+    if not isinstance(payload["title"], str):
+        raise rejected("title_type", "title")
+    if not (0 < len(payload["title"].strip()) <= TITLE_MAX_CHARS):
+        raise rejected("title_length", "title")
     assumptions = payload["assumptions"]
-    if (
-        not isinstance(assumptions, list)
-        or len(assumptions) > _MAX_ASSUMPTIONS
-        or any(
-            not isinstance(item, str)
-            or not (0 < len(item.strip()) <= ASSUMPTION_MAX_CHARS)
-            for item in assumptions
-        )
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(assumptions, list):
+        raise rejected("assumptions_type", "assumptions")
+    if len(assumptions) > _MAX_ASSUMPTIONS:
+        raise rejected("assumptions_count", "assumptions")
+    for index, item in enumerate(assumptions):
+        if not isinstance(item, str):
+            raise rejected("assumption_type", f"assumptions.{index}")
+        if not (0 < len(item.strip()) <= ASSUMPTION_MAX_CHARS):
+            raise rejected("assumption_length", f"assumptions.{index}")
     if not _is_integer(payload["root_index"]):
-        raise StagedGenerationError("component_wire_invalid")
+        raise rejected("root_type", "root_index")
     capabilities = payload["capabilities"]
-    _require_exact_keys(
-        capabilities,
-        {"external_effects", "retrieval_or_reuse", "learning_or_release"},
-    )
-    if any(not isinstance(value, bool) for value in capabilities.values()):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(capabilities, dict):
+        raise rejected("capabilities_type", "capabilities", schema=True)
+    if set(capabilities) != {"external_effects", "retrieval_or_reuse", "learning_or_release"}:
+        raise rejected("capabilities_keys", "capabilities", schema=True)
+    for field, value in capabilities.items():
+        if not isinstance(value, bool):
+            raise rejected("capability_type", f"capabilities.{field}")
     components = payload["components"]
-    if (
-        not isinstance(components, list)
-        or not components
-        or len(components) > component_limit
-        or not 0 <= payload["root_index"] < len(components)
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(components, list):
+        raise rejected("components_type", "components")
+    if not components or len(components) > component_limit:
+        raise rejected("components_count", "components")
+    if not 0 <= payload["root_index"] < len(components):
+        raise rejected("root_range", "root_index")
     identities: set[tuple[str, int]] = set()
-    for component in components:
-        _require_exact_keys(
-            component,
-            {
-                "label",
-                "type",
-                "responsibility",
-                "group_label",
-                "group_kind",
-                "primary_flow_member",
-            },
-        )
-        if (
-            not isinstance(component["label"], str)
-            or not (0 < len(component["label"].strip()) <= COMPONENT_LABEL_MAX_CHARS)
-            or not _is_integer(component["type"])
-            or component["type"] not in NODE_TYPE_CODES
-            or not isinstance(component["responsibility"], str)
-            or not (
-                0
-                < len(component["responsibility"].strip())
-                <= COMPONENT_RESPONSIBILITY_MAX_CHARS
-            )
-            or not isinstance(component["group_label"], str)
-            or not (0 < len(component["group_label"].strip()) <= GROUP_LABEL_MAX_CHARS)
-            or not _is_integer(component["group_kind"])
-            or component["group_kind"] not in GROUP_KIND_CODES
-            or not isinstance(component["primary_flow_member"], bool)
+    for index, component in enumerate(components):
+        path = f"components.{index}"
+        if not isinstance(component, dict):
+            raise rejected("component_type", path, schema=True)
+        if set(component) != {"label", "type", "responsibility", "group_label", "group_kind", "primary_flow_member"}:
+            raise rejected("component_keys", path, schema=True)
+        for field, limit in (
+            ("label", COMPONENT_LABEL_MAX_CHARS),
+            ("responsibility", COMPONENT_RESPONSIBILITY_MAX_CHARS),
+            ("group_label", GROUP_LABEL_MAX_CHARS),
         ):
-            raise StagedGenerationError("component_wire_invalid")
+            if not isinstance(component[field], str):
+                raise rejected(f"{field}_type", f"{path}.{field}")
+            if not (0 < len(component[field].strip()) <= limit):
+                raise rejected(f"{field}_length", f"{path}.{field}")
+        if not _is_integer(component["type"]) or component["type"] not in NODE_TYPE_CODES:
+            raise rejected("component_type_enum", f"{path}.type")
+        if not _is_integer(component["group_kind"]) or component["group_kind"] not in GROUP_KIND_CODES:
+            raise rejected("group_kind_enum", f"{path}.group_kind")
+        if not isinstance(component["primary_flow_member"], bool):
+            raise rejected("primary_flow_type", f"{path}.primary_flow_member")
         identity = (
             " ".join(component["label"].split()).casefold(),
             component["type"],
         )
         if identity in identities:
-            raise StagedGenerationError("component_wire_invalid")
+            raise rejected("duplicate_component", path)
         identities.add(identity)
     if not components[payload["root_index"]]["primary_flow_member"]:
-        raise StagedGenerationError("component_wire_invalid")
+        raise rejected("root_not_primary", "root_index")
     return payload
 
 
@@ -1849,37 +2018,52 @@ def _parse_connection_wire(
     edge_limit: int,
 ) -> dict[str, Any]:
     payload = _parse_json(text)
-    _require_exact_keys(payload, {"edges"})
+
+    def rejected(reason: str, path: str, *, schema: bool = False) -> StagedGenerationError:
+        return StagedGenerationError(
+            "staged_generation_schema_invalid" if schema else "connection_wire_invalid",
+            diagnostic_reason=reason,
+            diagnostic_path=path,
+            rejected_wire_fingerprint=_fingerprint(payload),
+        )
+
+    if set(payload) != {"edges"}:
+        raise rejected("wire_keys", "edges", schema=True)
     edges = payload["edges"]
     accepted_indexes = {item["index"] for item in accepted_components}
-    if not isinstance(edges, list) or len(edges) > edge_limit:
-        raise StagedGenerationError("connection_wire_invalid")
+    if not isinstance(edges, list):
+        raise rejected("edges_type", "edges")
+    if len(edges) > edge_limit:
+        raise rejected("edges_count", "edges")
     identities: set[tuple[int, int, str]] = set()
-    for edge in edges:
-        _require_exact_keys(
-            edge, {"source_index", "target_index", "label", "flow", "sync"}
-        )
-        if (
-            not _is_integer(edge["source_index"])
-            or not _is_integer(edge["target_index"])
-            or edge["source_index"] not in accepted_indexes
-            or edge["target_index"] not in accepted_indexes
-            or edge["source_index"] == edge["target_index"]
-            or not isinstance(edge["label"], str)
-            or not (0 < len(edge["label"].strip()) <= CONNECTION_LABEL_MAX_CHARS)
-            or not _is_integer(edge["flow"])
-            or edge["flow"] not in FLOW_CODES
-            or not _is_integer(edge["sync"])
-            or edge["sync"] not in SYNC_CODES
-        ):
-            raise StagedGenerationError("connection_wire_invalid")
+    for index, edge in enumerate(edges):
+        path = f"edges.{index}"
+        if not isinstance(edge, dict):
+            raise rejected("edge_type", path, schema=True)
+        if set(edge) != {"source_index", "target_index", "label", "flow", "sync"}:
+            raise rejected("edge_keys", path, schema=True)
+        for field in ("source_index", "target_index"):
+            if not _is_integer(edge[field]):
+                raise rejected("endpoint_type", f"{path}.{field}")
+            if edge[field] not in accepted_indexes:
+                raise rejected("endpoint_missing", f"{path}.{field}")
+        if edge["source_index"] == edge["target_index"]:
+            raise rejected("self_loop", path)
+        if not isinstance(edge["label"], str):
+            raise rejected("label_type", f"{path}.label")
+        if not (0 < len(edge["label"].strip()) <= CONNECTION_LABEL_MAX_CHARS):
+            raise rejected("label_length", f"{path}.label")
+        if not _is_integer(edge["flow"]) or edge["flow"] not in FLOW_CODES:
+            raise rejected("flow_enum", f"{path}.flow")
+        if not _is_integer(edge["sync"]) or edge["sync"] not in SYNC_CODES:
+            raise rejected("sync_enum", f"{path}.sync")
         identity = (
             edge["source_index"],
             edge["target_index"],
             " ".join(edge["label"].split()).casefold(),
         )
         if identity in identities:
-            raise StagedGenerationError("connection_wire_invalid")
+            raise rejected("duplicate_edge", path)
         identities.add(identity)
     root_indexes = {
         item["index"] for item in accepted_components if item.get("is_root") is True

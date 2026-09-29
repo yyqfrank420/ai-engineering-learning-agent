@@ -238,7 +238,7 @@ description. The selected-connection inspector edits each underlying directed re
 technology, description, flow class, and sync mode. A bundled visual connection does not merge its
 directed records. Double-clicking a node, or pressing F2 while it is focused, focuses its name field.
 The existing D3 canvas, visual language, learning details, and chat expansion remain in place.
-This pass does not add freeform notes or an undo history.
+Freeform notes are outside the editor. Accepted edits append a durable graph revision.
 
 Edits are drafts until explicit Save. Cancel discards the draft. Closing or changing selection must
 not silently discard unsaved text. The UI distinguishes unsaved, saving, saved, and failed states;
@@ -256,7 +256,7 @@ learner's wording was source-authored or reviewed by the generation gates. Manua
 per record in `user_edited_fields`. Later scoped patches preserve unrelated manual fields and their
 markers; an explicit patch that changes a marked field replaces that value and removes its marker.
 Compatible canonical graph selection carries manual fields across only where record identity is
-unambiguous. An explicit new create starts fresh. Subsequent scoped edits use the edited canonical
+unambiguous. An explicit new create starts fresh in a new chat. Subsequent scoped edits use the edited canonical
 graph and follow their applicable validation and approval path.
 
 The interaction borrows the direct text editing, connector labeling, and selection-dependent
@@ -276,26 +276,52 @@ polling; late responses cannot update a different account or a newer attempt. A 
 same user does not restart preparation.
 
 Diagram-enabled turns retain the canvas after completion, including a clear empty state when no
-diagram is published. The conversation shows one short status derived from the latest server
-workflow event while generation runs. The canvas has no progress overlay. Internal event titles,
-details, and completed activity logs are omitted; terminal errors remain in the conversation.
-The frontend stores response messages as they arrive but withholds the current turn's assistant
-messages until the stream terminates and the committed graph has painted. D3 reports readiness
+diagram is published. The conversation shows short labels for concurrent active operations and
+the latest completed milestone. Each server phase owns its active and terminal events. Book
+retrieval runs off the event loop so web search and stream delivery can continue. The canvas has
+no progress overlay. Internal event titles, details, and completed activity logs are omitted;
+terminal errors remain in the conversation.
+The frontend reveals validated explanation sections while generation continues once each section's
+graph version matches the displayed, painted diagram. Generic or unversioned answer text waits
+for the terminal result and graph paint. D3 reports readiness
 after fonts and two animation frames, with a three-second terminal grace period in the hook.
 Private candidate evaluation measures synchronous SVG geometry without waiting for paint. Its
 evaluator remains mounted across chat and dashboard routes and bounds image capture to three
-seconds. A painted preview can satisfy readiness only when its exact
-structure becomes the committed graph. Text-only mode continues streaming normally; a terminal
+seconds. A painted preview can release matching versioned explanation sections before the final save;
+the terminal commit remains the authority for graph history. Text-only mode continues streaming normally; a terminal
 failure without a graph releases the available explanation instead of waiting for a missing graph.
 
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
-`POST /api/threads/{thread_id}/diagram-intent` endpoint. Existing intent rules identify explicit
-diagram requests and opt-outs. The composer always sends automatic depth, graph on, and research
-on. Ambiguous learning requests automatically send `diagram_requested: true` separately from the
-unchanged message; request admission resolves it to a create intent when no existing edit intent
-applies. Existing explanations and explicit opt-outs retain their server-owned routing. There is
-no mode popover or diagram-choice dialog. An unavailable intent check retains the draft and shows
-connection feedback. Draft edits and thread switches invalidate pending checks.
+`POST /api/threads/{thread_id}/diagram-intent` endpoint. The composer always sends automatic depth,
+graph on, and research on. A new conversation can generate immediately. With a saved diagram,
+clear additions extend it, explanations leave it unchanged, and ambiguous requests show an inline
+choice: Extend this diagram or Start a new chat. The separate option creates and opens a chat
+before sending. Unavailable intent checks and failed chat creation retain the draft with feedback.
+Typed `graph_action` and expected graph version travel through both transports. Server admission
+rejects fresh creation over a saved graph and rejects stale extension requests before model calls.
+
+## Diagram history
+
+`graph_revisions` retains accepted graph bodies with their server-only contracts, parent links and
+request labels. `chat_threads.active_graph_revision_id` identifies the working revision;
+`chat_messages.graph_revision_id` associates an answer with its result. Publication and manual
+content edits append revisions in the same transaction as their canonical state. A layout save
+updates the active revision and materialized graph together, without creating a content revision.
+
+Undo activates the parent; Redo returns along the path just undone. An explicit restore, a content
+change or a thread switch clears that session path; without one, Redo selects the newest child.
+All retained branches remain in a compact numbered version picker. View diagram links beside
+answers provide the main history entry and indicate the viewed revision. Earlier versions open
+a read-only preview with Restore and Return to current controls. Selecting the current answer
+returns to the working graph. Chat scrolling never switches the graph. Before a transition, the
+canvas flushes pending layout saves. Failed saves keep the user in place. Existing positions remain
+fixed during extension; new components are placed around them.
+
+History endpoints are owner-scoped. Restore shares the generation lease and compares the current
+graph version, then assigns a fresh activation version. Repeating an already-active restore is a
+no-op. Old diagrams first become checkpoints when read or changed by this release; overwritten
+historical graphs cannot be recovered without another saved artifact. See
+[the continuity contract](graph-history-contract.md) for operation boundaries and rollout rules.
 
 Every production frontend turn includes a UUID `client_request_id`. Completed user/assistant
 pairs are unique on that key at the database boundary, and a network retry replays the stored
@@ -327,7 +353,7 @@ only to graph answers. Internal evaluation captures the exact book and research 
 synthesis, including empty context, under the prompt release identity.
 
 Graph explanations use `EXPLANATION_MODEL` (default `claude-sonnet-5-5`) independently of
-`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v31` includes the user's September 28
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v32` includes the user's September 28
 writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
 authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
 original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
@@ -424,3 +450,24 @@ The distinction is orchestration versus concurrency, not framework versus no fra
 
 The older spec in `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is design history,
 not the current runtime contract.
+
+## Accepting a preview during review
+
+An explicit composer Stop during a rendered staged preview sends `accept_preview` with the
+active request ID and exact eligible graph version. It leaves the socket open. The request-scoped
+review control cancels only the active semantic reviewer, then the workflow finishes the answer
+and persists through the normal turn transaction. Component acceptance preserves that component
+candidate and generates its connections; deterministic validation and private rendering still run.
+The remaining semantic review is skipped.
+
+Publication uses `user_accepted`, with skipped review and accepted preview provenance in the
+server-owned graph contract. Skipped review is never represented as model approval or reused as
+completed review on a later edit. The UI disables repeated Stop and steering while finishing.
+Navigation, account changes, disconnects, and normal cancellation never imply acceptance.
+Stale request or candidate commands are rejected without cancelling the active turn.
+
+Live thinking uses provider-emitted text from the existing builder, reviewer, and explanation
+streams. It is request-scoped, bounded, and displayed as plain text in an expandable feed.
+Structured graph JSON, provider signatures, and tool results never enter that feed. Thinking
+is transient UI state; it is not saved in messages, graph history, or analytics. Provider
+reasoning can quote request context and should not be treated as a verified answer.

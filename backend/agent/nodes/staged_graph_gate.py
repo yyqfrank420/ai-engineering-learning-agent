@@ -17,6 +17,7 @@ from typing import Any
 from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_PRODUCTION_REQUIREMENTS,
     STAGED_REVIEW_STANDARD,
     staged_review_requirements,
     TOPOLOGY_PROOF_REQUIREMENTS,
@@ -25,8 +26,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v24"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v29"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v25"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v30"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -353,7 +354,14 @@ def _prompt(
     return (
         f"Review the {gate} candidate records for the requested architecture.\n"
         "Return only the JSON response defined by the supplied schema.\n"
-        "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
+        + (
+            "Evaluate capability_classification first from declared behavior, then assess "
+            "applicable ownership in the same pass even when the supplied flags are wrong. "
+            "Apply each downstream control only to the behavior covered by its own clauses; "
+            "a capability flag does not activate every clause or require unrelated features.\n"
+            if gate == "components" else ""
+        )
+        + "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
         "candidate evidence, with one short reason identifying its concrete witness or "
         "explaining why the rule is inapplicable. Attribute mechanisms only when the "
         "cited records state them; identify unspecified detail without claiming it exists. "
@@ -392,7 +400,14 @@ def _prompt(
             ensure_ascii=False,
         )
         + "\n"
-        f"User request: {json.dumps(user_request, ensure_ascii=False)}\n"
+        + (
+            "downstream_controls: "
+            + json.dumps(STAGED_PRODUCTION_REQUIREMENTS, ensure_ascii=False)
+            + "\n"
+            if gate == "components" and resolved_maturity == "production"
+            else ""
+        )
+        + f"User request: {json.dumps(user_request, ensure_ascii=False)}\n"
         f"Evidence bundle: {json.dumps(dict(evidence_bundle), ensure_ascii=False, separators=(',', ':'))}\n"
         f"Immutable candidate records: {json.dumps([{'record_index': index, 'record': record} for index, record in enumerate(candidate_records)], ensure_ascii=False, separators=(',', ':'))}"
         + (
@@ -714,6 +729,8 @@ async def _review(
             ),
             max_output_tokens=settings.graph_qa_max_completion_tokens,
             provider_attempt_limit=1,
+            send=(telemetry_context or {}).get("send"),
+            thinking_phase="review",
         )
     except Exception as exc:
         result = _terminal_result(f"provider call failed: {type(exc).__name__}")

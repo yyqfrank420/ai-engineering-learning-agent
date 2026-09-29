@@ -62,6 +62,25 @@ describe('AgentTransport WebSocket protocol', () => {
     vi.unstubAllGlobals();
   });
 
+  it('accepts an exact preview without closing or settling the active stream', async () => {
+    const transport = new AgentTransport();
+    const events: ServerEvent[] = [];
+    transport.onEvent(event => events.push(event));
+    const completed = transport.sendMessage(session, 'thread-1', 'design', undefined, 'request');
+    const socket = MockWebSocket.instances[0];
+    expect(transport.acceptPreview('request', 'v1')).toBe(false);
+    socket.open();
+    socket.receive({ type: 'ready' });
+    expect(transport.acceptPreview('stale', 'v1')).toBe(false);
+    expect(transport.acceptPreview('request', 'v1')).toBe(true);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: 'accept_preview', client_request_id: 'request', graph_version: 'v1' });
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    socket.receive({ type: 'response_delta', content: 'Finished answer' });
+    socket.receive({ type: 'done' });
+    expect(await completed).toBe(true);
+    expect(events).toContainEqual({ type: 'response_delta', content: 'Finished answer' });
+  });
+
   it('authenticates in the first frame and sends steering on the active channel', async () => {
     const transport = new AgentTransport();
     const events: ServerEvent[] = [];
@@ -71,7 +90,7 @@ describe('AgentTransport WebSocket protocol', () => {
       session,
       'thread-1',
       'design the system',
-      { complexity: 'production', graphMode: 'on', diagramRequested: true },
+      { complexity: 'production', graphMode: 'on', diagramRequested: true, graphAction: 'extend', expectedGraphVersion: 'version-1' },
       'client-1',
     );
     const socket = MockWebSocket.instances[0];
@@ -89,6 +108,8 @@ describe('AgentTransport WebSocket protocol', () => {
       thread_id: 'thread-1',
       client_request_id: 'client-1',
       diagram_requested: true,
+      graph_action: 'extend',
+      expected_graph_version: 'version-1',
     });
     expect(transport.steerGeneration('focus on approvals')).toBe(true);
     expect(JSON.parse(socket.sent[2])).toMatchObject({

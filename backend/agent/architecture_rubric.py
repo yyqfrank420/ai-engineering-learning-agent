@@ -238,21 +238,32 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     ),
     "retrieval_and_reuse_trust": (
         "Apply each obligation to the declared retrieval or reuse path, its artifact, "
-        "and its consumer. A system-level retrieval_or_reuse capability does not mean "
+        "and its consumer. Establish applicability separately for each obligation below; "
+        "cite the declared behavior that activates it. A generic retriever or tool mention "
+        "does not establish reusable artifacts or a factual-answer dependency. An overview "
+        "label does not exempt declared behavior from applicable controls. "
+        "A system-level retrieval_or_reuse capability does not mean "
         "every generator performs factual retrieval. Identify the material factual claim "
         "or required factual-retrieval dependency before rejecting missing entailment "
         "validation or retrieval-failure handling; apply this equally to internal and "
         "external sources. Outcome-data reads and reuse for evaluation do not establish "
         "a factual-retrieval dependency for an unrelated creative generator. "
-        "Treat retrieved bytes as untrusted. Validate material factual claim entailment "
+        "For a declared path that consumes retrieved bytes, identify those bytes and their "
+        "consumer. Treat retrieved bytes as untrusted. For the identified material factual "
+        "claims, validate material factual claim entailment "
         "before delivery or reuse. Failed required factual retrieval must end in "
         "clarification, abstention, or a bounded validated retry. Discard rejected/stale "
-        "artifacts. When the candidate explicitly makes example or creative reuse optional, "
+        "artifacts on an applicable validation or reuse path. A factual RAG answer activates "
+        "claim validation and required-evidence failure handling; a private answer cache "
+        "reused across requests activates access and artifact lifecycle controls. "
+        "When the candidate explicitly makes example or creative reuse optional, "
         "a missing or rejected result may lead to fresh generation through the same "
         "validation and approval controls. Do not infer optionality or allow unsupported "
         "facts to replace missing evidence. State this outcome in the owning responsibility "
         "or response contract; a separate fallback component or edge is unnecessary. "
-        "Scope reuse by access "
+        "Before requiring reuse scope or lifecycle controls, identify the declared artifact "
+        "reused across requests or releases and its consuming path. A retrieval call alone "
+        "does not establish such reuse. For that reuse, scope reuse by access "
         "identity, version, and provenance, including model/prompt/index release when "
         "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
         "these controls."
@@ -345,6 +356,19 @@ def staged_review_requirements(
     if stage == "components":
         if maturity == "production":
             requirements["brief_coverage"] += (
+                " Before responsibilities freeze, check executable ownership feasibility "
+                "for downstream_controls activated by the declared behavior and "
+                "responsibilities, including when a capability flag needs correction in "
+                "this review. Each applicable control operation needs a compatible "
+                "declared owner; storage of evidence alone does not own evaluation or "
+                "approval. Compatible operations may share an existing owner; do not "
+                "require separate components. Assess ownership only here, not edges, "
+                "sequence, or payload proofs. Do not introduce capabilities or features "
+                "solely to satisfy conditional guidance. Report all missing or incompatible "
+                "owners in this pass, citing the affected component indexes and the "
+                "declared behavior that activates each obligation. Respect supplied edit "
+                "scope: a finding about frozen baseline responsibilities grants no "
+                "authority to change them."
                 " Give applicable required production controls executable ownership "
                 "before component responsibilities freeze. When this system owns an "
                 "update or release of a model, prompt, ranking, or live configuration, "
@@ -411,6 +435,10 @@ def staged_review_requirements(
             "respectively. Frozen inference without an owned update or release does "
             "not imply learning_or_release."
         )
+        requirements = {
+            "capability_classification": requirements["capability_classification"],
+            **{code: rule for code, rule in requirements.items() if code != "capability_classification"},
+        }
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (
             "Show necessary directed contracts between components, including controls "

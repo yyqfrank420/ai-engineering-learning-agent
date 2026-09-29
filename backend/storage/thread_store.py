@@ -20,6 +20,7 @@ from graph.content_edit import (
     apply_graph_content_edit,
 )
 
+from storage import graph_history_store
 from storage.errors import ThreadMessageLimitExceeded
 
 logger = logging.getLogger(__name__)
@@ -99,7 +100,7 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
         row = conn.execute(
             _adapt_query(
                 """
-                SELECT id, user_id, title, graph_data, created_at, updated_at, last_seen_at
+                SELECT id, user_id, title, graph_data, active_graph_revision_id, created_at, updated_at, last_seen_at
                 FROM chat_threads
                 WHERE id = ? AND user_id = ?
                 """
@@ -158,7 +159,7 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
 def get_thread(user_id: str, thread_id: str) -> dict | None:
     row = fetchone(
         """
-        SELECT id, user_id, title, graph_data, created_at, updated_at, last_seen_at
+        SELECT id, user_id, title, graph_data, active_graph_revision_id, created_at, updated_at, last_seen_at
         FROM chat_threads
         WHERE id = ? AND user_id = ?
         """,
@@ -193,7 +194,7 @@ def list_threads(user_id: str, limit: int = 20) -> list[dict]:
 def get_latest_thread(user_id: str) -> dict | None:
     row = fetchone(
         """
-        SELECT id, user_id, title, graph_data, created_at, updated_at, last_seen_at
+        SELECT id, user_id, title, graph_data, active_graph_revision_id, created_at, updated_at, last_seen_at
         FROM chat_threads
         WHERE user_id = ? AND {}
         ORDER BY last_seen_at DESC
@@ -313,9 +314,9 @@ def save_graph(user_id: str, thread_id: str, graph_data: dict) -> bool:
         if not settings.use_postgres:
             conn.execute("BEGIN IMMEDIATE")
         thread_query = (
-            "SELECT graph_data FROM chat_threads WHERE id = ? AND user_id = ? FOR UPDATE"
+            "SELECT graph_data, graph_contract, active_graph_revision_id FROM chat_threads WHERE id = ? AND user_id = ? FOR UPDATE"
             if settings.use_postgres
-            else "SELECT graph_data FROM chat_threads WHERE id = ? AND user_id = ?"
+            else "SELECT graph_data, graph_contract, active_graph_revision_id FROM chat_threads WHERE id = ? AND user_id = ?"
         )
         row = conn.execute(
             _adapt_query(thread_query),
@@ -368,6 +369,13 @@ def save_graph(user_id: str, thread_id: str, graph_data: dict) -> bool:
                 thread_id,
             )
             return True
+        revision_id = graph_history_store.seed_current(conn, user_id, thread_id, row)
+        revision = conn.execute(_adapt_query("SELECT graph_data FROM graph_revisions WHERE id = ? AND thread_id = ? AND user_id = ?"),
+                                (revision_id, thread_id, user_id)).fetchone()
+        snapshot = graph_history_store.decode_graph_json(revision["graph_data"])
+        snapshot["view_state"] = graph_data["view_state"]
+        conn.execute(_adapt_query("UPDATE graph_revisions SET graph_data = ? WHERE id = ? AND thread_id = ? AND user_id = ?"),
+                     (json.dumps(snapshot, ensure_ascii=False), revision_id, thread_id, user_id))
         conn.execute(
             _adapt_query(
                 """
@@ -433,10 +441,10 @@ def edit_graph_content(
         if not settings.use_postgres:
             conn.execute("BEGIN IMMEDIATE")
         thread_query = (
-            "SELECT graph_data, graph_contract FROM chat_threads "
+            "SELECT graph_data, graph_contract, active_graph_revision_id FROM chat_threads "
             "WHERE id = ? AND user_id = ? FOR UPDATE"
             if settings.use_postgres
-            else "SELECT graph_data, graph_contract FROM chat_threads "
+            else "SELECT graph_data, graph_contract, active_graph_revision_id FROM chat_threads "
             "WHERE id = ? AND user_id = ?"
         )
         row = conn.execute(_adapt_query(thread_query), (thread_id, user_id)).fetchone()
@@ -471,6 +479,9 @@ def edit_graph_content(
             old_version=old_version,
             new_version=new_version,
         )
+        parent_id = graph_history_store.seed_current(conn, user_id, thread_id, row)
+        graph_history_store.append_revision(conn, user_id, thread_id, edited, contract,
+                                             parent_id=parent_id, source="content_edit")
         conn.execute(
             _adapt_query(
                 """
@@ -549,9 +560,9 @@ def persist_turn(
             # Acquire SQLite's write lock before checking the idempotency key.
             conn.execute("BEGIN IMMEDIATE")
         thread_query = (
-            "SELECT id FROM chat_threads WHERE id = ? AND user_id = ? FOR UPDATE"
+            "SELECT id, graph_data, graph_contract, active_graph_revision_id FROM chat_threads WHERE id = ? AND user_id = ? FOR UPDATE"
             if settings.use_postgres
-            else "SELECT id FROM chat_threads WHERE id = ? AND user_id = ?"
+            else "SELECT id, graph_data, graph_contract, active_graph_revision_id FROM chat_threads WHERE id = ? AND user_id = ?"
         )
         thread = conn.execute(
             _adapt_query(thread_query),
@@ -590,14 +601,30 @@ def persist_turn(
                 "Thread message limit reached. Start a new chat to continue."
             )
 
+        revision_id = None
+        if serialized_graph is not None:
+            current = graph_history_store.decode_graph_json(thread["graph_data"])
+            committed = graph_history_store.preserve_latest_layout(graph_data, current)
+            candidate = json.dumps(committed, ensure_ascii=False)
+            if len(candidate.encode("utf-8")) > settings.max_graph_data_bytes:
+                serialized_graph = None
+                graph_saved = False
+            else:
+                serialized_graph = candidate
+                parent_id = graph_history_store.seed_current(conn, user_id, thread_id, thread)
+                if committed != current:
+                    revision_id = graph_history_store.append_revision(
+                        conn, user_id, thread_id, committed, graph_contract,
+                        parent_id=parent_id, source="generation", label=user_content)
+
         for role, content in (("user", user_content), ("assistant", assistant_content)):
             conn.execute(
                 _adapt_query(
                     """
                     INSERT INTO chat_messages (
-                        id, thread_id, user_id, role, content, client_request_id
+                        id, thread_id, user_id, role, content, client_request_id, graph_revision_id
                     )
-                    VALUES (?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -607,6 +634,7 @@ def persist_turn(
                     role,
                     content,
                     client_request_id,
+                    revision_id if role == "assistant" else None,
                 ),
             )
 

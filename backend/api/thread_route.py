@@ -1,4 +1,5 @@
 from typing import Any
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -151,3 +152,56 @@ async def get_thread_endpoint(thread_id: str, user=Depends(get_current_user)):
         "thread": thread,
         "messages": get_messages(user["id"], thread_id),
     }
+
+
+class RestoreGraphRequest(BaseModel):
+    revision_id: UUID
+    expected_version: str | None
+
+
+@router.get("/{thread_id}/graph/history")
+async def graph_history_endpoint(thread_id: str, user=Depends(get_current_user)):
+    from storage.graph_history_store import list_history
+
+    try:
+        return list_history(user["id"], thread_id)
+    except GraphEditNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GraphEditInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/{thread_id}/graph/history/{revision_id}")
+async def graph_revision_endpoint(thread_id: str, revision_id: UUID, user=Depends(get_current_user)):
+    from storage.graph_history_store import get_revision
+
+    try:
+        return get_revision(user["id"], thread_id, str(revision_id))
+    except GraphEditNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GraphEditInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/{thread_id}/graph/restore")
+async def restore_graph_endpoint(thread_id: str, body: RestoreGraphRequest, user=Depends(get_current_user)):
+    from storage.graph_history_store import restore_revision
+
+    if get_thread(user["id"], thread_id) is None:
+        raise HTTPException(status_code=404, detail="Thread not found")
+    stream_id = runtime_state_store.try_acquire_active_stream(
+        user["id"], "chat-thread", limit=1, ttl_s=settings.agent_timeout_s + 30, scope_id=thread_id,
+    )
+    if stream_id is None:
+        raise HTTPException(status_code=409, detail="A response is already running")
+    try:
+        try:
+            return restore_revision(user["id"], thread_id, str(body.revision_id), body.expected_version)
+        except GraphEditNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except GraphEditConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except GraphEditInvalid as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        runtime_state_store.release_active_stream(stream_id)

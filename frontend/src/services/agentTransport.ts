@@ -11,7 +11,7 @@
 // Outputs: ServerEvent objects dispatched to registered handlers
 // ─────────────────────────────────────────────────────────────────────────────
 
-import type { AuthSession, ComplexityLevel, DiagramLayoutReport, GraphMode, ServerEvent } from '../types';
+import type { AuthSession, DiagramLayoutReport, SendOptions, ServerEvent } from '../types';
 import { API_BASE } from './config';
 
 const PRE_START_CONNECT_RETRIES = 1;
@@ -117,7 +117,7 @@ export class AgentTransport {
     session: AuthSession,
     threadId: string,
     content: string,
-    opts?: { complexity?: ComplexityLevel; graphMode?: GraphMode; diagramRequested?: boolean; researchEnabled?: boolean },
+    opts?: SendOptions,
     clientRequestId = createClientRequestId(),
   ): Promise<boolean> {
     if (this._chatSocket) {
@@ -233,6 +233,8 @@ export class AgentTransport {
                   graph_mode: opts?.graphMode ?? 'on',
                   ...(opts?.diagramRequested ? { diagram_requested: true } : {}),
                   research_enabled: opts?.researchEnabled ?? false,
+                  ...(opts?.graphAction ? { graph_action: opts.graphAction } : {}),
+                  ...(opts?.expectedGraphVersion !== undefined ? { expected_graph_version: opts.expectedGraphVersion } : {}),
                   client_request_id: clientRequestId,
                 }));
                 this._chatCommandsReady = true;
@@ -290,6 +292,16 @@ export class AgentTransport {
       type: 'steer',
       content,
       client_request_id: this._chatClientRequestId,
+    }));
+    return true;
+  }
+
+  acceptPreview(clientRequestId: string, graphVersion: string): boolean {
+    const socket = this._chatSocket;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !this._chatCommandsReady
+      || this._chatClientRequestId !== clientRequestId) return false;
+    socket.send(JSON.stringify({
+      type: 'accept_preview', client_request_id: clientRequestId, graph_version: graphVersion,
     }));
     return true;
   }

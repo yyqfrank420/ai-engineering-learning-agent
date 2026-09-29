@@ -47,8 +47,53 @@ describe('ChatInput', () => {
     renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockResolvedValue(action) });
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My request' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action === 'ask'));
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action));
     expect(screen.queryByRole('dialog')).toBeNull();
+  });
+
+  it('asks where to continue for ambiguous existing diagrams and preserves a dismissed draft', async () => {
+    const onSend = vi.fn();
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'What about measuring results?' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByRole('button', { name: 'Extend this diagram' });
+    expect(screen.queryByText(/Keep building on this diagram/)).toBeNull();
+    expect(screen.queryByText(/A new chat keeps this conversation/)).toBeNull();
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('What about measuring results?');
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Extend this diagram' }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('What about measuring results?', 'extend'));
+  });
+
+  it('keeps the draft when new chat creation fails and blocks duplicate choice submission', async () => {
+    let reject!: (error: Error) => void;
+    const onSend = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Separate topic' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    const choice = await screen.findByRole('button', { name: 'Start a new chat' });
+    fireEvent.click(choice); fireEvent.click(choice);
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('Separate topic', 'new_chat');
+    await act(async () => reject(new Error('Could not create a new chat.')));
+    expect(screen.getByRole('alert').textContent).toContain('Could not create');
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Separate topic');
+  });
+
+  it('retains a new-chat draft through its own thread handoff until send is accepted', async () => {
+    let reject!: (error: Error) => void;
+    const onSend = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
+    const checkSubmission = vi.fn().mockResolvedValue('new_chat');
+    const view = renderInput('thread-1', { onSend, checkSubmission });
+    fireEvent.change(screen.getByRole('textbox'), {target:{value:'Keep until accepted'}});
+    fireEvent.click(screen.getByRole('button', {name:'Send message'}));
+    await waitFor(() => expect(onSend).toHaveBeenCalledOnce());
+    view.rerender(<ChatInput {...defaultProps} threadId="created-thread" onSend={onSend} checkSubmission={checkSubmission} />);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep until accepted');
+    await act(async () => reject(new Error('Send was not accepted.')));
+    expect(screen.getByRole('alert').textContent).toBe('Send was not accepted.');
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep until accepted');
   });
 
   it('keeps the draft and reports a connection failure when intent checking fails', async () => {
@@ -56,7 +101,7 @@ describe('ChatInput', () => {
     renderInput('thread-1', { onSend, checkSubmission: vi.fn().mockRejectedValue(new Error('offline')) });
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my question' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    expect((await screen.findByRole('alert')).textContent).toContain('Could not connect');
+    expect((await screen.findByRole('alert')).textContent).toContain('offline');
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep my question');
     expect(onSend).not.toHaveBeenCalled();
   });
@@ -190,6 +235,16 @@ describe('ChatInput', () => {
     expect(onSend).toHaveBeenCalledWith('focus on the approval boundary');
     expect((input as HTMLTextAreaElement).value).toBe('');
     expect(screen.getByRole('button', { name: 'Stop generation' })).toBeTruthy();
+  });
+
+  it('disables repeated Stop requests while the accepted diagram is finishing', () => {
+    const onStop = vi.fn();
+    renderInput('thread-1', { isGenerating: true, isFinishingDiagram: true, onStop });
+    const button = screen.getByRole('button', { name: 'Finishing diagram' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('Finishing…');
+    fireEvent.click(button);
+    expect(onStop).not.toHaveBeenCalled();
   });
 
   it('preserves focus feedback', () => {

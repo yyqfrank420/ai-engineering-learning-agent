@@ -15,6 +15,46 @@ from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import production_proofs_for_capabilities
 
 
+def test_production_component_coverage_checks_owners_before_connections():
+    criterion = staged_review_requirements("components", "production")["brief_coverage"]
+    assert "declared behavior and responsibilities" in criterion
+    assert "including when a capability flag needs correction" in criterion
+    assert "storage of evidence alone does not own evaluation or approval" in criterion
+    assert "Report all missing or incompatible owners in this pass" in criterion
+    assert "affected component indexes" in criterion
+    assert "Compatible operations may share an existing owner" in criterion
+    assert "do not require separate components" in criterion
+    assert "not edges, sequence, or payload proofs" in criterion
+    assert "Do not introduce capabilities or features" in criterion
+    assert "frozen baseline responsibilities grants no authority to change them" in criterion
+    assert staged_review_requirements("components", "prototype")["brief_coverage"] == (
+        RUBRIC_CRITERIA["brief_coverage"][1]
+    )
+    assert "brief_coverage" not in staged_review_requirements("connections", "production")
+
+
+@pytest.mark.parametrize("declares_release", [False, True])
+def test_component_owner_guidance_does_not_depend_on_correct_capability_flags(declares_release):
+    records = [
+        {"label": "Rollout Manager", "responsibility": "Owns model canary, promotion and rollback."},
+        {"label": "Telemetry Store", "responsibility": "Stores serving logs and rollout outcomes."},
+    ]
+    evidence = {"candidate_context": {"capabilities": {
+        "external_effects": False, "retrieval_or_reuse": False,
+        "learning_or_release": declares_release,
+    }}}
+    prompt = gate._prompt(
+        gate="components", user_request="Design production model serving.",
+        evidence_bundle=evidence, resolved_maturity="production",
+        candidate_records=records, required_production_guarantees=(),
+    )
+    controls = json.loads(prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0])
+    assert controls == STAGED_PRODUCTION_REQUIREMENTS
+    assert "reviewed immutable release" in controls["learning_and_release"]
+    assert "including when a capability flag needs correction" in prompt
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
+
+
 _PREVIOUS_CAPABILITY_CRITERION = (
     "Classify capabilities from the candidate responsibilities and assumptions: "
     "external_effects means it can mutate an external system; retrieval_or_reuse "
@@ -1064,6 +1104,51 @@ def test_staged_edge_policy_invalidates_legacy_connection_approval(
     monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
     assert gate.review_identity("connections", maturity) != current
 
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("behavior", [
+    "An agent calls a generic search tool for optional brainstorming.",
+    "A factual RAG answer requires retrieved private evidence.",
+    "A private answer cache reuses validated answers across requests.",
+])
+def test_retrieval_applicability_is_shared_by_generation_and_review(stage, behavior):
+    context = generation.AcceptedContext(
+        assumptions=(behavior,), external_effects=False,
+        retrieval_or_reuse=True, learning_or_release=False,
+    )
+    guarantees = ("retrieval_and_reuse_trust",)
+    prompt, _ = generation._attempt_prompt(
+        stage=stage, request=behavior, resolved_maturity="production",
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0,
+        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+        structural_findings=[], gate_findings=[], base=None,
+        rejected_candidate=None, accepted_context=context,
+        architecture_context=behavior if stage == "components" else None,
+    )
+    generated = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    reviewed = gate._prompt(
+        gate=stage, user_request=behavior,
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity="production", candidate_records=[],
+        required_production_guarantees=guarantees,
+    )
+    field = "downstream_controls" if stage == "components" else "acceptance_criteria"
+    rule = generated[field]["retrieval_and_reuse_trust"]
+    assert rule == STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
+    assert json.dumps(rule)[1:-1] in reviewed
+    for boundary in (
+        "Establish applicability separately for each obligation",
+        "generic retriever or tool mention does not establish reusable artifacts or a factual-answer dependency",
+        "For a declared path that consumes retrieved bytes",
+        "Identify the material factual claim or required factual-retrieval dependency",
+        "artifact reused across requests or releases and its consuming path",
+        "A factual RAG answer activates claim validation",
+        "a private answer cache reused across requests activates access",
+        "overview label does not exempt declared behavior",
+        "fresh generation through the same validation and approval controls",
+    ):
+        assert boundary in rule
 
 @pytest.mark.parametrize("ownership", ["missing", "internal", "external", "frozen"])
 def test_production_release_review_preserves_control_ownership_evidence(ownership):

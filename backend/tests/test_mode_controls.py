@@ -1011,8 +1011,9 @@ class TestResearchWorkerResilience:
         result = asyncio.run(rw.research_worker_node(state))
 
         assert result["research_status"] == "ready"
-        assert state["_events"][-1]["sources"] == ["https://example.com/report"]
-        assert state["_events"][-1]["status"] == "Web search results available."
+        status = next(event for event in state["_events"] if "sources" in event)
+        assert status["sources"] == ["https://example.com/report"]
+        assert status["status"] == "Web search results available."
 
     def test_success_emits_bounded_research_evidence_for_allowlisted_internal_identity(
         self, monkeypatch
@@ -1042,7 +1043,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        evidence = state["_events"][-1]
+        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
         assert evidence == {
             "type": "research_evidence",
             "query": "RAG pipeline architecture",
@@ -1081,10 +1082,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        assert [event["type"] for event in state["_events"]] == [
-            "worker_status",
-            "worker_status",
-        ]
+        assert {event["type"] for event in state["_events"]} == {"worker_status", "workflow_progress"}
 
     def test_build_queries_uses_current_year_instead_of_hard_coded_year(
         self, monkeypatch
@@ -1183,7 +1181,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        evidence = state["_events"][-1]
+        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
         assert len(evidence["results"]) == 6
         assert evidence["source_provenance"] == [
             {
@@ -1490,3 +1488,58 @@ def test_authored_name_protection_preserves_other_intent_boundaries(message, exp
         ],
     }
     assert resolve_graph_operation(message, graph) == expected
+
+
+@pytest.mark.parametrize("subject", ["a forecasting layer", "a search quality layer", "a fraud review layer"])
+def test_contextual_additions_extend_saved_graph_without_exact_label(subject):
+    from agent.complexity import diagram_submission_action
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Existing service"}]}
+    assert diagram_submission_action(f"What if we added {subject} on top of this?", graph) == "extend"
+
+
+def test_unresolved_legacy_diagram_request_cannot_replace_saved_graph():
+    from agent.complexity import resolve_graph_operation
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Existing service"}]}
+    assert resolve_graph_operation("A new idea?", graph, diagram_requested=True) is None
+    assert resolve_graph_operation("A new idea?", None, diagram_requested=True) == "create"
+
+
+@pytest.mark.parametrize("question,expected", [
+    ("Design a weather prediction system", "new_chat"),
+    ("Explain the current graph", "answer"),
+    ("Rename node n1", "send"),
+    ("A different approach?", "ask"),
+])
+def test_saved_graph_submission_separates_mutation_intents(question, expected):
+    from agent.complexity import diagram_submission_action
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Existing service"}]}
+    assert diagram_submission_action(question, graph) == expected
+
+
+@pytest.mark.parametrize("query", ["Do not add nodes to this graph", "Explain how to add a layer to this graph", "Add a layer and remove this node"])
+def test_extension_does_not_ignore_negation_explanation_or_mixed_mutations(query):
+    from agent.complexity import diagram_submission_action
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Existing service"}]}
+    assert diagram_submission_action(query, graph) != "extend"
+
+
+def test_broad_learning_request_without_graph_keeps_fresh_diagram_submission():
+    from agent.complexity import diagram_submission_action
+    assert diagram_submission_action("Explain AI engineering", None) == "send"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [None, "new"])
+async def test_agent_new_design_with_saved_graph_clarifies_before_any_builder(monkeypatch, action):
+    from agent import graph as module
+    async def send(_event):
+        pass
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("must not build workflow for replacement")
+    monkeypatch.setattr(module, "build_agent_workflow", forbidden)
+    saved = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}], "edges": []}
+    result = await module.run_agent({"send": send, "user_message": "Design a weather prediction system",
+                                   "graph_action": action, "graph_data": saved}, [], [], [])
+    assert result["graph_data"] == saved
+    assert result["graph_changed"] is False
+    assert result["graph_operation"]["status"] == "needs_clarification"

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { createRef, useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -7,7 +7,8 @@ vi.mock('../../services/api', () => ({
 }));
 
 vi.mock('./D3Graph', () => ({
-  D3Graph: ({ graphData, onNodeClick, onNodeEdit, onEditConnection, onViewStateChange, initialViewState, onLayoutReady, inspectionViewport }: {
+  D3Graph: ({ graphData, onNodeClick, onNodeEdit, onEditConnection, onViewStateChange, initialViewState, onLayoutReady, inspectionViewport, layoutReadOnly }: {
+    layoutReadOnly?: boolean;
     graphData: { nodes: Array<{ id: string; label: string }> };
     onNodeClick: (node: { id: string; label: string }) => void;
     onNodeEdit?: (node: { id: string; label: string }) => void;
@@ -22,7 +23,7 @@ vi.mock('./D3Graph', () => ({
     onLayoutReady?: (key: string) => void;
     inspectionViewport?: { nodeId: string; width: number; height: number };
   }) => (
-    <div data-testid="d3-graph">
+    <div data-testid="d3-graph" data-layout-read-only={layoutReadOnly}>
       <span data-testid="initial-view">{initialViewState?.viewport.k ?? 'none'}</span>
       <span data-testid="inspection-view">{JSON.stringify(inspectionViewport ?? null)}</span>
       <button onClick={() => onLayoutReady?.('painted-key')}>Layout ready</button>
@@ -46,7 +47,7 @@ vi.mock('./D3Graph', () => ({
 
 import { updateThreadGraph } from '../../services/api';
 import type { AuthSession, GraphData, SelectedNode } from '../../types';
-import { GraphCanvas } from './index';
+import { GraphCanvas, type GraphCanvasHandle } from './index';
 
 
 const session: AuthSession = {
@@ -113,6 +114,91 @@ const baseProps = {
 
 
 describe('GraphCanvas behavior', () => {
+  it('flushes an immediate layout change before debounce and propagates retryable failures', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    render(<GraphCanvas {...baseProps} ref={ref} graphData={graph} />);
+    fireEvent.click(screen.getByText('Save view'));
+    vi.mocked(updateThreadGraph).mockRejectedValueOnce(new Error('offline'));
+    await act(async () => { await expect(ref.current!.flushPendingLayout()).rejects.toThrow('offline'); });
+    expect(screen.getByRole('alert')).toBeTruthy();
+    await act(async () => { await ref.current!.flushPendingLayout(); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(2);
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('does not write or request node actions in history and restores the saved viewport', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    render(<GraphCanvas {...baseProps} ref={ref} historyPreview graphData={graph} onSaveGraphEdit={vi.fn()} />);
+    fireEvent.click(screen.getByText('Save view'));
+    fireEvent.click(screen.getByText('Select rendered node'));
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    await act(async () => { await ref.current!.flushPendingLayout(); vi.advanceTimersByTime(500); });
+    expect(updateThreadGraph).not.toHaveBeenCalled();
+    expect(baseProps.onNodeClick).not.toHaveBeenCalled();
+    expect(screen.getByTestId('initial-view').textContent).toBe('0.9');
+  });
+
+  it('rejects a flush when the graph version changes while its write is pending', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    let finish!: () => void;
+    vi.mocked(updateThreadGraph).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    const view = render(<GraphCanvas {...baseProps} ref={ref} graphData={graph} />);
+    fireEvent.click(screen.getByText('Save view'));
+    let pending!: Promise<void>;
+    await act(async () => { pending = ref.current!.flushPendingLayout(); });
+    const rejected = expect(pending).rejects.toThrow('diagram changed');
+    view.rerender(<GraphCanvas {...baseProps} ref={ref} graphData={{ ...graph, version: 'next' }} />);
+    await act(async () => { finish(); await rejected; });
+  });
+
+  it('blocks a flush for an unsaved edit and resets the editor on version replacement', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    const dirty = vi.fn();
+    const props = { ...baseProps, ref, onSaveGraphEdit: vi.fn(), onEditDraftChange: dirty };
+    const view = render(<GraphCanvas {...props} graphData={graph} />);
+    fireEvent.click(screen.getByText('Edit rendered node'));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), { target: { value: 'Unsaved name' } });
+    await expect(ref.current!.flushPendingLayout()).rejects.toThrow('Save or cancel');
+    expect(updateThreadGraph).not.toHaveBeenCalled();
+    view.rerender(<GraphCanvas {...props} graphData={{ ...graph, version: 'restored' }} />);
+    expect(screen.queryByRole('textbox', { name: 'Name' })).toBeNull();
+    expect(dirty).toHaveBeenLastCalledWith(false);
+  });
+
+  it('flushes changes made during an in-flight layout write in serial order', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    let finish!: () => void;
+    vi.mocked(updateThreadGraph).mockReturnValueOnce(new Promise(resolve => { finish = resolve; }));
+    render(<GraphCanvas {...baseProps} ref={ref} graphData={graph} />);
+    fireEvent.click(screen.getByText('Save view'));
+    let pending!: Promise<void>;
+    await act(async () => { pending = ref.current!.flushPendingLayout(); });
+    fireEvent.click(screen.getByText('Save zone view'));
+    expect(updateThreadGraph).toHaveBeenCalledTimes(1);
+    const concurrent = ref.current!.flushPendingLayout();
+    await act(async () => { finish(); await Promise.all([pending, concurrent]); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(updateThreadGraph).mock.lastCall![2].view_state?.zonePadding).toBeDefined();
+  });
+
+  it('locks layout changes during an action but still flushes the pending pre-lock view', async () => {
+    const ref = createRef<GraphCanvasHandle>();
+    const view = render(<GraphCanvas {...baseProps} ref={ref} graphData={graph} />);
+    fireEvent.click(screen.getByText('Save view'));
+    view.rerender(<GraphCanvas {...baseProps} ref={ref} graphData={graph} layoutLocked />);
+    expect(screen.getByTestId('d3-graph').getAttribute('data-layout-read-only')).toBe('true');
+    fireEvent.click(screen.getByText('Save zone view'));
+    await act(async () => { await ref.current!.flushPendingLayout(); vi.advanceTimersByTime(500); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(updateThreadGraph).mock.lastCall![2].view_state?.viewport.k).toBe(1.2);
+    expect(vi.mocked(updateThreadGraph).mock.lastCall![2].view_state?.zonePadding).toBeUndefined();
+    fireEvent.click(screen.getByText('Save zone view'));
+    await act(async () => { vi.advanceTimersByTime(500); });
+    expect(updateThreadGraph).toHaveBeenCalledTimes(1);
+  });
+
   it('labels only an accepted overview and explains its reduced detail', () => {
     const overview = { ...graph, detail_level: 'overview' as const };
     const view = render(<GraphCanvas {...baseProps} graphData={graph} />);
@@ -260,16 +346,12 @@ describe('GraphCanvas behavior', () => {
   });
 
   it('contains persistence failures and skips writes without durable identity', async () => {
-    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
     vi.mocked(updateThreadGraph).mockRejectedValueOnce(new Error('offline'));
     const view = render(<GraphCanvas {...baseProps} graphData={graph} />);
     fireEvent.click(screen.getByText('Save view'));
     await act(async () => vi.advanceTimersByTime(400));
     await act(async () => Promise.resolve());
-    expect(error).toHaveBeenCalledWith(
-      '[graph] Failed to persist graph view state:',
-      expect.any(Error),
-    );
+    expect(screen.getByRole('alert').textContent).toContain('Could not save');
 
     vi.mocked(updateThreadGraph).mockClear();
     view.rerender(
@@ -345,7 +427,7 @@ describe('GraphCanvas behavior', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
     await act(async () => { await Promise.resolve(); await Promise.resolve(); });
     expect(onSaveGraphEdit).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert').textContent).toContain('Layout write failed');
+    expect(screen.getAllByRole('alert').some(element => element.textContent?.includes('Layout write failed'))).toBe(true);
     expect((screen.getByRole('textbox', { name: 'Name' }) as HTMLInputElement).value).toBe('Retry Retrieval API');
     expect(view.container.querySelector('[inert]')).toBeNull();
 

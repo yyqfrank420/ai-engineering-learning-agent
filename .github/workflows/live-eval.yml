@@ -2,6 +2,19 @@ name: Live eval required
 
 on:
   workflow_dispatch:
+    inputs:
+      source_run_id:
+        description: Failed protected run whose saved evidence will be validated
+        type: string
+        default: ''
+      reviewed_diff_sha256:
+        description: SHA256 of the reviewed binary diff from the source head
+        type: string
+        default: ''
+      reason:
+        description: Reason for retaining the identified historical evidence
+        type: string
+        default: ''
   pull_request:
     branches: [main]
   push:
@@ -36,7 +49,19 @@ jobs:
         with:
           fetch-depth: 0
       - id: impact
-        run: ./scripts/ci impact --event-file "$GITHUB_EVENT_PATH" --github-output
+        env:
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          REVIEWED_DIFF_SHA256: ${{ inputs.reviewed_diff_sha256 }}
+          RESUME_REASON: ${{ inputs.reason }}
+        run: |
+          ./scripts/ci impact --event-file "$GITHUB_EVENT_PATH" --github-output
+          if [ -n "$SOURCE_RUN_ID" ]; then
+            [[ "$GITHUB_EVENT_NAME" = workflow_dispatch && "$SOURCE_RUN_ID" =~ ^[0-9]+$ && "$REVIEWED_DIFF_SHA256" =~ ^[0-9a-f]{64}$ && ${#RESUME_REASON} -ge 20 ]] || exit 1
+            echo "ai-impact=true" >> "$GITHUB_OUTPUT"
+          elif [ -n "$REVIEWED_DIFF_SHA256$RESUME_REASON" ]; then
+            echo "Recovery inputs require a source run." >&2
+            exit 1
+          fi
       - id: tree
         run: |
           echo "tree-sha=$(git rev-parse 'HEAD^{tree}')" >> "$GITHUB_OUTPUT"
@@ -125,6 +150,8 @@ jobs:
       OTEL_ENVIRONMENT: staging
     permissions:
       contents: read
+      actions: read
+      pull-requests: read
       id-token: write
     steps:
       - uses: actions/checkout@v4
@@ -153,6 +180,19 @@ jobs:
           pip install -r backend/requirements.txt -r backend/requirements-eval.txt
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
+
+      - name: Validate retained evaluation evidence
+        if: github.event_name == 'workflow_dispatch' && inputs.source_run_id != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: backend
+          SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          REVIEWED_DIFF_SHA256: ${{ inputs.reviewed_diff_sha256 }}
+          RESUME_REASON: ${{ inputs.reason }}
+        run: |
+          python -m eval.pr_resume prepare --source-run-id "$SOURCE_RUN_ID" \
+            --reviewed-diff-sha256 "$REVIEWED_DIFF_SHA256" --reason "$RESUME_REASON" \
+            --output-dir artifacts/live-eval/resume
 
       - name: Resolve staging request concurrency
         run: |
@@ -273,11 +313,37 @@ jobs:
           exit 1
 
       - id: browser
-        name: Run eight real-browser journeys
+        name: Run selected real-browser journeys
         continue-on-error: true
         env:
           EVAL_BACKEND_URL: ${{ env.CANDIDATE_URL }}
-        run: ./scripts/ci browser --suite pr --target http://localhost:5173 --output artifacts/live-eval/browser-results.json
+        run: |
+          if [ -f artifacts/live-eval/resume/plan.json ]; then
+            python - <<'PY'
+          import json, os, subprocess, time
+          from pathlib import Path
+          proof = {
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "run_attempt": os.environ["GITHUB_RUN_ATTEMPT"],
+              "head": subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip(),
+              "tree": subprocess.check_output(["git", "rev-parse", "HEAD^{tree}"], text=True).strip(),
+              "candidate_url": os.environ["CANDIDATE_URL"],
+              "image_digest": os.environ["IMAGE_DIGEST"],
+              "recorded_at_epoch": time.time(),
+          }
+          with Path("artifacts/live-eval/resume/candidate-deployment.json").open("x") as output:
+              json.dump(proof, output)
+          PY
+            case_args=()
+            read -r -a fresh_cases < artifacts/live-eval/resume/fresh-case-ids.txt
+            for case_id in "${fresh_cases[@]}"; do
+              [ -z "$case_id" ] || case_args+=(--case "$case_id")
+            done
+            [ "${#case_args[@]}" -gt 0 ] || exit 1
+            ./scripts/ci browser --suite diagnostic "${case_args[@]}" --target http://localhost:5173 --output artifacts/live-eval/browser-results.json
+          else
+            ./scripts/ci browser --suite pr --target http://localhost:5173 --output artifacts/live-eval/browser-results.json
+          fi
 
       - id: semantic
         name: Apply deterministic and semantic rubrics
@@ -287,7 +353,16 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_JUDGE_PROVIDER: anthropic
           EVAL_JUDGE_MODEL: claude-sonnet-5
-        run: ./scripts/ci live --suite pr --target "$CANDIDATE_URL" --input artifacts/live-eval/browser-results.json --output artifacts/live-eval/live-results.json --manual-review-policy report-only
+          GH_TOKEN: ${{ github.token }}
+          PYTHONPATH: backend
+        run: |
+          if [ -f artifacts/live-eval/resume/plan.json ]; then
+            python -m eval.pr_resume judge --input artifacts/live-eval/browser-results.json \
+              --target "$CANDIDATE_URL" --deployment artifacts/live-eval/resume/candidate-deployment.json \
+              --output-dir artifacts/live-eval/resume
+          else
+            ./scripts/ci live --suite pr --target "$CANDIDATE_URL" --input artifacts/live-eval/browser-results.json --output artifacts/live-eval/live-results.json --manual-review-policy report-only
+          fi
 
       - name: Record deployment identity
         if: always()

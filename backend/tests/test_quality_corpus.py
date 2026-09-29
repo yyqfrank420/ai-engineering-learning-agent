@@ -71,67 +71,51 @@ def test_corpus_uses_fixed_product_settings_and_explicit_answer_only_requests():
 
 
 @pytest.mark.parametrize(
-    "case_id,diagram_requested",
+    "case_id,step_index,prior_graph,graph_action",
     [
-        ("education-diagram", True),
-        ("graph-expansion", False),
-        ("memory", False),
+        ("education-diagram", 0, None, "new"),
+        ("graph-expansion", 0, None, "new"),
+        ("memory", 0, None, "answer"),
+        ("graph-expansion", 1, {"version": "saved-v1", "nodes": []}, "extend"),
     ],
 )
 def test_browser_submission_uses_fixed_settings_and_canonical_intent(
-    case_id, diagram_requested
+    case_id, step_index, prior_graph, graph_action
 ):
     from eval.browser_runner import _assert_turn_submission
 
     case = load_corpus().by_id[case_id]
     start = {
         "type": "start",
-        "content": case.steps[0].prompt,
+        "content": case.steps[step_index].prompt,
         "complexity": "auto",
         "graph_mode": "on",
         "research_enabled": True,
-        "diagram_requested": diagram_requested,
+        "graph_action": graph_action,
     }
-    _assert_turn_submission(case, 0, [{"direction": "sent", "message": start}], None)
+    if graph_action == "extend":
+        start["expected_graph_version"] = prior_graph["version"]
+    _assert_turn_submission(
+        case, step_index, [{"direction": "sent", "message": start}], prior_graph
+    )
 
 
 @pytest.mark.parametrize(
-    "case_id,intent_fields,accepted",
+    "intent_fields,accepted",
     [
-        pytest.param("memory", {}, True, id="omitted-false"),
-        pytest.param("education-diagram", {}, False, id="omitted-true"),
-        pytest.param(
-            "education-diagram",
-            {"diagram_requested": False},
-            False,
-            id="explicit-false-expected-true",
-        ),
-        pytest.param(
-            "memory",
-            {"diagram_requested": True},
-            False,
-            id="explicit-true-expected-false",
-        ),
-        pytest.param(
-            "memory",
-            {"diagram_requested": None},
-            False,
-            id="null-expected-false",
-        ),
-        pytest.param(
-            "education-diagram",
-            {"diagram_requested": None},
-            False,
-            id="null-expected-true",
-        ),
+        ({"graph_action": "new"}, True),
+        ({"graph_action": "new", "diagram_requested": False}, True),
+        ({}, False),
+        ({"graph_action": "answer"}, False),
+        ({"graph_action": "new", "diagram_requested": True}, False),
+        ({"graph_action": "new", "diagram_requested": None}, False),
+        ({"graph_action": "new", "expected_graph_version": "stale"}, False),
     ],
 )
-def test_browser_submission_normalizes_only_omitted_false_intent(
-    case_id, intent_fields, accepted
-):
+def test_browser_submission_requires_typed_intent(intent_fields, accepted):
     from eval.browser_runner import BrowserQualityError, _assert_turn_submission
 
-    case = load_corpus().by_id[case_id]
+    case = load_corpus().by_id["education-diagram"]
     start = {
         "type": "start",
         "content": case.steps[0].prompt,
@@ -150,19 +134,30 @@ def test_browser_submission_normalizes_only_omitted_false_intent(
 
 
 @pytest.mark.parametrize(
-    "mutation", ["missing", "duplicate", "prompt", "mode", "intent"]
+    "mutation",
+    [
+        "missing",
+        "duplicate",
+        "prompt",
+        "mode",
+        "intent",
+        "missing-version",
+        "stale-version",
+    ],
 )
 def test_browser_submission_rejects_missing_duplicate_or_changed_payload(mutation):
     from eval.browser_runner import BrowserQualityError, _assert_turn_submission
 
-    case = load_corpus().by_id["education-diagram"]
+    case = load_corpus().by_id["graph-expansion"]
+    prior_graph = {"version": "saved-v1", "nodes": []}
     start = {
         "type": "start",
-        "content": case.steps[0].prompt,
+        "content": case.steps[1].prompt,
         "complexity": "auto",
         "graph_mode": "on",
         "research_enabled": True,
-        "diagram_requested": True,
+        "graph_action": "extend",
+        "expected_graph_version": "saved-v1",
     }
     frames = [{"direction": "sent", "message": start}]
     if mutation == "missing":
@@ -173,10 +168,14 @@ def test_browser_submission_rejects_missing_duplicate_or_changed_payload(mutatio
         start["content"] = "Different question"
     elif mutation == "mode":
         start["research_enabled"] = False
+    elif mutation == "missing-version":
+        del start["expected_graph_version"]
+    elif mutation == "stale-version":
+        start["expected_graph_version"] = "stale"
     else:
-        start["diagram_requested"] = False
+        start["graph_action"] = "new"
     with pytest.raises(BrowserQualityError) as error:
-        _assert_turn_submission(case, 0, frames, None)
+        _assert_turn_submission(case, 1, frames, prior_graph)
     assert error.value.code == "browser_submission_mismatch"
 
 
@@ -257,7 +256,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v17", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v18", "anthropic", "claude-sonnet-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -1538,7 +1537,7 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(monkeypat
                             "complexity": "auto",
                             "graph_mode": "on",
                             "research_enabled": True,
-                            "diagram_requested": False,
+                            "graph_action": "new",
                         },
                     }
                 )
@@ -1603,7 +1602,7 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
                             "complexity": "auto",
                             "graph_mode": "on",
                             "research_enabled": True,
-                            "diagram_requested": False,
+                            "graph_action": "new",
                         },
                     }
                 )

@@ -64,7 +64,7 @@ def get_history(user_id: str, thread_id: str, limit: int = 20) -> list[dict]:
 def get_messages(user_id: str, thread_id: str, limit: int = 100) -> list[dict]:
     rows = fetchall(
         """
-        SELECT id, role, content, created_at
+        SELECT id, role, content, created_at, graph_revision_id, client_request_id
         FROM chat_messages
         WHERE thread_id = ? AND user_id = ?
         ORDER BY message_sequence ASC

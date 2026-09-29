@@ -16,6 +16,19 @@ function node(id: string, label: string, type: NodeType, lane: GraphNode['lane']
 }
 
 describe('architecture region roles', () => {
+  it('retains a saved contributing origin when an earlier group gains its role', () => {
+    const nodes = [node('api', 'API', 'service'), node('new', 'New store', 'datastore'), node('old', 'Existing store', 'datastore')];
+    const groups: GraphGroup[] = [
+      { id: 'runtime', label: 'Runtime', kind: 'runtime', nodeIds: ['api', 'new'] },
+      { id: 'data', label: 'Data', kind: 'data', nodeIds: ['old'] },
+    ];
+    expect(architectureRegions(nodes, groups, ['data:datastore'])[1])
+      .toEqual({ ...groups[1], id: 'data:datastore', label: 'Data stores', nodeIds: ['new', 'old'] });
+    for (const hints of [[], ['missing:datastore', 'data:service'], ['data:datastore', 'runtime:datastore']]) {
+      expect(architectureRegions(nodes, groups, hints).map(group => group.id)).toEqual(['runtime:service', 'runtime:datastore']);
+    }
+  });
+
   it('keeps main-lane business metrics stores with other data stores', () => {
     const stores = [
       node('approval', 'Approval lifecycle store', 'datastore'),

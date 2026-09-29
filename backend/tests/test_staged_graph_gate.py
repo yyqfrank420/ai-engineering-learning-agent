@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v24"
+        "staged_component_gate_v25"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -403,6 +403,13 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         reviewed_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
     assert generated_criteria == reviewed_criteria
+    if stage == "components" and maturity == "production":
+        reviewed_controls = json.loads(
+            reviewed_prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0]
+        )
+        assert reviewed_controls == generated_input["downstream_controls"]
+    else:
+        assert "downstream_controls: " not in reviewed_prompt
     assert generated_criteria == staged_review_requirements(stage, maturity, guarantees)
     assert set(generated_criteria) == set(rules)
     assert set(guarantees) <= set(rules)
@@ -489,6 +496,8 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             assert "without a separate component or edge" in requirement
         elif stage == "components" and maturity == "production" and code == "brief_coverage":
             assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "check executable ownership feasibility" in requirement
+            assert "including when a capability flag needs correction" in requirement
             assert "before component responsibilities freeze" in requirement
             assert "do not require edges or transition proof" in requirement
         elif code in RUBRIC_CRITERIA:
@@ -651,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v29"
+        == "staged_connection_gate_v30"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -2418,3 +2427,24 @@ def test_previous_review_prompt_metadata_does_not_duplicate_unchanged_large_evid
     serialized = json.dumps(result)
     assert records[0]["description"] not in serialized
     assert evidence["architecture_context"] not in serialized
+
+
+@pytest.mark.parametrize("reason", [
+    "The factual RAG answer is delivered without entailment validation or a required-evidence failure outcome.",
+    "The private answer cache reuses answers across requests without access scope or invalidation ownership.",
+])
+def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reason):
+    calls = _stub_response(monkeypatch, {"findings": [{
+        "rule_code": "retrieval_and_reuse_trust", "reason": reason,
+        "record_indexes": [0],
+    }]})
+    result = asyncio.run(gate.review_connections(
+        user_request="Design a production factual RAG system with a private answer cache.",
+        evidence_bundle={}, resolved_maturity="production",
+        candidate_records=[{"source": "retriever", "target": "answer"}],
+        required_production_guarantees=("retrieval_and_reuse_trust",),
+    ))
+    assert result["approved"] is False
+    assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
+    assert result["findings"][0]["record_indexes"] == [0]
+    assert len(calls) == 1

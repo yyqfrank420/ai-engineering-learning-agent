@@ -362,6 +362,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", help="Browser capture JSON from eval.browser_runner")
     parser.add_argument("--output", default="artifacts/live-eval/live-results.json")
     parser.add_argument("--require-approved-corpus", action="store_true")
+    parser.add_argument("--judge-call-limit", type=int, help="Restrict the suite judge-call budget")
     parser.add_argument(
         "--manual-review-policy",
         choices=("blocking", "report-only"),
@@ -797,6 +798,15 @@ def _exit_code_for_statuses(
     return 0
 
 
+def _restricted_judge_limit(args: argparse.Namespace, default: int) -> int:
+    limit = getattr(args, "judge_call_limit", None)
+    if limit is None:
+        return default
+    if type(limit) is not int or not 1 <= limit <= default:
+        raise ValueError("judge-call-limit must be positive and cannot increase the suite budget")
+    return limit
+
+
 async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     manual_review_policy: ManualReviewPolicy = args.manual_review_policy
     manifest = _manifest()
@@ -848,7 +858,7 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if is_pr_budget
             else limits["application_full_calls"]
         ),
-        judge_calls=limits["judge_calls"] if is_pr_budget else 40,
+        judge_calls=_restricted_judge_limit(args, limits["judge_calls"] if is_pr_budget else 40),
     )
     app_telemetry = capture.get("application_telemetry") or []
     telemetry_failure = (

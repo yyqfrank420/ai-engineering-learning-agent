@@ -484,7 +484,11 @@ def test_postgres_edit_locks_the_owned_graph_row_before_writing(
         def execute(self, query, params=()):
             self.queries.append((query, params))
             if query.startswith("SELECT graph_data, graph_contract"):
+                return Cursor({"graph_data": current, "graph_contract": None, "active_graph_revision_id": "base"})
+            if query.startswith("SELECT graph_data, graph_contract FROM graph_revisions"):
                 return Cursor({"graph_data": current, "graph_contract": None})
+            if "MAX(revision_number)" in query:
+                return Cursor({"n": 2})
             return Cursor()
 
     connection = Connection()
@@ -506,7 +510,7 @@ def test_postgres_edit_locks_the_owned_graph_row_before_writing(
     assert "FOR UPDATE" in select_query
     assert "id = %s AND user_id = %s" in select_query
     assert select_params == ("thread-1", "user-1")
-    update_query, update_params = connection.queries[1]
+    update_query, update_params = connection.queries[-1]
     assert "WHERE id = %s AND user_id = %s" in update_query
     assert update_params[-2:] == ("thread-1", "user-1")
     assert json.loads(update_params[0]) == updated

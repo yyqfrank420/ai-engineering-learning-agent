@@ -1570,9 +1570,12 @@ async def test_stream_llm_translates_provider_events_without_network_calls(monke
     )
 
     assert result == "Grounded answer"
+    thinking = sent[1]
+    assert thinking["content"] == "checking evidence"
+    assert thinking["phase"] == "explain" and thinking["operation_id"] and thinking["reset"]
     assert sent == [
         {"type": "provider_switch", "provider": "openai"},
-        {"type": "thinking_delta", "content": "checking evidence"},
+        thinking,
         {"type": "response_delta", "content": "Grounded "},
         {"type": "response_delta", "content": "answer"},
     ]

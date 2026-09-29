@@ -34,6 +34,7 @@ WITH required_tables(name) AS (
     ('profiles'),
     ('chat_threads'),
     ('chat_messages'),
+    ('graph_revisions'),
     ('request_events'),
     ('product_analytics_events'),
     ('search_tool_requests'),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { AuthSession } from '../types';
+import type { AuthSession, ThreadDetail } from '../types';
 import { trackEvent } from '../services/analytics';
 import { createThread, fetchLatestThread, fetchThread } from '../services/api';
 import {
@@ -97,6 +97,7 @@ export function useThreadSession({
         setThreadTitle(detail.thread.title);
         localStorage.setItem(storageKeyForThread(session.user.id), targetThreadId);
         const fetchedSnapshot: ThreadSnapshot = {
+          threadId: detail.thread.id,
           title: detail.thread.title,
           messages: mapThreadMessages(detail.messages),
           graphData: normalizeGraphData(detail.thread.graph_data),
@@ -128,7 +129,7 @@ export function useThreadSession({
 
   const createFreshThread = useCallback(
     async (session: AuthSession, { clearDraftState = true, initialization = false }:
-      { clearDraftState?: boolean; initialization?: boolean } = {}) => {
+      { clearDraftState?: boolean; initialization?: boolean } = {}): Promise<ThreadDetail | null> => {
       const requestSeq = ++threadRequestSeqRef.current;
       retryTargetRef.current = { kind: 'create' };
       setLoadingThread(true);
@@ -141,7 +142,7 @@ export function useThreadSession({
           clearSelection();
           clearActiveThreadView();
         }
-        localStorage.removeItem(storageKeyForThread(session.user.id));
+        if (clearDraftState) localStorage.removeItem(storageKeyForThread(session.user.id));
         const pending = pendingInitialCreateRef.current;
         createRequest = initialization && pending?.userId === session.user.id
           ? pending.request : createThread(session);
@@ -151,7 +152,7 @@ export function useThreadSession({
         };
         const detail = await createRequest;
         if (requestSeq !== threadRequestSeqRef.current) {
-          return;
+          return null;
         }
         setActiveThreadId(detail.thread.id);
         activeThreadIdRef.current = detail.thread.id;
@@ -159,14 +160,17 @@ export function useThreadSession({
         localStorage.setItem(storageKeyForThread(session.user.id), detail.thread.id);
         void trackEvent('thread_created', { thread_id: detail.thread.id }, session);
         setThreadSnapshot({
+          threadId: detail.thread.id,
           title: detail.thread.title,
           messages: mapThreadMessages(detail.messages),
           graphData: normalizeGraphData(detail.thread.graph_data),
         });
+        return detail;
       } catch {
         if (requestSeq === threadRequestSeqRef.current) {
           setThreadError('Could not start a new chat. Try again.');
         }
+        return null;
       } finally {
         if (pendingInitialCreateRef.current?.request === createRequest) {
           pendingInitialCreateRef.current = null;
@@ -215,12 +219,12 @@ export function useThreadSession({
     void createFreshThread(authSession, { clearDraftState: true, initialization: true });
   }, [authSession, backendReady, createFreshThread, resetThreadState]);
 
-  const handleNewChat = useCallback(async () => {
+  const handleNewChat = useCallback(async ({ preserveCurrentView = false }: { preserveCurrentView?: boolean } = {}): Promise<ThreadDetail | null> => {
     if (!authSession || !backendReady) {
-      return;
+      return null;
     }
 
-    await createFreshThread(authSession);
+    return await createFreshThread(authSession, { clearDraftState: !preserveCurrentView });
   }, [authSession, backendReady, createFreshThread]);
 
   const handleSelectThread = useCallback(

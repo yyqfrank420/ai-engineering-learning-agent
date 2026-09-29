@@ -70,7 +70,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v31"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v32"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -97,8 +97,8 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
     assert "<trusted_turn_result>" not in _SYNTHESIS_SYSTEM
     assert "publication" not in _SYNTHESIS_SYSTEM
     assert "<trusted_turn_result>" in _GRAPH_ANSWER_CONTRACT
-    assert "Only publication state approved" in _GRAPH_ANSWER_CONTRACT
-    assert "prior approved graph remains unchanged" in _GRAPH_ANSWER_CONTRACT
+    assert "Publication states approved and user_accepted" in _GRAPH_ANSWER_CONTRACT
+    assert "prior graph remains unchanged" in _GRAPH_ANSWER_CONTRACT
     assert "Cache population, logging, feedback capture, index publication" in _GRAPH_ANSWER_CONTRACT
     assert '"no downstream business writes" into "no writes"' in _GRAPH_ANSWER_CONTRACT
     assert "completion sentence in the block exactly" in _GRAPH_ANSWER_CONTRACT
@@ -514,7 +514,9 @@ async def test_quick_synthesise_streams_answer_and_existing_graph(monkeypatch):
 
     assert events[0]["status"] == "Looking it up…"
     assert events[1] == {"type": "graph_preview", "data": graph_data}
-    assert events[-1] == {"type": "response_delta", "content": "fast"}
+    assert events[-2] == {"type": "response_delta", "content": "fast"}
+    assert events[-1]["phase"] == "explain"
+    assert events[-1]["status"] == "complete"
     assert not any(event["type"] == "done" for event in events)
     assert captured["stream_deltas"] is True
     assert captured["messages"][-1] == {"role": "user", "content": "Define RAG"}
@@ -2439,7 +2441,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v31",
+            "prompt_version": "architecture_blocks_v32",
             "book_context": context,
             "research_context": "",
         }
@@ -2606,3 +2608,43 @@ async def test_render_failure_notice_requires_current_explicit_availability_code
     assert result["response_text"] == expected_response
     assert events[0]["content"] == expected
     assert result["graph_data"] == graph
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_user_accepted_graph_trust_text_preserves_review_provenance(stage):
+    from agent.nodes.orchestrator_node import _format_trusted_turn_result, _GRAPH_ANSWER_CONTRACT
+
+    text = _format_trusted_turn_result({
+        "graph_publication": "user_accepted",
+        "graph_contract": {"acceptance": {"stage": stage}},
+        "graph_operation": {"kind": "create", "status": "applied"},
+    })
+    assert "Publication state: user_accepted" in text
+    assert "semantic review was skipped" in text
+    assert "passed structural and browser rendering checks" in text
+    assert ("component preview" in text) == (stage == "components")
+    assert "approved and user_accepted" in _GRAPH_ANSWER_CONTRACT
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fails", [False, True])
+async def test_answer_progress_completes_or_reports_error(monkeypatch, fails):
+    from agent.nodes import orchestrator_node as orchestrator
+
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def stream(**_kwargs):
+        if fails:
+            raise RuntimeError("provider unavailable")
+        return "An answer"
+
+    monkeypatch.setattr(orchestrator, "stream_llm", stream)
+    if fails:
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            await orchestrator._stream_answer_with_progress(send)
+    else:
+        assert await orchestrator._stream_answer_with_progress(send) == "An answer"
+    assert [e["status"] for e in events] == ["active", "degraded" if fails else "complete"]

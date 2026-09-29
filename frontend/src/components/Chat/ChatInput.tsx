@@ -2,10 +2,12 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { CSSProperties, Dispatch, SetStateAction } from 'react';
 import type { BackendReadiness } from '../../hooks/useBackendReadiness';
 import './ChatInput.css';
+import type { DiagramIntentAction } from '../../types';
 
 interface ChatInputProps {
-  onSend:        (content: string, diagramRequested?: boolean) => void;
-  checkSubmission?: (content: string) => Promise<'send' | 'answer' | 'ask'>;
+  onSend:        (content: string, action?: DiagramIntentAction) => void | Promise<void>;
+  checkSubmission?: (content: string) => Promise<DiagramIntentAction>;
+  hasGraph?: boolean;
   onStop:        () => void;
   onRetryReadiness?:    () => void | Promise<void>;
   onDraftChange?: (hasText: boolean) => void;
@@ -14,6 +16,7 @@ interface ChatInputProps {
   sendDisabled?: boolean;   // blocks send while backend is not ready
   backendReadiness?: BackendReadiness;
   retryDisabled?: boolean;
+  isFinishingDiagram?: boolean;
   isGenerating?: boolean;   // LLM actively streaming; keep steering and Stop available
   readinessMessage?: string | null; // non-null while backend is warming up or failed
   selectionSuggestion?: string | null;
@@ -34,12 +37,16 @@ function clearDraft(
 }
 
 export function ChatInput({
-  onSend, checkSubmission, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating,
+  onSend, checkSubmission, hasGraph = false, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating, isFinishingDiagram = false,
   sendDisabled, backendReadiness = 'ready', retryDisabled, readinessMessage,
   selectionSuggestion, selectionReferenceActive, onUseSelection, onDismissSelection, onClearSelectionReference,
 }: ChatInputProps) {
   const [value, setValue]         = useState('');
   const [checkingIntent, setCheckingIntent] = useState(false);
+  const [needsGraphChoice, setNeedsGraphChoice] = useState(false);
+  const submittingRef = useRef(false);
+  const sendingRef = useRef(false);
+  const startingChatRef = useRef(false);
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const intentRequestRef = useRef(0);
   const [containerHovered, setContainerHovered] = useState(false);
@@ -49,7 +56,7 @@ export function ChatInput({
   useEffect(() => () => { intentRequestRef.current += 1; }, []);
 
   useEffect(() => {
-    if (!disabled && !sendDisabled && backendReadiness === 'ready') return;
+    if (sendingRef.current || (!disabled && !sendDisabled && backendReadiness === 'ready')) return;
     intentRequestRef.current += 1;
     setCheckingIntent(false);
   }, [disabled, sendDisabled, backendReadiness]);
@@ -74,27 +81,35 @@ export function ChatInput({
     onUseSelection?.();
   }, [onUseSelection, selectionSuggestion]);
 
-  const submit = async () => {
+  const submit = async (chosenAction?: DiagramIntentAction) => {
     const trimmed = value.trim();
-    if (!trimmed || disabled || sendDisabled || backendReadiness !== 'ready' || checkingIntent) return;
+    if (!trimmed || disabled || sendDisabled || backendReadiness !== 'ready' || submittingRef.current) return;
+    submittingRef.current = true;
     setSubmissionError(null);
-    if (!checkSubmission || isGenerating) {
-      clearDraft(setValue, textareaRef.current);
-      onSend(trimmed);
-      return;
-    }
     const requestId = ++intentRequestRef.current;
     setCheckingIntent(true);
     try {
-      const action = await checkSubmission(trimmed);
+      const action = chosenAction ?? (checkSubmission && !isGenerating ? await checkSubmission(trimmed) : undefined);
       if (requestId !== intentRequestRef.current) return;
+      if (action === 'ask' && hasGraph) {
+        setNeedsGraphChoice(true);
+        return;
+      }
+      sendingRef.current = true;
+      startingChatRef.current = action === 'new_chat';
+      const sent = action === undefined ? onSend(trimmed) : onSend(trimmed, action);
+      if (sent) await sent;
+      if (requestId !== intentRequestRef.current) return;
+      setNeedsGraphChoice(false);
       clearDraft(setValue, textareaRef.current);
-      onSend(trimmed, action === 'ask');
-    } catch {
+    } catch (error) {
       if (requestId === intentRequestRef.current) {
-        setSubmissionError('Could not connect. Your message is saved here. Please try again.');
+        setSubmissionError(error instanceof Error ? error.message : 'Could not send. Your message is saved here. Please try again.');
       }
     } finally {
+      sendingRef.current = false;
+      startingChatRef.current = false;
+      submittingRef.current = false;
       if (requestId === intentRequestRef.current) setCheckingIntent(false);
     }
   };
@@ -110,6 +125,7 @@ export function ChatInput({
     if (selectionSuggestion && !selectionReferenceActive && e.target.value.trim() !== '') {
       onUseSelection?.();
     }
+    setNeedsGraphChoice(false);
     setValue(e.target.value);
   };
 
@@ -123,10 +139,13 @@ export function ChatInput({
 
     // Preserve the draft for the initial bootstrap from "no thread yet" to the
     // first real thread after startup. Clear only on real thread switches.
-    if (previousThreadId && previousThreadId !== nextThreadId) {
+    // Creating a chat can switch threads before its first send is accepted.
+    // That send owns clearing the draft, so a failed handoff keeps it available.
+    if (previousThreadId && previousThreadId !== nextThreadId && !startingChatRef.current) {
       intentRequestRef.current += 1;
       setCheckingIntent(false);
       setSubmissionError(null);
+      setNeedsGraphChoice(false);
       clearDraft(setValue, textareaRef.current);
     }
 
@@ -157,8 +176,17 @@ export function ChatInput({
     onMouseEnter={() => setContainerHovered(true)}
     onMouseLeave={() => setContainerHovered(false)}
     >
-      {checkingIntent && <div role="status" style={prepareNoticeStyle}>Checking your request…</div>}
+      {checkingIntent && <div role="status" style={prepareNoticeStyle}>Preparing your request…</div>}
       {submissionError && <div role="alert" style={prepareNoticeStyle}>{submissionError}</div>}
+      {needsGraphChoice && (
+        <div className="chat-graph-choice" role="group" aria-label="Where to continue">
+          <div>
+            <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('extend')}>Extend this diagram</button>
+            <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('new_chat')}>Start a new chat</button>
+            <button disabled={checkingIntent} onClick={() => setNeedsGraphChoice(false)}>Dismiss</button>
+          </div>
+        </div>
+      )}
       {selectionSuggestion && (
         <div
           style={selectionSuggestionStyle(containerHovered, !!selectionReferenceActive)}
@@ -251,7 +279,7 @@ export function ChatInput({
         {isGenerating ? (
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             <button
-              onClick={submit}
+              onClick={() => void submit()}
               disabled={!isReady}
               aria-label="Send message"
               style={sendButtonStyle(isReady, 'Send')}
@@ -260,12 +288,13 @@ export function ChatInput({
             </button>
             <button
               onClick={onStop}
-              aria-label="Stop generation"
+              aria-label={isFinishingDiagram ? 'Finishing diagram' : 'Stop generation'}
+              disabled={isFinishingDiagram}
               style={stopButtonStyle}
               onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248, 81, 73, 0.2)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248, 81, 73, 0.1)'; }}
             >
-              Stop
+              {isFinishingDiagram ? 'Finishing…' : 'Stop'}
             </button>
           </div>
         ) : backendReadiness === 'error' ? (
@@ -279,7 +308,7 @@ export function ChatInput({
           </button>
         ) : (
           <button
-            onClick={submit}
+            onClick={() => void submit()}
             disabled={!isReady}
             aria-label="Send message"
             style={sendButtonStyle(isReady, 'Send')}

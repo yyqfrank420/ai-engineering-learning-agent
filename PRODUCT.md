@@ -56,10 +56,20 @@ authorize a read-only replacement for the core diagram workflow.
   notes, repetitive caveats, and internal workflow jargon should not dominate answers.
 - Reduce initial information density without removing architectural depth. Keep
   component responsibilities and connection details available through interaction.
-- Show truthful generation activity directly while work runs. Keep one Stop control
-  in the composer and use an upward arrow for sending. Release the completed answer
-  after the graph renders, with a bounded wait if the browser cannot acknowledge it.
+- Show concise live activity for each concurrent operation while work runs. Keep one
+  Stop control in the composer and use an upward arrow for sending. Stop during a
+  rendered preview accepts that candidate and skips remaining AI reviews. If only
+  components are ready, preserve them and finish their connections and answer.
+  Structure, edit-authority, rendering, and persistence checks still apply. Reveal validated answer sections as soon as their matching diagram has painted, with a
+  bounded terminal wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
+- Extending a diagram retains saved components, connections, and positions. Uncertain
+  follow-ups ask whether to extend or start in a new chat. Separate designs open a
+  new conversation.
+- Diagram history follows the conversation: each answer links to its diagram.
+  Undo/Redo and a compact numbered version picker keep every saved revision accessible.
+  Browsing history is read-only until Restore; scrolling the chat
+  never switches versions. Each version retains its saved layout.
 - Direct editing should let learners revise component names, types, subtitles, and
   descriptions, plus each directed connection's label and metadata. Clicking a node
   opens its details. A muted Edit button sits beside Close. Edit or F2 opens the
@@ -100,6 +110,8 @@ provided for use as product claims.
 3. Use evidence to strengthen generation without bounding it to retrieval coverage.
 4. Make the full learning and editing workflow comfortable on a laptop.
 5. Preserve learner context and show understandable, truthful progress.
+6. Let controls explain themselves. Remove repeated subtitles and success narration;
+   retain concise errors, pending feedback and the preview state.
 
 ## Open decisions
 

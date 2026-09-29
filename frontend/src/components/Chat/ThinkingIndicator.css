@@ -1,0 +1,11 @@
+.thinking-indicator { padding: 8px 16px; color: #a5b1c3; font-size: 12px; min-height: 0; flex-shrink: 0; }
+.thinking-activity { display: flex; flex-direction: column; gap: 4px; }
+.thinking-feed { margin-top: 6px; }
+.thinking-feed summary { cursor: pointer; color: #c5b4ee; }
+.thinking-feed summary:focus-visible, .thinking-transcript:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
+.thinking-excerpt { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #a5b1c3; margin-top: 3px; }
+.thinking-feed[open] .thinking-excerpt { display: none; }
+.thinking-transcript { max-height: min(180px, 25vh); overflow: auto; overscroll-behavior: contain; margin-top: 6px; padding-right: 8px; overflow-wrap: anywhere; }
+.thinking-transcript section + section { margin-top: 12px; }
+.thinking-transcript h3 { font-size: 12px; font-weight: 600; color: #c5b4ee; margin: 0 0 4px; }
+.thinking-transcript p { white-space: pre-wrap; line-height: 1.5; margin: 0; }

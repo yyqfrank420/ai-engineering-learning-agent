@@ -19,6 +19,7 @@ import logging
 import uuid
 from contextlib import suppress
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -33,6 +34,7 @@ from api.chat_guards import (
     check_prompt_injection,
     check_rate_limit,
     internal_test_stream_scope,
+    graph_continuity_error,
     is_production_traffic,
     knowledge_base_ready,
     truncate_utf8,
@@ -75,6 +77,10 @@ class ChatRequest(BaseModel):
     content: str
     complexity: str = "auto"
     graph_mode: str = "on"
+    graph_action: Literal["extend", "new", "answer"] | None = None
+    expected_graph_version: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
     diagram_requested: bool = False
     research_enabled: bool = False
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)
@@ -311,6 +317,18 @@ async def chat_endpoint(
             existing_graph, existing_graph_contract = thread_store.get_graph_artifact(
                 user_id, thread_id
             )
+            continuity_error = graph_continuity_error(
+                graph_action=body.graph_action,
+                expected_graph_version=body.expected_graph_version,
+                current_graph=existing_graph,
+                content=content,
+                diagram_requested=body.diagram_requested,
+            )
+            if continuity_error:
+                record_chat_rejected("graph_continuity")
+                yield sse({"type": "error", "content": continuity_error})
+                yield sse({"type": "done"})
+                return
 
             enqueue_analytics_event(
                 event_name="stream_started",
@@ -392,6 +410,7 @@ async def chat_endpoint(
                 "research_enabled": body.research_enabled,
                 "route": "",
                 "diagram_requested": body.diagram_requested,
+                "graph_action": body.graph_action,
                 "rag_chunks": [],
                 "retrieval_relevance": "strong",
                 "retrieval_notice": "",

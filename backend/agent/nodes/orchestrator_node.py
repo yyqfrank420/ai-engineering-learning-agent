@@ -37,7 +37,7 @@ from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v31"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v32"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
 _ROUTER_PROMPT_VERSION = "intent_router_v3"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -187,8 +187,10 @@ Cache population, logging, feedback capture, index publication, deployment, and 
 are writes. Do not expand "no downstream business writes" into "no writes" across the system.
 Only make universal claims about a graph when its complete relevant contents support them.
 The <trusted_turn_result> block is system-owned and authoritative for publication.
-Only publication state approved means a new diagram was rendered on the canvas. Preserved
-means the prior approved graph remains unchanged; withheld means no new graph was published.
+Publication states approved and user_accepted mean a new diagram was rendered on the canvas.
+User_accepted means the user chose a preview and skipped remaining semantic review; structural
+and rendering checks still passed. Do not describe that graph as semantically approved.
+Preserved means the prior graph remains unchanged; withheld means no new graph was published.
 Never describe a failed or unreviewed candidate as approved or applied. Follow any required
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
@@ -521,6 +523,20 @@ async def _emit_answer_evidence(
         )
 
 
+async def _stream_answer_with_progress(send, **arguments) -> str:
+    await send({"type": "workflow_progress", "phase": "explain", "status": "active",
+                "title": "Writing the answer", "detail": ""})
+    try:
+        answer = await stream_llm(send=send, **arguments)
+    except Exception:
+        await send({"type": "workflow_progress", "phase": "explain", "status": "degraded",
+                    "title": "Answer interrupted", "detail": ""})
+        raise
+    await send({"type": "workflow_progress", "phase": "explain", "status": "complete",
+                "title": "Answer ready", "detail": ""})
+    return answer
+
+
 async def quick_synthesise(state: AgentState) -> AgentState:
     """
     Fast path for simple factual questions.
@@ -547,7 +563,7 @@ async def quick_synthesise(state: AgentState) -> AgentState:
         book_context="",
         research_context="",
     )
-    response_text = await stream_llm(
+    response_text = await _stream_answer_with_progress(
         model=settings.orchestrator_model,
         system=_QUICK_SYNTHESIS_SYSTEM,
         messages=messages,
@@ -568,6 +584,7 @@ async def quick_synthesise(state: AgentState) -> AgentState:
         ),
         send=send,
         stream_deltas=True,
+        stream_thinking=True,
     )
 
     return {**state, "response_text": response_text}
@@ -702,7 +719,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
     staged_explanation = bool(
         isinstance(graph_contract, dict)
         and graph_contract.get("source") == "staged"
-        and state.get("graph_publication") == "approved"
+        and state.get("graph_publication") in {"approved", "user_accepted"}
     )
     if not staged_explanation:
         history = await maybe_condense_history(
@@ -730,9 +747,9 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         }
     )
 
-    # Preview an approved graph before its optional walkthrough. The graph has
-    # already passed deterministic render and semantic review; explanation
-    # latency must not hold the canvas empty.
+    # Preview the publishable graph before its optional walkthrough. The graph has
+    # already passed deterministic rendering and review or user acceptance;
+    # explanation latency must not hold the canvas empty.
     graph_is_preserved = state.get("graph_publication") == "preserved"
     delay_changed_graph = bool(
         current_graph and state.get("graph_changed") and not graph_is_preserved
@@ -876,6 +893,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             await send(event)
 
         response_text = await stream_explanation_blocks(
+            thinking_phase="explain",
             model=settings.explanation_model,
             system=(
                 f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}"
@@ -902,7 +920,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
                 if current_graph.get("detail_level") == "overview"
                 else "standard"
             )
-            if state.get("graph_publication") == "approved"
+            if state.get("graph_publication") in {"approved", "user_accepted"}
             else None,
         )
         completion_title, completion_detail = _explanation_completion_status(
@@ -922,7 +940,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         if early_response_text:
             await send({"type": "response_delta", "content": "\n\n"})
 
-        response_text = await stream_llm(
+        response_text = await _stream_answer_with_progress(
             model=settings.orchestrator_model,
             system=synthesis_system,
             messages=messages,
@@ -935,7 +953,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             telemetry=telemetry,
             send=send,
             stream_deltas=True,
-            stream_thinking=False,
+            stream_thinking=True,
             allow_fallback=True,
             provider_attempt_limit=None,
         )
@@ -974,6 +992,7 @@ def _format_trusted_turn_result(state: AgentState) -> str:
     )
     if publication not in {
         "approved",
+        "user_accepted",
         "preserved",
         "withheld",
         "unchanged",
@@ -998,6 +1017,19 @@ def _format_trusted_turn_result(state: AgentState) -> str:
         "prior approved diagram remains unchanged."
     )
     result_by_publication = {
+        "user_accepted": (
+            "Publication state: user_accepted.\n"
+            + (
+                "The user chose the rendered component preview. Those components were retained "
+                "while the connections were completed. "
+                if ((state.get("graph_contract") or {}).get("acceptance") or {}).get("stage") == "components"
+                else "The user chose the complete rendered diagram. "
+            )
+            + "The complete graph passed structural and browser rendering checks. "
+            "The remaining semantic review was skipped at the user's request. "
+            "Explain the diagram as shown. Do not claim it passed semantic review or "
+            "guarantees architectural correctness."
+        ),
         "approved": (
             "Publication state: approved.\n"
             "The current graph is the newly approved graph for this turn. The newly approved "

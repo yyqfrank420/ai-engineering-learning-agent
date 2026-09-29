@@ -328,19 +328,34 @@ def _assert_turn_submission(
         for frame in frames
         if frame["direction"] == "sent" and frame["message"].get("type") == "start"
     ]
+    action = diagram_submission_action(case.steps[step_index].prompt, prior_graph)
+    graph_action = (
+        action
+        if action in {"extend", "answer"}
+        else "new"
+        if action == "new_chat" or not prior_graph
+        else None
+    )
     expected = {
         "content": case.steps[step_index].prompt,
         "complexity": "auto",
         "graph_mode": "on",
         "research_enabled": True,
-        "diagram_requested": diagram_submission_action(
-            case.steps[step_index].prompt, prior_graph
-        )
-        == "ask",
+        "graph_action": graph_action,
     }
-    if len(starts) != 1 or any(
-        starts[0].get(key, False if key == "diagram_requested" else None) != value
-        for key, value in expected.items()
+    start = starts[0] if len(starts) == 1 else {}
+    version_matches = (
+        "expected_graph_version" in start
+        and start["expected_graph_version"] == (prior_graph or {}).get("version")
+        if graph_action == "extend"
+        else "expected_graph_version" not in start
+    )
+    if (
+        len(starts) != 1
+        or action == "ask"
+        or any(start.get(key) != value for key, value in expected.items())
+        or start.get("diagram_requested", False) is not False
+        or not version_matches
     ):
         raise BrowserQualityError(
             "browser_submission_mismatch",

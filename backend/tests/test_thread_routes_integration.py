@@ -32,14 +32,14 @@ def _setup_user():
     upsert_profile("user-1", "friend@example.com")
 
 
-def test_diagram_intent_asks_without_starting_generation(temp_data_dir):
+def test_diagram_intent_resolves_without_starting_generation(temp_data_dir):
     _setup_user()
     with TestClient(_app()) as client:
         thread_id = client.post("/api/threads", json={}).json()["thread"]["id"]
         path = f"/api/threads/{thread_id}/diagram-intent"
         for message, action in [
-            ("AI recursive self-improving trading bot?", "ask"),
-            ("Explain RAG", "ask"),
+            ("AI recursive self-improving trading bot?", "send"),
+            ("Explain RAG", "send"),
             ("Draw a diagram of retrieval", "send"),
             ("Show a simple concept map of RAG", "send"),
             ("Explain RAG. No diagram.", "answer"),

@@ -15,6 +15,141 @@ def _fingerprint(value: str) -> str:
 
 
 @pytest.mark.parametrize(
+    "change,reason,path",
+    [
+        ({"source_index": True}, "endpoint_type", "edges.0.source_index"),
+        ({"target_index": 9}, "endpoint_missing", "edges.0.target_index"),
+        ({"target_index": 0}, "self_loop", "edges.0"),
+        ({"label": None}, "label_type", "edges.0.label"),
+        ({"label": " "}, "label_length", "edges.0.label"),
+        ({"label": "x" * 1000}, "label_length", "edges.0.label"),
+        ({"flow": 999}, "flow_enum", "edges.0.flow"),
+        ({"sync": False}, "sync_enum", "edges.0.sync"),
+    ],
+)
+def test_connection_rejection_diagnostics_do_not_change_repair_errors(change, reason, path):
+    wire = {"edges": [{"source_index": 0, "target_index": 1,
+                       "label": "private label", "flow": 400, "sync": 500} | change]}
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            edge_limit=5,
+        )
+    error = caught.value
+    assert str(error) == error.code == "connection_wire_invalid"
+    assert error.diagnostic_reason == reason
+    assert error.diagnostic_path == path
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert "private label" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
+    "wire,limit,reason,path,code",
+    [
+        ({"secret": "private label"}, 5, "wire_keys", "edges", "staged_generation_schema_invalid"),
+        ({"edges": {}}, 5, "edges_type", "edges", "connection_wire_invalid"),
+        ({"edges": [None]}, 0, "edges_count", "edges", "connection_wire_invalid"),
+        ({"edges": [None]}, 5, "edge_type", "edges.0", "staged_generation_schema_invalid"),
+        ({"edges": [{"secret": "private label"}]}, 5, "edge_keys", "edges.0", "staged_generation_schema_invalid"),
+        ({"edges": [{"source_index": 0, "target_index": 1, "label": label,
+                     "flow": 400, "sync": 500} for label in ("private label", "PRIVATE  LABEL")]},
+         5, "duplicate_edge", "edges.1", "connection_wire_invalid"),
+    ],
+)
+def test_connection_container_and_duplicate_diagnostics(wire, limit, reason, path, code):
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            edge_limit=limit,
+        )
+    error = caught.value
+    assert str(error) == error.code == code
+    assert (error.diagnostic_reason, error.diagnostic_path) == (reason, path)
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert "private label" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
+    "path,value,reason",
+    [
+        ("title", None, "title_type"), ("title", " ", "title_length"),
+        ("assumptions", None, "assumptions_type"),
+        ("assumptions", ["a"] * 17, "assumptions_count"),
+        ("assumptions.0", None, "assumption_type"),
+        ("assumptions.0", " ", "assumption_length"),
+        ("root_index", True, "root_type"), ("root_index", 9, "root_range"),
+        ("capabilities", None, "capabilities_type"),
+        ("capabilities", {}, "capabilities_keys"),
+        ("capabilities.external_effects", 1, "capability_type"),
+        ("components", None, "components_type"),
+        ("components", [], "components_count"),
+        ("components.0", None, "component_type"),
+        ("components.0", {}, "component_keys"),
+        ("components.0.label", None, "label_type"),
+        ("components.0.label", " ", "label_length"),
+        ("components.0.responsibility", None, "responsibility_type"),
+        ("components.0.responsibility", " ", "responsibility_length"),
+        ("components.0.group_label", None, "group_label_type"),
+        ("components.0.group_label", " ", "group_label_length"),
+        ("components.0.type", True, "component_type_enum"),
+        ("components.0.group_kind", 999, "group_kind_enum"),
+        ("components.0.primary_flow_member", 1, "primary_flow_type"),
+        ("components.0.primary_flow_member", False, "root_not_primary"),
+    ],
+)
+def test_component_rejection_diagnostics(path, value, reason):
+    from agent import staged_graph_workflow as workflow
+
+    wire = _component_wire()
+    wire["assumptions"] = ["private source detail"]
+    target = wire
+    parts = path.split(".")
+    for part in parts[:-1]:
+        target = target[int(part) if part.isdigit() else part]
+    target[int(parts[-1]) if parts[-1].isdigit() else parts[-1]] = value
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=5)
+    error = caught.value
+    code = "staged_generation_schema_invalid" if reason in {
+        "capabilities_type", "capabilities_keys", "component_type", "component_keys"
+    } else "component_wire_invalid"
+    expected_path = "root_index" if reason == "root_not_primary" else path
+    assert str(error) == error.code == code
+    assert error.diagnostic_reason == reason
+    assert error.diagnostic_path == expected_path
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="components", attempt=2, candidate=_component_wire(),
+    )
+    assert diagnostic["reason"] == reason
+    assert diagnostic["path"] == expected_path
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    assert diagnostic["candidate_fingerprint"] != generation._fingerprint(_component_wire())
+    assert "private source detail" not in json.dumps(diagnostic)
+    assert workflow._safe_finding(error, stage="components") == {
+        "code": code, "path": "components", "rule": "contract_validation", "reason": code,
+    }
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("keys", "component_wire_keys"), ("duplicate", "duplicate_component"),
+    ("capacity", "components_count"),
+])
+def test_component_diagnostic_identity_and_capacity(case, reason):
+    wire = _component_wire()
+    if case == "keys":
+        wire["private key"] = "private output"
+    else:
+        wire["components"].append(dict(wire["components"][0]))
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=1 if case == "capacity" else 5)
+    error = caught.value
+    assert error.diagnostic_reason == reason
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert error.diagnostic_path == ("components.1" if case == "duplicate" else "components")
+    assert "private" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
     "connection_key", ["initial_connections", "corrected_connections"]
 )
 def test_retained_closed_loop_primary_reachability(connection_key):
@@ -518,7 +653,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v29"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v30"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -739,7 +874,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v34"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v37"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2019,6 +2154,15 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
         review_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
     assert generated == reviewed == staged_review_requirements("components", maturity)
+    assert generated_input["acceptance_criteria_order"] == list(reviewed) == [
+        "capability_classification", "objective_fidelity", "mece_scope", "brief_coverage",
+    ]
+    assert "Evaluate capability_classification first from declared behavior" in review_prompt
+    assert "same pass even when the supplied flags are wrong" in review_prompt
+    assert "covered by its own clauses" in review_prompt
+    assert "A prior satisfied coverage review that depended on the old flags" in prompt
+    assert "Change only fields authorized by the write set and supplied schema" in prompt
+    assert "do not introduce capabilities or unrelated controls" in prompt
     assert (
         generated.keys() == staged_review_requirements("components", "prototype").keys()
     )
@@ -2034,6 +2178,7 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= generated.keys()
     if maturity == "prototype":
         assert "downstream_controls" not in generated_input
+        assert "downstream_controls" not in review_prompt
     else:
         controls = generated_input["downstream_controls"]
         assert controls == STAGED_PRODUCTION_REQUIREMENTS
@@ -2062,7 +2207,10 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
             for code, guidance in controls.items()
             if code != "streaming_integrity"
         }
-        assert "downstream_controls" not in review_prompt
+        reviewed_controls = json.loads(
+            review_prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0]
+        )
+        assert reviewed_controls == controls == STAGED_PRODUCTION_REQUIREMENTS
         assert (
             "Do not add external effects, retrieval, learning, or streaming solely "
             "to satisfy unrelated guidance"
@@ -2528,6 +2676,129 @@ def test_semantic_correction_rejects_authority_expansion(mutation):
         response["additions"] = [case["original_candidate"]["components"][0]]
     with pytest.raises(generation.StagedGenerationError):
         delta.assemble(json.dumps(response))
+
+
+def _paired_recovery(indexes=(0, 1), *, limit=8, provenance=None, global_finding=False):
+    exchanges = {"exchanges": [
+        {"source_index": 0, "target_index": 1, "label": "Invoke tool",
+         "response_label": "Tool result", "flow": 400, "sync": 500},
+        {"source_index": 1, "target_index": 0, "label": "Publish event",
+         "response_label": None, "flow": 402, "sync": 501},
+    ]}
+    wire, pairs = generation._parse_connection_response(
+        json.dumps(exchanges), accepted_components=_accepted_components(), edge_limit=limit,
+    )
+    write_set = generation.create_write_set(component_limit=4, edge_limit=limit)
+    findings = [{"code": "edge_semantics", "path": "connections",
+                 "rule": "semantic_gate", "record_indexes": list(indexes)}]
+    if global_finding:
+        findings.append({**findings[0], "record_indexes": []})
+    delta = generation._semantic_correction_delta(
+        stage="connections", maturity="prototype", write_set=write_set, attempt=1,
+        rejected_candidate=wire, findings=findings,
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=_accepted_components(),
+        accepted_context=generation._accepted_context(_accepted_context()),
+        recovery_mode=True, connection_exchanges=pairs if provenance is None else provenance,
+    )
+    return delta, wire, pairs, write_set, findings
+
+
+@pytest.mark.asyncio
+async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
+    delta, original, pairs, write_set, findings = _paired_recovery()
+    assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_0"}
+    update = {"label": "Invoke tool", "response_label": "Validated tool result",
+              "flow": 400, "sync": 500}
+
+    async def fake_stream(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        assert '"original_edge_to_exchange_slot":{"0":"slot_0","1":"slot_0","2":"slot_1"}' in prompt
+        return _response({"updates": {"slot_0": update}, "additions": [], "removals": []})
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    result = await generation.generate_connection_candidate(
+        request="Repair the tool return", resolved_maturity="prototype", write_set=write_set,
+        upstream_fingerprint="a" * 64, accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(), attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        gate_findings=findings, rejected_candidate=original,
+        prior_connection_exchanges=pairs, recovery_mode=True,
+    )
+    assert result["wire"]["edges"][0] == original["edges"][0]
+    assert result["wire"]["edges"][1]["label"] == "Validated tool result"
+    assert result["wire"]["edges"][2] == original["edges"][2]
+    assert result["connection_exchanges"] == pairs
+    assert generation._generation_schema_version("connections", delta.schema) == "staged_connections_exchange_correction_v1"
+
+
+@pytest.mark.parametrize("change", [{"response_label": None}, {"response_label": " "},
+                                  {"source_index": 1, "target_index": 0}])
+def test_paired_recovery_rejects_lost_request_or_reply(change):
+    delta, *_ = _paired_recovery()
+    update = {"label": "Invoke tool", "response_label": "Tool result", "flow": 400, "sync": 500} | change
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps({"updates": {"slot_0": update}, "additions": [], "removals": []}))
+
+
+def test_paired_recovery_removal_reindexes_and_allows_explicit_rewire():
+    delta, original, *_ = _paired_recovery()
+    replacement = {"source_index": 1, "target_index": 0, "label": "Request check",
+                   "response_label": "Check outcome", "flow": 400, "sync": 501}
+    wire, pairs = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({"updates": {"slot_0": None},
+            "additions": [replacement], "removals": [0]}))),
+        accepted_components=_accepted_components(), edge_limit=8,
+    )
+    assert wire["edges"][0] == original["edges"][2]
+    assert pairs == [{"request_record_index": 0, "response_record_index": None},
+                     {"request_record_index": 1, "response_record_index": 2}]
+    assert wire["edges"][1]["sync"] == wire["edges"][2]["sync"] == 501
+
+
+def test_paired_recovery_checks_expanded_edge_capacity():
+    delta, *_ = _paired_recovery(limit=3)
+    addition = {"source_index": 0, "target_index": 1, "label": "Another request",
+                "response_label": "Another reply", "flow": 401, "sync": 500}
+    assembled = delta.assemble(json.dumps({"updates": {"slot_0": None},
+        "additions": [addition], "removals": []}))
+    with pytest.raises(generation.StagedGenerationError, match="connection_wire_invalid"):
+        generation._parse_connection_response(json.dumps(assembled),
+            accepted_components=_accepted_components(), edge_limit=3)
+
+
+@pytest.mark.parametrize("indexes,global_finding", [((), False), ((0,), True)])
+def test_global_full_capacity_recovery_retains_canonical_endpoint_authority(indexes, global_finding):
+    delta, *_ = _paired_recovery(indexes=indexes, limit=3, global_finding=global_finding)
+    assert delta.record_key == "edges"
+    slot = delta.schema["properties"]["updates"]["properties"]["slot_0"]["anyOf"][0]
+    assert {"source_index", "target_index"} <= set(slot["properties"])
+
+
+def test_one_way_exchange_may_add_async_reply_and_new_exchange():
+    delta, original, *_ = _paired_recovery(indexes=(2,))
+    result, pairs = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({
+            "updates": {"slot_1": {"label": "Publish event", "response_label": "Receipt",
+                                   "flow": 402, "sync": 501}},
+            "removals": [], "additions": [{"source_index": 0, "target_index": 1,
+                "label": "Deploy release", "response_label": None, "flow": 403, "sync": 501}],
+        }))), accepted_components=_accepted_components(), edge_limit=8,
+    )
+    assert result["edges"][:2] == original["edges"][:2]
+    assert pairs == [{"request_record_index": 0, "response_record_index": 1},
+                     {"request_record_index": 2, "response_record_index": 3},
+                     {"request_record_index": 4, "response_record_index": None}]
+
+
+@pytest.mark.parametrize("pairs", [[], [{"request_record_index": True, "response_record_index": 1}],
+    [{"request_record_index": 1, "response_record_index": 0}],
+    [{"request_record_index": 0, "response_record_index": None},
+     {"request_record_index": 2, "response_record_index": None}]])
+def test_paired_recovery_rejects_malformed_provenance(pairs):
+    with pytest.raises(generation.StagedGenerationError, match="invalid_connection_exchange_provenance"):
+        _paired_recovery(provenance=pairs)
 
 
 def _recovery_components():
@@ -3000,6 +3271,7 @@ def test_targeted_global_criterion_has_explicit_metadata_scope(code, metadata):
         == {"updates", "additions", "capabilities"} | metadata
     )
     assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_4"}
+    assert "responsibility" in delta.schema["properties"]["updates"]["properties"]["slot_4"]["anyOf"][0]["properties"]
 
 
 @pytest.mark.asyncio
@@ -3524,6 +3796,21 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
 
 
 @pytest.mark.asyncio
+async def test_extension_delta_can_request_clarification_without_mutating_locked_base(monkeypatch):
+    permissions = _permissions(
+        kind="extension", connection_addition_mode="extension", allowed_new_node_count=3,
+        minimum_new_node_count=1, allowed_new_edge_count=6, minimum_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1", "n2"], enforce_added_edge_contract_label=False,
+    )
+    result, calls = await _generate_edit(monkeypatch,
+        {"candidate": None, "clarification_questions": ["Where should this layer attach?"]}, permissions)
+    assert result["clarification_questions"] == ["Where should this layer attach?"]
+    schema = calls[0]["schema"]
+    assert set(schema["properties"]) == {"candidate", "clarification_questions"}
+    candidate_schema = schema["properties"]["candidate"]["anyOf"][0]
+    assert candidate_schema["properties"]["additions"]["minItems"] == 1
+    assert candidate_schema["properties"]["additions"]["maxItems"] == 3
+    assert candidate_schema["properties"]["updates"]["properties"] == {}
 @pytest.mark.parametrize("remove_entries", [False, True])
 async def test_connection_recovery_preserves_cited_tool_paths_and_root_reachability(
     monkeypatch, remove_entries

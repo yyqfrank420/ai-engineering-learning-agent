@@ -6539,3 +6539,116 @@ def test_component_attachment_does_not_treat_data_provenance_as_edge_direction()
     assert permissions["connection_addition_mode"] == "attachment"
     assert permissions["minimum_new_edge_count"] == 1
     assert permissions["allowed_new_edge_count"] == 2
+
+
+def _extension_fixture():
+    import copy
+    from agent.nodes.graph_worker import staged_edit_scope
+    base = {
+        "title": "Saved architecture", "design_origin": "applied", "version": "old",
+        "nodes": [{"id": "a", "label": "Saved service", "position": {"x": 12, "y": 34}}],
+        "edges": [], "groups": [{"id": "g", "label": "Saved", "nodeIds": ["a"]}],
+        "view_state": {"zoom": 0.8},
+    }
+    _, permissions = staged_edit_scope("Add a layer", base, resolved_complexity="prototype", add_only=True)
+    candidate = copy.deepcopy(base)
+    candidate["version"] = "new"
+    candidate["nodes"] += [{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}]
+    candidate["edges"] += [{"source": "a", "target": "b", "label": "Invoke"},
+                           {"source": "b", "target": "c", "label": "Persist"}]
+    candidate["groups"] += [{"id": "h", "label": "New layer", "nodeIds": ["b", "c"]}]
+    return base, candidate, permissions
+
+
+@pytest.mark.parametrize("title", ["Content publishing", "Forecasting", "Fraud review"])
+def test_additive_extension_preserves_saved_records_and_positions(title):
+    from agent.nodes.graph_worker import admit_graph_extension
+    base, candidate, permissions = _extension_fixture()
+    base["title"] = candidate["title"] = title
+    result = admit_graph_extension(base, candidate, permissions)
+    assert result == candidate
+    assert result["nodes"][0] == base["nodes"][0]
+    assert result["view_state"] == base["view_state"]
+
+
+@pytest.mark.parametrize("new_group", [False, True])
+def test_extension_appends_members_to_saved_group_and_can_add_new_group(new_group):
+    base, candidate, permissions = _extension_fixture()
+    base["groups"][0].update({"kind": "operations", "color": "blue", "style": {"padding": 12}})
+    candidate["groups"][0] = copy.deepcopy(base["groups"][0])
+    candidate["groups"][0]["nodeIds"].extend(["b"] if new_group else ["b", "c"])
+    candidate["groups"] = candidate["groups"][:1] + (
+        [{"id": "h", "label": "New layer", "nodeIds": ["c"]}] if new_group else []
+    )
+    result = graph_worker.admit_graph_extension(base, candidate, permissions)
+    assert result == candidate
+    assert result["nodes"][0] == base["nodes"][0]
+    assert result["groups"][0]["style"] == {"padding": 12}
+    assert base["groups"][0]["nodeIds"] == ["a"]
+
+
+@pytest.mark.parametrize("defect", [
+    "label", "kind", "metadata", "removed_metadata", "remove_member", "reorder_members",
+    "move_member", "reorder_groups", "foreign_id", "duplicate_within", "duplicate_across",
+    "old_id_in_new_group", "ungrouped_new", "invalid_member",
+])
+def test_extension_group_membership_preserves_baseline_and_unique_new_members(defect):
+    base, candidate, permissions = _extension_fixture()
+    old_extra = {"id": "old-extra", "label": "Another saved owner"}
+    base["nodes"].append(old_extra)
+    candidate["nodes"].insert(1, copy.deepcopy(old_extra))
+    base["groups"][0].update({"nodeIds": ["a", "old-extra"], "kind": "runtime", "color": "blue"})
+    candidate["groups"][0] = copy.deepcopy(base["groups"][0])
+    if defect in {"label", "kind", "metadata"}:
+        candidate["groups"][0]["color" if defect == "metadata" else defect] = "changed"
+    elif defect == "removed_metadata":
+        del candidate["groups"][0]["color"]
+    elif defect == "remove_member":
+        candidate["groups"][0]["nodeIds"].pop()
+    elif defect == "reorder_members":
+        candidate["groups"][0]["nodeIds"].reverse()
+    elif defect == "move_member":
+        candidate["groups"][0]["nodeIds"].remove("old-extra")
+        candidate["groups"][1]["nodeIds"].append("old-extra")
+    elif defect == "reorder_groups":
+        candidate["groups"].reverse()
+    elif defect == "foreign_id":
+        candidate["groups"][1]["nodeIds"].append("missing")
+    elif defect == "duplicate_within":
+        candidate["groups"][1]["nodeIds"].append("b")
+    elif defect == "duplicate_across":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "old_id_in_new_group":
+        candidate["groups"][1]["nodeIds"].append("a")
+    elif defect == "ungrouped_new":
+        candidate["groups"][1]["nodeIds"].remove("c")
+    else:
+        candidate["groups"][0]["nodeIds"].append({"id": "b"})
+    with pytest.raises(ValueError):
+        graph_worker.admit_graph_extension(base, candidate, permissions)
+
+
+@pytest.mark.parametrize("defect", ["delete", "rename", "id", "position", "group", "cap", "disconnected", "endpoint", "old_edge"])
+def test_additive_extension_rejects_changes_outside_add_only_authority(defect):
+    from agent.nodes.graph_worker import admit_graph_extension
+    base, candidate, permissions = _extension_fixture()
+    if defect == "delete":
+        candidate["nodes"].pop(0)
+    elif defect == "rename":
+        candidate["nodes"][0]["label"] = "Changed"
+    elif defect == "id":
+        candidate["nodes"][1]["id"] = "a"
+    elif defect == "position":
+        candidate["nodes"][0]["position"]["x"] = 0
+    elif defect == "group":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "cap":
+        permissions["allowed_new_node_count"] = 1
+    elif defect == "disconnected":
+        candidate["edges"] = [{"source": "b", "target": "c", "label": "Persist"}]
+    elif defect == "endpoint":
+        candidate["edges"][0]["source"] = "missing"
+    else:
+        candidate["edges"].append({"source": "a", "target": "a", "label": "Rewrite old flow"})
+    with pytest.raises(ValueError):
+        admit_graph_extension(base, candidate, permissions)

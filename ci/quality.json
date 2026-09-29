@@ -11,6 +11,7 @@
             "python", "-m", "pytest", "--tb=short", "-q",
             "backend/tests/test_api_security.py",
             "backend/tests/test_chat_websocket.py",
+            "backend/tests/test_graph_continuity_transports.py",
             "backend/tests/test_diagram_evaluation_channel.py",
             "backend/tests/test_graph_content_edits.py",
             "backend/tests/test_internal_auth_and_telemetry.py",
@@ -45,6 +46,7 @@
             "backend/tests/test_node_selected_service.py",
             "backend/tests/test_orchestrator_node.py",
             "backend/tests/test_pipeline_steps.py",
+            "backend/tests/test_provider_thinking.py",
             "backend/tests/test_rag_retrieval.py",
             "backend/tests/test_rag_worker.py",
             "backend/tests/test_search_tool_flow.py",
@@ -81,6 +83,7 @@
             "backend/tests/test_resource_limits.py",
             "backend/tests/test_runtime_dependencies.py",
             "backend/tests/test_storage_integrity.py",
+            "backend/tests/test_graph_history.py",
             "backend/tests/test_storage_models.py",
             "backend/tests/test_supabase_auth_adapter.py"
           ]
@@ -103,6 +106,7 @@
             "backend/tests/test_staging_diagram_renderer.py",
             "backend/tests/test_staging_runner.py",
             "backend/tests/test_quality_corpus.py",
+            "backend/tests/test_pr_resume.py",
             "backend/tests/test_semantic_gate.py"
           ]
         }

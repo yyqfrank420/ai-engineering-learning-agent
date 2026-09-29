@@ -6,6 +6,7 @@ export function storageKeyForThread(userId: string) {
 }
 
 export type ThreadSnapshot = {
+  threadId?: string | null;
   title: string;
   messages: Message[];
   graphData: GraphData | null;
@@ -22,6 +23,7 @@ export function readThreadSnapshot(userId: string, threadId: string): ThreadSnap
     const parsed = JSON.parse(raw) as ThreadSnapshot;
     if (!Array.isArray(parsed.messages)) return null;
     return {
+      threadId: parsed.threadId ?? threadId,
       title: parsed.title || 'New chat',
       messages: parsed.messages.map(message => ({
         ...message,
@@ -72,6 +74,8 @@ export function mapThreadMessages(messages: ThreadDetail['messages']): Message[]
     id: message.id,
     role: message.role,
     content: message.content,
+    graphRevisionId: message.graph_revision_id ?? null,
+    clientRequestId: message.client_request_id ?? null,
     isStreaming: false,
   }));
 }
