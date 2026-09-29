@@ -14,6 +14,7 @@ import type { Root, RootContent } from 'mdast';
 import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
+import './MessageList.css';
 import type { Message } from '../../types';
 
 interface MessageListProps {
@@ -102,7 +103,7 @@ const mdComponents = {
     );
   },
   pre: ({ children }: MarkdownChildrenProps) => (
-    <pre style={{
+    <pre className="chat-message__code" style={{
       background: '#0d1117',
       border: '1px solid #21262d',
       borderRadius: '6px',
@@ -130,7 +131,7 @@ const mdComponents = {
   ),
   // Tables (GFM)
   table: ({ children }: MarkdownChildrenProps) => (
-    <div style={{ overflowX: 'auto', margin: '0.5rem 0' }}>
+    <div className="chat-message__table" style={{ overflowX: 'auto', margin: '0.5rem 0' }}>
       <table style={{ borderCollapse: 'collapse', fontSize: '0.82rem', width: '100%' }}>{children}</table>
     </div>
   ),
@@ -185,7 +186,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   return (
     <>
       {segments.map((seg, i) => {
-        if (seg.type === 'block-math') return <BlockMath key={i} math={seg.value} />;
+        if (seg.type === 'block-math') return <div className="chat-message__math" key={i}><BlockMath math={seg.value} /></div>;
         if (seg.type === 'inline-math') return <InlineMath key={i} math={seg.value} />;
         return (
           <ReactMarkdown key={i} remarkPlugins={isAssistant ? [remarkGfm, remarkBookCitationLabels] : [remarkGfm]} components={mdComponents}>
@@ -205,8 +206,10 @@ export function MessageList({ messages }: MessageListProps) {
   }, [messages]);
 
   return (
-    <div style={{
+    <div className="chat-messages" style={{
       flex: 1,
+      minHeight: 0,
+      minWidth: 0,
       overflowY: 'auto',
       padding: '1rem',
       display: 'flex',
@@ -233,7 +236,7 @@ export function MessageList({ messages }: MessageListProps) {
             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
           }}
         >
-          <div style={{
+          <div className="chat-message__body" style={{
             maxWidth: '85%',
             padding: '0.6rem 0.875rem',
             borderRadius: msg.role === 'user' ? '12px 12px 2px 12px' : '12px 12px 12px 2px',

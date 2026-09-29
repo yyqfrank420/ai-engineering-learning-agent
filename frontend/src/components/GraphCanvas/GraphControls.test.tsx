@@ -48,6 +48,7 @@ describe('graph detail controls', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   it('renders node evidence and connection metadata and invokes its actions', () => {
@@ -154,6 +155,39 @@ describe('graph detail controls', () => {
     act(() => vi.runOnlyPendingTimers());
     fireEvent.click(screen.getByLabelText('Close glossary'));
     expect(screen.queryByText('Acronyms & terms')).toBeNull();
+  });
+
+  it('bounds glossary dragging to its canvas and resets the position when the canvas resizes', () => {
+    let notifyResize: (() => void) | undefined;
+    class TestResizeObserver {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = () => callback([], this as ResizeObserver);
+      }
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal('ResizeObserver', TestResizeObserver);
+    const box = (left: number, top: number, width: number, height: number): DOMRect => ({
+      left, top, width, height, right: left + width, bottom: top + height,
+      x: left, y: top, toJSON: () => ({}),
+    });
+    const view = render(<div className="graph-canvas__surface">
+      <GlossaryDrawer graphData={null} sourceTexts={['RAG calls an API.']} bottomOffset="1rem" />
+    </div>);
+    const canvas = view.container.querySelector<HTMLElement>('.graph-canvas__surface')!;
+    const drawer = view.container.querySelector<HTMLElement>('.glossary-drawer')!;
+    vi.spyOn(canvas, 'getBoundingClientRect').mockReturnValue(box(0, 0, 800, 600));
+    vi.spyOn(drawer, 'getBoundingClientRect').mockReturnValue(box(464, 400, 320, 184));
+    fireEvent.pointerDown(screen.getByText('Dictionary'), { clientX: 500, clientY: 500 });
+    act(() => {
+      fireEvent.pointerMove(window, { clientX: -500, clientY: -500 });
+      fireEvent.pointerMove(window, { clientX: -600, clientY: -600 });
+    });
+    expect(drawer.style.transform).toBe('translate(-448px, -384px)');
+    fireEvent.pointerCancel(window);
+    act(() => notifyResize?.());
+    expect(drawer.style.transform).toBe('translate(0px, 0px)');
   });
 
   it('does not render an empty glossary', () => {

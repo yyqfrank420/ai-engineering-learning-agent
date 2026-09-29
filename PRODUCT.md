@@ -31,7 +31,8 @@ represented as statements from a source that does not support them.
 
 ## Operating context
 
-Laptop-first browser experience with comfortable full diagram interaction and editing.
+Responsive browser experience with full diagram interaction and editing on desktop,
+tablet, and phone.
 Learners ask for a system, inspect its graph, follow its execution sequence, select
 components for explanations, and request changes or local expansion through chat.
 They also arrange blocks, move zones, and reshape zone borders.
@@ -39,8 +40,11 @@ They also arrange blocks, move zones, and reshape zone borders.
 Generation can take one to two minutes. Learners need understandable activity feedback
 throughout that wait, followed by a diagram and an explanation that agree.
 
-Phone and tablet interaction requirements remain undecided. Laptop-first does not
-authorize a read-only replacement for the core diagram workflow.
+On narrow workspaces, Chat and Diagram views each use the available workspace.
+Switching views preserves conversation drafts, diagram state, and editing controls.
+History opens in a dismissible drawer on phones and tablets. Wider workspaces retain
+resizable side-by-side panes. Touch controls and input fields remain usable across
+portrait, landscape, and software-keyboard layouts.
 
 ## Capabilities and constraints
 
@@ -95,11 +99,10 @@ provided for use as product claims.
 1. Teach the system through concrete responsibilities and relationships.
 2. Preserve depth while introducing detail at the learner's pace.
 3. Use evidence to strengthen generation without bounding it to retrieval coverage.
-4. Make the full learning and editing workflow comfortable on a laptop.
+4. Keep the learning and editing workflow usable across desktop, tablet, and phone.
 5. Preserve learner context and show understandable, truthful progress.
 
 ## Open decisions
 
 - Product name and the book's prominence in the product identity.
-- Phone and tablet editing expectations.
 - Any product-specific accessibility standard beyond the existing engineering requirements.

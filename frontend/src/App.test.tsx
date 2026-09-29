@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('./hooks/useAuthSession', () => ({ useAuthSession: vi.fn() }));
 vi.mock('./hooks/useBackendReadiness', () => ({ useBackendReadiness: vi.fn() }));
@@ -67,6 +67,7 @@ vi.mock('./components/Layout/SplitPane', () => ({
 }));
 
 vi.mock('./components/Layout/ThreadSidebar', () => ({
+  HISTORY_OVERLAY_QUERY: '(max-width: 1279px)',
   ThreadSidebar: ({ onNewChat, onSelectThread, onDeleteThread, isOpen }: {
     onNewChat: () => void;
     onSelectThread: (threadId: string) => void;
@@ -298,6 +299,7 @@ const agentState = {
 
 
 describe('App coordination', () => {
+  afterEach(() => vi.unstubAllGlobals());
   beforeEach(() => {
     vi.clearAllMocks();
     window.location.hash = '';
@@ -309,6 +311,43 @@ describe('App coordination', () => {
     vi.mocked(useThreadSession).mockReturnValue(threadState);
     vi.mocked(useAgentStream).mockReturnValue(agentState);
     vi.mocked(shouldPersistThreadSnapshot).mockReturnValue(true);
+  });
+
+  it('starts with history closed on compact screens and closes it after choosing a thread', () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({
+      matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+    })));
+    render(<App />);
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('false');
+    fireEvent.click(screen.getByText('Toggle sidebar'));
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('true');
+    fireEvent.click(screen.getByText('Select thread'));
+    expect(threadState.handleSelectThread).toHaveBeenCalledWith('thread-2');
+    expect(document.querySelector('[data-sidebar-open]')?.getAttribute('data-sidebar-open')).toBe('false');
+  });
+
+  it('tracks the visible keyboard viewport while preserving pinch zoom and cleaning up listeners', () => {
+    const viewport = Object.assign(new EventTarget(), { height: 844, offsetTop: 0, scale: 1 });
+    const remove = vi.spyOn(viewport, 'removeEventListener');
+    vi.stubGlobal('visualViewport', viewport);
+    const { container, unmount } = render(<App />);
+    const shell = container.querySelector<HTMLElement>('.app-viewport')!;
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('844px');
+    act(() => {
+      viewport.height = 410;
+      viewport.offsetTop = 30;
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('410px');
+    expect(shell.style.getPropertyValue('--workspace-top')).toBe('30px');
+    act(() => {
+      viewport.scale = 2;
+      viewport.dispatchEvent(new Event('resize'));
+    });
+    expect(shell.style.getPropertyValue('--workspace-height')).toBe('');
+    expect(shell.style.getPropertyValue('--workspace-top')).toBe('');
+    unmount();
+    expect(remove.mock.calls.map(([name]) => name)).toEqual(['resize', 'scroll']);
   });
 
   it('renders a bounded loading state before authentication initializes', () => {

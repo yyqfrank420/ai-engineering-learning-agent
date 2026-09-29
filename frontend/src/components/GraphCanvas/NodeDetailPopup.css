@@ -24,7 +24,7 @@
 @container graph-canvas (max-width: 559px) {
   .node-inspector {
     top: auto;
-    bottom: 12px;
+    bottom: max(12px, env(safe-area-inset-bottom));
     left: 12px;
     right: 12px;
     width: calc(100% - 24px);
@@ -221,4 +221,13 @@
 @media (pointer: coarse) {
   .node-inspector button { min-height: 44px; }
   .node-inspector__icon-button { min-width: 44px; }
+}
+
+@media (pointer: coarse) {
+  .node-inspector__form :is(input, select, textarea) { font-size: 16px; }
+}
+
+@container graph-canvas (max-width: 359px) {
+  .node-inspector__form-row { grid-template-columns: 1fr; }
+  .node-inspector__save-actions, .node-inspector__actions { flex-wrap: wrap; }
 }

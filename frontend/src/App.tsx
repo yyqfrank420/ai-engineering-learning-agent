@@ -1,12 +1,13 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { GraphNode } from './types';
+import './App.css';
 import { trackEvent } from './services/analytics';
 import { useAgentStream } from './hooks/useAgentStream';
 import { graphStructureKey } from './utils/graphStructureKey';
 import { TitleBar } from './components/Layout/TitleBar';
 import { SplitPane } from './components/Layout/SplitPane';
-import { ThreadSidebar } from './components/Layout/ThreadSidebar';
+import { HISTORY_OVERLAY_QUERY, ThreadSidebar } from './components/Layout/ThreadSidebar';
 import { ThinkingIndicator } from './components/Chat/ThinkingIndicator';
 import { RetrievalNoticeBar } from './components/Chat/RetrievalNoticeBar';
 import { ContextBar } from './components/Chat/ContextBar';
@@ -50,10 +51,42 @@ export default function App() {
 }
 
 function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { authReady, handleAuthenticated, setAuthSession, authSession } = auth;
+  const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches);
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia?.(HISTORY_OVERLAY_QUERY);
+    if (!media) return;
+    const update = () => setSidebarOpen(!media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const shell = viewportRef.current;
+    if (!viewport || !shell) return;
+    const update = () => {
+      // Dynamic viewport units exclude some mobile keyboards. Do not constrain pinch zoom.
+      if (viewport.scale === 1) {
+        shell.style.setProperty('--workspace-height', `${viewport.height}px`);
+        shell.style.setProperty('--workspace-top', `${viewport.offsetTop}px`);
+      } else {
+        shell.style.removeProperty('--workspace-height');
+        shell.style.removeProperty('--workspace-top');
+      }
+    };
+    update();
+    viewport.addEventListener('resize', update);
+    viewport.addEventListener('scroll', update);
+    return () => {
+      viewport.removeEventListener('resize', update);
+      viewport.removeEventListener('scroll', update);
+    };
+  }, [authReady]);
   const [hasUnsavedGraphEdit, setHasUnsavedGraphEdit] = useState(false);
   const [appRoute, setAppRoute] = useState<AppRoute>(resolveRouteFromHash);
-  const { authReady, handleAuthenticated, setAuthSession, authSession } = auth;
   const {
     selectionSuggestion,
     selectionReferenceActive,
@@ -243,11 +276,15 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   }, [activeThreadId, authSession, backendReadiness, clearSelectedNode, clearSelection, graphEditBlocked, sendMessage]);
 
   const startNewChat = useCallback(() => {
-    if (!graphEditBlocked) void handleNewChat();
+    if (graphEditBlocked) return;
+    void handleNewChat();
+    if (window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches) setSidebarOpen(false);
   }, [graphEditBlocked, handleNewChat]);
 
   const selectThread = useCallback((threadId: string) => {
-    if (!graphEditBlocked) handleSelectThread(threadId);
+    if (graphEditBlocked) return;
+    handleSelectThread(threadId);
+    if (window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches) setSidebarOpen(false);
   }, [graphEditBlocked, handleSelectThread]);
 
   const deleteThread = useCallback((threadId: string) => {
@@ -314,16 +351,16 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
   return (
-    <div style={{ position: 'relative', height: '100vh', overflow: 'hidden' }}>
+    <div ref={viewportRef} className="app-viewport">
     <Suspense fallback={null}>
       <HiddenGraphEvaluator candidate={graphCandidate} />
     </Suspense>
     {/* Auth overlay — sits above blurred app when unauthenticated */}
     {!authSession && <AuthScreen onAuthenticated={handleAuthenticated} />}
-    <div style={{
+    <div className="app-workspace" style={{
       display: 'flex',
       flexDirection: 'column',
-      height: '100vh',
+      height: '100%',
       // Ambient gradient backdrop — vivid enough for glass panels to refract color
       background: `
         radial-gradient(ellipse 80% 60% at 10% -5%, rgba(124,58,237,0.55) 0%, transparent 60%),
@@ -357,7 +394,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       />
 
       {/* Main body: sidebar + split pane side-by-side */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <div className="app-workspace__body" style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
         {dashboardActive && authSession ? (
           <Suspense fallback={<div style={panelFallbackStyle}>Loading dashboard…</div>}>
             <InternalDashboard authSession={authSession} />
@@ -373,6 +410,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
               onDeleteThread={deleteThread}
               isLoading={isStreaming}
               isOpen={sidebarOpen}
+              onClose={() => setSidebarOpen(false)}
             />
             <SplitPane
               graphVisible={showGraphPane}
@@ -400,7 +438,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                 </Suspense>
               }
               right={
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+                <div className="app-conversation" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
                   {threadError && (
                     <div role="alert" style={{
                       margin: '1rem',

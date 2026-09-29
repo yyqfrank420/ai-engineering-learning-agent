@@ -1,0 +1,34 @@
+.chat-messages {
+  overscroll-behavior: contain;
+}
+
+.chat-message__body {
+  min-width: 0;
+  max-width: min(90%, 72ch) !important;
+  overflow-wrap: anywhere;
+  color: #c9d1d9 !important;
+}
+
+.chat-message__code,
+.chat-message__table,
+.chat-message__math {
+  max-width: 100%;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+}
+
+.chat-message__math .katex-display {
+  width: max-content;
+  min-width: 100%;
+}
+
+@media (max-width: 600px) {
+  .chat-messages {
+    padding-inline: 0.75rem !important;
+  }
+
+  .chat-message__body {
+    max-width: 100% !important;
+    padding-inline: 0.75rem !important;
+  }
+}

@@ -1,5 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { AuthSession } from '../../types';
 
@@ -47,9 +47,13 @@ function renderSidebar(isLoading: boolean, onSelectThread = vi.fn()) {
 describe('ThreadSidebar active-work protection', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.spyOn(HTMLDialogElement.prototype, 'show');
+    vi.spyOn(HTMLDialogElement.prototype, 'showModal');
     mocks.listThreads.mockResolvedValue([thread]);
     mocks.deleteThread.mockResolvedValue(undefined);
   });
+
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it.each([
     ['unknown', 'Connecting to your chats…'],
@@ -137,4 +141,69 @@ describe('ThreadSidebar active-work protection', () => {
     await act(async () => finishOldRequest([]));
     expect(screen.getByRole('button', { name: 'Open chat Support architecture' })).toBeTruthy();
   });
+  it('opens compact history as a modal and requests close on Escape and backdrop', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    const onClose = vi.fn();
+    const props = { authSession: session, activeThreadId: 'thread-1', backendReadiness: 'ready' as const,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), onClose, isLoading: false, isOpen: true };
+    const view = render(<ThreadSidebar {...props} />);
+    const dialog = screen.getByRole('dialog', { name: 'Chat history' });
+    expect(HTMLDialogElement.prototype.showModal).toHaveBeenCalled();
+    fireEvent(dialog, new Event('cancel', { cancelable: true }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+    fireEvent.click(dialog, { clientX: 500 });
+    expect(onClose).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Close chat history' }));
+    expect(onClose).toHaveBeenCalledTimes(3);
+    await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    view.rerender(<ThreadSidebar {...props} isOpen={false} />);
+    expect(screen.queryByRole('dialog', { name: 'Chat history' })).toBeNull();
+    view.rerender(<ThreadSidebar {...props} />);
+    expect(screen.getByRole('button', { name: 'Open chat Support architecture' })).toBeTruthy();
+    expect(mocks.listThreads).toHaveBeenCalledTimes(1);
+  });
+
+  it('returns confirmation focus to the delete control and only deletes after confirmation', async () => {
+    const onDeleteThread = vi.fn();
+    render(<ThreadSidebar authSession={session} activeThreadId="thread-1" backendReadiness="ready"
+      onNewChat={vi.fn()} onSelectThread={vi.fn()} onDeleteThread={onDeleteThread} isLoading={false} isOpen />);
+    const remove = await screen.findByRole('button', { name: 'Delete chat Support architecture' });
+    fireEvent.click(remove);
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(cancel, { key: 'Escape' });
+    expect(document.activeElement).toBe(remove);
+    expect(screen.queryByRole('group', { name: /Confirm deletion/ })).toBeNull();
+    expect(mocks.deleteThread).not.toHaveBeenCalled();
+    fireEvent.click(remove);
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    await waitFor(() => expect(onDeleteThread).toHaveBeenCalledWith(thread.id));
+    expect(mocks.deleteThread).toHaveBeenCalledWith(session, thread.id);
+    expect(screen.queryByRole('button', { name: 'Open chat Support architecture' })).toBeNull();
+  });
+
+  it('keeps desktop opening from taking focus away from the conversation', async () => {
+    const outside = document.createElement('button');
+    document.body.append(outside);
+    outside.focus();
+    renderSidebar(false);
+    await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    expect(document.activeElement).toBe(outside);
+    expect(HTMLDialogElement.prototype.showModal).not.toHaveBeenCalled();
+    outside.remove();
+  });
+
+  it('keeps new-chat and thread selection callbacks available in compact history', async () => {
+    vi.stubGlobal('matchMedia', vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() })));
+    const onNewChat = vi.fn();
+    const onSelectThread = vi.fn();
+    render(<ThreadSidebar authSession={session} activeThreadId="thread-1" backendReadiness="ready"
+      onNewChat={onNewChat} onSelectThread={onSelectThread} onDeleteThread={vi.fn()} onClose={vi.fn()} isLoading={false} isOpen />);
+    const select = await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    fireEvent.click(select);
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(onSelectThread).toHaveBeenCalledWith(thread.id);
+    expect(onNewChat).toHaveBeenCalledTimes(1);
+  });
+
 });
