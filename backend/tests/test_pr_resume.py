@@ -183,6 +183,24 @@ def test_source_image_identity_is_retained():
     assert identity["image_digest"] == deployment["digest"]
 
 
+def test_source_run_head_survives_mutable_nested_pr_head():
+    run, pr, deployment, kwargs = provenance()
+    run["pull_requests"][0]["head"]["sha"] = pr["head"]["sha"]
+    identity = resume.validate_run_identity(run, pr, deployment, **kwargs)
+    assert identity["head"] == run["head_sha"]
+    run["head_sha"] = pr["head"]["sha"]
+    with pytest.raises(ValueError, match="authenticated PR merge"):
+        resume.validate_run_identity(run, pr, deployment, **kwargs)
+
+
+def test_mutable_source_base_cannot_override_original_merge_parent():
+    run, pr, deployment, kwargs = provenance()
+    run["pull_requests"][0]["base"]["sha"] = "9" * 40
+    pr["base"]["sha"] = "9" * 40
+    with pytest.raises(ValueError, match="authenticated PR merge"):
+        resume.validate_run_identity(run, pr, deployment, **kwargs)
+
+
 @pytest.mark.parametrize("limit", [0, -1, 17, True, "1"])
 def test_judge_budget_cannot_expand_or_disable(limit):
     with pytest.raises(ValueError):

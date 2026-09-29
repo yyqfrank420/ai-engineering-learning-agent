@@ -180,9 +180,9 @@ def validate_run_identity(run: dict, pr: dict, deployment: dict, *, repo: str, h
     pulls = run.get("pull_requests", [])
     require(len(pulls) == 1, "source run must identify one PR")
     source_pr = pulls[0]
-    source_head = source_pr["head"]["sha"]
+    # GitHub refreshes nested PR refs after pushes; the run SHA is immutable.
+    source_head = run["head_sha"]
     source_base = source_pr["base"]["sha"]
-    require(run.get("head_sha") == source_head, "source head mismatch")
     require(pr.get("number") == source_pr.get("number") and pr.get("state") == "open"
             and pr.get("head", {}).get("sha") == head
             and pr["head"].get("repo", {}).get("full_name") == repo
@@ -253,7 +253,7 @@ def verify_checkout(run: dict, pr: dict, deployment: dict, repo: str, reviewed_d
     head = git("rev-parse", "HEAD")
     require(head == os.environ.get("GITHUB_SHA"), "dispatch checkout SHA mismatch")
     require(not git("status", "--porcelain", "--untracked-files=no"), "tracked checkout is dirty")
-    source_head = run["pull_requests"][0]["head"]["sha"]
+    source_head = run["head_sha"]
     source_commit = deployment["commit_sha"]
     shas = (source_head, source_commit, pr["base"]["sha"], pr["merge_commit_sha"], head)
     require(all(isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{40}", sha) for sha in shas),
