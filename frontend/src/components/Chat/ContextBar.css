@@ -28,7 +28,7 @@
 }
 
 .context-bar__node svg { flex-shrink: 0; }
-.context-bar__node span { overflow-wrap: anywhere; }
+.context-bar__node span { min-width: 0; overflow-wrap: anywhere; }
 
 .context-bar__dismiss {
   display: grid;
@@ -92,4 +92,9 @@
 
 @media (max-width: 640px) {
   .context-bar { padding: 10px 14px; }
+}
+
+@media (pointer: coarse) {
+  .context-bar__dismiss { width: 44px; height: 44px; }
+  .context-bar__suggestion { min-height: 44px; }
 }

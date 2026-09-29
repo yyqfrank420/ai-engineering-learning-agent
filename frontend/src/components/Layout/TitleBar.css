@@ -1,0 +1,21 @@
+.title-bar__account { display: none; position: relative; }
+.title-bar__account summary { display: grid; place-items: center; width: 44px; min-height: 44px; padding: 0; list-style: none; }
+.title-bar__account summary::-webkit-details-marker { display: none; }
+.title-bar__account-menu { position: absolute; right: 0; top: calc(100% + 8px); display: flex; flex-direction: column; gap: 8px; width: min(280px, calc(100vw - 24px)); padding: 12px; border-radius: var(--radius-md); background: var(--bg-overlay); box-shadow: 0 12px 32px rgb(0 0 0 / .45); }
+.title-bar__account-email, .title-bar__account-provider { font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.title-bar__account-menu button { justify-content: flex-start; min-height: 44px; font-size: 14px; }
+@media (max-width: 1279px) {
+  .title-bar { height: auto; min-height: 56px; padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right)); gap: 8px; }
+  .title-bar__identity, .title-bar__actions { gap: 8px; }
+  .title-bar__toggle { width: 44px; min-height: 44px; }
+  .title-bar__book, .title-bar__email, .title-bar__desktop-action { display: none; }
+  .title-bar__account { display: block; }
+  .title-bar__provider { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@media (max-width: 639px) {
+  .title-bar__thread, .title-bar__provider, .title-bar__status-text { display: none; }
+  .title-bar__product { font-size: 14px; }
+}
+@media (pointer: coarse) {
+  .title-bar .chrome-button { min-height: 44px; min-width: 44px; }
+}

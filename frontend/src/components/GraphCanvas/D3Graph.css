@@ -59,7 +59,7 @@
 .connection-details {
   position: absolute;
   right: 12px;
-  bottom: 12px;
+  bottom: max(12px, env(safe-area-inset-bottom));
   z-index: 30;
   width: min(340px, calc(100% - 24px));
   max-height: min(420px, 55%);
@@ -119,4 +119,9 @@
   outline: none;
   stroke: var(--accent-violet);
   stroke-width: 3;
+}
+
+@media (pointer: coarse) {
+  .connection-details button { min-width: 44px; min-height: 44px; }
+  .connection-details header button { flex-basis: 44px; width: 44px; height: 44px; }
 }

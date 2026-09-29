@@ -129,7 +129,6 @@ h1, h2, h3 { text-wrap: balance; }
 .split-pane__conversation { background: transparent; }
 .split-pane__graph { background: transparent; }
 
-.app-shell { position: relative; height: 100%; overflow: hidden; }
 .app-workspace {
   display: flex;
   flex-direction: column;
@@ -147,7 +146,8 @@ h1, h2, h3 { text-wrap: balance; }
   -webkit-font-smoothing: antialiased;
 }
 .app-workspace[aria-hidden="true"] { visibility: hidden; }
-.app-workspace__main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.app-workspace__main,
+.app-workspace__body { display: flex; flex: 1; min-width: 0; min-height: 0; overflow: hidden; }
 .app-skip-link {
   position: fixed;
   top: 8px;
@@ -170,4 +170,51 @@ h1, h2, h3 { text-wrap: balance; }
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
   }
+}
+
+/* Anchor the options panel inside the conversation, including narrow panes. */
+.split-pane__conversation div:has(> div > div > [role="radiogroup"][aria-label="complexity"]) {
+  right: 1rem;
+}
+
+.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) {
+  max-width: 100%;
+  background: var(--bg-panel) !important;
+}
+
+.split-pane__conversation div:has(> [role="radiogroup"]) {
+  flex-direction: column;
+  align-items: stretch !important;
+  gap: 6px !important;
+}
+
+.split-pane__conversation div:has(> [role="radiogroup"]) > span,
+.split-pane__conversation div:has(> [role="switch"]) > div > :is(span, div),
+.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) > div:not(:has([role])) {
+  color: var(--text-secondary) !important;
+  font-size: 0.7rem !important;
+}
+
+.split-pane__conversation [role="radiogroup"] > span {
+  flex: 1;
+}
+
+.split-pane__conversation [role="radio"] {
+  min-height: 36px;
+  display: grid;
+  place-items: center;
+  font-size: 0.75rem !important;
+}
+
+.split-pane__conversation [role="radio"][aria-checked="false"] {
+  color: var(--text-secondary) !important;
+}
+
+.split-pane__conversation [role="radio"]:focus-visible {
+  outline-offset: -2px;
+}
+
+
+@media (pointer: coarse) {
+  .split-pane__conversation [role="radio"] { min-height: 44px; }
 }

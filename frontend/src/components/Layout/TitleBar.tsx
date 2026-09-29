@@ -1,5 +1,6 @@
-import { SidebarSimple, SignOut } from '@phosphor-icons/react';
+import { SidebarSimple, SignOut, User } from '@phosphor-icons/react';
 import './AppChrome.css';
+import './TitleBar.css';
 
 interface TitleBarProps {
   streamStatus: 'generating' | 'connected' | 'disconnected';
@@ -48,20 +49,39 @@ export function TitleBar({
       </div>
       <div className="title-bar__actions">
         {providerNotice && <span className="title-bar__provider" title={providerNotice}>{providerNotice}</span>}
-        <div className={`title-bar__status title-bar__status--${streamStatus}`} role="status">
+        <div className={`title-bar__status title-bar__status--${streamStatus}`} role="status" aria-label={`Connection status: ${streamStatus}`}>
           <span className="title-bar__status-dot" aria-hidden="true" />
-          <span>{streamStatus}</span>
+          <span className="title-bar__status-text">{streamStatus}</span>
         </div>
         <span className="title-bar__email" title={userEmail}>{userEmail}</span>
         {showDashboardLink && (
-          <button type="button" className="chrome-button title-bar__dashboard" onClick={dashboardActive ? onOpenChat : onOpenDashboard}>
+          <button type="button" className="chrome-button title-bar__dashboard title-bar__desktop-action" onClick={dashboardActive ? onOpenChat : onOpenDashboard}>
             {dashboardActive ? 'Back to chat' : 'Dashboard'}
           </button>
         )}
-        <button type="button" className="chrome-button title-bar__logout" onClick={onLogout}>
+        <button type="button" className="chrome-button title-bar__logout title-bar__desktop-action" onClick={onLogout}>
           <SignOut size={16} aria-hidden="true" />
           Sign out
         </button>
+        <details className="title-bar__account" onKeyDown={event => {
+          if (event.key === 'Escape') {
+            event.currentTarget.removeAttribute('open');
+            event.currentTarget.querySelector('summary')?.focus();
+          }
+        }}>
+          <summary className="chrome-button" aria-label="Account and navigation" title="Account and navigation">
+            <User size={20} aria-hidden="true" />
+          </summary>
+          <div className="title-bar__account-menu">
+            <span className="title-bar__account-email">{userEmail}</span>
+            {providerNotice && <span className="title-bar__account-provider">{providerNotice}</span>}
+            {showDashboardLink && <button className="chrome-button" type="button" onClick={event => {
+              event.currentTarget.closest('details')?.removeAttribute('open');
+              (dashboardActive ? onOpenChat : onOpenDashboard)?.();
+            }}>{dashboardActive ? 'Back to chat' : 'Dashboard'}</button>}
+            <button className="chrome-button" type="button" onClick={onLogout}>Sign out</button>
+          </div>
+        </details>
       </div>
     </header>
   );

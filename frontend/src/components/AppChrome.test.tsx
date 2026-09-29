@@ -31,10 +31,10 @@ describe('application chrome', () => {
     );
 
     expect(screen.getByText('generating')).toBeTruthy();
-    expect(screen.getByText('Using fallback provider')).toBeTruthy();
+    expect(view.container.querySelector('.title-bar__provider')?.textContent).toBe('Using fallback provider');
     fireEvent.click(screen.getByLabelText('Hide chat history'));
-    fireEvent.click(screen.getByText('Dashboard'));
-    fireEvent.click(screen.getByText('Sign out'));
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.title-bar__dashboard')!);
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.title-bar__logout')!);
     expect(actions.toggle).toHaveBeenCalledTimes(1);
     expect(actions.dashboard).toHaveBeenCalledTimes(1);
     expect(actions.logout).toHaveBeenCalledTimes(1);
@@ -55,7 +55,7 @@ describe('application chrome', () => {
       />,
     );
     fireEvent.click(screen.getByLabelText('Show chat history'));
-    fireEvent.click(screen.getByText('Back to chat'));
+    fireEvent.click(view.container.querySelector<HTMLButtonElement>('.title-bar__dashboard')!);
     expect(actions.chat).toHaveBeenCalledTimes(1);
   });
 
@@ -88,7 +88,7 @@ describe('application chrome', () => {
     fireEvent.mouseEnter(suggestion);
     fireEvent.mouseLeave(suggestion);
     fireEvent.click(suggestion);
-    fireEvent.click(screen.getByRole('button', { name: 'Clear selected component' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selected node' }));
 
     expect(onSendMessage).toHaveBeenCalledWith('How is evidence ranked?');
     expect(onClear).toHaveBeenCalledTimes(1);

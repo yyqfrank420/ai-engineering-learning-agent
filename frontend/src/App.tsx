@@ -1,12 +1,13 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import type { DiagramIntentAction, GraphNode, Message, SendOptions } from './types';
+import './App.css';
 import { trackEvent } from './services/analytics';
 import { useAgentStream } from './hooks/useAgentStream';
 import { graphStructureKey } from './utils/graphStructureKey';
 import { TitleBar } from './components/Layout/TitleBar';
 import { SplitPane } from './components/Layout/SplitPane';
-import { ThreadSidebar } from './components/Layout/ThreadSidebar';
+import { HISTORY_OVERLAY_QUERY, ThreadSidebar } from './components/Layout/ThreadSidebar';
 import { RetrievalNoticeBar } from './components/Chat/RetrievalNoticeBar';
 import { ContextBar } from './components/Chat/ContextBar';
 import { ChatInput } from './components/Chat/ChatInput';
@@ -52,10 +53,42 @@ export default function App() {
 }
 
 function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
-  const [sidebarOpen, setSidebarOpen] = useState(true);
+  const { authReady, handleAuthenticated, setAuthSession, authSession } = auth;
+  const [sidebarOpen, setSidebarOpen] = useState(() => !window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches);
+  const viewportRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const media = window.matchMedia?.(HISTORY_OVERLAY_QUERY);
+    if (!media) return;
+    const update = () => setSidebarOpen(!media.matches);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, []);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const shell = viewportRef.current;
+    if (!viewport || !shell) return;
+    const update = () => {
+      // Dynamic viewport units exclude some mobile keyboards. Do not constrain pinch zoom.
+      if (viewport.scale === 1) {
+        shell.style.setProperty('--workspace-height', `${viewport.height}px`);
+        shell.style.setProperty('--workspace-top', `${viewport.offsetTop}px`);
+      } else {
+        shell.style.removeProperty('--workspace-height');
+        shell.style.removeProperty('--workspace-top');
+      }
+    };
+    update();
+    viewport.addEventListener('resize', update);
+    viewport.addEventListener('scroll', update);
+    return () => {
+      viewport.removeEventListener('resize', update);
+      viewport.removeEventListener('scroll', update);
+    };
+  }, [authReady]);
   const [hasUnsavedGraphEdit, setHasUnsavedGraphEdit] = useState(false);
   const [appRoute, setAppRoute] = useState<AppRoute>(resolveRouteFromHash);
-  const { authReady, handleAuthenticated, setAuthSession, authSession } = auth;
   const {
     selectionSuggestion,
     selectionReferenceActive,
@@ -294,7 +327,10 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setActionError(null);
     try {
       await flushLayout();
-      if (mountedRef.current && currentContext.current === context) await handleNewChat();
+      if (mountedRef.current && currentContext.current === context) {
+        await handleNewChat();
+        if (mountedRef.current && window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches) setSidebarOpen(false);
+      }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not save the diagram. Please retry.');
     } finally {
@@ -310,7 +346,10 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setActionError(null);
     try {
       await flushLayout();
-      if (mountedRef.current && currentContext.current === context) handleSelectThread(threadId);
+      if (mountedRef.current && currentContext.current === context) {
+        handleSelectThread(threadId);
+        if (window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches) setSidebarOpen(false);
+      }
     } catch (error) {
       setActionError(error instanceof Error ? error.message : 'Could not save the diagram. Please retry.');
     } finally {
@@ -383,7 +422,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
   return (
-    <div className="app-shell">
+    <div ref={viewportRef} className="app-viewport">
     <Suspense fallback={null}>
       <HiddenGraphEvaluator candidate={graphCandidate} />
     </Suspense>
@@ -409,7 +448,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       />
 
       {/* Main body: sidebar + split pane side-by-side */}
-      <main id="learning-workspace" className="app-workspace__main" tabIndex={-1}>
+      <main id="learning-workspace" className="app-workspace__main app-workspace__body" tabIndex={-1}>
         {dashboardActive && authSession ? (
           <Suspense fallback={<div style={panelFallbackStyle}>Loading dashboard…</div>}>
             <InternalDashboard authSession={authSession} />
@@ -425,6 +464,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
               onDeleteThread={deleteThread}
               isLoading={isStreaming}
               isOpen={sidebarOpen}
+              onClose={() => setSidebarOpen(false)}
             />
             <SplitPane
               graphVisible={showGraphPane}
@@ -468,7 +508,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                 </div>
               }
               right={
-                <div style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
+                <div className="app-conversation" style={{ display: 'flex', flexDirection: 'column', flex: 1, overflow: 'hidden' }}>
                   {threadError && (
                     <div role="alert" style={{
                       margin: '1rem',

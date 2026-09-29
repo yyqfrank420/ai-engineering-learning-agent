@@ -118,7 +118,7 @@ export function ChatInput({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); }
   };
 
   const onInput = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
@@ -166,8 +166,7 @@ export function ChatInput({
     : 'Ask a question…';
 
   return (
-    <div style={{
-      padding:             '0.75rem 1rem',
+    <div className="chat-composer" style={{
       background:          'rgba(10,13,19,0.65)',
       backdropFilter:      'blur(40px) saturate(160%)',
       WebkitBackdropFilter:'blur(40px) saturate(160%)',
@@ -194,7 +193,7 @@ export function ChatInput({
         <div
           style={selectionSuggestionStyle(containerHovered, !!selectionReferenceActive)}
         >
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.7rem' }}>
+          <div className="chat-composer__selection-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '0.7rem' }}>
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: '0.64rem', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.05em' }}>
                 {selectionReferenceActive ? 'REFERENCE ACTIVE' : 'HIGHLIGHTED TEXT'}
@@ -214,12 +213,14 @@ export function ChatInput({
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexShrink: 0 }}>
               <button
+                className="chat-composer__control"
                 onClick={seedSelection}
                 style={selectionActionButtonStyle}
               >
                 {selectionReferenceActive ? 'Referenced' : 'Use in chat'}
               </button>
               <button
+                className="chat-composer__control"
                 onClick={onDismissSelection}
                 aria-label="Dismiss highlighted text"
                 style={selectionDismissButtonStyle}
@@ -248,6 +249,8 @@ export function ChatInput({
       <div style={{ display: 'flex', alignItems: 'flex-end', gap: '0.5rem' }}>
         {/* Text input */}
         <textarea
+          className="chat-composer__input"
+          aria-label="Message"
           ref={textareaRef}
           value={value}
           onChange={onInput}
@@ -282,6 +285,7 @@ export function ChatInput({
         {isGenerating ? (
           <div style={{ display: 'flex', gap: '0.4rem' }}>
             <button
+              className="chat-composer__control"
               onClick={() => void submit()}
               disabled={!isReady}
               aria-label="Send message"
@@ -290,6 +294,7 @@ export function ChatInput({
               <SendArrow />
             </button>
             <button
+              className="chat-composer__control"
               onClick={onStop}
               aria-label={isFinishingDiagram ? 'Finishing diagram' : 'Stop generation'}
               disabled={isFinishingDiagram}
@@ -302,6 +307,7 @@ export function ChatInput({
           </div>
         ) : backendReadiness === 'error' ? (
           <button
+            className="chat-composer__control"
             onClick={() => void onRetryReadiness?.()}
             disabled={retryDisabled}
             aria-label="Retry connection"
@@ -311,6 +317,7 @@ export function ChatInput({
           </button>
         ) : (
           <button
+            className="chat-composer__control"
             onClick={() => void submit()}
             disabled={!isReady}
             aria-label="Send message"
