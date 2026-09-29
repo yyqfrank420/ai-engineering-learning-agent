@@ -1,37 +1,24 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// File: frontend/src/components/Layout/ThreadSidebar.tsx
-// Purpose: Left-rail chat history sidebar. Shows all threads grouped by
-//          recency. Clicking a thread switches to it. Hovering reveals a
-//          trash icon that opens a liquid-glass delete confirmation popup.
-// Language: TypeScript / React
-// Connects to: services/api.ts (listThreads, deleteThread), App.tsx (callbacks)
-// Inputs:  authSession, activeThreadId, onNewChat, onSelectThread,
-//          onDeleteThread, isLoading, isOpen
-// Outputs: visual sidebar; user interactions call parent callbacks
-// ─────────────────────────────────────────────────────────────────────────────
-
-import { createPortal } from 'react-dom';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import type { CSSProperties } from 'react';
 import type { BackendReadiness } from '../../hooks/useBackendReadiness';
 import type { AuthSession, ThreadSummary } from '../../types';
 import { listThreads, deleteThread } from '../../services/api';
+import './ThreadSidebar.css';
 
 interface ThreadSidebarProps {
-  authSession:     AuthSession | null;
-  activeThreadId:  string | null;
+  authSession: AuthSession | null;
+  activeThreadId: string | null;
   backendReadiness: BackendReadiness;
-  onNewChat:       () => void;
-  onSelectThread:  (threadId: string) => void;
-  onDeleteThread:  (threadId: string) => void;
-  isLoading:       boolean;
-  isOpen:          boolean;
+  onNewChat: () => void;
+  onSelectThread: (threadId: string) => void;
+  onDeleteThread: (threadId: string) => void;
+  onClose?: () => void;
+  isLoading: boolean;
+  isOpen: boolean;
 }
 
-// Must match settings.max_threads_per_user in backend/config.py
+// Matches settings.max_threads_per_user in backend/config.py.
 const MAX_THREADS = 5;
-
-// ── Date grouping helpers ─────────────────────────────────────────────────────
+export const HISTORY_OVERLAY_QUERY = '(max-width: 1279px)';
 
 type Group = 'Today' | 'Yesterday' | 'This week' | 'Older';
 
@@ -67,71 +54,48 @@ function groupThreads(threads: ThreadSummary[]): { label: Group; items: ThreadSu
     .map(g => ({ label: g, items: groups[g] }));
 }
 
-// ── DeletePopup ───────────────────────────────────────────────────────────────
-// Rendered via React portal at document.body so it escapes sidebar's
-// overflow:hidden and can appear to the right of the sidebar at any viewport pos.
-
-interface DeletePopupProps {
-  onConfirm: () => void;
-  onClose:   () => void;
-  // Viewport-space anchor: right edge x, vertical center y of the trash button
-  anchor:    { x: number; y: number };
-}
-
-function DeletePopup({ onConfirm, onClose, anchor }: DeletePopupProps) {
-  const popupRef = useRef<HTMLDivElement>(null);
-
-  // Close on outside click (anywhere outside this popup)
-  useEffect(() => {
-    function handleClick(e: MouseEvent) {
-      if (popupRef.current && !popupRef.current.contains(e.target as Node)) {
-        onClose();
-      }
-    }
-    document.addEventListener('mousedown', handleClick);
-    return () => document.removeEventListener('mousedown', handleClick);
-  }, [onClose]);
-
-  const style: CSSProperties = {
-    ...portalPopupStyle,
-    // position: fixed so it sits relative to the viewport, not any parent
-    position:  'fixed',
-    left:      anchor.x + 8,
-    top:       anchor.y,
-    transform: 'translateY(-50%)',
-  };
-
-  return createPortal(
-    <div ref={popupRef} style={style}>
-      <span style={popupTextStyle}>Permanently delete this chat?</span>
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', marginTop: '0.55rem' }}>
-        <button onClick={onConfirm} style={confirmButtonStyle}>Yes</button>
-        <button onClick={onClose}   style={closeButtonStyle}>✕</button>
-      </div>
-    </div>,
-    document.body,
-  );
-}
-
-// ── Component ─────────────────────────────────────────────────────────────────
-
-export function ThreadSidebar({
-  authSession,
-  activeThreadId,
-  backendReadiness,
-  onNewChat,
-  onSelectThread,
-  onDeleteThread,
-  isLoading,
-  isOpen,
-}: ThreadSidebarProps) {
+export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
+  onNewChat, onSelectThread, onDeleteThread, onClose, isLoading, isOpen }: ThreadSidebarProps) {
   const backendReady = backendReadiness === 'ready';
-  const [threads, setThreads]           = useState<ThreadSummary[]>([]);
-  const [fetching, setFetching]         = useState(false);
-  const [hoveredId, setHoveredId]       = useState<string | null>(null);
+  const [threads, setThreads] = useState<ThreadSummary[]>([]);
+  const [fetching, setFetching] = useState(false);
   const [confirmingId, setConfirmingId] = useState<string | null>(null);
-  // Viewport coords of the trash button that opened the popup
-  const [popupAnchor, setPopupAnchor]   = useState<{ x: number; y: number } | null>(null);
+  const [isDrawer, setIsDrawer] = useState(() => window.matchMedia?.(HISTORY_OVERLAY_QUERY).matches ?? false);
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  const deleteButtonRef = useRef<HTMLButtonElement | null>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    const query = window.matchMedia?.(HISTORY_OVERLAY_QUERY);
+    if (!query) return;
+    const handleChange = () => setIsDrawer(query.matches);
+    query.addEventListener('change', handleChange);
+    return () => query.removeEventListener('change', handleChange);
+  }, []);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (!dialog) return;
+    // A single mounted dialog preserves history state across viewport changes.
+    const activeElement = document.activeElement as HTMLElement | null;
+    const focused = dialog.contains(activeElement) ? activeElement : null;
+    if (dialog.open) dialog.close();
+    if (isOpen) {
+      if (isDrawer) dialog.showModal();
+      // The open attribute keeps the inline rail visible without dialog autofocus.
+      else dialog.setAttribute('open', '');
+      focused?.focus();
+    }
+  }, [isOpen, isDrawer]);
+
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    return () => { if (dialog?.open) dialog.close(); };
+  }, []);
+
+  useEffect(() => {
+    if (confirmingId) cancelRef.current?.focus();
+  }, [confirmingId]);
 
   // Stable refs — prevent fetchThreads from changing identity on every token refresh,
   // which would cause the effect below to fire repeatedly even with no real state change.
@@ -165,7 +129,6 @@ export function ThreadSidebar({
   const handleDelete = useCallback(async (threadId: string) => {
     if (!authSession || isLoading) return;
     setConfirmingId(null);
-    setPopupAnchor(null);
     try {
       await deleteThread(authSession, threadId);
       setThreads(prev => prev.filter(t => t.id !== threadId));
@@ -177,286 +140,66 @@ export function ThreadSidebar({
 
   const closePopup = useCallback(() => {
     setConfirmingId(null);
-    setPopupAnchor(null);
   }, []);
 
   const grouped = groupThreads(threads);
+  const newChatDisabled = isLoading || !authSession || !backendReady || threads.length >= MAX_THREADS;
 
   return (
-    <div
-      className={`thread-sidebar ${isOpen ? 'thread-sidebar--open' : 'thread-sidebar--closed'}`}
-      style={sidebarStyle(isOpen)}
-      aria-hidden={!isOpen}
-    >
-      <div className="thread-sidebar__inner" style={sidebarInnerStyle(isOpen)}>
-        {/* New chat button — disabled at thread limit */}
-        <button
-          aria-label="New chat"
-          onClick={onNewChat}
-          disabled={isLoading || !authSession || !backendReady || threads.length >= MAX_THREADS}
-          style={newChatButtonStyle(isLoading || !authSession || !backendReady || threads.length >= MAX_THREADS)}
-        >
-          <span style={{ fontSize: '1rem', lineHeight: 1 }}>+</span>
+    <dialog ref={dialogRef} id="chat-history" aria-label="Chat history"
+      aria-modal={isDrawer ? true : undefined}
+      className={`thread-sidebar ${isDrawer ? 'thread-sidebar--drawer' : 'thread-sidebar--inline'} ${isOpen ? 'thread-sidebar--open' : 'thread-sidebar--closed'}`}
+      onCancel={event => {
+        event.preventDefault();
+        if (confirmingId) { closePopup(); deleteButtonRef.current?.focus(); }
+        else onClose?.();
+      }}
+      onClick={event => {
+        if (!isDrawer || event.target !== event.currentTarget) return;
+        const rect = event.currentTarget.getBoundingClientRect();
+        if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose?.();
+      }}>
+      <div className="thread-sidebar__inner">
+        <div className="thread-sidebar__heading">
+          <h2>Chat history</h2>
+          {isDrawer && <button type="button" className="thread-sidebar__close" aria-label="Close chat history" onClick={onClose} autoFocus>
+            <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="m6 6 12 12M18 6 6 18" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
+          </button>}
+        </div>
+        <button type="button" className="thread-sidebar__new" aria-label="New chat" disabled={newChatDisabled} onClick={onNewChat}>
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M12 5v14M5 12h14" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" /></svg>
           New chat
         </button>
-        {threads.length >= MAX_THREADS && (
-          <div style={maxThreadsStyle}>Limit reached ({MAX_THREADS} chats)</div>
-        )}
-
-        {/* Thread list */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '0.25rem 0' }}>
-          {fetching && threads.length === 0 && (
-            <div style={emptyStyle}>Loading…</div>
-          )}
-
-          {!fetching && threads.length === 0 && (
-            <div role="status" style={emptyStyle}>
-              {!authSession ? 'Sign in to view your chats'
-                : backendReadiness === 'error' ? 'Could not connect to load chats'
-                  : backendReady ? 'No chats yet' : 'Connecting to your chats…'}
-            </div>
-          )}
-
-          {grouped.map(group => (
-            <div key={group.label}>
-              <div style={groupLabelStyle}>{group.label}</div>
-              {group.items.map(thread => {
-                const isActive     = thread.id === activeThreadId;
-                const isHovered    = thread.id === hoveredId;
-                const isConfirming = thread.id === confirmingId;
-                const showControls = isHovered || isConfirming;
-
-                return (
-                  <div key={thread.id}>
-                    {/* Single flex row */}
-                    <div
-                      style={threadItemStyle(isActive, showControls)}
-                      onMouseEnter={() => setHoveredId(thread.id)}
-                      onMouseLeave={() => setHoveredId(null)}
-                    >
-                      <button
-                        type="button"
-                        disabled={isLoading || !backendReady || isActive}
-                        onClick={() => onSelectThread(thread.id)}
-                        style={{
-                          flex: 1,
-                          minWidth: 0,
-                          padding: 0,
-                          border: 0,
-                          background: 'transparent',
-                          color: 'inherit',
-                          font: 'inherit',
-                          textAlign: 'left',
-                          overflow: 'hidden',
-                          textOverflow: 'ellipsis',
-                          whiteSpace: 'nowrap',
-                          cursor: isLoading || !backendReady || isActive ? 'default' : 'pointer',
-                        }}
-                        aria-label={`Open chat ${thread.title || 'New chat'}`}
-                      >
-                        {thread.title || 'New chat'}
-                      </button>
-
-                      {/* Trash button — inline in flex row, opacity-hidden when not hovered.
-                          pointerEvents always 'auto' — prevents mid-hover invisible dead zone. */}
-                      <button
-                        type="button"
-                        disabled={isLoading}
-                        onClick={e => {
-                          e.stopPropagation();
-                          if (isConfirming) {
-                            closePopup();
-                          } else {
-                            // Capture viewport position of this button for the portal popup
-                            const rect = (e.currentTarget as HTMLButtonElement).getBoundingClientRect();
-                            setPopupAnchor({ x: rect.right, y: rect.top + rect.height / 2 });
-                            setConfirmingId(thread.id);
-                          }
-                        }}
-                        onMouseEnter={() => setHoveredId(thread.id)}
-                        style={trashButtonStyle(isConfirming, showControls)}
-                        title="Delete chat"
-                        aria-label={`Delete chat ${thread.title || 'New chat'}`}
-                      >
-                        <svg width="11" height="12" viewBox="0 0 11 12" fill="currentColor">
-                          <path d="M1 3h9M4 3V2h3v1M2 3l.7 7.3A.7.7 0 002.7 11h5.6a.7.7 0 00.7-.7L9.7 3" stroke="currentColor" strokeWidth="1" fill="none" strokeLinecap="round"/>
-                        </svg>
-                      </button>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          ))}
+        {threads.length >= MAX_THREADS && <p className="thread-sidebar__limit">Limit reached ({MAX_THREADS} chats)</p>}
+        <div className="thread-sidebar__list">
+          {fetching && threads.length === 0 && <p className="thread-sidebar__empty">Loading…</p>}
+          {!fetching && threads.length === 0 && <p role="status" className="thread-sidebar__empty">
+            {!authSession ? 'Sign in to view your chats' : backendReadiness === 'error' ? 'Could not connect to load chats'
+              : backendReady ? 'No chats yet' : 'Connecting to your chats…'}
+          </p>}
+          {grouped.map(group => <section key={group.label} aria-label={group.label}>
+            <h3 className="thread-sidebar__group">{group.label}</h3>
+            {group.items.map(thread => <div key={thread.id}>
+              <div className={`thread-sidebar__row ${thread.id === activeThreadId ? 'thread-sidebar__row--active' : ''}`}>
+                <button type="button" className="thread-sidebar__select" disabled={isLoading || !backendReady || thread.id === activeThreadId}
+                  aria-current={thread.id === activeThreadId ? 'page' : undefined}
+                  aria-label={`Open chat ${thread.title || 'New chat'}`} onClick={() => onSelectThread(thread.id)}>{thread.title || 'New chat'}</button>
+                <button type="button" className="thread-sidebar__delete" disabled={isLoading}
+                  aria-label={`Delete chat ${thread.title || 'New chat'}`} aria-expanded={confirmingId === thread.id}
+                  onClick={event => { deleteButtonRef.current = event.currentTarget; setConfirmingId(confirmingId === thread.id ? null : thread.id); }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 10v7M14 10v7" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" /></svg>
+                </button>
+              </div>
+              {confirmingId === thread.id && <div role="group" aria-label={`Confirm deletion of ${thread.title || 'New chat'}`} className="thread-sidebar__confirmation"
+                onKeyDown={event => { if (event.key === 'Escape') { event.stopPropagation(); closePopup(); deleteButtonRef.current?.focus(); } }}>
+                <p>Permanently delete this chat?</p>
+                <div><button type="button" className="thread-sidebar__confirm" disabled={isLoading} onClick={() => handleDelete(thread.id)}>Delete</button>
+                  <button type="button" ref={cancelRef} onClick={() => { closePopup(); deleteButtonRef.current?.focus(); }}>Cancel</button></div>
+              </div>}
+            </div>)}
+          </section>)}
         </div>
       </div>
-
-      {/* Portal popup — rendered at document.body, escapes overflow:hidden */}
-      {confirmingId && popupAnchor && (
-        <DeletePopup
-          onConfirm={() => handleDelete(confirmingId)}
-          onClose={closePopup}
-          anchor={popupAnchor}
-        />
-      )}
-    </div>
+    </dialog>
   );
 }
-
-// ── Styles ────────────────────────────────────────────────────────────────────
-
-function sidebarStyle(isOpen: boolean): CSSProperties {
-  return {
-    width:               isOpen ? '240px' : '0',
-    flexShrink:          0,
-    display:             'flex',
-    flexDirection:       'column',
-    background:          'rgba(10,13,19,0.55)',
-    backdropFilter:      'blur(40px) saturate(160%)',
-    WebkitBackdropFilter:'blur(40px) saturate(160%)',
-    borderRight:         isOpen ? '1px solid rgba(255,255,255,0.06)' : '1px solid transparent',
-    boxShadow:           isOpen ? 'inset -1px 0 0 rgba(255,255,255,0.03)' : 'none',
-    overflow:            'hidden',
-    transition:          'border-color 0.22s ease, box-shadow 0.22s ease',
-  };
-}
-
-function sidebarInnerStyle(isOpen: boolean): CSSProperties {
-  return {
-    width:         '240px',
-    flex:          1,
-    display:       'flex',
-    flexDirection: 'column',
-    opacity:       isOpen ? 1 : 0,
-    pointerEvents: isOpen ? 'auto' : 'none',
-    transition:    'opacity 0.14s ease',
-  };
-}
-
-function newChatButtonStyle(disabled: boolean): CSSProperties {
-  return {
-    display:             'flex',
-    alignItems:          'center',
-    gap:                 '0.5rem',
-    margin:              '0.75rem 0.75rem 0.5rem',
-    padding:             '0.55rem 0.85rem',
-    background:          disabled ? 'rgba(167,139,250,0.04)' : 'rgba(167,139,250,0.1)',
-    border:              '1px solid rgba(167,139,250,0.18)',
-    borderRadius:        '8px',
-    color:               disabled ? '#6e7681' : '#a78bfa',
-    fontSize:            '0.82rem',
-    fontWeight:          500,
-    cursor:              disabled ? 'not-allowed' : 'pointer',
-    backdropFilter:      'blur(12px)',
-    WebkitBackdropFilter:'blur(12px)',
-    boxShadow:           disabled ? 'none' : 'inset 0 1px 0 rgba(167,139,250,0.08)',
-    transition:          'background 0.15s ease, border-color 0.15s ease, box-shadow 0.15s ease',
-    flexShrink:          0,
-  };
-}
-
-const groupLabelStyle: CSSProperties = {
-  padding:        '0.6rem 0.9rem 0.25rem',
-  fontSize:       '0.62rem',
-  fontWeight:     600,
-  color:          '#6e7681',
-  textTransform:  'uppercase',
-  letterSpacing:  '0.06em',
-};
-
-function threadItemStyle(isActive: boolean, isHighlighted: boolean): CSSProperties {
-  return {
-    display:        'flex',
-    alignItems:     'center',
-    gap:            '0.25rem',
-    padding:        '0.45rem 0.5rem 0.45rem 0.75rem',
-    fontSize:       '0.82rem',
-    color:          isActive ? '#e6edf3' : '#8b949e',
-    borderLeft:     isActive ? '3px solid rgba(167,139,250,0.6)' : '3px solid transparent',
-    background:     isActive
-                      ? 'rgba(167,139,250,0.06)'
-                      : isHighlighted
-                      ? 'rgba(255,255,255,0.04)'
-                      : 'transparent',
-    transition:     'background 0.12s ease, color 0.12s ease',
-    lineHeight:     '1.4',
-    userSelect:     'none',
-  };
-}
-
-function trashButtonStyle(active: boolean, visible: boolean): CSSProperties {
-  return {
-    display:         'flex',
-    alignItems:      'center',
-    justifyContent:  'center',
-    flexShrink:      0,
-    width:           20,
-    height:          20,
-    background:      active ? 'rgba(248,81,73,0.12)' : 'transparent',
-    border:          'none',
-    borderRadius:    '4px',
-    color:           active ? '#f85149' : '#6e7681',
-    cursor:          'pointer',
-    padding:         0,
-    opacity:         visible ? 1 : 0,
-    transition:      'opacity 0.1s ease, background 0.12s ease, color 0.12s ease',
-  };
-}
-
-// Portal popup is position:fixed — coords injected at render time from getBoundingClientRect()
-const portalPopupStyle: CSSProperties = {
-  zIndex:              1000,
-  width:               '200px',
-  padding:             '0.65rem 0.8rem',
-  background:          'rgba(12,16,23,0.92)',
-  backdropFilter:      'blur(24px) saturate(160%)',
-  WebkitBackdropFilter:'blur(24px) saturate(160%)',
-  border:              '1px solid rgba(255,255,255,0.1)',
-  borderRadius:        '10px',
-  boxShadow:           '0 8px 32px rgba(0,0,0,0.5), inset 0 1px 0 rgba(255,255,255,0.07)',
-};
-
-const popupTextStyle: CSSProperties = {
-  fontSize:    '0.78rem',
-  color:       '#c9d1d9',
-  lineHeight:  1.4,
-};
-
-const confirmButtonStyle: CSSProperties = {
-  flex:                1,
-  padding:             '0.3rem 0',
-  background:          'rgba(248,81,73,0.15)',
-  border:              '1px solid rgba(248,81,73,0.35)',
-  borderRadius:        '6px',
-  color:               '#f85149',
-  fontSize:            '0.76rem',
-  fontWeight:          600,
-  cursor:              'pointer',
-  backdropFilter:      'blur(8px)',
-  WebkitBackdropFilter:'blur(8px)',
-  boxShadow:           'inset 0 1px 0 rgba(248,81,73,0.1)',
-  transition:          'background 0.12s ease',
-};
-
-const closeButtonStyle: CSSProperties = {
-  padding:     '0.3rem 0.5rem',
-  background:  'rgba(255,255,255,0.05)',
-  border:      '1px solid rgba(255,255,255,0.1)',
-  borderRadius:'6px',
-  color:       '#8b949e',
-  fontSize:    '0.72rem',
-  cursor:      'pointer',
-  transition:  'background 0.12s ease',
-};
-
-const emptyStyle: CSSProperties = {
-  padding:   '1rem 0.9rem',
-  fontSize:  '0.78rem',
-  color:     '#6e7681',
-};
-
-const maxThreadsStyle: CSSProperties = {
-  padding:    '0.1rem 0.9rem 0.4rem',
-  fontSize:   '0.68rem',
-  color:      '#6e7681',
-};

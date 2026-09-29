@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import type { GraphData } from '../../types';
 import { extractGlossaryEntries } from '../../utils/glossary';
+import './GlossaryDrawer.css';
 
 interface GlossaryDrawerProps {
   graphData: GraphData | null;
@@ -19,6 +20,7 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
     startY: number;
     originX: number;
     originY: number;
+    bounds?: { left: number; right: number; top: number; bottom: number };
   }>({
     active: false,
     startX: 0,
@@ -27,6 +29,7 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
     originY: 0,
   });
   const suppressClickRef = useRef(false);
+  const rootRef = useRef<HTMLDivElement>(null);
 
   const entries = useMemo(
     () => extractGlossaryEntries(sourceTexts, graphData),
@@ -42,10 +45,12 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
       if (Math.abs(dx) > 4 || Math.abs(dy) > 4) {
         suppressClickRef.current = true;
       }
-      setOffset({
-        x: drag.originX + dx,
-        y: drag.originY + dy,
-      });
+      const bounds = drag.bounds;
+      const desired = { x: drag.originX + dx, y: drag.originY + dy };
+      setOffset(bounds ? {
+        x: Math.max(bounds.left, Math.min(desired.x, bounds.right)),
+        y: Math.max(bounds.top, Math.min(desired.y, bounds.bottom)),
+      } : desired);
     };
 
     const handlePointerUp = () => {
@@ -57,21 +62,50 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
 
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
     };
   }, []);
+
+  useEffect(() => {
+    const canvas = rootRef.current?.parentElement?.closest('.graph-canvas__surface');
+    if (!canvas) return;
+    const resetPosition = () => {
+      dragStateRef.current.active = false;
+      setOffset(current => current.x === 0 && current.y === 0 ? current : { x: 0, y: 0 });
+    };
+    if (typeof ResizeObserver === 'undefined') {
+      window.addEventListener('resize', resetPosition);
+      return () => window.removeEventListener('resize', resetPosition);
+    }
+    const observer = new ResizeObserver(resetPosition);
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [entries.length]);
 
   if (entries.length === 0) return null;
 
   const startDrag = (event: ReactPointerEvent<HTMLElement>) => {
+    const root = rootRef.current;
+    const panel = root?.getBoundingClientRect();
+    const canvas = root?.parentElement?.closest('.graph-canvas__surface')?.getBoundingClientRect();
+    const bottomPadding = root ? Math.max(16, Number.parseFloat(getComputedStyle(root).bottom) || 0) : 16;
+    const bounds = panel && canvas && canvas.width > 0 && canvas.height > 0 ? {
+      left: canvas.left + 16 - panel.left + offset.x,
+      right: canvas.right - 16 - panel.right + offset.x,
+      top: canvas.top + 16 - panel.top + offset.y,
+      bottom: canvas.bottom - bottomPadding - panel.bottom + offset.y,
+    } : undefined;
     dragStateRef.current = {
       active: true,
       startX: event.clientX,
       startY: event.clientY,
       originX: offset.x,
       originY: offset.y,
+      bounds,
     };
   };
 
@@ -82,10 +116,12 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
 
   return (
     <div
+      ref={rootRef}
+      className="glossary-drawer"
       style={{
         position: 'absolute',
         right: '1rem',
-        bottom: bottomOffset,
+        bottom: `max(${bottomOffset}, env(safe-area-inset-bottom))`,
         zIndex: 25,
         display: 'flex',
         flexDirection: 'column',
@@ -96,8 +132,9 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
       }}
     >
       {open && (
-        <div style={drawerStyle(expanded)}>
+        <div className="glossary-drawer__panel" style={drawerStyle(expanded)}>
           <div
+            className="glossary-drawer__header"
             style={headerStyle}
             onPointerDown={startDrag}
           >
@@ -105,14 +142,15 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
               <div style={{ fontSize: '0.72rem', color: '#e6edf3', fontWeight: 600 }}>
                 Acronyms & terms
               </div>
-              <div style={{ fontSize: '0.64rem', color: '#6e7681', marginTop: '0.1rem' }}>
+              <div className="glossary-drawer__summary" style={{ fontSize: '0.64rem', color: '#6e7681', marginTop: '0.1rem' }}>
                 Quick plain-English explanations for technical words in this diagram and response.
               </div>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem', flexShrink: 0 }}>
               <button
-                onClick={() => setExpanded((value) => !value)}
+                onClick={() => { setOffset({ x: 0, y: 0 }); setExpanded(value => !value); }}
                 aria-label={expanded ? 'Use compact glossary' : 'Open larger glossary'}
+                className="glossary-drawer__icon"
                 style={windowButtonStyle}
               >
                 {expanded ? '▣' : '□'}
@@ -120,6 +158,7 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
               <button
                 onClick={() => setOpen(false)}
                 aria-label="Close glossary"
+                className="glossary-drawer__icon"
                 style={closeButtonStyle}
               >
                 ×
@@ -127,7 +166,7 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
             </div>
           </div>
 
-          <div style={entriesStyle(expanded)}>
+          <div className="glossary-drawer__entries" style={entriesStyle(expanded)}>
             {entries.map((entry) => (
               <div key={entry.term} style={{ borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '0.45rem' }}>
                 <div style={{ fontSize: '0.7rem', color: '#a78bfa', fontWeight: 700, letterSpacing: '0.03em' }}>
@@ -145,6 +184,7 @@ export function GlossaryDrawer({ graphData, sourceTexts, bottomOffset }: Glossar
       <button
         onClick={handleTriggerClick}
         onPointerDown={startDrag}
+        className="glossary-drawer__trigger"
         style={triggerStyle(open)}
         aria-expanded={open}
         title="Drag to move"

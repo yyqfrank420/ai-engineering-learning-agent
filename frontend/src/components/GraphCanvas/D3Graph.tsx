@@ -1505,8 +1505,8 @@ export function D3Graph({
             nodeDragStarts.set(node.id, { x: node.x, y: node.y, targets });
           })
           .on('drag', function(event, d) {
-            // Reparenting on mousedown prevents WebKit from dispatching the click.
-            d3.select(this).raise();
+            // Reparenting before the pointer moves cancels the browser's native click.
+            if (event.dx !== 0 || event.dy !== 0) d3.select(this).raise();
             stopCameraFollow();
             const start = nodeDragStarts.get(d.id)!;
             const constrain = navigation && event.sourceEvent.shiftKey;

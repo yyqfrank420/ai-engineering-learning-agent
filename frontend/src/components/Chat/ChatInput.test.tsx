@@ -165,6 +165,18 @@ describe('ChatInput', () => {
     expect((input as HTMLTextAreaElement).value).toBe('');
   });
 
+  it('keeps composition Enter in the named message field until composition ends', () => {
+    const onSend = vi.fn();
+    renderInput('thread-1', { onSend });
+    const input = screen.getByRole('textbox', { name: 'Message' }) as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '架構' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    expect(onSend).not.toHaveBeenCalled();
+    expect(input.value).toBe('架構');
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: false });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('架構');
+  });
+
   it('sends via the button and reports draft changes', () => {
     const onSend = vi.fn();
     const onDraftChange = vi.fn();
