@@ -279,3 +279,23 @@ synthesis evidence was empty. Its cost was$0.01373; education usage is unknown.
 No new application generation occurred. Model listing and a tiny synthetic Sonnet
 request succeeded, so a broad provider outage is not established. These are local
 diagnostic judgments, not protected CI approval. Original evidence is retained.
+
+### Stream long judge responses
+
+The Anthropic judge now requests raw streaming events and uses the SDK accumulator
+to build the complete response. It requires message_stop before parsing a verdict.
+Both native Anthropic and PostHog7.12 use messages.create(stream=True), because the
+PostHog messages.stream method has a different interface. The raw stream closes on
+completion or interruption. Raw HTTP transport errors retain the existing bounded
+retry policy. Model, judge prompt, rubric, schema, token cap and120second deadline
+are unchanged. No generation pipeline change is part of this transport fix.
+
+Offline tests cover real native/PostHog clients over MockTransport, usage and schema
+preservation, incomplete EOF, interrupted transport and cancellation. The full
+semantic suite passes142tests. Independent Sol review found no actionable defect.
+No streamed live education verdict is available yet. Official SDK guidance:
+https://platform.claude.com/docs/en/build-with-claude/streaming
+
+Protected recovery still fails closed when the source base or evaluator code differs.
+Main has advanced and this transport file changed; the old run cannot be advertised
+as current protected approval. Neither review findings nor CI policy were altered.

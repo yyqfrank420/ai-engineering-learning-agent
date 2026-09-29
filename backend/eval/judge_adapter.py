@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Callable
+import inspect
 import json
 import os
 from typing import Any
 
 from anthropic import (
+    NOT_GIVEN,
     APIConnectionError as AnthropicAPIConnectionError,
     APITimeoutError as AnthropicAPITimeoutError,
     RateLimitError as AnthropicRateLimitError,
 )
+from anthropic.lib.streaming import AsyncMessageStream
+import httpx
 from openai import APIConnectionError, APITimeoutError, RateLimitError
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -45,8 +49,9 @@ _RETRYABLE_JUDGE_ERRORS = (
     AnthropicAPIConnectionError,
     AnthropicAPITimeoutError,
     AnthropicRateLimitError,
+    httpx.TransportError,
 )
-# Judge responses are non-streaming; the per-attempt deadline still caps the request.
+# The per-attempt deadline caps the complete streamed judgment.
 _JUDGE_ATTEMPT_TIMEOUT_SECONDS = 120
 
 
@@ -366,9 +371,30 @@ class SemanticJudge:
             }
             if self.posthog_enabled:
                 request_kwargs["posthog_properties"] = posthog_properties
-            response = await self.client.messages.create(
-                **request_kwargs,
+            # PostHog 7.12 overrides messages.stream with an async generator;
+            # create(stream=True) returns the same raw events for both clients.
+            raw_stream = await self.client.messages.create(
+                **request_kwargs, stream=True
             )
+            try:
+                stream = AsyncMessageStream(raw_stream, output_format=NOT_GIVEN)
+                saw_message_stop = False
+                async for event in stream:
+                    if event.type == "message_stop":
+                        saw_message_stop = True
+                if not saw_message_stop:
+                    raise ConnectionError(
+                        "Anthropic judge stream ended before message_stop"
+                    )
+                response = await stream.get_final_message()
+            finally:
+                close = getattr(raw_stream, "aclose", None) or getattr(
+                    raw_stream, "close", None
+                )
+                if close is not None:
+                    close_result = close()
+                    if inspect.isawaitable(close_result):
+                        await close_result
             if response.stop_reason == "refusal":
                 raise RuntimeError(
                     "Anthropic judge refused the structured-output request"

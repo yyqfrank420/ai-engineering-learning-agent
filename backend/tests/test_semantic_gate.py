@@ -1,6 +1,7 @@
 import asyncio
 from copy import deepcopy
 from dataclasses import replace
+import json
 import traceback
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -8,6 +9,7 @@ from unittest.mock import AsyncMock
 from anthropic import (
     APIConnectionError as AnthropicAPIConnectionError,
     APITimeoutError as AnthropicAPITimeoutError,
+    AsyncAnthropic,
     RateLimitError as AnthropicRateLimitError,
 )
 import httpx
@@ -48,6 +50,39 @@ from eval.semantic_gate import (
     calibration_passes,
     decide_semantic_gate,
 )
+
+
+class _JudgeStream:
+    def __init__(self, response, *, events=("message_stop",), error=None):
+        self.response = response
+        self.events = iter(events)
+        self.error = error
+        self.closed = False
+        self.final_calls = 0
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        self.closed = True
+
+    async def aclose(self):
+        self.closed = True
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        try:
+            return SimpleNamespace(type=next(self.events))
+        except StopIteration:
+            if self.error is not None:
+                raise self.error
+            raise StopAsyncIteration
+
+    async def get_final_message(self):
+        self.final_calls += 1
+        return self.response
 
 
 def result(*grades: tuple[str, str, bool]) -> JudgeResult:
@@ -1039,8 +1074,9 @@ async def test_judge_response_still_rejects_missing_or_extra_dimensions(
         usage=SimpleNamespace(input_tokens=1, output_tokens=1),
     )
     client = SimpleNamespace(
-        messages=SimpleNamespace(create=AsyncMock(return_value=response))
+        messages=SimpleNamespace(create=AsyncMock(return_value=_JudgeStream(response)))
     )
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
     monkeypatch.setattr(
         "eval.judge_adapter.create_anthropic_client", lambda **_: client
     )
@@ -1089,8 +1125,7 @@ def test_judge_prompt_excludes_human_approval_labels():
 async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch):
     corpus = load_corpus()
     case = corpus.cases[0]
-    create = AsyncMock(
-        return_value=SimpleNamespace(
+    response = SimpleNamespace(
             content=[
                 SimpleNamespace(
                     type="text",
@@ -1111,8 +1146,9 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
             stop_reason="end_turn",
             usage=SimpleNamespace(input_tokens=123, output_tokens=45),
         )
-    )
+    create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
     constructor_calls = []
 
     def fake_anthropic(**kwargs):
@@ -1129,6 +1165,7 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
 
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
+    assert request["stream"] is True
     assert request["model"] == DEFAULT_ANTHROPIC_JUDGE_MODEL
     assert request["max_tokens"] == judge_adapter._ANTHROPIC_OUTPUT_TOKEN_LIMIT == 16384
     assert request["system"].startswith("You are an evaluation judge")
@@ -1164,8 +1201,7 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
 async def test_anthropic_judge_prefers_eval_judge_api_key(monkeypatch):
     corpus = load_corpus()
     case = corpus.cases[0]
-    create = AsyncMock(
-        return_value=SimpleNamespace(
+    response = SimpleNamespace(
             content=[
                 SimpleNamespace(
                     type="text",
@@ -1186,8 +1222,9 @@ async def test_anthropic_judge_prefers_eval_judge_api_key(monkeypatch):
             stop_reason="end_turn",
             usage=SimpleNamespace(input_tokens=12, output_tokens=4),
         )
-    )
+    create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
     constructor_calls = []
 
     def fake_anthropic(**kwargs):
@@ -1333,14 +1370,14 @@ async def test_anthropic_judge_rejects_non_structured_responses(
 ):
     corpus = load_corpus()
     case = corpus.cases[0]
-    create = AsyncMock(
-        return_value=SimpleNamespace(
+    response = SimpleNamespace(
             content=content,
             stop_reason=stop_reason,
             usage=SimpleNamespace(input_tokens=1, output_tokens=1),
         )
-    )
+    create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
     monkeypatch.setattr(
         "eval.judge_adapter.create_anthropic_client",
         lambda **_kwargs: client,
@@ -1375,8 +1412,7 @@ async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
     corpus = load_corpus()
     case = corpus.cases[0]
     secret_text = "secret provider response"
-    create = AsyncMock(
-        return_value=SimpleNamespace(
+    response = SimpleNamespace(
             content=[
                 SimpleNamespace(type="thinking", text="secret hidden reasoning"),
                 SimpleNamespace(type="text", text=secret_text),
@@ -1384,8 +1420,9 @@ async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
             stop_reason="max_tokens",
             usage=usage,
         )
-    )
+    create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
     monkeypatch.setattr(
         "eval.judge_adapter.create_anthropic_client",
         lambda **_kwargs: client,
@@ -1410,6 +1447,147 @@ async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
     assert "secret usage" not in reason
     assert create.await_count == 1
     assert budget.judge_calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("interrupted", [False, True])
+async def test_anthropic_judge_requires_a_complete_stream_and_retries_transport_once(
+    monkeypatch, interrupted
+):
+    corpus = load_corpus()
+    case = corpus.cases[0]
+    streams = []
+
+    def open_stream(**_kwargs):
+        stream = _JudgeStream(
+            SimpleNamespace(stop_reason="end_turn", content=[]),
+            events=("message_start",),
+            error=(httpx.RemoteProtocolError("stream interrupted") if interrupted else None),
+        )
+        streams.append(stream)
+        return stream
+
+    create = AsyncMock(side_effect=open_stream)
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
+    monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+    monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+    budget = EvaluationBudget(application_calls=1, judge_calls=2)
+
+    with pytest.raises(RuntimeError, match="judge provider remained unavailable"):
+        await judge_with_transport_retry(
+            SemanticJudge(provider="anthropic", api_key="anthropic-test-key"),
+            corpus,
+            case,
+            {"answer": "Artifact text."},
+            on_attempt=budget.record_judge_call,
+        )
+
+    assert budget.judge_calls == 2
+    assert len(streams) == 2
+    assert all(stream.closed and stream.final_calls == 0 for stream in streams)
+
+
+@pytest.mark.asyncio
+async def test_anthropic_judge_cancellation_closes_stream_without_a_verdict(monkeypatch):
+    corpus = load_corpus()
+    case = corpus.cases[0]
+    started = asyncio.Event()
+
+    class WaitingStream(_JudgeStream):
+        async def __anext__(self):
+            started.set()
+            await asyncio.Event().wait()
+
+    stream = WaitingStream(SimpleNamespace(stop_reason="end_turn", content=[]))
+    client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=stream)))
+    monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
+    monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+    monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+    task = asyncio.create_task(
+        SemanticJudge(provider="anthropic", api_key="anthropic-test-key").judge(
+            corpus, case, {"answer": "Artifact text."}
+        )
+    )
+    await started.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stream.closed
+    assert stream.final_calls == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("instrumented", [False, True])
+async def test_anthropic_judge_accumulates_native_and_posthog_streams_offline(
+    monkeypatch, instrumented
+):
+    corpus = load_corpus()
+    case = corpus.cases[0]
+    dimensions = {
+        dimension: {
+            "grade": "pass",
+            "evidence": [{"source_id": "answer-1"}],
+            "rationale": "The artifact satisfies this criterion.",
+        }
+        for dimension in case.rubric_dimensions
+    }
+    events = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": DEFAULT_ANTHROPIC_JUDGE_MODEL,
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 12, "output_tokens": 1},
+            },
+        },
+        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": json.dumps({"dimensions": dimensions})}},
+        {"type": "content_block_stop", "index": 0},
+        {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 4}},
+        {"type": "message_stop"},
+    ]
+    body = "".join(
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
+        for event in events
+    )
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
+        if instrumented:
+            from posthog.ai.anthropic import AsyncAnthropic as PostHogAsyncAnthropic
+
+            posthog_client = SimpleNamespace(privacy_mode=False, capture=lambda **_: None)
+            client = PostHogAsyncAnthropic(
+                api_key="test-key", max_retries=0, http_client=http_client,
+                posthog_client=posthog_client,
+            )
+            monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: posthog_client)
+        else:
+            client = AsyncAnthropic(api_key="test-key", max_retries=0, http_client=http_client)
+            monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
+        monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+
+        judgment = await SemanticJudge(
+            provider="anthropic", api_key="test-key"
+        ).judge(corpus, case, {"answer": "Artifact text."})
+
+    assert len(requests) == 1
+    assert json.loads(requests[0].content)["stream"] is True
+    assert judgment.input_tokens == 12
+    assert judgment.output_tokens == 4
+    assert all(dimension.grade == "pass" for dimension in judgment.dimensions)
 
 
 def test_judge_payload_removes_duplicate_graph_events_and_internal_graph_metadata():
