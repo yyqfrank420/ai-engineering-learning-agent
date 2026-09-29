@@ -39,9 +39,12 @@ GroupKind = Literal["runtime", "data", "operations", "delivery", "external"]
 TITLE_MAX_CHARS = 100
 ASSUMPTION_MAX_CHARS = 240
 COMPONENT_LABEL_MAX_CHARS = 60
-COMPONENT_RESPONSIBILITY_MAX_CHARS = 220
+# A tight grammar limit can end a clause mid-operation. Admission has headroom;
+# author prompts still target responsibilities below 160 characters.
+COMPONENT_RESPONSIBILITY_MAX_CHARS = 800
 GROUP_LABEL_MAX_CHARS = 80
-CONNECTION_LABEL_MAX_CHARS = 100
+# Headroom above concise author targets preserves complete directed contract clauses.
+CONNECTION_LABEL_MAX_CHARS = 160
 
 
 class CapabilityPlan(TypedDict):

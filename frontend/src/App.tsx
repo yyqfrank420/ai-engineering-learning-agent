@@ -22,6 +22,7 @@ import { useBackendReadiness } from './hooks/useBackendReadiness';
 import { useSelectionSuggestion } from './hooks/useSelectionSuggestion';
 import { useThreadSession } from './hooks/useThreadSession';
 import {
+  formatNodeQuestionRequest,
   shouldPersistThreadSnapshot,
   storageKeyForThread,
   writeThreadSnapshot,
@@ -211,7 +212,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     setAuthSession(null);
   }, [authSession, clearPreparedCache, graphEditBlocked, setAuthSession]);
 
-  const handleSend = useCallback(async (content: string, action?: DiagramIntentAction) => {
+  const handleSend = useCallback(async (content: string, action?: DiagramIntentAction, selectedNodeId?: string) => {
     if (backendReadiness !== 'ready' || isFinishingDiagram || graphEditBlocked || history.busy || history.preview || actionInFlight.current) {
       throw new Error('Finish the current diagram action before sending. Your message is saved here.');
     }
@@ -222,7 +223,14 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     try {
       await flushLayout();
       if (!mountedRef.current || currentContext.current !== context) throw new Error('The conversation changed. Please try again.');
-      const requestContent = selectionReferenceActive && selectionSuggestion
+      const chipNode = selectedNodeId === undefined ? undefined : graphData?.nodes.find(node => node.id === selectedNodeId);
+      if (selectedNodeId !== undefined && !chipNode) {
+        throw new Error('The selected component is no longer in this diagram. Select a component and try again.');
+      }
+      const hasSelectedTextContext = !chipNode && selectionReferenceActive && !!selectionSuggestion;
+      const requestContent = chipNode
+        ? formatNodeQuestionRequest(content, chipNode)
+        : hasSelectedTextContext
         ? ['Explain this highlighted part in beginner-friendly terms and relate it to the diagram.', '',
           `Highlighted text: "${selectionSuggestion}"`, '', `User question: ${content}`].join('\n')
         : content;
@@ -232,7 +240,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
         complexity: 'auto', graphMode: 'on', researchEnabled: true,
         graphAction, expectedGraphVersion: graphAction === 'extend' ? graphData?.version ?? null : undefined,
         displayContent: content, backendReadinessState: backendReadiness,
-        hasSelectedTextContext: selectionReferenceActive && !!selectionSuggestion,
+        hasSelectedTextContext,
       };
       let accepted: boolean;
       if (action === 'new_chat') {
@@ -555,7 +563,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                   />
                   <ContextBar
                     selectedNode={selectedNode}
-                    onSendMessage={content => { void handleSend(content, 'answer').catch(() => {}); }}
+                    onSendMessage={content => { if (selectedNode) void handleSend(content, 'answer', selectedNode.node.id).catch(() => {}); }}
                     onClear={clearSelectedNode}
                   />
                   {graphEditBlocked && (

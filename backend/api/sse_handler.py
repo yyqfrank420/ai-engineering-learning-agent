@@ -522,7 +522,7 @@ async def chat_endpoint(
                 }
             )
 
-            workflow_started_at = asyncio.get_running_loop().time()
+            workflow_started_at = time.monotonic()
             terminal_deadline = (
                 workflow_started_at
                 + settings.agent_timeout_s
@@ -574,7 +574,7 @@ async def chat_endpoint(
                 # Short timeout on each get() so we re-check agent_task.done() frequently.
                 # Hard wall-clock timeout aborts the task if it runs too long.
                 while True:
-                    if asyncio.get_running_loop().time() >= terminal_deadline:
+                    if time.monotonic() >= terminal_deadline:
                         agent_task.cancel()
                         record_timeout()
                         enqueue_analytics_event(

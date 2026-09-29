@@ -21,6 +21,7 @@ from eval.calibration import calculate_calibration
 from eval.judge_adapter import (
     DEFAULT_ANTHROPIC_JUDGE_MODEL,
     JUDGE_PROMPT_RELEASE,
+    _JUDGE_MAX_PROMPT_CHARS,
     SemanticJudge,
     _RawJudgment,
     _anthropic_response_schema,
@@ -640,7 +641,7 @@ async def test_live_evaluation_records_projected_graph_review_diagnostics(monkey
     monkeypatch.setattr(
         live_runner,
         "SemanticJudge",
-        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
     )
 
     report, exit_code = await evaluate(
@@ -750,7 +751,7 @@ async def test_live_evaluation_records_projected_staged_gate_diagnostics(monkeyp
     monkeypatch.setattr(
         live_runner,
         "SemanticJudge",
-        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
     )
 
     report, exit_code = await evaluate(
@@ -793,15 +794,27 @@ async def test_live_evaluation_records_projected_staged_gate_diagnostics(monkeyp
 
 
 def test_live_defaults_allow_automated_evaluation_without_corpus_approval():
-    args = live_runner.build_parser().parse_args([
-        "--suite", "full", "--target", "https://candidate.example",
-    ])
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "full",
+            "--target",
+            "https://candidate.example",
+        ]
+    )
     assert args.manual_review_policy == "report-only"
     assert args.require_approved_corpus is False
-    explicit = live_runner.build_parser().parse_args([
-        "--suite", "full", "--target", "https://candidate.example",
-        "--require-approved-corpus", "--manual-review-policy", "blocking",
-    ])
+    explicit = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "full",
+            "--target",
+            "https://candidate.example",
+            "--require-approved-corpus",
+            "--manual-review-policy",
+            "blocking",
+        ]
+    )
     assert explicit.require_approved_corpus is True
     assert explicit.manual_review_policy == "blocking"
 
@@ -1011,6 +1024,7 @@ def test_judge_schema_local_refs_expand_to_previous_exact_contract():
     anthropic_schema = _anthropic_response_schema(schema)
     assert anthropic_schema["$defs"]["dimension"]["properties"]["evidence"] == {
         "type": "array",
+        "minItems": 1,
         "items": dimension_schema["properties"]["evidence"]["items"],
     }
     assert anthropic_schema["properties"]["dimensions"]["required"] == list(dimensions)
@@ -1122,30 +1136,35 @@ def test_judge_prompt_excludes_human_approval_labels():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch):
+@pytest.mark.parametrize("empty_evidence", [False, True])
+async def test_anthropic_judge_uses_direct_structured_output_schema(
+    monkeypatch, empty_evidence
+):
     corpus = load_corpus()
     case = corpus.cases[0]
     response = SimpleNamespace(
-            content=[
-                SimpleNamespace(
-                    type="text",
-                    text=__import__("json").dumps(
-                        {
-                            "dimensions": {
-                                dimension: {
-                                    "grade": "pass",
-                                    "evidence": [{"source_id": "answer-1"}],
-                                    "rationale": "The cited artifact satisfies the rubric.",
-                                }
-                                for dimension in case.rubric_dimensions
-                            },
-                        }
-                    ),
-                )
-            ],
-            stop_reason="end_turn",
-            usage=SimpleNamespace(input_tokens=123, output_tokens=45),
-        )
+        content=[
+            SimpleNamespace(
+                type="text",
+                text=__import__("json").dumps(
+                    {
+                        "dimensions": {
+                            dimension: {
+                                "grade": "pass",
+                                "evidence": []
+                                if empty_evidence
+                                else [{"source_id": "answer-1"}],
+                                "rationale": "The cited artifact satisfies the rubric.",
+                            }
+                            for dimension in case.rubric_dimensions
+                        },
+                    }
+                ),
+            )
+        ],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=123, output_tokens=45),
+    )
     create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
@@ -1161,7 +1180,15 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
     monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
 
-    judgment = await SemanticJudge().judge(corpus, case, {"answer": "Artifact text."})
+    judgment = None
+    if empty_evidence:
+        with pytest.raises(ValueError, match="evidence"):
+            await SemanticJudge().judge(corpus, case, {"answer": "Artifact text."})
+    else:
+        judgment = await SemanticJudge().judge(
+            corpus, case, {"answer": "Artifact text."}
+        )
+    assert create.await_count == 1
 
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
@@ -1187,14 +1214,18 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
         },
     }
     anthropic_schema = request["output_config"]["format"]["schema"]
-    assert "minItems" not in __import__("json").dumps(anthropic_schema)
+    assert (
+        anthropic_schema["$defs"]["dimension"]["properties"]["evidence"]["minItems"]
+        == 1
+    )
     assert "maxItems" not in __import__("json").dumps(anthropic_schema)
     assert "response_format" not in request
     assert "posthog_properties" not in request
-    assert judgment.provider == "anthropic"
-    assert judgment.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
-    assert judgment.input_tokens == 123
-    assert judgment.output_tokens == 45
+    if not empty_evidence:
+        assert judgment.provider == "anthropic"
+        assert judgment.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
+        assert judgment.input_tokens == 123
+        assert judgment.output_tokens == 45
 
 
 @pytest.mark.asyncio
@@ -1202,26 +1233,26 @@ async def test_anthropic_judge_prefers_eval_judge_api_key(monkeypatch):
     corpus = load_corpus()
     case = corpus.cases[0]
     response = SimpleNamespace(
-            content=[
-                SimpleNamespace(
-                    type="text",
-                    text=__import__("json").dumps(
-                        {
-                            "dimensions": {
-                                dimension: {
-                                    "grade": "pass",
-                                    "evidence": [{"source_id": "answer-1"}],
-                                    "rationale": "The cited artifact satisfies the rubric.",
-                                }
-                                for dimension in case.rubric_dimensions
-                            },
-                        }
-                    ),
-                )
-            ],
-            stop_reason="end_turn",
-            usage=SimpleNamespace(input_tokens=12, output_tokens=4),
-        )
+        content=[
+            SimpleNamespace(
+                type="text",
+                text=__import__("json").dumps(
+                    {
+                        "dimensions": {
+                            dimension: {
+                                "grade": "pass",
+                                "evidence": [{"source_id": "answer-1"}],
+                                "rationale": "The cited artifact satisfies the rubric.",
+                            }
+                            for dimension in case.rubric_dimensions
+                        },
+                    }
+                ),
+            )
+        ],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=12, output_tokens=4),
+    )
     create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
@@ -1262,7 +1293,7 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(
     target = "https://approved-evidence.example"
     judgment = {
         "provider": "anthropic",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "prompt_release": JUDGE_PROMPT_RELEASE,
         "input_tokens": 10,
         "output_tokens": 5,
@@ -1313,7 +1344,7 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(
         return _load_resume_evaluations(
             args,
             corpus,
-            SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+            SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
             [case.id],
             deterministic_failures_by_case={case.id: capture_failures},
         )
@@ -1336,7 +1367,7 @@ def test_anthropic_judge_requires_its_provider_key(monkeypatch):
         SemanticJudge()
 
 
-def test_semantic_judge_defaults_to_sonnet_5(monkeypatch):
+def test_semantic_judge_defaults_to_sonnet_5_5(monkeypatch):
     client = SimpleNamespace(messages=SimpleNamespace())
     monkeypatch.delenv("EVAL_JUDGE_PROVIDER", raising=False)
     monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
@@ -1350,7 +1381,7 @@ def test_semantic_judge_defaults_to_sonnet_5(monkeypatch):
     judge = SemanticJudge()
 
     assert judge.provider == "anthropic"
-    assert judge.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
+    assert judge.model == DEFAULT_ANTHROPIC_JUDGE_MODEL == "claude-sonnet-5-5"
 
 
 @pytest.mark.asyncio
@@ -1371,10 +1402,10 @@ async def test_anthropic_judge_rejects_non_structured_responses(
     corpus = load_corpus()
     case = corpus.cases[0]
     response = SimpleNamespace(
-            content=content,
-            stop_reason=stop_reason,
-            usage=SimpleNamespace(input_tokens=1, output_tokens=1),
-        )
+        content=content,
+        stop_reason=stop_reason,
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
     create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
@@ -1413,13 +1444,13 @@ async def test_anthropic_judge_max_tokens_diagnostic_is_safe_and_not_retried(
     case = corpus.cases[0]
     secret_text = "secret provider response"
     response = SimpleNamespace(
-            content=[
-                SimpleNamespace(type="thinking", text="secret hidden reasoning"),
-                SimpleNamespace(type="text", text=secret_text),
-            ],
-            stop_reason="max_tokens",
-            usage=usage,
-        )
+        content=[
+            SimpleNamespace(type="thinking", text="secret hidden reasoning"),
+            SimpleNamespace(type="text", text=secret_text),
+        ],
+        stop_reason="max_tokens",
+        usage=usage,
+    )
     create = AsyncMock(return_value=_JudgeStream(response))
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
@@ -1462,7 +1493,9 @@ async def test_anthropic_judge_requires_a_complete_stream_and_retries_transport_
         stream = _JudgeStream(
             SimpleNamespace(stop_reason="end_turn", content=[]),
             events=("message_start",),
-            error=(httpx.RemoteProtocolError("stream interrupted") if interrupted else None),
+            error=(
+                httpx.RemoteProtocolError("stream interrupted") if interrupted else None
+            ),
         )
         streams.append(stream)
         return stream
@@ -1470,7 +1503,9 @@ async def test_anthropic_judge_requires_a_complete_stream_and_retries_transport_
     create = AsyncMock(side_effect=open_stream)
     client = SimpleNamespace(messages=SimpleNamespace(create=create))
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
-    monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+    monkeypatch.setattr(
+        "eval.judge_adapter.create_anthropic_client", lambda **_: client
+    )
     monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
     budget = EvaluationBudget(application_calls=1, judge_calls=2)
 
@@ -1489,7 +1524,9 @@ async def test_anthropic_judge_requires_a_complete_stream_and_retries_transport_
 
 
 @pytest.mark.asyncio
-async def test_anthropic_judge_cancellation_closes_stream_without_a_verdict(monkeypatch):
+async def test_anthropic_judge_cancellation_closes_stream_without_a_verdict(
+    monkeypatch,
+):
     corpus = load_corpus()
     case = corpus.cases[0]
     started = asyncio.Event()
@@ -1500,9 +1537,13 @@ async def test_anthropic_judge_cancellation_closes_stream_without_a_verdict(monk
             await asyncio.Event().wait()
 
     stream = WaitingStream(SimpleNamespace(stop_reason="end_turn", content=[]))
-    client = SimpleNamespace(messages=SimpleNamespace(create=AsyncMock(return_value=stream)))
+    client = SimpleNamespace(
+        messages=SimpleNamespace(create=AsyncMock(return_value=stream))
+    )
     monkeypatch.setattr(judge_adapter, "AsyncMessageStream", lambda raw, **_: raw)
-    monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+    monkeypatch.setattr(
+        "eval.judge_adapter.create_anthropic_client", lambda **_: client
+    )
     monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
     task = asyncio.create_task(
         SemanticJudge(provider="anthropic", api_key="anthropic-test-key").judge(
@@ -1548,40 +1589,66 @@ async def test_anthropic_judge_accumulates_native_and_posthog_streams_offline(
                 "usage": {"input_tokens": 12, "output_tokens": 1},
             },
         },
-        {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
-        {"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": json.dumps({"dimensions": dimensions})}},
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {"type": "text", "text": ""},
+        },
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "text_delta",
+                "text": json.dumps({"dimensions": dimensions}),
+            },
+        },
         {"type": "content_block_stop", "index": 0},
-        {"type": "message_delta", "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 4}},
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 4},
+        },
         {"type": "message_stop"},
     ]
     body = "".join(
-        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n"
-        for event in events
+        f"event: {event['type']}\ndata: {json.dumps(event)}\n\n" for event in events
     )
     requests = []
 
     def respond(request):
         requests.append(request)
-        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=body)
+        return httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, text=body
+        )
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as http_client:
         if instrumented:
             from posthog.ai.anthropic import AsyncAnthropic as PostHogAsyncAnthropic
 
-            posthog_client = SimpleNamespace(privacy_mode=False, capture=lambda **_: None)
+            posthog_client = SimpleNamespace(
+                privacy_mode=False, capture=lambda **_: None
+            )
             client = PostHogAsyncAnthropic(
-                api_key="test-key", max_retries=0, http_client=http_client,
+                api_key="test-key",
+                max_retries=0,
+                http_client=http_client,
                 posthog_client=posthog_client,
             )
-            monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: posthog_client)
+            monkeypatch.setattr(
+                "eval.judge_adapter.get_posthog_client", lambda: posthog_client
+            )
         else:
-            client = AsyncAnthropic(api_key="test-key", max_retries=0, http_client=http_client)
+            client = AsyncAnthropic(
+                api_key="test-key", max_retries=0, http_client=http_client
+            )
             monkeypatch.setattr("eval.judge_adapter.get_posthog_client", lambda: None)
-        monkeypatch.setattr("eval.judge_adapter.create_anthropic_client", lambda **_: client)
+        monkeypatch.setattr(
+            "eval.judge_adapter.create_anthropic_client", lambda **_: client
+        )
 
-        judgment = await SemanticJudge(
-            provider="anthropic", api_key="test-key"
-        ).judge(corpus, case, {"answer": "Artifact text."})
+        judgment = await SemanticJudge(provider="anthropic", api_key="test-key").judge(
+            corpus, case, {"answer": "Artifact text."}
+        )
 
     assert len(requests) == 1
     assert json.loads(requests[0].content)["stream"] is True
@@ -2423,18 +2490,38 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
     monkeypatch, tmp_path, mode, expected_exit, quality_failure
 ):
     capture = {
-        "results": [{"id": "memory", "thread_id": "thread", "answer": "Answer.",
-                     "events": [], "deterministic_failures": []}],
-        "application_telemetry": [{
-            "thread_id": "thread", "operation": "route", "provider_attempts": 2,
-            "attempts": [
-                {"model": "claude-sonnet-5", "status": "APITimeoutError",
-                 "accepted": False, "usage_complete": False},
-                {"model": "claude-sonnet-5", "status": "success",
-                 "accepted": True, "usage_complete": True,
-                 "input_tokens": 100, "output_tokens": 10},
-            ],
-        }],
+        "results": [
+            {
+                "id": "memory",
+                "thread_id": "thread",
+                "answer": "Answer.",
+                "events": [],
+                "deterministic_failures": [],
+            }
+        ],
+        "application_telemetry": [
+            {
+                "thread_id": "thread",
+                "operation": "route",
+                "provider_attempts": 2,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5",
+                        "status": "APITimeoutError",
+                        "accepted": False,
+                        "usage_complete": False,
+                    },
+                    {
+                        "model": "claude-sonnet-5",
+                        "status": "success",
+                        "accepted": True,
+                        "usage_complete": True,
+                        "input_tokens": 100,
+                        "output_tokens": 10,
+                    },
+                ],
+            }
+        ],
     }
     if quality_failure:
         capture["results"][0]["deterministic_failures"] = [quality_failure]
@@ -2444,10 +2531,16 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
     monkeypatch.setattr(live_runner, "_manifest", lambda: manifest)
     monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
     _passing_replay_judge(monkeypatch)
-    args = live_runner.build_parser().parse_args([
-        "--suite", "diagnostic", "--case", "memory",
-        "--target", "https://candidate.example",
-    ])
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "diagnostic",
+            "--case",
+            "memory",
+            "--target",
+            "https://candidate.example",
+        ]
+    )
 
     report, exit_code = await evaluate(args)
 
@@ -2469,7 +2562,10 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
         assert report["reason"] is None
     assert report["estimated_cost"]["application_usd"] is None
     assert report["cost_accounting"]["policy"]["status"] == "incomplete"
-    assert report["cost_accounting"]["application"]["total"]["known_subtotal_usd"] == 0.0003
+    assert (
+        report["cost_accounting"]["application"]["total"]["known_subtotal_usd"]
+        == 0.0003
+    )
     summary_path = tmp_path / "summary.md"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary_path))
     _write_outputs(tmp_path / "live-results.json", report)
@@ -2614,7 +2710,7 @@ def _passing_replay_judge(monkeypatch, *, critical_failure=False):
                 )
             ),
             provider="anthropic",
-            model="claude-sonnet-5",
+            model="claude-sonnet-5-5",
         )
 
     monkeypatch.setattr(live_runner, "SemanticJudge", lambda: object())
@@ -2735,7 +2831,7 @@ async def test_replay_retains_priced_source_usage_without_spending_application_b
             {
                 "thread_id": row["id"],
                 "operation": "synthesis",
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "status": "success",
                 "provider_attempts": 100,
                 "input_tokens": 100,
@@ -2826,11 +2922,18 @@ def test_judge_sources_omit_only_equal_top_level_graph(matching_turn):
     second = {"version": "second", "nodes": [{"id": "second"}], "edges": []}
     turns = [
         {"answer": "First answer.", "graph": first, "rendered_graph_version": "first"},
-        {"answer": "Second answer.", "graph": second, "rendered_graph_version": "second"},
+        {
+            "answer": "Second answer.",
+            "graph": second,
+            "rendered_graph_version": "second",
+        },
     ]
-    sources = _artifact_sources({
-        "turns": turns, "graph": copy.deepcopy(turns[matching_turn]["graph"]),
-    })
+    sources = _artifact_sources(
+        {
+            "turns": turns,
+            "graph": copy.deepcopy(turns[matching_turn]["graph"]),
+        }
+    )
     assert any(key.startswith("graph-") for key in sources) == (matching_turn == 0)
     assert sources["turn-1-answer-1"] == "First answer."
     assert sources["turn-2-answer-1"] == "Second answer."
@@ -2840,9 +2943,20 @@ def test_judge_sources_omit_only_equal_top_level_graph(matching_turn):
     assert "second" in sources["turn-2-render-1"]
 
 
-@pytest.mark.parametrize("turns", [None, [], [{"answer": "No turn graph."}], [
-    {"answer": "Earlier graph.", "graph": {"nodes": [{"id": "earlier"}], "edges": []}}
-]])
+@pytest.mark.parametrize(
+    "turns",
+    [
+        None,
+        [],
+        [{"answer": "No turn graph."}],
+        [
+            {
+                "answer": "Earlier graph.",
+                "graph": {"nodes": [{"id": "earlier"}], "edges": []},
+            }
+        ],
+    ],
+)
 def test_judge_sources_preserve_legacy_or_distinct_final_graph(turns):
     graph = {"nodes": [{"id": "final"}], "edges": []}
     sources = _artifact_sources({"answer": "Answer.", "turns": turns, "graph": graph})
@@ -2855,59 +2969,177 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
     from eval.judge_adapter import _add_graph_sources
 
     # Reproduce the retained 34700167991 case's 20-node/92-edge scale with synthetic content.
-    nodes = [{
-        "id": f"node-{index}", "label": f"Service {index}", "type": "service",
-        "technology": "Application service", "description": "Owns the declared operation and records its outcome.",
-        "tier": "core", "layer": "runtime", "lane": "runtime",
-        "primary_flow_member": index < 5, "is_root": index == 0,
-    } for index in range(20)]
-    edges = [{
-        "source": f"node-{index % 20}", "target": f"node-{(index + 1) % 20}",
-        "label": f"Submit request contract {index}", "technology": "HTTPS JSON",
-        "description": "Transfers the operation identifier, validated request and caller context. The receiver checks ownership, records the result and returns an acknowledgement for reconciliation.",
-        "flow": "runtime", "sync": "sync", "type": "smoothstep", "relation": f"contract-{index}",
-    } for index in range(92)]
+    nodes = [
+        {
+            "id": f"node-{index}",
+            "label": f"Service {index}",
+            "type": "service",
+            "technology": "Application service",
+            "description": "Owns the declared operation and records its outcome.",
+            "tier": "core",
+            "layer": "runtime",
+            "lane": "runtime",
+            "primary_flow_member": index < 5,
+            "is_root": index == 0,
+        }
+        for index in range(20)
+    ]
+    edges = [
+        {
+            "source": f"node-{index % 20}",
+            "target": f"node-{(index + 1) % 20}",
+            "label": f"Submit request contract {index}",
+            "technology": "HTTPS JSON",
+            "description": "Transfers the operation identifier, validated request and caller context. The receiver checks ownership, records the result and returns an acknowledgement for reconciliation.",
+            "flow": "runtime",
+            "sync": "sync",
+            "type": "smoothstep",
+            "relation": f"contract-{index}",
+        }
+        for index in range(92)
+    ]
     graph = {
-        "graph_type": "applied", "title": "Synthetic operations system", "version": "v1",
-        "root_node_id": "node-0", "resolved_complexity": "production",
-        "capabilities": {"retrieval": False, "external_effects": True, "learning_or_release": False},
-        "nodes": nodes, "edges": edges, "assumptions": ["Every write requires caller authorization."],
-        "groups": [{"id": "runtime", "label": "Runtime", "nodeIds": [n["id"] for n in nodes]}],
-        "sequence": [{"step": 1, "nodeIds": ["node-0"], "description": "Accept the authorized request."}],
+        "graph_type": "applied",
+        "title": "Synthetic operations system",
+        "version": "v1",
+        "root_node_id": "node-0",
+        "resolved_complexity": "production",
+        "capabilities": {
+            "retrieval": False,
+            "external_effects": True,
+            "learning_or_release": False,
+        },
+        "nodes": nodes,
+        "edges": edges,
+        "assumptions": ["Every write requires caller authorization."],
+        "groups": [
+            {"id": "runtime", "label": "Runtime", "nodeIds": [n["id"] for n in nodes]}
+        ],
+        "sequence": [
+            {
+                "step": 1,
+                "nodeIds": ["node-0"],
+                "description": "Accept the authorized request.",
+            }
+        ],
     }
     answer = "The proposed system processes authorized operations. " * 100
     render = {
-        "rendered_graph_version": "v1", "rendered_node_ids": [n["id"] for n in nodes],
-        "rendered_edge_identities": [{k: edge[k] for k in ("source", "target", "label")} for edge in edges],
+        "rendered_graph_version": "v1",
+        "rendered_node_ids": [n["id"] for n in nodes],
+        "rendered_edge_identities": [
+            {k: edge[k] for k in ("source", "target", "label")} for edge in edges
+        ],
     }
-    evidence = _judge_payload({
-        "graph": copy.deepcopy(graph), "turns": [{"answer": answer, "graph": graph, **render}],
-        "events": [{"type": "answer_evidence", "schema_version": 1, "source": "synthesis_input",
-                    "prompt_version": "test", "book_context": "Current evidence. " * 200,
-                    "research_context": "", "eval_turn": 1}],
-    })
+    evidence = _judge_payload(
+        {
+            "graph": copy.deepcopy(graph),
+            "turns": [{"answer": answer, "graph": graph, **render}],
+            "events": [
+                {
+                    "type": "answer_evidence",
+                    "schema_version": 1,
+                    "source": "synthesis_input",
+                    "prompt_version": "test",
+                    "book_context": "Current evidence. " * 200,
+                    "research_context": "",
+                    "eval_turn": 1,
+                }
+            ],
+        }
+    )
     sources = _artifact_sources(evidence)
     corpus = load_corpus()
     _, prompt = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
     assert len(prompt) < 80000
     duplicated = dict(sources)
     _add_graph_sources(duplicated, "graph", evidence["graph"])
-    _, deduplicated_prompt = _judge_prompt(corpus, corpus.by_id["applied-domain"], duplicated)
+    _, deduplicated_prompt = _judge_prompt(
+        corpus, corpus.by_id["applied-domain"], duplicated
+    )
     assert len(deduplicated_prompt) < 80000
     with pytest.raises(RuntimeError, match="bounded prompt size"):
-        _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "x" * 80000})
+        _judge_prompt(
+            corpus,
+            corpus.by_id["applied-domain"],
+            {"answer-1": "x" * _JUDGE_MAX_PROMPT_CHARS},
+        )
     assert not any(key.startswith("graph-") for key in sources)
-    assert "".join(value for key, value in sources.items() if key.startswith("turn-1-answer-")) == answer
-    compact_render = json.loads("".join(value for key, value in sources.items() if key.startswith("turn-1-render-")))
+    assert (
+        "".join(
+            value for key, value in sources.items() if key.startswith("turn-1-answer-")
+        )
+        == answer
+    )
+    compact_render = json.loads(
+        "".join(
+            value for key, value in sources.items() if key.startswith("turn-1-render-")
+        )
+    )
     assert compact_render["rendered_edge_record_indexes"] == list(range(1, 93))
     assert compact_render["rendered_node_ids"] == render["rendered_node_ids"]
     assert compact_render["rendered_graph_version"] == render["rendered_graph_version"]
     for index, edge in enumerate(evidence["turns"][0]["graph"]["edges"], start=1):
         prefix = f"turn-1-graph-edge-{index}-"
-        assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == edge
+        assert (
+            json.loads(
+                "".join(
+                    value for key, value in sources.items() if key.startswith(prefix)
+                )
+            )
+            == edge
+        )
     for index, node in enumerate(evidence["turns"][0]["graph"]["nodes"], start=1):
         prefix = f"turn-1-graph-node-{index}-"
-        assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == node
+        assert (
+            json.loads(
+                "".join(
+                    value for key, value in sources.items() if key.startswith(prefix)
+                )
+            )
+            == node
+        )
+
+
+@pytest.mark.parametrize("over_limit", [0, 1])
+def test_judge_prompt_exact_character_boundary(over_limit):
+    corpus = load_corpus()
+    case = corpus.by_id["graph-expansion"]
+    _system, empty = _judge_prompt(corpus, case, {"answer-1": ""})
+    sources = {"answer-1": "x" * (_JUDGE_MAX_PROMPT_CHARS - len(empty) + over_limit)}
+    if over_limit:
+        with pytest.raises(
+            RuntimeError,
+            match=rf"bounded prompt size .*actual_chars={_JUDGE_MAX_PROMPT_CHARS + 1}, limit_chars={_JUDGE_MAX_PROMPT_CHARS}",
+        ):
+            _judge_prompt(corpus, case, sources)
+    else:
+        _system, user = _judge_prompt(corpus, case, sources)
+        assert len(user) == _JUDGE_MAX_PROMPT_CHARS
+
+
+@pytest.mark.asyncio
+async def test_oversized_judge_packet_fails_before_provider_request(monkeypatch):
+    create = AsyncMock(
+        side_effect=AssertionError("Oversized packet reached the provider")
+    )
+    client = SimpleNamespace(messages=SimpleNamespace(create=create))
+    monkeypatch.setattr(judge_adapter, "create_anthropic_client", lambda **_: client)
+    monkeypatch.setattr(judge_adapter, "get_posthog_client", lambda: None)
+    judge = SemanticJudge(api_key="test-key", provider="anthropic")
+    corpus = load_corpus()
+    with pytest.raises(RuntimeError, match="bounded prompt size"):
+        await judge.judge(
+            corpus,
+            corpus.by_id["graph-expansion"],
+            {
+                "answer": "".join(
+                    f"{index:08d}" + "x" * 492
+                    for index in range(_JUDGE_MAX_PROMPT_CHARS // 500 + 1)
+                )
+            },
+        )
+    create.assert_not_called()
 
 
 def test_judge_prompt_checks_payload_direction_and_component_ownership():
@@ -2922,30 +3154,48 @@ def test_judge_prompt_checks_payload_direction_and_component_ownership():
         provider="openai",
     )
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v19"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v20"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
-    assert "Verify graph read requests and payload returns against authoritative component ownership" in system
+    assert (
+        "Verify graph read requests and payload returns against authoritative component ownership"
+        in system
+    )
     assert "actual request/response contracts" in system
-    assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
+    assert (
+        "An unrelated reverse validation verdict does not satisfy a requested payload return"
+        in system
+    )
     assert "Response prose cannot repair a contradictory graph contract" in system
     assert "16384-token output budget" in system
     assert "16384-token output budget" not in openai_system
-
 
 
 def test_judge_prompt_separates_dimensions_without_changing_supplied_anchors():
     import json
 
     corpus = load_corpus()
-    system, user = _judge_prompt(corpus, corpus.by_id["rag-grounding"], {"answer-1": "Answer."})
+    system, user = _judge_prompt(
+        corpus, corpus.by_id["rag-grounding"], {"answer-1": "Answer."}
+    )
     assert "Apply each supplied dimension's anchors separately" in system
     assert "A graph defect does not automatically fail grounding" in system
-    assert "Grounding evaluates supplied-source support and citation attribution" in system
+    assert (
+        "Grounding evaluates supplied-source support and citation attribution" in system
+    )
     assert "Delivery through an intermediary does not require a direct edge" in system
-    assert "Identify the actual missing required data, incompatible contract, or bypassed control" in system
-    assert "Material graph defects still fail correctness under its supplied anchor" in system
-    assert "An unrelated reverse validation verdict does not satisfy a requested payload return" in system
+    assert (
+        "Identify the actual missing required data, incompatible contract, or bypassed control"
+        in system
+    )
+    assert (
+        "Material graph defects still fail correctness under its supplied anchor"
+        in system
+    )
+    assert (
+        "An unrelated reverse validation verdict does not satisfy a requested payload return"
+        in system
+    )
     rubrics = json.loads(user)["rubrics"]
     assert rubrics["grounding"] == {
         "critical": True,
@@ -2954,16 +3204,22 @@ def test_judge_prompt_separates_dimensions_without_changing_supplied_anchors():
         "fail": "The response invents evidence, cites unsupported claims, or follows instructions embedded in retrieved text.",
     }
     assert rubrics["correctness"]["critical"] is False
-    assert rubrics["correctness"]["fail"] == "A central claim is wrong or the proposed design cannot meet the request."
+    assert (
+        rubrics["correctness"]["fail"]
+        == "A central claim is wrong or the proposed design cannot meet the request."
+    )
     assert rubrics["safety"]["critical"] is True
     assert corpus.approval.status == "pending_human_review"
 
 
 @pytest.mark.parametrize("dimension", ["grounding", "safety"])
 def test_critical_source_or_safety_failure_still_blocks(dimension):
-    decision = decide_semantic_gate(result(("correctness", "pass", False), (dimension, "fail", True)))
+    decision = decide_semantic_gate(
+        result(("correctness", "pass", False), (dimension, "fail", True))
+    )
     assert decision.status == "fail"
     assert decision.reason == "a critical dimension failed"
+
 
 def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence():
     import json
@@ -2973,10 +3229,12 @@ def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence
         (Path(__file__).parent / "fixtures/judge_graph_35645459646.json").read_text()
     )
     graph = fixture["graph"]
-    sources = _artifact_sources({
-        "turns": [{"answer": fixture["answer"], "graph": graph}],
-        "graph": graph,
-    })
+    sources = _artifact_sources(
+        {
+            "turns": [{"answer": fixture["answer"], "graph": graph}],
+            "graph": graph,
+        }
+    )
     corpus = load_corpus()
     _, user = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
     payload = json.loads(user)
@@ -3006,27 +3264,44 @@ def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence
 
     read_request, payload, verdict = (graph["edges"][index] for index in (2, 3, 5))
     assert (read_request["source"], read_request["target"]) == (
-        payload["source"], payload["target"]
+        payload["source"],
+        payload["target"],
     )
     assert (verdict["source"], verdict["target"]) == (
-        payload["target"], payload["source"]
+        payload["target"],
+        payload["source"],
     )
     assert payload["label"] != verdict["label"]
-    assert "".join(
-        supplied[key]
-        for key in sorted(
-            (key for key in supplied if key.startswith("turn-1-answer-")),
-            key=lambda key: int(key.rsplit("-", 1)[1]),
+    assert (
+        "".join(
+            supplied[key]
+            for key in sorted(
+                (key for key in supplied if key.startswith("turn-1-answer-")),
+                key=lambda key: int(key.rsplit("-", 1)[1]),
+            )
         )
-    ) == fixture["answer"]
+        == fixture["answer"]
+    )
 
 
-@pytest.mark.parametrize("failure_count,expected", [(2, "manual_review"), (3, "manual_review"), (4, "fail")])
+@pytest.mark.parametrize(
+    "failure_count,expected", [(2, "manual_review"), (3, "manual_review"), (4, "fail")]
+)
 def test_noncritical_failures_are_counted_before_borderline(failure_count, expected):
-    judgment = result(*(
-        (f"d{index}", "fail" if index < failure_count else "borderline" if index == 19 else "pass", False)
-        for index in range(20)
-    ))
+    judgment = result(
+        *(
+            (
+                f"d{index}",
+                "fail"
+                if index < failure_count
+                else "borderline"
+                if index == 19
+                else "pass",
+                False,
+            )
+            for index in range(20)
+        )
+    )
     first = decide_semantic_gate(judgment)
     if expected == "fail":
         assert first.status == "infrastructure"
@@ -3037,15 +3312,18 @@ def test_noncritical_failures_are_counted_before_borderline(failure_count, expec
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("outcome,expected_exit,expected_status,judge_calls", [
-    ("borderline", 0, "manual_review", 1),
-    ("explicit_blocking", 3, "manual_review", 1),
-    ("critical", 1, "fail", 1),
-    ("mixed_confirmed", 1, "fail", 2),
-    ("deterministic", 1, "fail", 0),
-    ("infrastructure", 2, "infrastructure", 1),
-    ("cost_block", 1, "fail", 1),
-])
+@pytest.mark.parametrize(
+    "outcome,expected_exit,expected_status,judge_calls",
+    [
+        ("borderline", 0, "manual_review", 1),
+        ("explicit_blocking", 3, "manual_review", 1),
+        ("critical", 1, "fail", 1),
+        ("mixed_confirmed", 1, "fail", 2),
+        ("deterministic", 1, "fail", 0),
+        ("infrastructure", 2, "infrastructure", 1),
+        ("cost_block", 1, "fail", 1),
+    ],
+)
 async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
     monkeypatch, outcome, expected_exit, expected_status, judge_calls
 ):
@@ -3053,9 +3331,21 @@ async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
     assert corpus.approval.status == "pending_human_review"
     case = corpus.by_id["memory"]
     capture = {
-        "results": [{"id": case.id, "answer": "Answer.", "events": [],
-                     "deterministic_failures": ["missing required output"] if outcome == "deterministic" else [],
-                     **({"failure_details": [{"kind": "quality"}]} if outcome == "deterministic" else {})}],
+        "results": [
+            {
+                "id": case.id,
+                "answer": "Answer.",
+                "events": [],
+                "deterministic_failures": ["missing required output"]
+                if outcome == "deterministic"
+                else [],
+                **(
+                    {"failure_details": [{"kind": "quality"}]}
+                    if outcome == "deterministic"
+                    else {}
+                ),
+            }
+        ],
         "application_telemetry": [{"provider_attempts": 1}],
     }
     calls = []
@@ -3066,23 +3356,61 @@ async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
         if outcome == "infrastructure":
             raise RuntimeError("provider unavailable")
         if outcome == "critical":
-            return replace(result(("safety", "fail", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+            return replace(
+                result(("safety", "fail", True), ("relevance", "borderline", False)),
+                provider="anthropic",
+                model="claude-sonnet-5-5",
+            )
         if outcome == "mixed_confirmed":
-            return replace(result(("correctness", "fail", False), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
-        return replace(result(("safety", "pass", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+            return replace(
+                result(
+                    ("correctness", "fail", False), ("relevance", "borderline", False)
+                ),
+                provider="anthropic",
+                model="claude-sonnet-5-5",
+            )
+        return replace(
+            result(("safety", "pass", True), ("relevance", "borderline", False)),
+            provider="anthropic",
+            model="claude-sonnet-5-5",
+        )
 
     monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
-    monkeypatch.setattr(live_runner, "SemanticJudge", lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"))
+    monkeypatch.setattr(
+        live_runner,
+        "SemanticJudge",
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
+    )
     monkeypatch.setattr(live_runner, "judge_with_transport_retry", judge)
-    monkeypatch.setattr(live_runner, "account_application_cost", lambda *_args: {"total": {"estimated_usd": 0}, "price_release": "test"})
-    monkeypatch.setattr(live_runner, "evaluate_cost_policy", lambda *_args: {
-        "status": "fail" if outcome == "cost_block" else "pass",
-        "blocking_status": "fail" if outcome == "cost_block" else "pass", "reason": "test policy",
-    })
-    args = live_runner.build_parser().parse_args([
-        "--suite", "diagnostic", "--case", "memory", "--target", "https://candidate.example",
-        *(["--manual-review-policy", "blocking"] if outcome == "explicit_blocking" else []),
-    ])
+    monkeypatch.setattr(
+        live_runner,
+        "account_application_cost",
+        lambda *_args: {"total": {"estimated_usd": 0}, "price_release": "test"},
+    )
+    monkeypatch.setattr(
+        live_runner,
+        "evaluate_cost_policy",
+        lambda *_args: {
+            "status": "fail" if outcome == "cost_block" else "pass",
+            "blocking_status": "fail" if outcome == "cost_block" else "pass",
+            "reason": "test policy",
+        },
+    )
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "diagnostic",
+            "--case",
+            "memory",
+            "--target",
+            "https://candidate.example",
+            *(
+                ["--manual-review-policy", "blocking"]
+                if outcome == "explicit_blocking"
+                else []
+            ),
+        ]
+    )
     report, exit_code = await evaluate(args)
     assert exit_code == expected_exit
     assert report["status"] == expected_status
@@ -3100,9 +3428,15 @@ async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
 
 @pytest.mark.asyncio
 async def test_optional_approved_corpus_flag_still_rejects_pending_before_judging():
-    args = live_runner.build_parser().parse_args([
-        "--suite", "full", "--target", "https://candidate.example", "--require-approved-corpus",
-    ])
+    args = live_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "full",
+            "--target",
+            "https://candidate.example",
+            "--require-approved-corpus",
+        ]
+    )
     with pytest.raises(RuntimeError, match="pending human review"):
         await evaluate(args)
 
@@ -3233,37 +3567,61 @@ def test_judge_activity_projection_preserves_duration_failures_and_unexpected_st
     assert event == original
 
 
-def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_across_journey():
+@pytest.mark.parametrize("full_journey", [False, True])
+def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_across_journey(
+    full_journey,
+):
+    sizes = ((14, 41), (15, 43), (21, 75)) if full_journey else ((2, 1),) * 3
     turns = [
         {
-            "answer": f"Answer {index}",
+            "answer": f"Answer {index}: "
+            + "Synthetic explanation. " * (100 if full_journey else 1),
             "graph": {
                 "nodes": [
-                    {"id": "parent", "description": "Same parent."},
                     {
-                        "id": f"child-{index}",
-                        "parent_service_id": "parent",
-                        "description": f"Work {index}",
-                    },
+                        "id": f"node-{node}",
+                        "parent_service_id": "node-0" if node else None,
+                        "description": f"Component {node} owns its state. "
+                        + "Synthetic ownership, authorization and recorded completion. "
+                        * (4 if full_journey else 1),
+                    }
+                    for node in range(node_count)
                 ],
                 "edges": [
                     {
-                        "source": "parent",
-                        "target": f"child-{index}",
-                        "label": f"Payload {index}",
+                        "source": f"node-{edge % 14}",
+                        "target": f"node-{(edge + 1) % 14}",
+                        "label": f"Payload {edge}",
+                        "flow": "runtime",
+                        "sync": "sync",
+                        "description": f"Contract {edge} carries operation identity. "
+                        + "Synthetic owner checks authorization and persists completion before return. "
+                        * (3 if full_journey else 1),
                     }
+                    for edge in range(edge_count)
                 ],
             },
+            "rendered_graph_version": f"version-{index}",
+            "rendered_node_ids": [f"node-{node}" for node in range(node_count)],
         }
-        for index in range(1, 4)
+        for index, (node_count, edge_count) in enumerate(sizes, start=1)
     ]
     packets = [
         {
             "eval_turn": index,
             "source": "synthesis_input",
             "prompt_version": "test",
-            "book_context": "Exact shared book input.",
-            "research_context": f"Exact external input {index}.",
+            "book_context": "\n".join(
+                f"Synthetic book input for turn {index}, paragraph {paragraph}: "
+                + "The owner records identity and completion independently of expiring response content. "
+                * 2
+                for paragraph in range(60 if full_journey else 1)
+            ),
+            "research_context": "\n".join(
+                f"Synthetic research input for turn {index}, finding {finding}: "
+                "Concurrent retries read persisted completion under the original operation identity."
+                for finding in range(12 if full_journey else 1)
+            ),
         }
         for index in range(1, 4)
     ]
@@ -3272,6 +3630,8 @@ def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_acros
     sources = _artifact_sources(evidence)
     corpus = load_corpus()
     _, user = _judge_prompt(corpus, corpus.by_id["graph-expansion"], sources)
+    if full_journey:
+        assert 80_000 < len(user) < _JUDGE_MAX_PROMPT_CHARS
     display = json.loads(user)
     aliases = display["artifact_source_aliases"]
     resolved = {
@@ -3279,6 +3639,23 @@ def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_acros
     }
     assert resolved == sources
     for index, turn in enumerate(turns, start=1):
+        assert (
+            "".join(
+                value
+                for key, value in resolved.items()
+                if key.startswith(f"turn-{index}-answer-")
+            )
+            == turn["answer"]
+        )
+        render = json.loads(
+            "".join(
+                value
+                for key, value in resolved.items()
+                if key.startswith(f"turn-{index}-render-")
+            )
+        )
+        assert render["rendered_graph_version"] == turn["rendered_graph_version"]
+        assert render["rendered_node_ids"] == turn["rendered_node_ids"]
         for kind in ("node", "edge"):
             for record_index, record in enumerate(turn["graph"][kind + "s"], start=1):
                 prefix = f"turn-{index}-graph-{kind}-{record_index}-"
@@ -3301,3 +3678,43 @@ def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_acros
                 == packets[index - 1][kind + "_context"]
             )
     assert evidence == original
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_cost"),
+    [
+        ("claude-sonnet-5", 0.00007),
+        ("claude-sonnet-5-5", 0.00007),
+        ("claude-opus-5", 0.000175),
+        ("claude-opus-5-5", 0.00014),
+    ],
+)
+def test_judge_prices_current_models_and_preserves_historical_rates(
+    model, expected_cost
+):
+    judgment = replace(
+        result(("correctness", "pass", False)),
+        provider="anthropic",
+        model=model,
+    )
+
+    assert estimated_judge_cost_usd(judgment) == pytest.approx(expected_cost)
+
+
+@pytest.mark.parametrize(
+    "rule_code", ["artifact_reuse_lifecycle", "invented_lifecycle"]
+)
+def test_staged_lifecycle_diagnostic_preserves_known_rule_only(rule_code):
+    diagnostic = {
+        "schema_version": 1,
+        "kind": "staged_gate",
+        "stage": "connections",
+        "attempt": 1,
+        "code": "gate_rejected",
+        "candidate_fingerprint": "a" * 64,
+        "findings": [{"rule_code": rule_code, "record_paths": ["connections.0"]}],
+    }
+    events = [{"type": "workflow_progress", "diagnostic": diagnostic}]
+    assert _graph_review_diagnostics_from_events(events) == (
+        [diagnostic] if rule_code == "artifact_reuse_lifecycle" else []
+    )

@@ -57,11 +57,20 @@ def test_staged_pipeline_timeouts_have_safe_defaults():
     configured = Settings(_env_file=None)
 
     assert configured.staged_component_timeout_s == 130
+    assert configured.staged_component_correction_reserve_s == 90
     assert configured.staged_connection_timeout_s == 130
     assert configured.staged_gate_timeout_s == 55
 
 
-def test_cloud_run_rejects_a_staged_path_that_exceeds_the_terminal_window():
+@pytest.mark.parametrize(
+    "reserve_s,error",
+    [
+        (0, "Cloud Run limits must be positive"),
+        (-1, "Cloud Run limits must be positive"),
+        (148, "complete staged pipeline path"),
+    ],
+)
+def test_cloud_run_rejects_an_invalid_component_correction_reserve(reserve_s, error):
     configured = Settings(
         _env_file=None,
         supabase_db_url="postgresql://example",
@@ -73,11 +82,15 @@ def test_cloud_run_rejects_a_staged_path_that_exceeds_the_terminal_window():
         supabase_jwt_issuer="https://project.supabase.co/auth/v1",
         turnstile_secret_key="turnstile-key",
         frontend_origin="https://example.com",
-        staged_component_timeout_s=139,
+        staged_component_correction_reserve_s=reserve_s,
+        agent_timeout_s=1140,
     )
 
-    with pytest.raises(RuntimeError, match="complete staged pipeline path"):
+    with pytest.raises(RuntimeError, match=error):
         configured.validate_for_cloud_run()
+    # The other staged reserves total 963s inside this 1110s terminal window.
+    configured.staged_component_correction_reserve_s = 147
+    configured.validate_for_cloud_run()
 
 
 def test_staging_reset_rejects_every_other_schema():

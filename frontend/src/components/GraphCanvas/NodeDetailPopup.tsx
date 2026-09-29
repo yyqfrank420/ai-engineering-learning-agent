@@ -396,7 +396,7 @@ export function NodeDetailPopup({
         <label>Technology<input value={draft.node.technology} maxLength={100}
           disabled={saving || editingDisabled} onChange={event => updateNode('technology', event.target.value)} /></label>
       </div>
-      <label>Description<textarea ref={nodeDescriptionRef} aria-label="Description" value={draft.node.description} maxLength={220} rows={3}
+      <label>Description<textarea ref={nodeDescriptionRef} aria-label="Description" value={draft.node.description} maxLength={800} rows={3}
         aria-invalid={invalidField?.field === 'node-description'} disabled={saving || editingDisabled}
         onChange={event => updateNode('description', event.target.value)} />
         {invalidField?.field === 'node-description' && <span className="node-inspector__field-error" role="alert">Description is required.</span>}
@@ -418,7 +418,7 @@ export function NodeDetailPopup({
               <span aria-hidden="true">{open ? '−' : '+'}</span>
             </button>
             {open && <div id={`node-connection-${index}`} className="node-inspector__connection-fields">
-              <label>Label<input ref={edgeLabelRef} aria-label="Label" value={current.label} maxLength={100}
+              <label>Label<input ref={edgeLabelRef} aria-label="Label" value={current.label} maxLength={160}
                 aria-invalid={invalidField?.field === 'edge-label' && invalidField.edgeIndex === index}
                 disabled={saving || editingDisabled} onChange={event => updateEdge(index, 'label', event.target.value)} />
                 {invalidField?.field === 'edge-label' && invalidField.edgeIndex === index && <span className="node-inspector__field-error" role="alert">Connection label is required.</span>}

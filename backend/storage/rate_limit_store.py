@@ -16,7 +16,7 @@ class RateLimitDimension:
     identifier: str
     event_type: str
     limit: int
-    window_s: int
+    window_s: int | None
 
 
 def _key_hash(dimension: RateLimitDimension) -> str:
@@ -43,12 +43,27 @@ def reserve_rate_limit(
     """Atomically reserve one attempt across every supplied rate-limit dimension."""
     if not dimensions:
         raise ValueError("At least one rate-limit dimension is required")
-    if any(dimension.limit < 0 or dimension.window_s <= 0 for dimension in dimensions):
-        raise ValueError("Rate-limit dimensions require non-negative limits and positive windows")
+    if any(dimension.limit < 0 for dimension in dimensions):
+        raise ValueError("Rate-limit dimensions require non-negative limits")
+    for dimension in dimensions:
+        if dimension.window_s is None:
+            if (dimension.scope, dimension.event_type) != (
+                "evaluation_run",
+                "llm_provider_attempt",
+            ):
+                raise ValueError(
+                    "Lifetime quota is reserved for evaluation provider attempts"
+                )
+            if bypass_limits:
+                raise ValueError("Lifetime evaluation quota cannot be bypassed")
+        elif dimension.window_s <= 0:
+            raise ValueError("Rate-limit windows must be positive")
 
     now = created_at_epoch if created_at_epoch is not None else time.time()
     event_ids = tuple(str(uuid.uuid4()) for _ in dimensions)
-    hashed_dimensions = tuple((dimension, _key_hash(dimension)) for dimension in dimensions)
+    hashed_dimensions = tuple(
+        (dimension, _key_hash(dimension)) for dimension in dimensions
+    )
     lock_keys = sorted(
         {
             f"rate-limit:{dimension.event_type}:{key_hash}"
@@ -63,8 +78,13 @@ def reserve_rate_limit(
         else:
             conn.execute("BEGIN IMMEDIATE")
 
+        # Keep historical provider reservations so an unrelated rate-limit call
+        # cannot erase evidence or reopen a cumulative evaluation budget.
         conn.execute(
-            _adapt_query("DELETE FROM rate_limit_events WHERE expires_at_epoch <= ?"),
+            _adapt_query(
+                "DELETE FROM rate_limit_events "
+                "WHERE expires_at_epoch <= ? AND event_type != 'llm_provider_attempt'"
+            ),
             (now,),
         )
 
@@ -75,10 +95,16 @@ def reserve_rate_limit(
                         """
                         SELECT COUNT(*) AS n
                         FROM rate_limit_events
-                        WHERE key_hash = ? AND event_type = ? AND expires_at_epoch > ?
+                        WHERE key_hash = ? AND event_type = ?
+                          AND (? = 1 OR expires_at_epoch > ?)
                         """
                     ),
-                    (key_hash, dimension.event_type, now),
+                    (
+                        key_hash,
+                        dimension.event_type,
+                        int(dimension.window_s is None),
+                        now,
+                    ),
                 ).fetchone()
                 if (row["n"] if row else 0) >= dimension.limit:
                     return None
@@ -100,7 +126,9 @@ def reserve_rate_limit(
                     key_hash,
                     dimension.event_type,
                     now,
-                    now + dimension.window_s,
+                    float("inf")
+                    if dimension.window_s is None
+                    else now + dimension.window_s,
                 ),
             )
 
@@ -111,9 +139,27 @@ def release_rate_limit(event_ids: tuple[str, ...]) -> None:
     """Release reservations that should not count against their limit."""
     if not event_ids:
         return
+    event_ids = tuple(dict.fromkeys(event_ids))
+    batches = [
+        event_ids[offset : offset + 500] for offset in range(0, len(event_ids), 500)
+    ]
     with _connect() as conn:
-        for event_id in event_ids:
+        # Bandit cannot infer that placeholders are constants; IDs remain bound values.
+        for batch in batches:
+            placeholders = ", ".join("?" for _ in batch)
+            provider_row = conn.execute(
+                _adapt_query(
+                    f"SELECT 1 FROM rate_limit_events WHERE id IN ({placeholders}) AND event_type = 'llm_provider_attempt' LIMIT 1"  # nosec
+                ),
+                batch,
+            ).fetchone()
+            if provider_row is not None:
+                raise ValueError("Provider-attempt reservations cannot be released")
+        for batch in batches:
+            placeholders = ", ".join("?" for _ in batch)
             conn.execute(
-                _adapt_query("DELETE FROM rate_limit_events WHERE id = ?"),
-                (event_id,),
+                _adapt_query(
+                    f"DELETE FROM rate_limit_events WHERE id IN ({placeholders}) AND event_type != 'llm_provider_attempt'"  # nosec
+                ),
+                batch,
             )

@@ -33,7 +33,7 @@ For an applied architecture request, the default staged pipeline:
 3. Builds connections against the accepted components and reviews the complete design.
 4. Writes the walkthrough, saves the accepted graph, and publishes the result.
 
-Kimi K3 generates the graph, Sonnet 5 reviews each stage, and Sonnet 5.5 writes the walkthrough.
+Opus 5.5 (`claude-opus-5-5`) authors components and corrections at high effort; initial connections use low effort. Opus 5.5 medium reviews each staged candidate. Sonnet 5.5 handles legacy graph QA and writes the walkthrough.
 
 Each stage allows one correction. Previews remain provisional until the graph passes its checks and is saved. If requirements are unclear, the agent can ask clarifying questions before building connections.
 

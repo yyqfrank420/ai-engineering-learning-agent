@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
+import agent.architecture_rubric as rubric
 
 from agent.architecture_rubric import (
     RUBRIC_CRITERIA,
@@ -51,6 +52,9 @@ def test_component_owner_guidance_does_not_depend_on_correct_capability_flags(de
     controls = json.loads(prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0])
     assert controls == STAGED_PRODUCTION_REQUIREMENTS
     assert "reviewed immutable release" in controls["learning_and_release"]
+    assert "release controls on its path before serving" in controls["learning_and_release"]
+    assert "parallel controlled release branch does not constrain a direct execution path" in controls["learning_and_release"]
+    assert "same-owner dependency may enforce the controls without extra components or edges" in controls["learning_and_release"]
     assert "including when a capability flag needs correction" in prompt
     assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
 
@@ -163,6 +167,10 @@ def test_learning_capability_includes_owned_offline_and_reviewed_changes(maturit
         "Offline or batch training and human-approved updates or releases count",
         "automatic feedback and immediate live deployment are not required",
         "A no-automatic-loop assumption does not negate an explicitly owned update or release",
+        "Live configuration means persistent rules or settings that govern subsequent runtime behavior",
+        "An owned update counts when the setting is applied to an external target",
+        "One-off content or ordinary business-record writes alone do not establish this capability",
+        "Excluding model training or prompt releases does not exclude declared configuration updates",
         "Frozen inference without an owned update or release does not imply learning_or_release",
     ):
         assert obligation in criterion
@@ -178,6 +186,18 @@ def test_learning_capability_includes_owned_offline_and_reviewed_changes(maturit
             "There is no automatic feedback loop or live deployment.",
             True,
             id="owned-offline-fine-tuning",
+        ),
+        pytest.param(
+            "Applies feedback-driven targeting rules and event settings to the external runtime.",
+            "Models are frozen; this system neither trains models nor releases prompts.",
+            True,
+            id="owned-live-targeting-and-event-settings",
+        ),
+        pytest.param(
+            "Publishes one-off content and updates ordinary campaign business records.",
+            "Runtime settings, models and prompts remain unchanged.",
+            False,
+            id="ordinary-content-and-business-record-writes",
         ),
         pytest.param(
             "Curates and publishes versioned datasets for a passive downstream consumer.",
@@ -235,6 +255,42 @@ def test_owned_learning_review_cases_preserve_responsibilities_and_controls(
     assert ("learning_and_release" in guarantees) == (
         maturity == "production" and learning_or_release
     )
+    for stage in ("components", "connections"):
+        author, _ = generation._attempt_prompt(
+            stage=stage, request=responsibility, resolved_maturity=maturity,
+            write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+            upstream_fingerprint="a" * 64, attempt=0,
+            prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+            structural_findings=[], gate_findings=[], base=None,
+            rejected_candidate=None, accepted_context=context,
+            architecture_context=responsibility if stage == "components" else None,
+        )
+        author_input = json.loads(author.split("\nINPUT\n", 1)[1])
+        review = gate._prompt(
+            gate=stage, user_request=responsibility,
+            evidence_bundle={"candidate_context": context.prompt_value()},
+            resolved_maturity=maturity, candidate_records=records,
+            required_production_guarantees=guarantees,
+        )
+        if stage == "components":
+            authored_rules = author_input.get("downstream_controls", {})
+            reviewed_rules = (
+                json.loads(review.split("downstream_controls: ", 1)[1].split("\n", 1)[0])
+                if maturity == "production" else {}
+            )
+            applicable = maturity == "production"
+        else:
+            authored_rules = author_input["acceptance_criteria"]
+            reviewed_rules = json.loads(review.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+            applicable = maturity == "production" and learning_or_release
+        assert ("learning_and_release" in authored_rules) is applicable
+        assert ("learning_and_release" in reviewed_rules) is applicable
+        if applicable:
+            assert authored_rules["learning_and_release"] == reviewed_rules["learning_and_release"] == STAGED_PRODUCTION_REQUIREMENTS["learning_and_release"]
+            release = authored_rules["learning_and_release"]
+            assert "For each owned released artifact class, identify a compatible serving target" in release
+            assert "a release path serving a different artifact class does not cover it" in release
+            assert "Declared same-owner internal use is valid" in release
     if maturity == "production" and learning_or_release:
         requirements = staged_review_requirements("connections", maturity, guarantees)
         assert (
@@ -244,14 +300,20 @@ def test_owned_learning_review_cases_preserve_responsibilities_and_controls(
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_generation_and_gate_receive_shared_capability_policy(maturity):
-    request = (
-        "Draw a closed-loop evaluation system from raw feedback through validation, "
-        "scoring, review, and dataset updates."
-    )
+@pytest.mark.parametrize("user_request", [
+    "Draw a closed-loop evaluation system from raw feedback through validation, "
+    "scoring, review, and dataset updates.",
+    "Read versioned evidence within the current release and request only; "
+    "do not reuse artifacts across requests or releases.",
+    "Recall persistent evidence across requests, with separate consumers "
+    "and compatible shared reuse-check ownership.",
+    "Consumer A recalls stored evidence across requests; consumer B receives fresh "
+    "evidence for the current request only, with no cross-request or release reuse.",
+])
+def test_generation_and_gate_receive_shared_capability_policy(maturity, user_request):
     generated_prompt, _ = generation._attempt_prompt(
         stage="components",
-        request=request,
+        request=user_request,
         resolved_maturity=maturity,
         write_set=generation.create_write_set(component_limit=16, edge_limit=24),
         upstream_fingerprint="a" * 64,
@@ -266,7 +328,7 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     )
     reviewed_prompt = gate._prompt(
         gate="components",
-        user_request=request,
+        user_request=user_request,
         evidence_bundle={},
         resolved_maturity=maturity,
         candidate_records=[],
@@ -280,14 +342,34 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     )
 
     assert generated_criteria == reviewed_criteria
+    assert json.loads(generated_prompt.split("\nINPUT\n", 1)[1])["request"] == user_request
+    assert json.loads(
+        reviewed_prompt.split("User request: ", 1)[1].split("\n", 1)[0]
+    ) == user_request
     brief = generated_criteria["brief_coverage"]
     if maturity == "production":
         for obligation in (
             "before component responsibilities freeze",
+            "inventory each current component's owned operations and declared input origins and consumers",
+            "Apply the existing criteria to each component and its declared inputs",
+            "A shared-owner witness applies only when its declared scope covers the consumer and input",
+            "explicitly assign policy checks and the exact-action approval decision",
+            "plus applicable recovery ownership",
+            "Executing approved calls consumes approval",
+            "cite the candidate declaration that establishes this consumer reuses the artifact across requests or releases",
+            "Versioning, storage or retrieval alone does not establish that lifetime",
+            "For each applicable consuming path, assess reuse-check ownership separately",
+            "Consumer-local controls do not cover independent consumers; a shared compatible owner may cover them",
+            "Structural validation alone does not establish policy or approval ownership",
             "curated versioned evidence including hostile traces",
             "offline evaluation", "reviewed immutable release", "canary",
             "promotion", "rollback", "recorded outcomes",
             "Compatible controls may share an existing executable owner",
+            "each owned updated or released artifact class established in the candidate assumptions or responsibilities",
+            "For each declared class, require compatible executable ownership",
+            "An explicit scope enumerating other artifact classes does not cover this class",
+            "compatible broader or shared owners may cover it without exact class labels or separate components",
+            "Do not invent artifact classes or update or release behavior",
             "explicitly declared external dependency",
             "metrics-only monitor", "passive artifact store", "word 'reviewed' alone",
             "do not require edges or transition proof",
@@ -316,9 +398,7 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
         generated_criteria
     )
     schema = gate._response_schema(rule_codes=tuple(reviewed_criteria), record_count=0)
-    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-        "enum"
-    ]
+    codes = schema["properties"]["rule_reviews"]["required"]
     assert {"domain_specificity", "succinctness", "selected_depth"}.isdisjoint(codes)
     generated_input = json.loads(generated_prompt.split("\nINPUT\n", 1)[1])
     if maturity == "production":
@@ -409,48 +489,6 @@ def test_production_branch_policy_keeps_required_outcomes_and_controls():
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_declared_escalation_policy_matches_authoring_and_review(maturity):
-    request = "Route declared workflow exceptions for human correction and return the decision."
-    context = generation.AcceptedContext(
-        assumptions=(), external_effects=False,
-        retrieval_or_reuse=False, learning_or_release=False,
-    )
-    authored, _ = generation._attempt_prompt(
-        stage="connections", request=request, resolved_maturity=maturity,
-        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
-        upstream_fingerprint="a" * 64, attempt=0,
-        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
-        structural_findings=[], gate_findings=[], base=None,
-        rejected_candidate=None, accepted_components=[], accepted_context=context,
-    )
-    reviewed = gate._prompt(
-        gate="connections", user_request=request,
-        evidence_bundle={"candidate_context": context.prompt_value()},
-        resolved_maturity=maturity, candidate_records=[],
-        required_production_guarantees=production_proofs_for_capabilities(
-            context.prompt_value()["capabilities"], maturity=maturity
-        ),
-    )
-    authored_rules = json.loads(authored.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
-    reviewed_rules = json.loads(reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
-    assert authored_rules == reviewed_rules
-    criterion = reviewed_rules["edge_semantics"]
-    shared = RUBRIC_CRITERIA["edge_semantics"][1]
-    escalation = shared[shared.index("Treat declared escalation as an invoked capability."):]
-    assert escalation in criterion
-    for obligation in (
-        "presentation of the applicable exception payload to that owner",
-        "When a declared consumer needs the resulting decision or output to continue work or answer, trace it back to that consumer",
-        "A standalone asynchronous review or alert does not require a return acknowledgment",
-        "A typed terminal exception can close reporting but cannot establish separately promised review, correction, or override",
-        "Direct delivery, explicit forwarding, authoritative persistence with declared reads, or declared same-owner handling",
-        "Do not require human escalation when the request and accepted design do not declare it",
-        "Do not require tool observations for an action that did not run",
-    ):
-        assert obligation in criterion
-
-
-@pytest.mark.parametrize("maturity", ["prototype", "production"])
 def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturity):
     criterion = staged_review_requirements("connections", maturity)["edge_semantics"]
 
@@ -460,6 +498,13 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
         "a contradictory direction",
         "a path that bypasses a required control",
         "An unrelated verdict or acknowledgment cannot replace required data",
+        "Before pairing, identify the consumer needing each payload",
+        "producing or storing it",
+        "the consumer requests the payload and the owner returns it",
+        "receiving a request does not give a consumer authority to produce owner-held records",
+        "An authoritative owner may deliver directly to multiple compatible consumers",
+        "Missing peer names in high-level responsibilities alone do not establish a contradiction",
+        "do not invent a mandatory intermediary or relax a declared trust boundary",
         "Feedback and deployment contracts cannot substitute for required runtime or control",
     ):
         assert obligation in criterion
@@ -469,37 +514,38 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
         "neither changes execution nor violates a required control"
     ) in criterion
     assert "identify that concrete failure when rejecting" in criterion
-    owner, shared_criterion = RUBRIC_CRITERIA["edge_semantics"]
-    assert owner == "connections"
+    reviewed_prompt = gate._prompt(
+        gate="connections", user_request="Show evidence delivery",
+        evidence_bundle={}, resolved_maturity=maturity, candidate_records=[],
+        required_production_guarantees=(),
+    )
+    reviewed = json.loads(reviewed_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert reviewed["edge_semantics"] == criterion
     for obligation in (
-        "Give each directed edge one distinct necessary contract",
-        "consolidate duplicate interactions",
-        "keep reverse or parallel contracts compatible",
-        "Classify each interaction by its actual behavior",
-        "feedback and deployment contracts cannot substitute for required runtime or control interactions",
-        "Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester",
-        "An unrelated reverse verdict or acknowledgment does not supply that payload",
+        "An intermediary may forward already received data without owning its original authority",
+        "compatible relay contracts can establish forwarding",
+        "does not authorize a consumer to create a policy or approval decision",
+        "substitute generated citations for canonical source data",
+        "Block an absent producer or delivery path",
     ):
-        assert obligation in shared_criterion
-    for output_requirement in (
-        "Trace required input data and execution output to each declared consumer",
-        "Every intermediary contract must name the actual required payload",
-        "Containment or generic parent lifecycle ownership alone cannot supply child output",
-        "Name the actual needed output data in each forwarding connection",
-        "Generic 'success', 'failure', or 'outcome' does not imply a result payload",
-        "A validation verdict, acknowledgment, or commit status alone is insufficient",
-        "Direct delivery, explicit forwarding, or declared persistence with a consumer read can satisfy output delivery",
-        "Preserve this output route during scoped edits and repairs",
-        "If execution is denied or halted while a declared consumer waits for action output",
-        "deliver the final decision, action identity, and reason to that consumer as the terminal result",
-        "Do not require tool observations for an action that did not run",
-        "A reply emitted only after execution cannot close a branch that skips execution",
-        "An audit write alone needs a declared consumer read of that result",
-        "Declared same-owner handling can also satisfy output delivery without extra edges",
-        "A commit/status-only contract is valid when its consumer needs only commit information",
-    ):
-        assert output_requirement in shared_criterion
-        assert output_requirement in criterion
+        assert obligation in criterion
+        assert obligation in reviewed_prompt
+    assert RUBRIC_CRITERIA["edge_semantics"] == (
+        "connections",
+        "For topic, mechanism, and lifecycle maps, use truthful causal, adaptation, "
+        "or lifecycle relationships without inventing requests or replies between abstract topics. "
+        "Give each directed edge one distinct necessary contract, consolidate duplicate "
+        "interactions, and keep reverse or parallel contracts compatible. Classify each "
+        "interaction by its actual behavior; feedback and deployment contracts cannot "
+        "substitute for required runtime or control interactions. Each read or request "
+        "that expects returned data needs its matching payload from the authoritative "
+        "owner back to the requester. An unrelated reverse verdict or acknowledgment "
+        "does not supply that payload. Check both directions against declared data and "
+        "decision ownership. Data payloads and policy or approval results must originate "
+        "at their authoritative owner; pairing cannot assign that authority to a consumer. "
+        + rubric._EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
+        + " " + rubric._DECLARED_ESCALATION_DELIVERY_REQUIREMENT,
+    )
 
 
 def test_prototype_action_policy_preserves_required_controls_without_extra_stages():
@@ -521,12 +567,15 @@ def test_prototype_action_policy_preserves_required_controls_without_extra_stage
 
 
 def test_production_and_legacy_action_policy_retain_exact_controls():
-    criterion = "Put policy, exact-action approval, audit, and recovery controls on external mutations."
+    criterion = (
+        "Put policy, exact-action approval, audit, and recovery controls on external mutations. "
+        + rubric._ACTION_APPROVAL_DELIVERY_REQUIREMENT
+    )
 
-    assert RUBRIC_CRITERIA["safe_action_boundary"][1].startswith(criterion)
+    assert RUBRIC_CRITERIA["safe_action_boundary"][1] == criterion
     assert (
         staged_review_requirements("connections", "production")["safe_action_boundary"]
-        == RUBRIC_CRITERIA["safe_action_boundary"][1]
+        == criterion
     )
 
 
@@ -590,8 +639,9 @@ def test_production_review_consolidates_obligations_without_losing_failure_outco
     ):
         assert obligation in reconciliation
     retrieval = requirements["retrieval_and_reuse_trust"]
-    for obligation in ("rejected/stale", "abstention", "invalidation", "entailment"):
+    for obligation in ("rejected/stale", "abstention", "entailment"):
         assert obligation in retrieval
+    assert "invalidation" in requirements["artifact_reuse_lifecycle"]
 
 
 def test_production_contracts_allow_internal_ownership_without_extra_graph_edges():
@@ -689,8 +739,11 @@ def test_shared_compensation_contracts_preserve_the_complete_control_path():
     )["authorization_and_compensation"]
 
     assert criterion == STAGED_PRODUCTION_REQUIREMENTS["authorization_and_compensation"]
+    assert "request or an explicitly required recovery guarantee" in criterion
+    assert "External effects alone do not require compensation behavior" in criterion
+    assert "only when required or declared" in criterion
     assert (
-        "Compensation must use the same policy, approval, execution, reconciliation, "
+        "it must use the same policy, approval, execution, reconciliation, "
         "and audit controls"
     ) in criterion
     for obligation in (
@@ -703,7 +756,7 @@ def test_shared_compensation_contracts_preserve_the_complete_control_path():
     ):
         assert obligation in criterion
     assert (
-        "Cover compensation explicitly in the existing validation and approval "
+        "For applicable compensation, cover it explicitly in the existing validation and approval "
         "invocation and response contracts"
     ) in criterion
     assert (
@@ -792,6 +845,10 @@ def test_shared_owner_initiation_reaches_connection_author_and_gate():
 
     assert "authorization_and_compensation" in guarantees
     assert generated_input["acceptance_criteria"] == reviewed_criteria
+    assert (
+        "A shared contract carrying the required approved payload and exact-scope decision"
+        in reviewed_criteria["authorization_and_compensation"]
+    )
     assert (
         reviewed_criteria["authorization_and_compensation"]
         == (STAGED_PRODUCTION_REQUIREMENTS["authorization_and_compensation"])
@@ -947,14 +1004,19 @@ def test_reuse_control_details_remain_in_connection_review():
         "Identify the material factual claim or required factual-retrieval dependency",
         "apply this equally to internal and external sources",
         "Outcome-data reads and reuse for evaluation do not establish a factual-retrieval dependency for an unrelated creative generator",
-        "name invalidation and revalidation ownership",
         "Discard rejected/stale artifacts",
         "Failed required factual retrieval must end in clarification, abstention, "
         "or a bounded validated retry",
-        "identity, version, and provenance",
-        "Shortcuts cannot bypass these controls",
     ):
         assert obligation in trust
+    lifecycle = connections["artifact_reuse_lifecycle"]
+    for obligation in (
+        "executable check of access identity and scope",
+        "version and provenance",
+        "invalidation and revalidation ownership",
+        "Shortcuts cannot bypass these controls",
+    ):
+        assert obligation in lifecycle
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -1055,8 +1117,6 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
         trust = reviewed_criteria["retrieval_and_reuse_trust"]
         for obligation in (
             "entailment",
-            "identity, version, and provenance",
-            "invalidation",
             "Failed required factual retrieval",
             "Discard rejected/stale artifacts",
             "candidate explicitly makes example or creative reuse optional",
@@ -1071,6 +1131,7 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
     [
         "audit_and_provenance",
         "retrieval_and_reuse_trust",
+        "artifact_reuse_lifecycle",
         "state_effect_reconciliation",
         "authorization_and_compensation",
     ],
@@ -1078,7 +1139,7 @@ def test_memory_generation_and_review_share_conditional_gate_preservation(
 def test_production_control_change_invalidates_saved_connection_approval(
     monkeypatch, rule_code
 ):
-    guarantees = (rule_code,)
+    guarantees = ("retrieval_and_reuse_trust" if rule_code == "artifact_reuse_lifecycle" else rule_code,)
     current = gate.review_identity("connections", "production", guarantees)
 
     def changed_requirements(stage, depth, required=()):
@@ -1120,9 +1181,7 @@ def test_streaming_guidance_is_absent_from_staged_blocking_schema(stage, maturit
     )
     requirements = staged_review_requirements(stage, maturity, guarantees)
     schema = gate._response_schema(rule_codes=tuple(requirements), record_count=0)
-    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-        "enum"
-    ]
+    codes = schema["properties"]["rule_reviews"]["required"]
 
     assert "streaming_integrity" not in requirements
     assert "streaming_integrity" not in codes
@@ -1201,14 +1260,25 @@ def test_retrieval_applicability_is_shared_by_generation_and_review(stage, behav
     rule = generated[field]["retrieval_and_reuse_trust"]
     assert rule == STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
     assert json.dumps(rule)[1:-1] in reviewed
+    for trust_boundary in (
+        "The candidate must explicitly declare that its consuming runtime treats retrieved or recalled bytes as untrusted data",
+        "Cite a compatible owning responsibility or input contract",
+        "Assumptions alone do not establish that runtime behavior",
+        "Access, scope, freshness and factual-claim checks do not themselves establish that input trust boundary",
+        "The reviewing model's treatment of supplied source evidence does not establish a control in the candidate runtime",
+    ):
+        assert trust_boundary in rule
+    lifecycle = generated[field]["artifact_reuse_lifecycle"]
+    assert lifecycle == STAGED_PRODUCTION_REQUIREMENTS["artifact_reuse_lifecycle"]
+    assert "Supplying requester identity in a request does not establish its executable check" in lifecycle
+    assert "scope or stale-artifact refusal alone does not establish identity checking" in lifecycle
+    assert json.dumps(lifecycle)[1:-1] in reviewed
     for boundary in (
         "Establish applicability separately for each obligation",
         "generic retriever or tool mention does not establish reusable artifacts or a factual-answer dependency",
-        "For a declared path that consumes retrieved bytes",
+        "For each declared path that consumes retrieved bytes",
         "Identify the material factual claim or required factual-retrieval dependency",
-        "artifact reused across requests or releases and its consuming path",
         "A factual RAG answer activates claim validation",
-        "a private answer cache reused across requests activates access",
         "overview label does not exempt declared behavior",
         "fresh generation through the same validation and approval controls",
     ):
@@ -1391,11 +1461,15 @@ def test_shared_validation_review_preserves_owner_and_contract_evidence(
     for obligation in (
         "named compatible owner may perform this deterministic validation internally",
         "responsibility or a connection contract",
-        "covered producer, proposal structure and allowed constraints",
+        "covered producer, action path, proposal structure and allowed constraints",
         "validation before approval or execution",
         "does not need duplicate wording in the owner's responsibility",
         "vague 'validate' label without an executable owner, deterministic checks, and pre-execution order is insufficient",
         "Validation of one producer does not establish validation of another",
+        "every model-proposed action path, including read-only tools, internal tools, and code execution",
+        "as the producer, dispatcher, or executor when it declares that path's checks before approval or execution and preserves validated dispatch to any separate executor",
+        "For a separate validator, trace the actual proposal invocation and validated result",
+        "write-only validation invocation or broad validator responsibility does not establish validation of another action path from the same producer",
     ):
         assert obligation in criterion
 
@@ -1418,7 +1492,7 @@ def test_action_validation_policy_changes_production_identity_only(
             requirements["audit_and_provenance"] = requirements[
                 "audit_and_provenance"
             ].replace(
-                "A named compatible owner may perform this deterministic validation internally. ",
+                "A named compatible owner may perform this deterministic validation internally as the producer, dispatcher, or executor when it declares that path's checks before approval or execution and preserves validated dispatch to any separate executor. ",
                 "",
             )
         return requirements
@@ -1427,6 +1501,555 @@ def test_action_validation_policy_changes_production_identity_only(
     assert (gate.review_identity(stage, maturity, guarantees) != current) is (
         maturity == "production"
     )
+
+
+def test_production_claim_checking_requires_component_owner_before_connections():
+    prototype = staged_review_requirements("components", "prototype")
+    production = staged_review_requirements("components", "production")
+
+    assert prototype.keys() == production.keys()
+    ownership = production["mece_scope"]
+    for requirement in (
+        "When retrieved evidence supports material factual claims in generated answers",
+        "explicitly owns checking those claims against the evidence before delivery or reuse",
+        "Grounded generation and citations alone do not establish claim checking",
+        "A compatible existing owner may perform the check",
+        "assign the consuming runtime ownership of clarification, abstention or bounded validated retry",
+        "Artifact-owner refusal alone does not establish that consumer outcome",
+        "invocation contracts and failure paths belong to connection review",
+        "optional creative examples or evaluation-only reuse",
+    ):
+        assert requirement in ownership
+        assert requirement not in prototype["mece_scope"]
+    assert "retrieval_and_reuse_trust" not in production
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_component_generation_declares_factual_check_owner_only_at_production(maturity):
+    prompt, _ = generation._attempt_prompt(
+        stage="components",
+        request="Build a tutor whose factual answers use approved course notes.",
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=8, edge_limit=16),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Approved course notes support the requested tutor.",
+    )
+    requirement = (
+        "explicitly declare the component responsibility that checks those claims "
+        "against the evidence before delivery or reuse"
+    )
+    assert (requirement in prompt) is (maturity == "production")
+    controls = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert controls["request"] == "Build a tutor whose factual answers use approved course notes."
+    trust_ownership = "For each component's declared consumption of retrieved, recalled or relayed external, model or user content"
+    assert (trust_ownership in prompt) is (maturity == "production")
+    if maturity == "production":
+        criteria = controls["acceptance_criteria"]
+        assert trust_ownership in criteria["brief_coverage"]
+        assert "only when their consumption is declared" in criteria["brief_coverage"]
+        assert "internal owner's own freshly computed control decisions, numerical aggregates and acknowledgments" in criteria["brief_coverage"]
+        assert "Copied or relayed external, model or user content retains its provenance" in criteria["brief_coverage"]
+        assert "Do not infer consumption or reusable lifetime from an artifact mention" in criteria["brief_coverage"]
+        assert "assign the consuming runtime ownership" in criteria["mece_scope"]
+        review = gate._prompt(
+            gate="components", user_request=controls["request"], resolved_maturity=maturity,
+            candidate_records=[], evidence_bundle={}, required_production_guarantees=(),
+        )
+        review_criteria = json.loads(review.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+        assert review_criteria == criteria
+
+        assert "Reuse a compatible existing owner" in prompt
+        assert "optional creative examples or evaluation-only reuse" in prompt
+
+
+def test_claim_entailment_checks_preserve_action_validation_and_failed_retrieval():
+    trust = STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
+    assert "Check material generated factual claims against the retrieved evidence for entailment" in trust
+    assert "Grounded generation and citations alone do not establish this check" in trust
+    assert "without requiring proof that the source itself is true" in trust
+    assert "Do not require deterministic semantic entailment unless the user requests it" in trust
+    assert "mechanically verifiable structure and action-constraint checks retain their deterministic requirements" in trust
+    assert "Failed required factual retrieval must end in clarification, abstention, or a bounded validated retry" in trust
+    assert "deterministically validates those proposals' structure and allowed constraints" in (
+        STAGED_PRODUCTION_REQUIREMENTS["audit_and_provenance"]
+    )
+
+
+@pytest.mark.parametrize("creates_approval", [False, True])
+def test_relay_review_preserves_received_evidence_and_decision_ownership(creates_approval):
+    records = [
+        {"source": "prompt_builder", "target": "model",
+         "label": "Augmented prompt with retrieved source passages"},
+        {"source": "model", "target": "presenter", "label": (
+            "Approve the action" if creates_approval else
+            "Forward generated answer with already received source passages"
+        )},
+    ]
+    prompt = gate._prompt(
+        gate="connections", user_request="Show the model delivery path",
+        evidence_bundle={"candidate_components": [
+            {"id": "model", "description": "Generate answers using augmented context"}
+        ]}, resolved_maturity="prototype", candidate_records=records,
+        required_production_guarantees=(),
+    )
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert "An intermediary may forward already received data" in prompt
+    assert "does not authorize a consumer to create a policy or approval decision" in prompt
+    assert "substitute generated citations for canonical source data" in prompt
+
+
+@pytest.mark.parametrize("read_path", ["bypass", "separate_validator", "internal_validator", "producer_validator"])
+def test_action_path_review_preserves_read_and_write_validation_evidence(read_path):
+    components = [
+        {"id": "planner", "responsibility": "Proposes read and write tool calls."},
+        {"id": "validator", "responsibility": "Deterministically checks proposal structure and allowed constraints."},
+        {"id": "executor", "responsibility": "Executes approved calls."},
+    ]
+    records = [
+        {"source": "planner", "target": "validator", "label": "Submit write proposal for checks"},
+        {"source": "validator", "target": "planner", "label": "Return validated write proposal"},
+        {"source": "planner", "target": "executor", "label": "Execute validated write proposal"},
+        {"source": "planner", "target": "executor", "label": "Execute proposed read"},
+    ]
+    if read_path == "separate_validator":
+        records[3:3] = [
+            {"source": "planner", "target": "validator", "label": "Submit read proposal for deterministic structure and allowed-constraint checks"},
+            {"source": "validator", "target": "planner", "label": "Return validated read proposal before execution"},
+        ]
+        records[-1]["label"] = "Execute validated read proposal"
+    elif read_path == "internal_validator":
+        components[-1]["responsibility"] += " Deterministically validates read proposal structure and allowed constraints internally before execution."
+    elif read_path == "producer_validator":
+        components[0]["responsibility"] += " Deterministically validates read proposal structure and allowed constraints internally before dispatch."
+        records[-1]["label"] = "Dispatch validated read proposal to separate executor"
+        assert records[-1]["source"] == "planner"
+        assert records[-1]["target"] == "executor"
+        assert not any(record["source"] == record["target"] for record in records)
+    prompt = gate._prompt(
+        gate="connections", user_request="Review all tool action paths",
+        evidence_bundle={"candidate_components": components},
+        resolved_maturity="production", candidate_records=records,
+        required_production_guarantees=("audit_and_provenance",),
+    )
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert "every model-proposed action path, including read-only tools" in prompt
+    assert "write-only validation invocation or broad validator responsibility" in prompt
+    assert "as the producer, dispatcher, or executor when it declares that path's checks before approval or execution and preserves validated dispatch to any separate executor" in prompt
+    assert "trace the actual proposal invocation and validated result" in prompt
+
+
+@pytest.mark.parametrize("reversed_owner", [False, True])
+def test_lookup_review_identifies_payload_owner_before_request_reply_pairing(reversed_owner):
+    consumer, owner = "reviewer", "measurement_recorder"
+    requester, recipient = (owner, consumer) if reversed_owner else (consumer, owner)
+    records = [
+        {"source": requester, "target": recipient, "label": "Request recorded measurements"},
+        {"source": recipient, "target": requester, "label": "Return recorded measurements"},
+    ]
+    evidence = {"candidate_components": [
+        {"id": consumer, "responsibility": "Consumes measurements to review evaluation outcomes."},
+        {"id": owner, "responsibility": "Produces and stores authoritative measurement records."},
+    ], "connection_exchanges": [{"request_record_index": 0, "response_record_index": 1}]}
+    prompt = gate._prompt(
+        gate="connections", user_request="Review the measurement lookup",
+        evidence_bundle=evidence, resolved_maturity="production", candidate_records=records,
+        required_production_guarantees=(),
+    )
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    rule = criteria["edge_semantics"]
+    assert "Before pairing, identify the consumer needing each payload" in rule
+    assert "receiving a request does not give a consumer authority to produce owner-held records" in rule
+    assert "An intermediary may forward already received data without owning its original authority" in rule
+    assert "An authoritative owner may deliver directly to multiple compatible consumers" in rule
+
+
+@pytest.mark.parametrize("path", [
+    "write_only", "missing_result", "missing_outcome", "combined", "direct", "delegated", "same_owner",
+    "autonomous", "conceptual",
+])
+def test_operation_coverage_evidence_reaches_connection_author_and_review(path):
+    components = [
+        {"id": "planner", "responsibility": "Produces task outcomes."},
+        {"id": "executor", "responsibility": "Runs search, code, and write operations."},
+        {"id": "tools", "responsibility": "Provides search results, code output, and write status."},
+        {"id": "memory", "responsibility": "Writes new memories after task outcomes."},
+    ]
+    records = [
+        {"source": "executor", "target": "tools", "label": "Execute approved write"},
+        {"source": "tools", "target": "executor", "label": "Return commit status"},
+        {"source": "planner", "target": "memory", "label": "Request prior stored context"},
+    ]
+    if path == "missing_result":
+        records[0]["label"] = "Execute approved search, code, or write operation"
+    if path in {"missing_outcome", "combined", "direct", "delegated", "same_owner", "autonomous"}:
+        records[0]["label"] = "Execute approved search, code, or write operation"
+        records[1]["label"] = "Return search results, code output, or write commit status"
+    if path in {"combined", "direct"}:
+        records[2]["label"] = "Supply new task outcome and request updated context"
+    elif path == "delegated":
+        records += [
+            {"source": "planner", "target": "executor", "label": "Delegate new outcome delivery to memory"},
+            {"source": "executor", "target": "memory", "label": "Deliver delegated new outcome"},
+        ]
+    elif path == "same_owner":
+        components[0]["responsibility"] += " Internally writes memories from its newly produced outcomes."
+        components.pop()
+        records.pop()
+    elif path == "autonomous":
+        components[-1]["responsibility"] += " Autonomously observes newly completed task outcomes from the authoritative run log."
+    elif path == "conceptual":
+        components = [{"id": "adaptation", "responsibility": "Offline parameter adaptation"},
+                      {"id": "inference", "responsibility": "Live inference using adapted parameters"}]
+        records = [{"source": "adaptation", "target": "inference", "label": "Adapted parameters inform inference"}]
+    context = generation.AcceptedContext(
+        assumptions=("Use the requested overview depth.",), external_effects=False,
+        retrieval_or_reuse=False, learning_or_release=False,
+    )
+    prompt, _ = generation._attempt_prompt(
+        stage="connections", request="Show declared operations at overview depth",
+        resolved_maturity="production", write_set=generation.create_write_set(component_limit=4, edge_limit=12),
+        upstream_fingerprint="a" * 64, attempt=0, prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None, structural_findings=[], gate_findings=[],
+        base=None, rejected_candidate=None, accepted_context=context,
+    )
+    reviewed = gate._prompt(
+        gate="connections", user_request="Show declared operations at overview depth",
+        evidence_bundle={"candidate_components": components, "candidate_context": context.prompt_value()},
+        resolved_maturity="production", candidate_records=records, required_production_guarantees=(),
+    )
+    author_rule = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]["runtime_completeness"]
+    review_rule = json.loads(reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])["runtime_completeness"]
+    assert author_rule == review_rule
+    for obligation in (
+        "derive a coverage inventory from all current component responsibilities and connection contracts",
+        "including supporting, feedback and deployment paths",
+        "For declared executable paths, identify each producer and action, consumer and byte origin, and artifact class",
+        "Cite the actual declaration of any cross-request or release reuse lifetime",
+        "recall or curation alone does not establish it",
+        "prior satisfied reasons do not define the inventory",
+        "Preserve trusted-baseline review scope",
+        "state mutation remains within permitted stage and edit fields, without limiting findings to editable records",
+        "Compatible shared or internal owners and contracts remain valid",
+        "Do not invent behavior, capabilities or obligations",
+        "One operation's invocation or status-only reply does not establish another operation",
+        "For each declared read, identify its consumer and authoritative source",
+        "A read from another source or by another consumer does not cover it",
+        "trace the authoritative constraint values to that consumer",
+        "Proposed values, evaluation summaries, or citations alone do not supply the constraints being checked",
+        "New outcome or update data must reach its update owner",
+        "prior stored state may support declared metadata updates but does not supply unrelated new domain or progress data",
+        "Direct, delegated, combined-contract, or declared same-owner internal paths",
+        "Explicit autonomous observation is valid",
+        "Do not require a separate edge or component per operation",
+        "Conceptual maps retain truthful one-way causal or lifecycle relationships",
+    ):
+        assert obligation in review_rule
+    captured = json.loads(reviewed.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert "runtime_completeness" not in staged_review_requirements("components", "production")
+
+
+@pytest.mark.parametrize("explicit_consumer_checks", [False, True])
+def test_reusable_memory_review_preserves_executable_control_evidence(explicit_consumer_checks):
+    components = [
+        {"id": "memory_store", "responsibility": "Stores cross-session memories with provenance and version; entries can be invalidated."},
+        {"id": "memory_consumer", "responsibility": "Recalls relevant memories to assemble task context."},
+    ]
+    if explicit_consumer_checks:
+        components[-1]["responsibility"] += " Checks applicable access identity, version, provenance and validity internally before reuse; rejects stale or rejected memories, treats recalled bytes as untrusted, and invalidates and revalidates entries when their source changes."
+    records = [
+        {"source": "memory_consumer", "target": "memory_store", "label": "Request stored memories"},
+        {"source": "memory_store", "target": "memory_consumer", "label": "Return memories with provenance and version"},
+    ]
+    prompt = gate._prompt(
+        gate="connections", user_request="Use cross-session memory for task context",
+        evidence_bundle={"candidate_components": components}, resolved_maturity="production",
+        candidate_records=records, required_production_guarantees=("retrieval_and_reuse_trust",),
+    )
+    captured = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert captured["candidate_components"] == components
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    lifecycle = criteria["artifact_reuse_lifecycle"]
+    for obligation in (
+        "checks access identity, applicable scope and validity before reuse",
+        "rejects stale or rejected artifacts",
+        "Stored metadata or a capability to invalidate does not establish an invalidation or revalidation operation",
+        "A compatible consumer may own these checks internally without a separate service or edge",
+    ):
+        assert obligation in lifecycle
+    assert "its consuming runtime treats retrieved or recalled bytes as untrusted data" in criteria["retrieval_and_reuse_trust"]
+    assert "learning_and_release" not in criteria
+
+
+@pytest.mark.parametrize("input_path", [
+    "unrelated_consumer", "onward_relay", "metadata_update", "new_progress_from_metadata",
+    "same_owner_produced",
+])
+def test_write_review_preserves_change_input_origin_before_destination(input_path):
+    components = [
+        {"id": "executor", "responsibility": "Produces tool results."},
+        {"id": "reviewer", "responsibility": "Reviews new task outcomes."},
+        {"id": "writer", "responsibility": "Recalls prior entries and records new progress and facts."},
+        {"id": "store", "responsibility": "Stores progress, facts, and access metadata."},
+    ]
+    records = [
+        {"source": "executor", "target": "reviewer", "label": "Deliver new task results"},
+        {"source": "writer", "target": "store", "label": "Request prior entries"},
+        {"source": "store", "target": "writer", "label": "Return prior entries and access metadata"},
+        {"source": "writer", "target": "store", "label": "Write new progress notes and facts"},
+    ]
+    if input_path == "onward_relay":
+        records.insert(3, {"source": "reviewer", "target": "writer", "label": "Forward newly reviewed task outcome for memory update"})
+    elif input_path == "metadata_update":
+        components[2]["responsibility"] = "Recalls prior entries and increments their access count internally from the lookup."
+        records[-1]["label"] = "Write updated access count derived from lookup metadata"
+    elif input_path == "new_progress_from_metadata":
+        components[2]["responsibility"] = "Recalls prior entries and increments their access count internally from the lookup; records new task progress and facts."
+        records[-1]["label"] = "Write new task progress notes and facts"
+    elif input_path == "same_owner_produced":
+        components[2]["responsibility"] += " Internally observes its own task execution and produces new progress facts before writing them."
+    prompt = gate._prompt(
+        gate="connections", user_request="Review memory writes at overview depth",
+        evidence_bundle={"candidate_components": components}, resolved_maturity="production",
+        candidate_records=records, required_production_guarantees=(),
+    )
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["candidate_components"] == components
+    rule = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])["runtime_completeness"]
+    for obligation in (
+        "first cite its supplied or explicitly internally produced change input at the writer before execution",
+        "An outgoing write contract establishes destination, not data origin",
+        "Delivery to another consumer does not supply this writer without an onward contract",
+        "prior stored state may support declared metadata updates but does not supply unrelated new domain or progress data",
+        "Explicit autonomous observation is valid",
+    ):
+        assert obligation in rule
+
+
+@pytest.mark.parametrize("maturity,reuse", [
+    ("prototype", False), ("prototype", True), ("production", False), ("production", True),
+])
+def test_reuse_capability_expands_only_staged_production_review(maturity, reuse):
+    selectors = production_proofs_for_capabilities({
+        "external_effects": False, "retrieval_or_reuse": reuse, "learning_or_release": False,
+    }, maturity=maturity)
+    requirements = staged_review_requirements("connections", maturity, selectors)
+    expected = maturity == "production" and reuse
+    assert ("retrieval_and_reuse_trust" in requirements) == expected
+    assert ("artifact_reuse_lifecycle" in requirements) == expected
+    assert "artifact_reuse_lifecycle" not in selectors
+    assert "artifact_reuse_lifecycle" not in TOPOLOGY_PROOF_REQUIREMENTS
+    assert "artifact_reuse_lifecycle" not in RUBRIC_CRITERIA
+    if expected:
+        codes = list(requirements)
+        assert codes.index("artifact_reuse_lifecycle") == codes.index("retrieval_and_reuse_trust") + 1
+        assert requirements["artifact_reuse_lifecycle"] == STAGED_PRODUCTION_REQUIREMENTS["artifact_reuse_lifecycle"]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("origin", ["missing", "relay", "internal_owner"])
+def test_audit_origin_evidence_and_rule_reach_author_and_reviewer(stage, origin):
+    # Fixtures test retained evidence and shared criteria, not model judgments.
+    components = [
+        {"id": "recall", "responsibility": "Invalidates stale memory entries."},
+        {"id": "writer", "responsibility": "Persists memory and logs writes and checkpoint outcomes."},
+        {"id": "store", "responsibility": "Stores memories and applies invalidation."},
+        {"id": "logs", "responsibility": "Stores audit evidence."},
+    ]
+    records = [
+        {"source": "recall", "target": "store", "label": "Invalidate stale entries"},
+        {"source": "writer", "target": "logs", "label": "Record memory writes, invalidations, and checkpoint outcomes"},
+    ]
+    if origin == "relay":
+        records.insert(1, {"source": "recall", "target": "writer", "label": "Forward invalidation input and outcome for audit"})
+    elif origin == "internal_owner":
+        components[1]["responsibility"] += " Internally owns invalidation and its outcomes before producing audit evidence."
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=False, retrieval_or_reuse=False, learning_or_release=False,
+    )
+    author, _ = generation._attempt_prompt(
+        stage=stage, request="Audit memory invalidation outcomes.", resolved_maturity="production",
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0, prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None, structural_findings=[], gate_findings=[],
+        base=None, rejected_candidate=None, accepted_context=context,
+        architecture_context="Audit memory operations." if stage == "components" else None,
+    )
+    review = gate._prompt(
+        gate=stage, user_request="Audit memory invalidation outcomes.",
+        evidence_bundle={"candidate_components": components}, resolved_maturity="production",
+        candidate_records=components if stage == "components" else records,
+        required_production_guarantees=("audit_and_provenance",),
+    )
+    field = "downstream_controls" if stage == "components" else "acceptance_criteria"
+    author_rule = json.loads(author.split("\nINPUT\n", 1)[1])[field]["audit_and_provenance"]
+    review_field = "downstream_controls: " if stage == "components" else "Acceptance criteria: "
+    review_rule = json.loads(review.split(review_field, 1)[1].split("\n", 1)[0])["audit_and_provenance"]
+    assert author_rule == review_rule == STAGED_PRODUCTION_REQUIREMENTS["audit_and_provenance"]
+    assert "An audit producer must own the recorded operation or receive its material input or outcome through a declared path" in review_rule
+    assert "Naming another owner's event in a log contract does not supply that data" in review_rule
+    evidence = json.loads(review.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["candidate_components"] == components
+    captured = json.loads(review.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == (components if stage == "components" else records)
+    if origin == "relay":
+        assert records[1]["target"] == records[2]["source"] == "writer"
+        assert records[1]["label"] == "Forward invalidation input and outcome for audit"
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("responsibility,label", [
+    ("Persists its own invalidation operation and returns its commit acknowledgment.",
+     "Commit acknowledgment with reason"),
+    ("Stores and returns received user or model text as its commit reason.",
+     "Commit acknowledgment with reason"),
+    ("Computes a fresh numerical aggregate from untrusted metrics.", "Computed aggregate"),
+    ("Computes its own control decision from untrusted observations.", "New control decision"),
+    ("Recalls a stored computed result.", "Stored aggregate"),
+    ("Normalizes external operation status.", "Normalized external status"),
+    ("Retrieves an aggregate computed by an external API.", "External API computed aggregate"),
+    ("Copies or extracts report fields from retrieved evidence.", "Extracted report fields"),
+    ("Recalls stored constraints for evaluation.", "Stored constraint records"),
+    ("Retrieves operation status from an external target.", "Authoritative status: committed"),
+    ("Relays model-produced text received from a tool.", "Received model-produced text"),
+    ("Requests text from a separately declared model provider, checks its claims and uses it.",
+     "Requested provider model text"),
+    ("Executes approved model-produced changes with hash-bound operation IDs; treats platform replies as untrusted.",
+     "Approved model action payload and exact-value identity"),
+    ("Executes approved model-produced changes and treats both action content and platform replies as untrusted.",
+     "Approved model action payload and exact-value identity"),
+    ("Reserves an internal operation ID and consumes only approval metadata; forwards no model or user content.",
+     "Approval decision and operation identity metadata"),
+])
+def test_trust_review_preserves_payload_provenance_without_store_exemptions(
+    stage, responsibility, label,
+):
+    components = [
+        {"id": "owner", "responsibility": responsibility},
+        {"id": "consumer", "responsibility": "Uses the declared returned payload."},
+    ]
+    records = [{"source": "owner", "target": "consumer", "label": label}]
+    prompt = gate._prompt(
+        gate=stage, user_request="Review this payload's declared origin and use.",
+        evidence_bundle={"candidate_components": components},
+        resolved_maturity="production", candidate_records=components if stage == "components" else records,
+        required_production_guarantees=("retrieval_and_reuse_trust",),
+    )
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == (components if stage == "components" else records)
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["candidate_components"] == components
+    review_field = "downstream_controls: " if stage == "components" else "Acceptance criteria: "
+    reviewed = json.loads(prompt.split(review_field, 1)[1].split("\n", 1)[0])
+    trust = reviewed["retrieval_and_reuse_trust"]
+    assert trust == STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
+    assert "own internal control or commit acknowledgment needs no separate untrusted-data declaration unless" in trust
+    assert "An internal store does not exempt recalled records, constraints, configuration, retrieved status" in trust
+    assert "A bounded status enum does not exempt retrieved bytes" in trust
+    assert "retrieval_and_reuse_trust" not in staged_review_requirements("connections", "prototype", ())
+
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=False, retrieval_or_reuse=True, learning_or_release=False,
+    )
+    author, _ = generation._attempt_prompt(
+        stage=stage, request="Review this payload's declared origin and use.",
+        resolved_maturity="production", write_set=generation.create_write_set(component_limit=2, edge_limit=2),
+        upstream_fingerprint="a" * 64, attempt=0, prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None, structural_findings=[], gate_findings=[],
+        base=None, rejected_candidate=None, accepted_context=context,
+        architecture_context="Review declared payload provenance." if stage == "components" else None,
+    )
+    field = "downstream_controls" if stage == "components" else "acceptance_criteria"
+    assert json.loads(author.split("\nINPUT\n", 1)[1])[field]["retrieval_and_reuse_trust"] == trust
+    assert "dependence on untrusted inputs alone does not establish source-byte forwarding" in trust
+    assert "Typing, bounds, validation, approval or hash binding alone do not erase it" in trust
+    assert "Returned text from a separately declared model or provider retains model provenance even when the caller requested it" in trust
+    assert "not the caller's freshly computed internal control decision or numerical aggregate" in trust
+    assert "Durable operation IDs do not change an action payload's origin" in trust
+    assert "Assess consumed model or user action content separately from approval decisions and identity metadata" in trust
+    assert "A computed label alone does not establish a new origin" in trust
+    assert "Retrieving a stored computed result remains a retrieval path" in trust
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("consumer_outcome", [False, True])
+def test_factual_retrieval_failure_preserves_owner_and_consumer_outcome_evidence(stage, consumer_outcome):
+    components = [
+        {"id": "artifact_owner", "responsibility": "Returns source evidence or refuses stale artifacts."},
+        {"id": "answerer", "responsibility": "Checks factual claims against required source evidence before delivery."},
+    ]
+    if consumer_outcome:
+        components[1]["responsibility"] += " Abstains when required retrieval is missing or refused."
+    records = [{"source": "artifact_owner", "target": "answerer", "label": "Evidence or stale artifact refused"}]
+    prompt = gate._prompt(
+        gate=stage, user_request="Answer factual questions using required retrieved evidence.",
+        evidence_bundle={"candidate_components": components}, resolved_maturity="production",
+        candidate_records=components if stage == "components" else records,
+        required_production_guarantees=("retrieval_and_reuse_trust",),
+    )
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["candidate_components"] == components
+    field = "downstream_controls: " if stage == "components" else "Acceptance criteria: "
+    trust = json.loads(prompt.split(field, 1)[1].split("\n", 1)[0])["retrieval_and_reuse_trust"]
+    assert trust == STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
+    assert "An artifact owner's stale result or refusal does not establish that consumer outcome" in trust
+    assert "When the candidate explicitly makes example or creative reuse optional" in trust
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_declared_escalation_policy_matches_authoring_and_review(maturity):
+    request = "Route declared workflow exceptions for human correction and return the decision."
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=False,
+        retrieval_or_reuse=False, learning_or_release=False,
+    )
+    authored, _ = generation._attempt_prompt(
+        stage="connections", request=request, resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0,
+        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+        structural_findings=[], gate_findings=[], base=None,
+        rejected_candidate=None, accepted_components=[], accepted_context=context,
+    )
+    reviewed = gate._prompt(
+        gate="connections", user_request=request,
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity=maturity, candidate_records=[],
+        required_production_guarantees=production_proofs_for_capabilities(
+            context.prompt_value()["capabilities"], maturity=maturity
+        ),
+    )
+    authored_rules = json.loads(authored.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    reviewed_rules = json.loads(reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert authored_rules == reviewed_rules
+    criterion = reviewed_rules["edge_semantics"]
+    shared = RUBRIC_CRITERIA["edge_semantics"][1]
+    escalation = shared[shared.index("Treat declared escalation as an invoked capability."):]
+    assert escalation in criterion
+    for obligation in (
+        "presentation of the applicable exception payload to that owner",
+        "When a declared consumer needs the resulting decision or output to continue work or answer, trace it back to that consumer",
+        "A standalone asynchronous review or alert does not require a return acknowledgment",
+        "A typed terminal exception can close reporting but cannot establish separately promised review, correction, or override",
+        "Direct delivery, explicit forwarding, authoritative persistence with declared reads, or declared same-owner handling",
+        "Do not require human escalation when the request and accepted design do not declare it",
+        "Do not require tool observations for an action that did not run",
+    ):
+        assert obligation in criterion
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -1521,7 +2144,6 @@ def test_declared_approval_scope_is_preserved_in_shared_authoring_and_review_con
             "At the component stage, assess responsibilities and approval scope only"
             in rule
         )
-    # Fresh generation verifies model acceptance.
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])

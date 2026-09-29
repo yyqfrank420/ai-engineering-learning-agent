@@ -546,3 +546,26 @@ def test_uncited_component_cannot_be_reassigned_to_another_service():
             {"allowed_ids": ["n2", "n3"], "addition_count": 0, "removal_count": 0},
         )
     assert caught.value.path == "components.n4"
+
+
+@pytest.mark.parametrize("length", [221, 800])
+def test_responsibility_ceiling_preserves_contract_and_saved_import(length):
+    text = "Records " + "a" * (length - 9) + "."
+    plan = _plan()
+    plan["components"][0]["responsibility"] = text
+    assigned = assign_server_ids(plan)
+    graph = project_graph_data(assigned)
+    assert graph["nodes"][0]["description"] == text
+    rebuilt = reconstruct_staged_graph_build(graph)
+    assert project_graph_data(rebuilt)["nodes"][0]["description"] == text
+
+
+def test_responsibility_ceiling_rejects_contract_and_saved_import_overflow():
+    plan = _plan()
+    plan["components"][0]["responsibility"] = "x" * 801
+    with pytest.raises(GraphContractError):
+        assign_server_ids(plan)
+    graph = project_graph_data(assign_server_ids(_plan()))
+    graph["nodes"][0]["description"] = "x" * 801
+    with pytest.raises(GraphContractError):
+        reconstruct_staged_graph_build(graph)

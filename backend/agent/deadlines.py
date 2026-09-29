@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import math
 import time
 from collections.abc import Callable
 from typing import Any, Literal
@@ -114,11 +115,23 @@ def staged_timeout_seconds(
     phase: Literal["components", "connections"],
     action: Literal["generate", "review"],
     attempt: int,
+    review_max_timeout_s: float | None = None,
 ) -> float:
     if phase not in {"components", "connections"}:
         raise ValueError("phase must be components or connections")
     if action not in {"generate", "review"}:
         raise ValueError("action must be generate or review")
+    if review_max_timeout_s is not None and (
+        phase != "connections"
+        or action != "review"
+        or isinstance(review_max_timeout_s, bool)
+        or not isinstance(review_max_timeout_s, (int, float))
+        or not math.isfinite(review_max_timeout_s)
+        or review_max_timeout_s <= 0
+    ):
+        raise ValueError(
+            "review_max_timeout_s requires a finite positive connection review ceiling"
+        )
     component_phase = phase == "components"
     generation_calls = (
         STAGED_COMPONENT_GENERATION_CALLS
@@ -142,7 +155,15 @@ def staged_timeout_seconds(
     )
     downstream_reserve_s = (
         (review_reserve_s if action == "generate" else 0)
-        + remaining_attempts * (generation_s + review_reserve_s)
+        + remaining_attempts
+        * (
+            (
+                settings.staged_component_correction_reserve_s
+                if component_phase
+                else generation_s
+            )
+            + review_reserve_s
+        )
         + (
             STAGED_CONNECTION_GENERATION_CALLS
             * (settings.staged_connection_timeout_s + review_reserve_s)
@@ -152,12 +173,17 @@ def staged_timeout_seconds(
         + settings.graph_synthesis_timeout_s
         + settings.graph_finalization_reserve_s
     )
+    review_ceiling = (
+        settings.graph_critic_max_timeout_s
+        if review_max_timeout_s is None
+        else review_max_timeout_s
+    )
     return _stage_timeout(
         state,
         max_s=(
             settings.graph_builder_max_timeout_s
             if action == "generate"
-            else settings.graph_critic_max_timeout_s
+            else review_ceiling
         ),
         downstream_reserve_s=downstream_reserve_s,
         stage=f"staged {phase} {action}",

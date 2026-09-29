@@ -1,6 +1,8 @@
 import asyncio
 import base64
+import time
 from io import BytesIO
+from types import SimpleNamespace
 
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -197,6 +199,14 @@ async def test_diagram_evaluation_cleans_pending_correlation_on_timeout_and_canc
 def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
     temp_data_dir, monkeypatch
 ):
+    from agent import deadlines
+
+    clock_s = time.monotonic() + 1_000_000_000.0
+    clock = SimpleNamespace(
+        monotonic=lambda: clock_s, time=time.time, perf_counter=time.perf_counter
+    )
+    monkeypatch.setattr(chat_websocket, "time", clock)
+    monkeypatch.setattr(deadlines, "time", clock)
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
     approved_graph = {
         "version": "approved-v1",
@@ -217,6 +227,7 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
     calls: list[str] = []
     input_graphs: list[dict | None] = []
     terminal_deadlines: list[float] = []
+    deadline_states = []
     approved_baselines: list[dict] = []
     input_contracts: list[dict | None] = []
     approved_contracts: list[dict | None] = []
@@ -238,6 +249,7 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
         calls.append(state["user_message"])
         input_graphs.append(state["graph_data"])
         terminal_deadlines.append(state["terminal_deadline_s"])
+        deadline_states.append((state, asyncio.get_running_loop().time()))
         approved_baselines.append(state["approved_graph_data"])
         input_contracts.append(state["graph_contract"])
         approved_contracts.append(state["approved_graph_contract"])
@@ -311,6 +323,22 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
                 }
             )
             events = _receive_until(socket, "done")
+
+    for state, loop_time in deadline_states:
+        assert state["workflow_started_at_s"] == clock.monotonic()
+        assert loop_time != clock.monotonic()
+        assert deadlines._remaining_seconds(state) == pytest.approx(
+            settings.agent_timeout_s - settings.agent_terminal_headroom_s
+        )
+        assert state["graph_preview_deadline_s"] == pytest.approx(
+            min(
+                clock.monotonic() + settings.graph_preview_timeout_s,
+                state["terminal_deadline_s"],
+            )
+        )
+        assert deadlines._remaining_seconds(
+            {**state, "terminal_deadline_s": clock.monotonic() - 1}
+        ) == 0
 
     assert first_cancelled is True
     assert len(calls) == 2

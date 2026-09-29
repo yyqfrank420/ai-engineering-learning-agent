@@ -929,6 +929,8 @@ class TestFormatResults:
 # ── research_worker_node error resilience ─────────────────────────────────────
 
 
+
+
 class TestResearchWorkerResilience:
     """One search request, actual source evidence, and bounded degradation."""
 
@@ -1388,3 +1390,111 @@ async def test_agent_new_design_with_saved_graph_clarifies_before_any_builder(mo
     assert result["graph_data"] == saved
     assert result["graph_changed"] is False
     assert result["graph_operation"]["status"] == "needs_clarification"
+
+_TUTOR_PROGRESS_EXTENSION = (
+    "Extend this diagram to remember learner progress across devices. "
+    "Preserve the existing course retrieval flow and components. "
+    "Add the smallest storage and identity mechanism needed, and explain only what changed."
+)
+
+
+def test_tutor_progress_extension_preserves_existing_diagram_intent():
+    from agent.complexity import is_graph_extension_request, resolve_graph_operation
+
+    graph = {"design_origin": "applied", "nodes": [
+        {"id": "n1", "label": "Learner web app"},
+        {"id": "n2", "label": "Conversation tutor service"},
+    ]}
+    assert resolve_graph_operation(_TUTOR_PROGRESS_EXTENSION, graph) == "edit"
+    assert resolve_graph_operation(
+        _TUTOR_PROGRESS_EXTENSION, graph, diagram_requested=True
+    ) == "edit"
+    assert is_graph_extension_request(_TUTOR_PROGRESS_EXTENSION, graph)
+
+
+@pytest.mark.parametrize("query", [
+    "Do not extend this graph",
+    "Explain how to add a layer to this graph",
+    "Add a layer and remove this node",
+])
+def test_additive_authority_excludes_negated_explanatory_and_mixed_edits(query):
+    from agent.complexity import is_graph_extension_request
+
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}]}
+    assert not is_graph_extension_request(query, graph)
+
+
+@pytest.mark.asyncio
+async def test_tutor_progress_extension_selects_additive_server_authority(monkeypatch):
+    from agent import graph as module
+
+    class Workflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_intent"] == "edit"
+            assert state["graph_action"] == "extend"
+            return state
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(module, "build_agent_workflow", lambda *args, **kwargs: Workflow())
+    saved = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}], "edges": []}
+    result = await module.run_agent({
+        "send": send, "user_message": _TUTOR_PROGRESS_EXTENSION,
+        "diagram_requested": True, "graph_mode": "on", "graph_data": saved,
+    }, [], [], [])
+    assert result["graph_data"] == saved
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_confirmed_diagram_edit_preserves_saved_graph(monkeypatch):
+    from agent import graph as module
+
+    def forbidden(*_args, **_kwargs):
+        raise AssertionError("ambiguous intent must not reach generation")
+
+    emitted = []
+
+    async def send(event):
+        emitted.append(event)
+
+    monkeypatch.setattr(module, "build_agent_workflow", forbidden)
+    saved = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}], "edges": []}
+    result = await module.run_agent({
+        "send": send, "user_message": "A different approach?",
+        "diagram_requested": True, "graph_mode": "on", "graph_data": saved,
+    }, [], [], [])
+    assert result["graph_data"] == saved
+    assert result["graph_changed"] is False
+    assert result["graph_operation"]["status"] == "needs_clarification"
+    assert emitted == [{"type": "response_delta", "content": result["response_text"]}]
+
+
+def test_new_design_intent_precedes_contextual_extension_language():
+    from agent.complexity import is_graph_extension_request, resolve_graph_operation
+
+    graph = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}]}
+    query = "Design a new weather prediction architecture and extend this diagram with forecasts."
+    assert resolve_graph_operation(query, graph) == "create"
+    assert not is_graph_extension_request(query, graph)
+
+
+@pytest.mark.asyncio
+async def test_explicit_extension_action_preserves_additive_authority(monkeypatch):
+    from agent import graph as module
+
+    class Workflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_action"] == "extend"
+            assert state["graph_intent"] == "edit"
+            return state
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(module, "build_agent_workflow", lambda *args, **kwargs: Workflow())
+    saved = {"design_origin": "applied", "nodes": [{"id": "n1", "label": "Saved"}], "edges": []}
+    await module.run_agent({
+        "send": send, "user_message": "Explain this diagram",
+        "graph_action": "extend", "graph_mode": "on", "graph_data": saved,
+    }, [], [], [])

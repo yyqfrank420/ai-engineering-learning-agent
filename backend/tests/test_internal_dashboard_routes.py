@@ -3,7 +3,9 @@ import pytest
 import api.internal_dashboard_route as dashboard
 
 
-def _event(event_type: str, *, actor: str = "anon-1", ts: float = 1000.0, properties=None):
+def _event(
+    event_type: str, *, actor: str = "anon-1", ts: float = 1000.0, properties=None
+):
     return {
         "event_type": event_type,
         "anonymous_id": actor,
@@ -23,7 +25,17 @@ def _http(path: str, status: int, latency: int, *, ts: float = 1000.0, metadata=
     }
 
 
-def _llm(operation: str, provider: str, model: str, *, ts: float = 1000.0, fallback=False, status="success", duration=100, metadata=None):
+def _llm(
+    operation: str,
+    provider: str,
+    model: str,
+    *,
+    ts: float = 1000.0,
+    fallback=False,
+    status="success",
+    duration=100,
+    metadata=None,
+):
     return {
         "operation": operation,
         "provider": provider,
@@ -36,7 +48,15 @@ def _llm(operation: str, provider: str, model: str, *, ts: float = 1000.0, fallb
     }
 
 
-def _analytics(event_name: str, event_category: str, *, ts: float = 1000.0, value=None, properties=None, request_id="r1"):
+def _analytics(
+    event_name: str,
+    event_category: str,
+    *,
+    ts: float = 1000.0,
+    value=None,
+    properties=None,
+    request_id="r1",
+):
     return {
         "event_name": event_name,
         "event_category": event_category,
@@ -66,39 +86,87 @@ def dashboard_data(monkeypatch):
         _event("otp_verified", actor="user-1", ts=now - 80),
         _event("prepare_clicked", actor="user-1", ts=now - 70),
         _event("prepare_succeeded", actor="user-1", ts=now - 60),
-        _event("chat_sent", actor="user-1", ts=now - 50, properties={"complexity": "deep", "graph_mode": "on", "research_enabled": True}),
+        _event(
+            "chat_sent",
+            actor="user-1",
+            ts=now - 50,
+            properties={
+                "complexity": "deep",
+                "graph_mode": "on",
+                "research_enabled": True,
+            },
+        ),
         _event("chat_stream_completed", actor="user-1", ts=now - 40),
-        _event("chat_sent", actor="user-2", ts=now - 30, properties={"complexity": "auto", "graph_mode": "auto", "research_enabled": False}),
+        _event(
+            "chat_sent",
+            actor="user-2",
+            ts=now - 30,
+            properties={
+                "complexity": "auto",
+                "graph_mode": "auto",
+                "research_enabled": False,
+            },
+        ),
         _event("chat_stream_failed", actor="user-2", ts=now - 20),
         _event("chat_stopped", actor="user-2", ts=now - 10),
         _event("search_tool_requested", actor="user-2", ts=now - 5),
     ]
     http_logs = [
-        _http("/api/chat", 200, 1200, ts=now - 50, metadata={"request_id": "r1", "trace_id": "t1"}),
-        _http("/api/chat", 500, 2400, ts=now - 20, metadata={"request_id": "r2", "trace_id": "t2", "client_request_id": "c2"}),
+        _http(
+            "/api/chat",
+            200,
+            1200,
+            ts=now - 50,
+            metadata={"request_id": "r1", "trace_id": "t1"},
+        ),
+        _http(
+            "/api/chat",
+            500,
+            2400,
+            ts=now - 20,
+            metadata={"request_id": "r2", "trace_id": "t2", "client_request_id": "c2"},
+        ),
         _http("/health", 200, 15, ts=now - 5),
     ]
     llm_rows = [
         _llm("synthesis", "anthropic", "claude", ts=now - 50, duration=900),
-        _llm("synthesis", "openai", "gpt", ts=now - 20, fallback=True, status="error", duration=1300, metadata={"request_id": "r2", "trace_id": "t2"}),
+        _llm(
+            "synthesis",
+            "openai",
+            "gpt",
+            ts=now - 20,
+            fallback=True,
+            status="error",
+            duration=1300,
+            metadata={"request_id": "r2", "trace_id": "t2"},
+        ),
         _llm("routing", "anthropic", "claude", ts=now - 10, duration=100),
     ]
     analytics_rows = [
         _analytics("stream_first_token", "stream", ts=now - 50, value=320),
-        _analytics("stream_first_token", "stream", ts=now - 20, value=900, request_id="r2"),
+        _analytics(
+            "stream_first_token", "stream", ts=now - 20, value=900, request_id="r2"
+        ),
         _analytics(
             "stream_completed",
             "stream",
             ts=now - 40,
             value=1400,
-            properties={"output_type": "chat_response", "graph_emitted": True, "retrieval_relevance": "strong"},
+            properties={
+                "output_type": "chat_response",
+                "graph_emitted": True,
+                "retrieval_relevance": "strong",
+            },
         ),
         _analytics(
             "retrieval_quality",
             "quality_score",
             ts=now - 30,
             value=0.3,
-            properties={"score_name": "retrieval_relevance", "retrieval_relevance": "weak"},
+            properties={
+                "score_name": "retrieval_relevance",
+                "retrieval_relevance": "weak",
+            },
             request_id="r3",
         ),
         _analytics(
@@ -111,14 +179,43 @@ def dashboard_data(monkeypatch):
     ]
 
     monkeypatch.setattr(dashboard.time, "time", lambda: now)
-    monkeypatch.setattr(dashboard, "list_recent_product_analytics_events", lambda since_epoch: [row for row in events if row["created_at_epoch"] >= since_epoch])
-    monkeypatch.setattr(dashboard, "list_recent_http_request_logs", lambda since_epoch: [row for row in http_logs if row["created_at_epoch"] >= since_epoch])
-    monkeypatch.setattr(dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row for row in llm_rows if row["created_at_epoch"] >= since_epoch])
-    monkeypatch.setattr(dashboard, "list_recent_analytics_events", lambda since_epoch, event_category=None: [
-        row for row in analytics_rows
-        if row["created_at_epoch"] >= since_epoch and (event_category is None or row["event_category"] == event_category)
-    ])
-    return {"events": events, "http_logs": http_logs, "llm_rows": llm_rows, "analytics_rows": analytics_rows}
+    monkeypatch.setattr(
+        dashboard,
+        "list_recent_product_analytics_events",
+        lambda since_epoch: [
+            row for row in events if row["created_at_epoch"] >= since_epoch
+        ],
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "list_recent_http_request_logs",
+        lambda since_epoch: [
+            row for row in http_logs if row["created_at_epoch"] >= since_epoch
+        ],
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "list_recent_llm_telemetry",
+        lambda since_epoch: [
+            row for row in llm_rows if row["created_at_epoch"] >= since_epoch
+        ],
+    )
+    monkeypatch.setattr(
+        dashboard,
+        "list_recent_analytics_events",
+        lambda since_epoch, event_category=None: [
+            row
+            for row in analytics_rows
+            if row["created_at_epoch"] >= since_epoch
+            and (event_category is None or row["event_category"] == event_category)
+        ],
+    )
+    return {
+        "events": events,
+        "http_logs": http_logs,
+        "llm_rows": llm_rows,
+        "analytics_rows": analytics_rows,
+    }
 
 
 @pytest.mark.asyncio
@@ -142,11 +239,19 @@ async def test_dashboard_overview_computes_kpis(dashboard_data):
 
 
 @pytest.mark.asyncio
-async def test_dashboard_trends_buckets_events_latency_and_provider_usage(dashboard_data):
-    payload = await dashboard.dashboard_trends(bucket="hour", _user={"email": "admin@example.com"})
+async def test_dashboard_trends_buckets_events_latency_and_provider_usage(
+    dashboard_data,
+):
+    payload = await dashboard.dashboard_trends(
+        bucket="hour", _user={"email": "admin@example.com"}
+    )
 
     assert payload["bucket"] == "hour"
-    non_empty = [point for point in payload["points"] if point["chat_sent"] or point["chat_failed"] or point["provider_usage"]]
+    non_empty = [
+        point
+        for point in payload["points"]
+        if point["chat_sent"] or point["chat_failed"] or point["provider_usage"]
+    ]
     assert len(non_empty) == 1
     point = non_empty[0]
     assert point["chat_sent"] == 2
@@ -192,8 +297,12 @@ async def test_dashboard_failures_shapes_operational_debug_payloads(dashboard_da
 
 
 @pytest.mark.asyncio
-async def test_dashboard_llm_performance_groups_by_operation_provider_model(dashboard_data):
-    payload = await dashboard.dashboard_llm_performance(_user={"email": "admin@example.com"})
+async def test_dashboard_llm_performance_groups_by_operation_provider_model(
+    dashboard_data,
+):
+    payload = await dashboard.dashboard_llm_performance(
+        _user={"email": "admin@example.com"}
+    )
 
     operations = {
         (row["operation"], row["provider"], row["model"]): row
@@ -227,6 +336,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 "cache_creation_input_tokens": 1_024,
                 "cache_read_input_tokens": 2_048,
                 "output_tokens": 5,
+                "web_search_requests": 0,
                 "system_chars": 120,
                 "message_chars": 56,
                 "schema_chars": 0,
@@ -244,6 +354,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                         "cache_creation_input_tokens": 1_024,
                         "cache_read_input_tokens": 2_048,
                         "output_tokens": 5,
+                        "web_search_requests": 0,
                         "queue_wait_ms": 23,
                         "duration_ms": 100,
                         "first_reasoning_delta_ms": 37,
@@ -257,7 +368,9 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
         | {"thread_id": "thread-1"},
         _llm("routing", "openai", "gpt") | {"thread_id": "another-thread"},
     ]
-    monkeypatch.setattr(dashboard, "list_recent_llm_telemetry", lambda since_epoch: rows)
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: rows
+    )
 
     payload = await dashboard.dashboard_eval_telemetry(
         since_epoch=900,
@@ -284,6 +397,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 "cache_creation_input_tokens": 1_024,
                 "cache_read_input_tokens": 2_048,
                 "output_tokens": 5,
+                "web_search_requests": 0,
                 "system_chars": 120,
                 "message_chars": 56,
                 "schema_chars": 0,
@@ -299,6 +413,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                         "cache_creation_input_tokens": 1_024,
                         "cache_read_input_tokens": 2_048,
                         "output_tokens": 5,
+                        "web_search_requests": 0,
                         "queue_wait_ms": 23,
                         "duration_ms": 100,
                         "first_reasoning_delta_ms": 37,
@@ -500,12 +615,20 @@ async def test_eval_telemetry_preserves_unknown_usage_in_cost_accounting(
 async def test_dashboard_self_improvement_surfaces_latency_scores_and_errors(
     dashboard_data,
 ):
-    payload = await dashboard.dashboard_self_improvement(_user={"email": "admin@example.com"})
+    payload = await dashboard.dashboard_self_improvement(
+        _user={"email": "admin@example.com"}
+    )
 
     assert payload["window_days"] == 7
     assert payload["queues"]["slow_first_token"][0]["latency_ms"] == 900
-    assert payload["queues"]["low_quality_scores"][0]["score_name"] == "retrieval_relevance"
-    assert payload["queues"]["recent_operational_errors"][0]["event_name"] == "stream_failed"
+    assert (
+        payload["queues"]["low_quality_scores"][0]["score_name"]
+        == "retrieval_relevance"
+    )
+    assert (
+        payload["queues"]["recent_operational_errors"][0]["event_name"]
+        == "stream_failed"
+    )
     assert payload["output_shapes"] == [
         {"label": "chat_response / graph:True / retrieval:strong", "count": 1}
     ]
@@ -618,3 +741,205 @@ async def test_eval_native_search_accounting_survives_sanitized_dashboard_endpoi
     assert accounting["total"]["estimated_usd"] == (
         pytest.approx(count * 0.002) if complete else None
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "count,expected,complete",
+    [(2, 2, True), (-1, 0, False), ("2", 0, False), (True, 0, False), (None, 0, False)],
+)
+async def test_eval_telemetry_sanitizes_web_search_counts(
+    monkeypatch, count, expected, complete
+):
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "usage_complete": True,
+        "web_search_requests": count,
+    }
+    row = _llm(
+        "research",
+        "anthropic",
+        "claude-sonnet-5-5",
+        metadata={**usage, "attempts": [usage]},
+    ) | {"thread_id": "thread-1"}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread-1"], _user={"email": "admin@example.com"}
+    )
+    call = payload["calls"][0]
+    assert call["web_search_requests"] == expected
+    assert call["usage_complete"] is complete
+    assert call["attempts"][0]["web_search_requests"] == expected
+    assert call["attempts"][0]["usage_complete"] is complete
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count,native", [(0, False), (2, False), (2, True)])
+async def test_eval_anthropic_counts_do_not_imply_standalone_search(
+    monkeypatch, count, native
+):
+    usage = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5-5",
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "usage_complete": True,
+        "web_search_requests": count,
+        **({"web_search": True} if native else {}),
+    }
+    row = _llm(
+        "research",
+        "anthropic",
+        "claude-sonnet-5-5",
+        metadata={**usage, "attempts": [usage]},
+    ) | {"thread_id": "thread"}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread"], _user={"email": "admin@example.com"}
+    )
+    call = payload["calls"][0]
+    assert (call.get("web_search") is True) is native
+    assert call["web_search_requests"] == count
+    assert call["attempts"][0]["web_search_requests"] == count
+    assert call["usage_complete"] is True
+    assert "web_search_usage_complete" not in call
+    from eval.cost_gate import account_application_cost
+
+    cost = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], payload["calls"]
+    )
+    assert cost["status"] == "pass"
+    assert cost["total"]["estimated_usd"] == pytest.approx(count * 0.01 + 0.00007)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,fallback,expected",
+    [
+        (None, False, "pass"),
+        ("moonshot", False, "pass"),
+        ("anthropic", False, "infrastructure"),
+        ("openai", False, "infrastructure"),
+        ("unknown", False, "infrastructure"),
+        (None, True, "infrastructure"),
+    ],
+)
+async def test_eval_standalone_attempt_provider_inheritance_is_bounded(
+    monkeypatch, provider, fallback, expected
+):
+    attempt = {
+        "model": "moonshot-web-search-basic",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "web_search_requests": 1,
+        "web_search_usage_complete": True,
+        "usage_complete": True,
+        **({"provider": provider} if provider is not None else {}),
+    }
+    row = _llm(
+        "web_research",
+        "moonshot",
+        "moonshot-web-search-basic",
+        metadata={**attempt, "web_search": True, "attempts": [attempt]},
+    ) | {"thread_id": "thread", "used_fallback": fallback}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread"], _user={"email": "admin@example.com"}
+    )
+    from eval.cost_gate import account_application_cost
+
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], payload["calls"]
+    )
+    assert accounting["status"] == expected
+    assert accounting["total"]["estimated_usd"] == (
+        pytest.approx(0.002) if expected == "pass" else None
+    )
+    assert payload["calls"][0]["attempts"][0]["provider"] == (
+        provider or ("unknown" if fallback else "moonshot")
+    )
+
+
+@pytest.mark.asyncio
+async def test_eval_unknown_standalone_aggregate_preserves_known_attempt_subtotal(
+    monkeypatch,
+):
+    attempt = {
+        "provider": "moonshot",
+        "model": "moonshot-web-search-basic",
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "usage_complete": True,
+        "web_search_requests": 1,
+        "web_search_usage_complete": True,
+    }
+    row = _llm(
+        "web_research",
+        "moonshot",
+        "moonshot-web-search-basic",
+        metadata={
+            "web_search": True,
+            "web_search_requests": None,
+            "web_search_usage_complete": False,
+            "attempts": [attempt],
+        },
+    ) | {"thread_id": "thread"}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread"], _user={"email": "admin@example.com"}
+    )
+    call = payload["calls"][0]
+    assert call["web_search_requests"] is None
+    assert call["web_search_usage_complete"] is False
+    assert call["usage_complete"] is False
+    from eval.cost_gate import account_application_cost
+
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], payload["calls"]
+    )
+    assert accounting["usage_complete"] is False
+    assert accounting["total"]["estimated_usd"] is None
+    assert accounting["total"]["known_subtotal_usd"] == pytest.approx(0.002)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "provider,model",
+    [("moonshot", "kimi-k3"), ("openai", "gpt-5.4"), ("openai", "claude-sonnet-5-5")],
+)
+async def test_eval_incompatible_native_search_flag_cannot_certify_zero_fee(
+    monkeypatch, provider, model
+):
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "usage_complete": True,
+        "web_search": True,
+        "web_search_requests": 0,
+    }
+    row = _llm("research", provider, model, metadata=usage) | {"thread_id": "thread"}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread"], _user={"email": "admin@example.com"}
+    )
+    call = payload["calls"][0]
+    assert "web_search" not in call
+    assert call["usage_complete"] is False
+    from eval.cost_gate import account_application_cost
+
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], payload["calls"]
+    )
+    assert accounting["usage_complete"] is False
+    assert accounting["total"]["estimated_usd"] is None

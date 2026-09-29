@@ -11,6 +11,9 @@ from typing import Any, Literal
 PRICE_RELEASE = "2026-10-01"
 WEB_SEARCH_MODEL = "moonshot-web-search-basic"
 WEB_SEARCH_PRICE_USD_PER_REQUEST = 0.002
+# https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+# Verified 2026-10-01: $10 per 1,000 searches, charged in addition to tokens.
+ANTHROPIC_WEB_SEARCH_PRICE_USD = 0.01
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
     WEB_SEARCH_MODEL: (0.0, 0.0),
@@ -164,27 +167,59 @@ def account_application_cost(
             invalid_cases.add(case_id)
             invalid_operations.add((case_id, operation))
             continue
+        aggregate_search_requests = call.get("web_search_requests", 0)
+        if type(aggregate_search_requests) is not int or aggregate_search_requests < 0:
+            errors.append(f"application call {call_index} has invalid web-search usage")
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
+        elif (
+            "web_search_requests" in call
+            and call.get("usage_complete") is not False
+            and all(
+                type(attempt.get("web_search_requests", 0)) is int
+                and attempt.get("web_search_requests", 0) >= 0
+                for attempt in attempts
+            )
+            and aggregate_search_requests
+            != sum(attempt.get("web_search_requests", 0) for attempt in attempts)
+        ):
+            errors.append(
+                f"application call {call_index} has inconsistent web-search usage"
+            )
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
+        if call.get("usage_complete") is False and all(
+            attempt.get("usage_complete") is not False
+            and "incomplete_usage" not in str(attempt.get("status") or "")
+            for attempt in attempts
+        ):
+            incomplete_attempts.append(
+                f"application call {call_index} has incomplete aggregate usage"
+            )
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
         for attempt_index, attempt in enumerate(attempts, start=1):
             model = str(attempt.get("model") or "")
-            search_incomplete = False
+            standalone_search = model == WEB_SEARCH_MODEL
+            count = attempt.get("web_search_requests")
+            search_incomplete = (
+                (
+                    standalone_search
+                    and not (
+                        type(count) is int
+                        and count in (0, 1)
+                        and attempt.get("web_search_usage_complete") is True
+                    )
+                )
+                or (native_search and count is None)
+                or attempt.get("web_search_usage_complete") is False
+            )
             if (
-                model == WEB_SEARCH_MODEL
+                standalone_search
                 or native_search
                 or "web_search_requests" in attempt
                 or "web_search_usage_complete" in attempt
             ):
-                count = attempt.get("web_search_requests")
-                valid_count = type(count) is int and count in (0, 1)
-                search_incomplete = not (
-                    model == WEB_SEARCH_MODEL
-                    and valid_count
-                    and attempt.get("web_search_usage_complete") is True
-                )
-                fee = (
-                    count * WEB_SEARCH_PRICE_USD_PER_REQUEST
-                    if not search_incomplete
-                    else 0.0
-                )
                 for target in (operation_usage, per_case[case_id], total):
                     target.setdefault("web_search_requests", 0)
                     target.setdefault("web_search_estimated_usd", 0.0)
@@ -192,10 +227,6 @@ def account_application_cost(
                         target.get("web_search_usage_complete", True)
                         and not search_incomplete
                     )
-                    if not search_incomplete:
-                        target["web_search_requests"] += count
-                        target["web_search_estimated_usd"] += fee
-                        target["estimated_usd"] += fee
             if (
                 search_incomplete
                 or attempt.get("usage_complete") is False
@@ -216,6 +247,34 @@ def account_application_cost(
             if price is None:
                 errors.append(
                     f"application call {call_index} attempt {attempt_index} uses unpriced model {model!r}"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
+                continue
+            web_search_requests = (
+                0
+                if standalone_search and search_incomplete
+                else attempt.get("web_search_requests", 0)
+            )
+            if type(web_search_requests) is not int or web_search_requests < 0:
+                errors.append(
+                    f"application call {call_index} attempt {attempt_index} has invalid web-search usage"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
+                continue
+            if (
+                standalone_search and attempt.get("provider") not in (None, "moonshot")
+            ) or (
+                not standalone_search
+                and (web_search_requests or native_search)
+                and (
+                    attempt.get("provider") != "anthropic"
+                    or not model.startswith("claude-")
+                )
+            ):
+                errors.append(
+                    f"application call {call_index} attempt {attempt_index} has unsupported web-search pricing"
                 )
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
@@ -290,6 +349,11 @@ def account_application_cost(
                 if _MODEL_VERSION_SUFFIX.sub("", model) == "claude-opus-5-5"
                 else CACHE_READ_INPUT_PRICE_MULTIPLIER
             )
+            search_fee = web_search_requests * (
+                WEB_SEARCH_PRICE_USD_PER_REQUEST
+                if standalone_search
+                else ANTHROPIC_WEB_SEARCH_PRICE_USD
+            )
             estimated_usd = (
                 input_tokens * price[0] / 1_000_000
                 + cache_creation_input_tokens
@@ -298,6 +362,7 @@ def account_application_cost(
                 / 1_000_000
                 + cache_read_input_tokens * price[0] * cache_read_multiplier / 1_000_000
                 + output_tokens * price[1] / 1_000_000
+                + search_fee
             )
             operation_usage["provider_attempts"] += 1
             for target in (operation_usage, per_case[case_id], total):
@@ -305,6 +370,9 @@ def account_application_cost(
                 target["cache_creation_input_tokens"] += cache_creation_input_tokens
                 target["cache_read_input_tokens"] += cache_read_input_tokens
                 target["output_tokens"] += output_tokens
+                if "web_search_requests" in target:
+                    target["web_search_requests"] += web_search_requests
+                    target["web_search_estimated_usd"] += search_fee
                 target["queue_wait_ms"] += queue_wait_ms
                 target["estimated_usd"] += estimated_usd
 

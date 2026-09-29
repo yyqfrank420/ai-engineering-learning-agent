@@ -696,10 +696,10 @@ def test_presentation_text_is_bounded_without_rejecting_valid_topology(caplog):
     payload = _draft(4)
     payload["composition"]["title"] = "t" * 101
     payload["components"][0][1] = "l" * 61
-    payload["components"][0][3] = "r" * 221
+    payload["components"][0][3] = "r" * 801
     payload["components"][0][4] = "g" * 81
-    payload["components"][0][6] = "p" * 101
-    payload["connections"]["links"] = [[0, 2, "e" * 101, 401, 501]]
+    payload["components"][0][6] = "p" * 161
+    payload["connections"]["links"] = [[0, 2, "e" * 161, 401, 501]]
 
     with caplog.at_level("INFO"):
         draft = validate_applied_graph_topology(
@@ -709,12 +709,12 @@ def test_presentation_text_is_bounded_without_rejecting_valid_topology(caplog):
 
     assert draft["title"] == "t" * 100
     assert draft["nodes"][1]["label"] == "l" * 60
-    assert draft["nodes"][1]["responsibility"] == "r" * 220
+    assert draft["nodes"][1]["responsibility"] == "r" * 800
     assert draft["nodes"][1]["group"] == "g" * 80
-    assert draft["edges"][0]["label"] == "p" * 100
-    assert draft["edges"][-1]["label"] == "e" * 100
-    assert "original_chars=221 limit=220" in caplog.text
-    assert "r" * 221 not in caplog.text
+    assert draft["edges"][0]["label"] == "p" * 160
+    assert draft["edges"][-1]["label"] == "e" * 160
+    assert "original_chars=801 limit=800" in caplog.text
+    assert "r" * 801 not in caplog.text
 
 
 def test_bounded_group_labels_cannot_merge_distinct_ownership_boundaries():
@@ -734,14 +734,14 @@ def test_bounded_group_labels_cannot_merge_distinct_ownership_boundaries():
 
 def test_bounded_presentation_text_prefers_a_word_boundary():
     payload = _draft(4)
-    payload["components"][0][3] = "word " * 60
+    payload["components"][0][3] = "word " * 180
 
     draft = validate_applied_graph_topology(
         payload,
         applied_graph_spec("production"),
     )
 
-    assert len(draft["nodes"][1]["responsibility"]) <= 220
+    assert len(draft["nodes"][1]["responsibility"]) <= 800
     assert draft["nodes"][1]["responsibility"].endswith("word")
 
 
@@ -825,7 +825,8 @@ def test_worst_case_topology_serialization_is_bounded_by_resource_ceiling():
     )
     topology_chars = worst_case_topology_chars(spec)
     assert topology_chars < 200_000
-    assert topology_chars <= legacy_chars * 0.82
+    # The 160-character label budget retains at least 17% compression.
+    assert topology_chars <= legacy_chars * 0.83
 
 
 def test_provider_schema_stays_below_compact_byte_budget():
@@ -1090,7 +1091,7 @@ async def test_dynamic_generator_corrects_invalid_initial_topology_once(
     assert "replace index 5 with an integer from 0 through 4" in correction_prompt
     assert "PRIVATE_SENTINEL" in correction_prompt
     assert "PRIVATE_SENTINEL" not in caplog.text
-    assert [call["model"] for call in calls] == ["kimi-k3", "kimi-k3"]
+    assert [call["model"] for call in calls] == ["claude-opus-5-5", "claude-opus-5-5"]
     assert [call["effort"] for call in calls] == ["high", "high"]
     assert [call["provider_attempt_limit"] for call in calls] == [1, 1]
     assert [entry["operation"] for entry in telemetry] == [
@@ -1424,3 +1425,14 @@ def test_internal_component_cannot_be_a_root_or_owned_by_another_component():
     payload["components"][1][2] = 109
     with pytest.raises(AppliedGraphSpecError):
         validate_applied_graph_topology(payload, applied_graph_spec("production"))
+
+
+@pytest.mark.parametrize("length", [221, 800])
+def test_legacy_responsibility_ceiling_preserves_complete_text(length):
+    text = "Records " + "a" * (length - 9) + "."
+    payload = _draft(4)
+    payload["components"][0][3] = text
+    spec = applied_graph_spec("production")
+    assert spec.responsibility_chars == 800
+    draft = validate_applied_graph_topology(payload, spec)
+    assert draft["nodes"][1]["responsibility"] == text

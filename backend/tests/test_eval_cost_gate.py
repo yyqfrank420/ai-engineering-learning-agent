@@ -100,15 +100,17 @@ def test_application_cost_prices_anthropic_cache_writes_and_reads():
 def test_application_cost_prices_kimi_automatic_cache_reads():
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread",
-            "operation": "graph_worker",
-            "provider": "kimi",
-            "model": "kimi-k3",
-            "input_tokens": 1_000,
-            "cache_read_input_tokens": 2_000,
-            "output_tokens": 100,
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "graph_worker",
+                "provider": "kimi",
+                "model": "kimi-k3",
+                "input_tokens": 1_000,
+                "cache_read_input_tokens": 2_000,
+                "output_tokens": 100,
+            }
+        ],
     )
 
     assert accounting["status"] == "pass"
@@ -173,7 +175,13 @@ def test_specific_model_price_wins_over_a_shared_prefix():
 
 
 def test_model_prices_reject_lookalike_future_skus():
-    for model in ("gpt-5.40", "gpt-5.4-turbo", "claude-opus-50", "claude-opus-5-50", "claude-sonnet-5-50"):
+    for model in (
+        "gpt-5.40",
+        "gpt-5.4-turbo",
+        "claude-opus-50",
+        "claude-opus-5-50",
+        "claude-sonnet-5-50",
+    ):
         accounting = account_application_cost(
             [{"id": "case", "thread_id": "thread"}],
             [
@@ -209,9 +217,10 @@ def test_case_with_a_thread_but_no_telemetry_is_unknown_not_zero_cost():
     )
 
     assert accounting["status"] == "infrastructure"
-    assert "'missing' has thread attribution but no application telemetry" in accounting[
-        "reason"
-    ]
+    assert (
+        "'missing' has thread attribution but no application telemetry"
+        in accounting["reason"]
+    )
     assert accounting["cases"][1]["estimated_usd"] is None
     assert accounting["total"]["estimated_usd"] is None
 
@@ -565,9 +574,7 @@ def test_judge_cost_rejects_invalid_attempt_counts(attempted_calls):
         )
 
 
-def test_blocking_cost_breach_is_visible_in_junit_and_summary(
-    tmp_path, monkeypatch
-):
+def test_blocking_cost_breach_is_visible_in_junit_and_summary(tmp_path, monkeypatch):
     from eval.live_runner import _exit_code_for_statuses, _write_outputs
 
     summary = tmp_path / "summary.md"
@@ -619,23 +626,31 @@ def test_recovered_timeout_preserves_known_subtotal_but_total_remains_unknown(
 ):
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread",
-            "operation": "orchestrator_route",
-            "status": "success",
-            "attempts": [
-                {
-                    "model": "claude-opus-5", "status": "error",
-                    "accepted": accepted, "usage_complete": False,
-                    "error_type": "APITimeoutError", "input_tokens": 100,
-                },
-                {
-                    "model": "claude-opus-5", "status": "success",
-                    "accepted": True, "usage_complete": True,
-                    "input_tokens": 1_000, "output_tokens": 100,
-                },
-            ],
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "orchestrator_route",
+                "status": "success",
+                "attempts": [
+                    {
+                        "model": "claude-opus-5",
+                        "status": "error",
+                        "accepted": accepted,
+                        "usage_complete": False,
+                        "error_type": "APITimeoutError",
+                        "input_tokens": 100,
+                    },
+                    {
+                        "model": "claude-opus-5",
+                        "status": "success",
+                        "accepted": True,
+                        "usage_complete": True,
+                        "input_tokens": 1_000,
+                        "output_tokens": 100,
+                    },
+                ],
+            }
+        ],
     )
 
     assert accounting["status"] == "incomplete"
@@ -647,9 +662,14 @@ def test_recovered_timeout_preserves_known_subtotal_but_total_remains_unknown(
     operation = accounting["cases"][0]["operations"][0]
     assert operation["estimated_usd"] is None
     assert operation["provider_attempts"] == 2
-    policy = evaluate_cost_policy(accounting, CostPolicy(
-        mode=mode, suite_limit_usd=limit, case_limit_usd=limit,
-    ))
+    policy = evaluate_cost_policy(
+        accounting,
+        CostPolicy(
+            mode=mode,
+            suite_limit_usd=limit,
+            case_limit_usd=limit,
+        ),
+    )
     assert policy["status"] == "incomplete"
     assert policy["blocking_status"] == ("pass" if mode == "report-only" else "fail")
 
@@ -657,14 +677,33 @@ def test_recovered_timeout_preserves_known_subtotal_but_total_remains_unknown(
 def test_incomplete_attempt_count_includes_recovered_zero_usage_timeouts():
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread", "operation": "orchestrator_route", "status": "success",
-            "attempts": [
-                {"model": "claude-opus-5", "status": "error", "usage_complete": False, "accepted": False},
-                {"model": "claude-opus-5", "status": "error", "usage_complete": False, "accepted": False},
-                {"model": "claude-opus-5", "status": "success", "usage_complete": True, "input_tokens": 100},
-            ],
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "orchestrator_route",
+                "status": "success",
+                "attempts": [
+                    {
+                        "model": "claude-opus-5",
+                        "status": "error",
+                        "usage_complete": False,
+                        "accepted": False,
+                    },
+                    {
+                        "model": "claude-opus-5",
+                        "status": "error",
+                        "usage_complete": False,
+                        "accepted": False,
+                    },
+                    {
+                        "model": "claude-opus-5",
+                        "status": "success",
+                        "usage_complete": True,
+                        "input_tokens": 100,
+                    },
+                ],
+            }
+        ],
     )
     assert accounting["incomplete_attempt_count"] == 2
     assert accounting["total"]["known_subtotal_usd"] == 0.0005
@@ -675,10 +714,15 @@ def test_incomplete_attempt_count_includes_recovered_zero_usage_timeouts():
 def test_flat_usage_completeness_is_preserved(complete):
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread", "operation": "synthesis", "model": "claude-opus-5",
-            "input_tokens": 100, "usage_complete": complete,
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "synthesis",
+                "model": "claude-opus-5",
+                "input_tokens": 100,
+                "usage_complete": complete,
+            }
+        ],
     )
     assert accounting["usage_complete"] is complete
     assert accounting["incomplete_attempt_count"] == (0 if complete else 1)
@@ -710,12 +754,17 @@ def test_incomplete_usage_does_not_hide_malformed_accounting(mode, invalid):
 def test_opus_55_prices_input_output_and_default_ephemeral_cache():
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread", "operation": "synthesis", "model": "claude-opus-5-5",
-            "input_tokens": 1_000_000, "output_tokens": 1_000_000,
-            "cache_creation_input_tokens": 1_000_000,
-            "cache_read_input_tokens": 1_000_000,
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "synthesis",
+                "model": "claude-opus-5-5",
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cache_creation_input_tokens": 1_000_000,
+                "cache_read_input_tokens": 1_000_000,
+            }
+        ],
     )
     assert accounting["status"] == "pass"
     assert accounting["total"]["estimated_usd"] == 29.2
@@ -726,12 +775,17 @@ def test_opus_55_prices_input_output_and_default_ephemeral_cache():
 def test_sonnet_55_prices_input_output_and_default_ephemeral_cache(model):
     accounting = account_application_cost(
         [{"id": "case", "thread_id": "thread"}],
-        [{
-            "thread_id": "thread", "operation": "synthesis", "model": model,
-            "input_tokens": 1_000_000, "output_tokens": 1_000_000,
-            "cache_creation_input_tokens": 1_000_000,
-            "cache_read_input_tokens": 1_000_000,
-        }],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "synthesis",
+                "model": model,
+                "input_tokens": 1_000_000,
+                "output_tokens": 1_000_000,
+                "cache_creation_input_tokens": 1_000_000,
+                "cache_read_input_tokens": 1_000_000,
+            }
+        ],
     )
     assert accounting["status"] == "pass"
     assert accounting["total"]["estimated_usd"] == 14.7
@@ -800,7 +854,7 @@ def test_native_search_missing_or_invalid_usage_has_unknown_full_cost(usage, nes
     accounting = account_application_cost(
         [{"id": "research", "thread_id": "thread"}], [call]
     )
-    assert accounting["status"] == "incomplete"
+    assert accounting["status"] in {"incomplete", "infrastructure"}
     assert accounting["incomplete_attempt_count"] == 1
     assert accounting["usage_complete"] is False
     assert accounting["total"]["known_subtotal_usd"] == 0
@@ -893,3 +947,255 @@ def test_legacy_external_research_operation_has_no_native_fee():
     assert accounting["status"] == "pass"
     assert accounting["total"]["estimated_usd"] == 0.0045
     assert "web_search_requests" not in accounting["total"]
+
+
+@pytest.mark.parametrize("with_attempts", [False, True])
+def test_official_web_search_pricing_counts_retries_without_aggregate_double_count(
+    with_attempts,
+):
+    attempt = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5-5",
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "web_search_requests": 1,
+    }
+    call = {"thread_id": "thread", "operation": "research", **attempt}
+    if with_attempts:
+        call["attempts"] = [attempt, {**attempt, "web_search_requests": 2}]
+        call["web_search_requests"] = 3
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], [call]
+    )
+    assert accounting["status"] == "pass"
+    expected_count = 3 if with_attempts else 1
+    expected_cost = 0.036 if with_attempts else 0.013
+    for usage in [
+        accounting["total"],
+        accounting["cases"][0],
+        accounting["cases"][0]["operations"][0],
+    ]:
+        assert usage["web_search_requests"] == expected_count
+        assert usage["estimated_usd"] == pytest.approx(expected_cost)
+    assert accounting["price_release"] == "2026-10-01"
+
+
+@pytest.mark.parametrize("count", [-1, True, 1.5, "1", None, {}])
+def test_official_web_search_rejects_invalid_counts(count):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "model": "claude-sonnet-5-5",
+                "provider": "anthropic",
+                "web_search_requests": count,
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["total"]["estimated_usd"] is None
+    assert "invalid web-search usage" in accounting["reason"]
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "gpt-5.4"),
+        ("moonshot", "kimi-k3"),
+        ("openai", "claude-sonnet-5-5"),
+        ("anthropic", "unknown"),
+    ],
+)
+def test_official_web_search_rejects_unsupported_pricing(provider, model):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "model": model,
+                "provider": provider,
+                "web_search_requests": 1,
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["usage_complete"] is False
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("aggregate", [-1, "2", True, None])
+def test_web_search_invalid_aggregate_cannot_certify_valid_attempt_cost(aggregate):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search_requests": aggregate,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["total"]["known_subtotal_usd"] == 0.01
+    assert accounting["total"]["estimated_usd"] is None
+
+
+def test_sanitized_incomplete_aggregate_keeps_known_search_subtotal():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "usage_complete": False,
+                "web_search_requests": 0,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                        "usage_complete": True,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "incomplete"
+    assert accounting["total"]["known_subtotal_usd"] == 0.01
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("aggregate", [0, 2])
+def test_web_search_aggregate_must_match_recorded_attempts(aggregate):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search_requests": aggregate,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert "inconsistent web-search usage" in accounting["reason"]
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("provider", ["anthropic", "openai", "unknown"])
+def test_standalone_moonshot_search_rejects_other_provider_even_with_zero_count(
+    provider,
+):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "model": "moonshot-web-search-basic",
+                "provider": provider,
+                "web_search_requests": 0,
+                "web_search_usage_complete": True,
+                "usage_complete": True,
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["total"]["estimated_usd"] is None
+
+
+def test_mixed_search_services_price_each_attempt_once():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "search",
+                "web_search_requests": 3,
+                "attempts": [
+                    {
+                        "model": "moonshot-web-search-basic",
+                        "provider": "moonshot",
+                        "web_search_requests": 1,
+                        "web_search_usage_complete": True,
+                        "usage_complete": True,
+                    },
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 2,
+                        "input_tokens": 1000,
+                        "output_tokens": 100,
+                    },
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "pass"
+    for usage in [
+        accounting["total"],
+        accounting["cases"][0],
+        accounting["cases"][0]["operations"][0],
+    ]:
+        assert usage["web_search_requests"] == 3
+        assert usage["web_search_estimated_usd"] == pytest.approx(0.022)
+        assert usage["estimated_usd"] == pytest.approx(0.025)
+
+
+@pytest.mark.parametrize("complete", [True, False])
+def test_anthropic_native_zero_search_count_remains_known_only_with_complete_usage(
+    complete,
+):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search": True,
+                "model": "claude-sonnet-5-5",
+                "provider": "anthropic",
+                "web_search_requests": 0,
+                "web_search_usage_complete": complete,
+                "usage_complete": complete,
+                "input_tokens": 1000,
+                "output_tokens": 100,
+            }
+        ],
+    )
+    assert accounting["status"] == ("pass" if complete else "incomplete")
+    assert accounting["total"]["known_subtotal_usd"] == pytest.approx(0.003)
+    assert accounting["total"]["estimated_usd"] == (
+        pytest.approx(0.003) if complete else None
+    )
+
+
+def test_anthropic_native_search_missing_count_cannot_certify_zero_fee():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search": True,
+                "model": "claude-sonnet-5-5",
+                "provider": "anthropic",
+                "usage_complete": True,
+                "input_tokens": 1000,
+                "output_tokens": 100,
+            }
+        ],
+    )
+    assert accounting["status"] == "incomplete"
+    assert accounting["total"]["estimated_usd"] is None
+    assert accounting["total"]["web_search_requests"] is None
+    assert accounting["total"]["known_subtotal_usd"] == pytest.approx(0.003)

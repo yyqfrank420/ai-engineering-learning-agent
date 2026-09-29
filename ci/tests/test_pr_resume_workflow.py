@@ -133,7 +133,7 @@ def test_missing_or_failed_evidence_cannot_publish(shell, browser, semantic):
     assert result.returncode != 0
 
 
-@pytest.mark.parametrize("application,judge", [("42", "8"), ("78", "16"), ("1", "1")])
+@pytest.mark.parametrize("application,judge", [("42", "8"), ("129", "16"), ("100", "16"), ("1", "1")])
 def test_dispatch_attempt_limits_resolve_before_prepare_and_deployment(
     shell, tmp_path, application, judge
 ):
@@ -181,7 +181,7 @@ def test_dispatch_attempt_limits_resolve_before_prepare_and_deployment(
         "",
         "0",
         "-1",
-        "79",
+        "130",
         "9999999999999999999999",
         "1.0",
         " 8",
@@ -222,14 +222,14 @@ def test_attempt_limit_defaults_leave_ordinary_workflow_caps_unchanged():
     config = workflow()
     inputs = config["on" if "on" in config else True]["workflow_dispatch"]["inputs"]
     assert inputs["application_attempt_limit"] == {
-        "description": "Maximum application provider attempts (1 to 78)",
+        "description": "Maximum application provider attempts (1 to 129)",
         "type": "string",
-        "default": "78",
+        "default": "129",
     }
     assert inputs["judge_attempt_limit"]["default"] == "16"
     assert inputs["judge_attempt_limit"]["type"] == "string"
     environment = config["jobs"]["evaluate"]["env"]
-    assert environment["EVALUATION_PROVIDER_ATTEMPT_LIMIT"] == 78
+    assert environment["EVALUATION_PROVIDER_ATTEMPT_LIMIT"] == 129
     assert environment["RESUME_JUDGE_CALL_LIMIT"] == 16
     assert (
         step("Validate dispatch attempt limits")["if"]

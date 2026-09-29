@@ -157,7 +157,12 @@ Environment-bearing OIDC subject, can read only staging secrets, and cannot
 impersonate the separate production deployer. The `production` Environment has an
 independently bound identity. Production accepts only successful push or manual
 workflow runs from this repository's `main` branch, checked before source checkout.
-Staging mutation is globally serialized. A database
+Staging mutation is globally serialized. Protected PR and scheduled evaluations
+share `staging-live-eval-global` with `queue: max` and cancellation disabled, so up
+to 100 pending evaluations can wait without replacing an earlier pending job.
+[GitHub processes this queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+in the order jobs start waiting on the group; dispatch order can differ. A new push
+still cancels the superseded run for the same PR. A database
 advisory lock is held while the constant `staging` schema is dropped, recreated,
 and migrated from scratch. `DB_SCHEMA` accepts only `public` or `staging`;
 application connections and Alembic both pin their search path. Before and after
@@ -198,16 +203,21 @@ process when the authenticated user, thread, exact classifier payload, model, an
 prompt match. Changed inputs, expired entries, and requests reaching another
 process require a fresh check. This reuse does not guarantee a cache hit.
 
-The application attempt cap stays at 78 and includes input classification,
-generation, paid search, repairs, retries, and fallbacks. There is no fixed
-successful-path call total or guaranteed repair allowance. In failed run
-`37240990845`, the quota recorded 78 attempts: 22 input classification calls and
-56 core/search calls. Nine paid search calls, five logical generation/gate repairs,
-and two service planning calls contributed work omitted from the old first-pass
-estimate. These counts describe that run; they are not future bounds. The quota
-rejects attempt 79 before dispatch. Judge calls remain capped at 16;
-infrastructure retries stay disabled. The browser suite cap is 4,200 seconds.
-The staging job allows 100 minutes: 70 for browser work, 20 for semantic review,
+The application attempt cap is 129. The configured normal-path envelope is
+125 attempts: eight graph turns at 14 attempts each, three ordinary turns at
+four attempts each, and one node-question chip attempt. Four more attempts cover
+existing same-provider retries for ordinary answers and the chip. This finite
+budget includes uncached input checks, core generation and search, and the
+existing correction paths. It does not guarantee completion through provider
+outages or fallback attempts. Retry limits and concurrency remain unchanged.
+
+In failed run `37240990845`, the previous 78-attempt quota recorded 22 input
+classification calls and 56 core/search calls. Nine paid search calls, five
+logical generation/gate repairs, and two service planning calls contributed work
+omitted from the old first-pass estimate. That run rejected attempt 79 before
+dispatch. These historical counts are not future bounds. Judge calls remain
+capped at 16. Infrastructure retries stay disabled. The browser suite cap is 6,300 seconds.
+The staging job allows 135 minutes: 105 for browser work, 20 for semantic review,
 and 10 for setup and evidence upload.
 
 Playwright uses the real frontend and production WebSocket protocol. The eight PR
@@ -262,9 +272,10 @@ verified value in `deployment.json`. Production retains its separate concurrency
 setting.
 
 The Anthropic semaphore allows four streams per application process/Cloud Run
-instance; it is not a global account cap. It bounds Opus architecture and Sonnet QA
-calls. Kimi graph construction uses the Moonshot OpenAI-compatible endpoint and the
-two-case graph lane remains the suite-level concurrency bound.
+instance; it is not a global account cap. It bounds Anthropic-backed streams, including
+Opus 5.5 staged authors and gates, Sonnet 5.5 legacy QA and explanations. Explicit
+Moonshot model overrides use the OpenAI-compatible endpoint. The two-case graph lane
+remains the suite-level concurrency bound.
 
 Each attempt records received events, final answers, graph JSON, rendered-node
 counts, screenshots, redacted traces, persistence, cleanup, fallback, and typed
@@ -318,7 +329,7 @@ The `Live eval required` workflow also supports failed-only PR verification thro
 `reviewed_diff_sha256`, and a review `reason`. The diff hash is SHA256 of
 `git diff --binary SOURCE_HEAD CANDIDATE_HEAD`. Optional
 `application_attempt_limit` and `judge_attempt_limit` inputs restrict the default
-78/16 attempt caps. Both must be positive integers within those defaults.
+129/16 attempt caps. Both must be positive integers within those defaults.
 
 The resume lane authenticates the failed protected PR attempt, uploaded artifact,
 deployment, unchanged base, candidate tree, reviewed diff, corpus and judges.
@@ -336,31 +347,53 @@ The combined artifact records each case's original or fresh evidence. The native
 required check and image approval require complete validated coverage under that
 policy. A new paid attempt requires explicit operator authorization.
 
-PR evaluation limits are eight cases, 78 application provider attempts, and 16
+PR evaluation limits are eight cases, 129 application provider attempts, and 16
 judge provider attempts. Input checks and core/search work share the application
 quota. Completed input verdict reuse can reduce repeated classification, but its
-process and input scope make cache misses possible. The tagged staging revision
-atomically reserves one shared quota record before each provider request and
-rejects attempt 79 before dispatch. Repairs, retries, paid search, or failed-turn
-recovery can exhaust this quota and fail the run. Production traffic does not set
-this evaluation-only quota. The timeout chain is deliberately nested: the backend
-agent envelope is 940 seconds, with model work stopping at 910 seconds to retain persistence
-headroom. The Playwright turn waits at most 970 seconds so it can capture the typed terminal event,
-and Cloud Run accepts a request for at most 1000
+process and input scope make cache misses possible. Each enabled research phase
+consumes one application attempt and permits one server search, without adapter
+retry or continuation. The tagged staging revision atomically reserves one shared
+quota record before each provider request and rejects attempt 130 before dispatch.
+Repairs, retries, paid search, or failed-turn recovery can exhaust this quota and
+fail the run. This evaluation quota counts the run's lifetime, including historical
+reservations with expired rate windows. Rate-limit cleanup preserves those records;
+ordinary user limits retain their rolling windows. Local runs retain their original
+run ID and cumulative ledger when an approved cap is extended. Quota keys use the
+rate limiter's HMAC secret; keep its value and selection fixed throughout the run.
+A resumed run must use only the new runtime because an older writer can delete
+historical finite-window reservations. Verify the preserved rows and matching key
+before resuming. Stop an active evaluation before reverting the quota change.
+No schema migration is needed. Production traffic does not set this evaluation-only
+quota. Server-search counts are exported with token usage, and cost accounting adds
+the provider's $0.01 per search fee without charging aggregate and attempt counters
+twice. The timeout chain is deliberately nested: the backend
+agent envelope is 1500 seconds, with model work stopping at 1470 seconds to retain persistence
+headroom. Indexed production connection audits may borrow unused time up to a
+360-second review ceiling while retaining the complete downstream correction,
+review and synthesis reserves. Components retain two finite generation/review attempts;
+connections permit three. Gate and render counts derive from those five stage slots.
+Future reviews still reserve their existing baseline time; the larger ceiling is
+borrowed capacity, not a guarantee that every review can consume 360 seconds.
+Other reviews keep their existing ceilings.
+The Playwright turn waits at most 1530 seconds so it can capture the typed terminal event,
+and Cloud Run accepts a request for at most 1560
 seconds. The browser-suite timeout scales with the number of turns and the two-wide
-graph lane, with a 70-minute hard ceiling. Semantic judging is capped at 20 minutes
+graph lane, with a 105-minute hard ceiling. Semantic judging is capped at 20 minutes
 for PR/smoke/diagnostic suites and 60 minutes for full suites. Each semantic judge
 request has a 120-second deadline and at most one transport retry. This request
 deadline shares the suite's existing wall-clock and provider-attempt budgets;
 it does not extend either limit. Exhausted retries record a safe exception class
 and HTTP status when available, without provider messages or request data.
 The outer GitHub jobs
-allow 100 minutes for the PR gate and 150 minutes for scheduled evaluation, including
-installation, deployment, judging, artifact upload, and cleanup; the former 15/30
-minute limits no longer apply.
+allow 135 minutes for the PR gate and 190 minutes for scheduled evaluation, including
+installation, deployment, judging, artifact upload, and cleanup. Scheduled evaluation
+retains a 150-attempt spending cap; it does not guarantee all worst-case correction paths.
+Production deployment allows 45 minutes around its one-turn smoke, whose browser
+deadline derives from the same policy as 1710 seconds. Production smoke does not
+set an evaluation attempt quota. The former 15/30-minute limits no longer apply.
 
 Scheduled nightly and full suites use the same pre-request quota with a 150-attempt
-cap. Diagnostic dispatches use the 78-attempt PR cap.
+cap. Diagnostic dispatches use the 129-attempt PR cap.
 Every scheduled browser failure or blocking semantic outcome fails the workflow.
 Borderline semantic findings are retained as nonblocking review information. Scheduled artifacts retain evidence for 90 days. `deployment.json`
 binds the run to its commit, Git tree, immutable image digest, tagged Cloud Run revision,
@@ -378,7 +411,7 @@ fallback, and every provider attempt. Reports publish deterministic nearest-rank
 p50/p95 summaries for case end-to-end, turn end-to-end, first event, and first token;
 final infrastructure-failed cases are excluded from those baselines. Latency remains
 report-only with no manifest thresholds while five clean runs are collected.
-Reviewed baselines can then add blocking thresholds without changing the 940-second
+Reviewed baselines can then add blocking thresholds without changing the 1500-second
 correctness deadline. Stage durations may overlap and are reported independently
 rather than added into a false critical path.
 
@@ -418,7 +451,7 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v17`, Anthropic, and `claude-sonnet-5` are the versioned judge
+`semantic-rubric-judge-v18`, Anthropic, and `claude-sonnet-5-5` are the versioned judge
 selection. The Anthropic request uses high reasoning effort with a 16384-token
 budget shared by reasoning and structured output. Its prompt directs the judge
 to reserve room for complete schema output. The judge receives the case
@@ -487,8 +520,10 @@ Reports are kept in 90-day GitHub artifacts and copied to GCS calibration histor
 
 The judge receives the public graph's directed flow, synchronization, descriptions, and sequence.
 The final graph is encoded once when it equals the last turn's graph. A different final graph
-retains its own evidence, including a final state that matches an earlier turn. The 80,000-character
-prompt limit rejects oversized packets without truncating graph contracts.
+retains its own evidence, including a final state that matches an earlier turn. The 160,000-character
+judge user-packet limit retains exact evidence for larger full journeys. Packets above the
+limit fail before a provider request, with actual and allowed character counts.
+Graph contracts and synthesis-visible evidence are not truncated to fit this limit.
 For new captures it receives the exact synthesis-visible book and research strings. Older retrieval
 telemetry is labeled as incomplete knowledge of the model input; source text beyond the supplied
 excerpt cannot certify the answer's grounding. Judge release v6 records this changed evidence contract.
@@ -513,7 +548,15 @@ required` run and will not rebuild a missing approval. It then:
    rendering, cleanup, and one real-model browser journey;
 4. sends 100% traffic to that tagged candidate only after success.
 
-The previous Cloud Run revision is left available for rollback. Nightly runs rotate
+The previous Cloud Run revision is left available for compatible rollbacks. Once
+stored graphs contain connection labels longer than 100 characters, recovery must
+use a backend image that retains the 160-character admission limit. The older
+100-character backend can reject edits and clear the saved approval contract.
+Keep the compatible backend running if the later frontend deployment fails, then
+repair and redeploy the frontend. Retire the 100-character revisions before
+removing this restriction. Existing graph labels require no rewriting.
+
+Nightly runs rotate
 four cases, while Sunday runs cover the full corpus. Staging revision and ephemeral
 image tags are removed after evaluation; the content-addressed approval tag and
 30-day evidence remain.

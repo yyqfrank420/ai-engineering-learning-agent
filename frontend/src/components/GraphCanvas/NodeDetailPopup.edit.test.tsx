@@ -78,6 +78,27 @@ describe('NodeDetailPopup editing', () => {
     await waitFor(() => expect(onDirtyChange).toHaveBeenLastCalledWith(false));
   });
 
+  it('preserves and saves complete node descriptions longer than 220 characters', async () => {
+    const description = 'Retrieves evidence from authorised sources, checks access and provenance before reuse, validates freshness and invalidation state, treats all retrieved bytes as untrusted input, and returns grounded results or an explicit refusal to the caller.';
+    const updatedDescription = `${description} Records the outcome for audit.`;
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<NodeDetailPopup {...props} node={{ ...node, description }} onSave={onSave} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+    const field = screen.getByRole<HTMLTextAreaElement>('textbox', { name: 'Description' });
+    expect(description.length).toBeGreaterThan(220);
+    expect(updatedDescription.length).toBeLessThan(800);
+    expect(field.maxLength).toBe(800);
+    expect(field.value).toBe(description);
+    fireEvent.change(field, { target: { value: updatedDescription } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+      nodes: [{ id: 'service', description: updatedDescription }],
+    }));
+    expect((await screen.findByRole('status')).textContent).toBe('Changes saved');
+  });
+
   it('edits the selected directed edge by its original graph index', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(<NodeDetailPopup {...props} onSave={onSave} autoFocusEdgeIndex={2} />);
@@ -86,6 +107,7 @@ describe('NodeDetailPopup editing', () => {
     expect(screen.getByRole('option', { name: 'Control flow' })).toHaveProperty('value', 'control');
     fireEvent.change(screen.getByRole('textbox', { name: 'Label' }), { target: { value: 'publishes metrics' } });
     const connection = screen.getByRole('region', { name: 'Connections' });
+    expect(within(connection).getByRole<HTMLTextAreaElement>('textbox', { name: 'Description' }).maxLength).toBe(220);
     fireEvent.change(within(connection).getByRole('textbox', { name: 'Technology' }), { target: { value: 'gRPC' } });
     fireEvent.change(within(connection).getByRole('textbox', { name: 'Description' }), { target: { value: 'Publishes bounded metrics.' } });
     fireEvent.change(screen.getByRole('combobox', { name: 'Flow' }), { target: { value: 'control' } });
@@ -95,6 +117,26 @@ describe('NodeDetailPopup editing', () => {
     await waitFor(() => expect(onSave).toHaveBeenCalledWith({
       edges: [{ index: 2, label: 'publishes metrics', technology: 'gRPC', description: 'Publishes bounded metrics.', flow: 'control', sync: 'sync' }],
     }));
+  });
+
+  it('preserves and saves a connection label at the 160-character editing limit', async () => {
+    const originalLabel = 'a'.repeat(160);
+    const updatedLabel = 'b'.repeat(160);
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(<NodeDetailPopup {...props}
+      edges={[edges[0], edges[1], { ...edges[2], label: originalLabel }]}
+      onSave={onSave} autoFocusEdgeIndex={2} />);
+
+    const field = screen.getByRole<HTMLInputElement>('textbox', { name: 'Label' });
+    expect(field.maxLength).toBe(160);
+    expect(field.value).toBe(originalLabel);
+    fireEvent.change(field, { target: { value: updatedLabel } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledWith({
+      edges: [{ index: 2, label: updatedLabel }],
+    }));
+    expect(screen.getByRole('status').textContent).toBe('Changes saved');
   });
 
   it('retains a failed draft, offers retry, and guards close until discard is chosen', async () => {

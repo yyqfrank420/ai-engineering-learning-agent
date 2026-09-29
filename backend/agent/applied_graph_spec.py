@@ -7,6 +7,10 @@ import logging
 from typing import Any
 
 from agent.state import GraphData
+from agent.staged_graph_contract import (
+    COMPONENT_RESPONSIBILITY_MAX_CHARS,
+    CONNECTION_LABEL_MAX_CHARS,
+)
 from agent.diagram_contract import MAXIMUM_DIAGRAM_NODES
 from config import settings
 
@@ -33,7 +37,7 @@ _GROUP_KIND_CODES = {600 + index: token for index, token in enumerate(_GROUP_KIN
 _ROOT_FIELD_COUNT = 5
 _COMPONENT_FIELD_COUNT = 9
 _LINK_FIELD_COUNT = 5
-GRAPH_EDGE_LABEL_CHARS = 100
+GRAPH_EDGE_LABEL_CHARS = CONNECTION_LABEL_MAX_CHARS
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +68,7 @@ class AppliedGraphSpec:
     title_chars: int = 100
     node_label_chars: int = 60
     group_label_chars: int = 80
-    responsibility_chars: int = 220
+    responsibility_chars: int = COMPONENT_RESPONSIBILITY_MAX_CHARS
     edge_label_chars: int = GRAPH_EDGE_LABEL_CHARS
     assumption_chars: int = 240
     query_chars: int = 8000
@@ -313,7 +317,7 @@ def applied_graph_topology_prompt(
         f"{max(0, spec.safety_max_nodes - 1)} rows. components plus links must not exceed "
         f"{spec.safety_max_edges}. Steps contain at most {spec.safety_max_nodes} entries. "
         "Keep title at most 100 characters, node labels at most 60, group labels at most 80, "
-        f"responsibilities at most 220, and edge labels at most {spec.edge_label_chars}.\n"
+        f"responsibilities at most {spec.responsibility_chars}, and edge labels at most {spec.edge_label_chars}.\n"
         "EXAMPLE\n"
         + json.dumps(valid_example, ensure_ascii=False, separators=(",", ":"))
         + "\nUse the example only for wire shape. Author the requested domain topology. Return only compact "

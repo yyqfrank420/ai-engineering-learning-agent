@@ -637,14 +637,16 @@ def test_patch_admission_uses_available_time_after_following_reserve():
 @pytest.mark.parametrize(
     "phase,action,attempt,reserved_s",
     [
-        ("components", "generate", 0, 763.0),
-        ("components", "review", 0, 693.0),
-        ("components", "generate", 1, 563.0),
-        ("components", "review", 1, 493.0),
-        ("connections", "generate", 0, 363.0),
-        ("connections", "review", 0, 293.0),
-        ("connections", "generate", 1, 163.0),
-        ("connections", "review", 1, 93.0),
+        ("components", "generate", 0, 923.0),
+        ("components", "review", 0, 853.0),
+        ("components", "generate", 1, 763.0),
+        ("components", "review", 1, 693.0),
+        ("connections", "generate", 0, 563.0),
+        ("connections", "review", 0, 493.0),
+        ("connections", "generate", 1, 363.0),
+        ("connections", "review", 1, 293.0),
+        ("connections", "generate", 2, 163.0),
+        ("connections", "review", 2, 93.0),
     ],
 )
 @pytest.mark.parametrize("available_s", [10.0, 180.0, 300.0])
@@ -703,7 +705,8 @@ def test_staged_timeout_without_workflow_deadline_keeps_baseline(
 @pytest.mark.parametrize(
     "phase,action,attempt",
     [("unknown", "generate", 0), ("components", "unknown", 0)]
-    + [("components", "generate", value) for value in [-1, 2, True, 0.5, None]],
+    + [("components", "generate", value) for value in [-1, 2, True, 0.5, None]]
+    + [("connections", "generate", value) for value in [-1, 3, True, 0.5, None]],
 )
 def test_staged_timeout_rejects_invalid_schedule_position(phase, action, attempt):
     from agent.deadlines import staged_timeout_seconds
@@ -737,7 +740,7 @@ def test_staged_component_generation_uses_terminal_budget_after_preview_target(
 
 
 @pytest.mark.parametrize(
-    "first_duration,retry_budget", [(147.0, 200.0), (129.955, 217.045)]
+    "first_duration,retry_budget", [(187.0, 160.0), (129.955, 217.045)]
 )
 def test_component_timeout_reuses_unspent_render_and_review_reserves(
     monkeypatch, first_duration, retry_budget
@@ -747,7 +750,7 @@ def test_component_timeout_reuses_unspent_render_and_review_reserves(
     clock = {"now": 100.0}
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
     state = {
-        "terminal_deadline_s": 1_010.0,
+        "terminal_deadline_s": 1_210.0,
         "graph_preview_deadline_s": 270.0,
         "graph_stage_preview_count": 0,
     }
@@ -755,27 +758,40 @@ def test_component_timeout_reuses_unspent_render_and_review_reserves(
         deadlines.staged_timeout_seconds(
             state, phase="components", action="generate", attempt=0
         )
-        == 147.0
+        == 187.0
     )
-    # The retained marketing trace ended its first incomplete stream at 129.955s.
+    clock["now"] += 8.0
+    assert deadlines.staged_timeout_seconds(
+        state, phase="components", action="generate", attempt=0
+    ) == 179.0
+    clock["now"] -= 8.0
+    # A failed stream skips rendering and review, leaving their reserves for recovery.
     clock["now"] += first_duration
     assert deadlines.staged_timeout_seconds(
         state, phase="components", action="generate", attempt=1
     ) == pytest.approx(retry_budget)
     clock["now"] += retry_budget
-    assert state["terminal_deadline_s"] - clock["now"] == 563.0
+    assert state["terminal_deadline_s"] - clock["now"] == 763.0
 
 
 def test_staged_borrowing_leaves_a_complete_correction_path(monkeypatch):
     from agent import deadlines
-    from config import settings
+    from config import (
+        STAGED_COMPONENT_GENERATION_CALLS,
+        STAGED_CONNECTION_GENERATION_CALLS,
+        settings,
+    )
 
     clock = {"now": 100.0}
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
-    state = {"terminal_deadline_s": 1_010.0}
+    state = {"terminal_deadline_s": 1_210.0}
     observed = []
     for phase in ("components", "connections"):
-        for attempt in (0, 1):
+        for attempt in range(
+            STAGED_COMPONENT_GENERATION_CALLS
+            if phase == "components"
+            else STAGED_CONNECTION_GENERATION_CALLS
+        ):
             generate_s = deadlines.staged_timeout_seconds(
                 state,
                 phase=phase,
@@ -792,7 +808,7 @@ def test_staged_borrowing_leaves_a_complete_correction_path(monkeypatch):
             )
             observed.append(review_s)
             clock["now"] += review_s
-    assert observed == [147.0, 55.0, 130.0, 55.0, 130.0, 55.0, 130.0, 55.0]
+    assert observed == [187.0, 55.0, 90.0, 55.0, 130.0, 55.0, 130.0, 55.0, 130.0, 55.0]
     assert (
         deadlines.synthesis_timeout_seconds(state) == settings.graph_synthesis_timeout_s
     )
@@ -968,11 +984,8 @@ def test_measured_completion_path_preserves_patch_and_final_review_time(monkeypa
 
     clock = {"now": 0.0}
     monkeypatch.setattr(deadlines.time, "monotonic", lambda: clock["now"])
-    state = {
-        "terminal_deadline_s": (
-            settings.agent_timeout_s - settings.agent_terminal_headroom_s
-        )
-    }
+    # Keep the measured path's original terminal window to exercise borrowing.
+    state = {"terminal_deadline_s": 910.0}
 
     architecture_s = deadlines.architecture_timeout_seconds(state, review=False)
     assert architecture_s == settings.architecture_role_timeout_s
@@ -1077,7 +1090,7 @@ def test_architecture_and_two_complete_patches_fit_the_request_deadline():
     terminal_window_s = settings.agent_timeout_s - settings.agent_terminal_headroom_s
 
     assert all_stage_caps_s == 873
-    assert terminal_window_s - all_stage_caps_s == 37
+    assert terminal_window_s - all_stage_caps_s == 597
     assert (
         all_stage_caps_s + settings.agent_orchestration_reserve_s <= terminal_window_s
     )
@@ -3453,3 +3466,78 @@ async def test_early_continuity_guard_streams_question_without_changing_graph(
     assert result["clarification_questions"] == [question]
     assert events == [{"type": "response_delta", "content": question}]
     forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("attempt,reserved_s", [(0, 493.0), (1, 293.0), (2, 93.0)])
+@pytest.mark.parametrize("available_s", [10.0, 195.0, 288.0, 360.0, 500.0])
+def test_indexed_connection_review_ceiling_preserves_reserves(
+    monkeypatch, attempt, reserved_s, available_s
+):
+    from agent import deadlines
+
+    monkeypatch.setattr(deadlines.time, "monotonic", lambda: 100.0)
+    state = {"terminal_deadline_s": 100.0 + reserved_s + available_s}
+    assert deadlines.staged_timeout_seconds(
+        state,
+        phase="connections",
+        action="review",
+        attempt=attempt,
+        review_max_timeout_s=360.0,
+    ) == min(360.0, available_s)
+    assert deadlines.staged_timeout_seconds(
+        state,
+        phase="connections",
+        action="review",
+        attempt=attempt,
+    ) == min(195.0, available_s)
+    with pytest.raises(deadlines.StageAdmissionDenied):
+        deadlines.staged_timeout_seconds(
+            {"terminal_deadline_s": 100.0 + reserved_s},
+            phase="connections",
+            action="review",
+            attempt=attempt,
+            review_max_timeout_s=360.0,
+        )
+    assert (
+        deadlines.staged_timeout_seconds(
+            {},
+            phase="connections",
+            action="review",
+            attempt=attempt,
+            review_max_timeout_s=360.0,
+        )
+        == 55.0
+    )
+
+
+@pytest.mark.parametrize(
+    "value", [0, -1, True, False, float("nan"), float("inf"), -float("inf"), "360"]
+)
+def test_indexed_connection_review_ceiling_rejects_invalid_values(value):
+    from agent.deadlines import staged_timeout_seconds
+
+    with pytest.raises(ValueError, match="review_max_timeout_s"):
+        staged_timeout_seconds(
+            {},
+            phase="connections",
+            action="review",
+            attempt=0,
+            review_max_timeout_s=value,
+        )
+
+
+@pytest.mark.parametrize(
+    "phase,action",
+    [("components", "review"), ("components", "generate"), ("connections", "generate")],
+)
+def test_indexed_connection_review_ceiling_rejects_other_stages(phase, action):
+    from agent.deadlines import staged_timeout_seconds
+
+    with pytest.raises(ValueError, match="review_max_timeout_s"):
+        staged_timeout_seconds(
+            {},
+            phase=phase,
+            action=action,
+            attempt=0,
+            review_max_timeout_s=360.0,
+        )

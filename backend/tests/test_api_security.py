@@ -1,4 +1,6 @@
+import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -198,7 +200,7 @@ def test_cloud_run_config_rejects_an_impossible_architecture_deadline():
         configured.validate_for_cloud_run()
 
 
-def test_cloud_run_config_deadline_boundary_includes_contract_correction():
+def test_cloud_run_config_deadline_boundary_includes_all_finite_corrections():
     values = {
         "_env_file": None,
         "supabase_db_url": "postgresql://example",
@@ -215,7 +217,23 @@ def test_cloud_run_config_deadline_boundary_includes_contract_correction():
     with pytest.raises(RuntimeError, match="complete architecture repair path"):
         Settings(**values, agent_timeout_s=932).validate_for_cloud_run()
 
-    Settings(**values, agent_timeout_s=933).validate_for_cloud_run()
+    # The legacy path fits at 933s; all five staged generation/review slots need 1083s.
+    for too_short in (933, 1082):
+        with pytest.raises(RuntimeError, match="complete staged pipeline path"):
+            Settings(**values, agent_timeout_s=too_short).validate_for_cloud_run()
+    Settings(**values, agent_timeout_s=1083).validate_for_cloud_run()
+    Settings(**values).validate_for_cloud_run()
+
+    from config import (
+        STAGED_COMPONENT_GENERATION_CALLS,
+        STAGED_CONNECTION_GENERATION_CALLS,
+        STAGED_GATE_CALLS,
+        STAGED_RENDER_CALLS,
+    )
+
+    assert STAGED_COMPONENT_GENERATION_CALLS == 2
+    assert STAGED_CONNECTION_GENERATION_CALLS == 3
+    assert STAGED_GATE_CALLS == STAGED_RENDER_CALLS == 5
 
 
 @pytest.mark.parametrize(
@@ -224,6 +242,7 @@ def test_cloud_run_config_deadline_boundary_includes_contract_correction():
         {"graph_builder_max_timeout_s": 149},
         {"graph_critic_max_timeout_s": 59},
         {"staged_component_timeout_s": 241},
+        {"staged_component_correction_reserve_s": 241},
         {"staged_connection_timeout_s": 241},
     ],
 )
@@ -1031,14 +1050,23 @@ def test_chat_stream_releases_active_stream_lock(temp_data_dir, monkeypatch):
     thread = create_thread("user-1")
     app = _authed_app()
 
+    from agent import deadlines
+    import api.sse_handler as sse_handler
+
+    clock_s = time.monotonic() + 1_000_000_000.0
+    clock = SimpleNamespace(
+        monotonic=lambda: clock_s, time=time.time, perf_counter=time.perf_counter
+    )
+    monkeypatch.setattr(sse_handler, "time", clock)
+    monkeypatch.setattr(deadlines, "time", clock)
     captured_state = {}
+    loop_times = []
 
     async def fake_run_agent(state, rag_tools, graph_tools, node_detail_tools):
         captured_state.update(state)
+        loop_times.append(asyncio.get_running_loop().time())
         await state["send"]({"type": "done"})
         return {**state, "response_text": "ok", "graph_data": None}
-
-    import api.sse_handler as sse_handler
 
     monkeypatch.setattr(sse_handler, "run_agent", fake_run_agent)
 
@@ -1047,6 +1075,18 @@ def test_chat_stream_releases_active_stream_lock(temp_data_dir, monkeypatch):
             "/api/chat",
             json={"thread_id": thread["id"], "content": "Teach me RAG"},
         )
+
+    assert captured_state["workflow_started_at_s"] == clock.monotonic()
+    assert loop_times[0] != clock.monotonic()
+    assert deadlines._remaining_seconds(captured_state) == pytest.approx(
+        settings.agent_timeout_s - settings.agent_terminal_headroom_s
+    )
+    assert captured_state["graph_preview_deadline_s"] == pytest.approx(
+        clock.monotonic() + settings.graph_preview_timeout_s
+    )
+    assert deadlines._remaining_seconds(
+        {**captured_state, "terminal_deadline_s": clock.monotonic() - 1}
+    ) == 0
 
     assert response.status_code == 200
     assert response.text
@@ -1853,3 +1893,68 @@ async def test_chat_does_not_admit_work_before_response_body_starts(
             )
     model.assert_not_called()
     assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
+
+
+@pytest.mark.parametrize("limit", [0, -1, 131073])
+def test_cloud_run_config_rejects_invalid_indexed_connection_audit_budget(limit):
+    configured = Settings(
+        _env_file=None,
+        supabase_db_url="postgresql://example",
+        anthropic_api_key="anthropic-key",
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        supabase_jwt_issuer="https://project.supabase.co/auth/v1",
+        turnstile_secret_key="turnstile-key",
+        frontend_origin="https://example.com",
+        staged_connection_audit_max_completion_tokens=limit,
+    )
+    with pytest.raises(
+        RuntimeError, match="STAGED_CONNECTION_AUDIT_MAX_COMPLETION_TOKENS"
+    ):
+        configured.validate_for_cloud_run()
+
+
+def test_indexed_connection_audit_budget_default_and_override_validate():
+    values = dict(
+        _env_file=None,
+        supabase_db_url="postgresql://example",
+        anthropic_api_key="anthropic-key",
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        supabase_jwt_issuer="https://project.supabase.co/auth/v1",
+        turnstile_secret_key="turnstile-key",
+        frontend_origin="https://example.com",
+    )
+    default = Settings(**values)
+    assert default.staged_connection_audit_max_completion_tokens == 32768
+    default.validate_for_cloud_run()
+    override = Settings(**values, staged_connection_audit_max_completion_tokens=65536)
+    override.validate_for_cloud_run()
+    assert override.staged_connection_audit_max_completion_tokens == 65536
+
+
+@pytest.mark.parametrize("limit", [0, -1, float("nan"), float("inf"), -float("inf")])
+def test_cloud_run_config_rejects_invalid_indexed_connection_review_ceiling(limit):
+    configured = Settings(
+        _env_file=None,
+        supabase_db_url="postgresql://example",
+        anthropic_api_key="anthropic-key",
+        supabase_url="https://project.supabase.co",
+        supabase_anon_key="anon-key",
+        supabase_jwt_issuer="https://project.supabase.co/auth/v1",
+        turnstile_secret_key="turnstile-key",
+        frontend_origin="https://example.com",
+        staged_connection_audit_max_timeout_s=limit,
+    )
+    with pytest.raises(RuntimeError, match="STAGED_CONNECTION_AUDIT_MAX_TIMEOUT_S"):
+        configured.validate_for_cloud_run()
+
+
+def test_indexed_connection_review_ceiling_default_and_override():
+    assert Settings(_env_file=None).staged_connection_audit_max_timeout_s == 360.0
+    assert (
+        Settings(
+            _env_file=None, staged_connection_audit_max_timeout_s=400.0
+        ).staged_connection_audit_max_timeout_s
+        == 400.0
+    )

@@ -30,15 +30,18 @@ from eval.semantic_gate import DimensionJudgment, JudgeResult
 
 DEFAULT_JUDGE_PROVIDER = "anthropic"
 DEFAULT_JUDGE_MODEL = "gpt-5.4-mini-2026-03-17"
-DEFAULT_ANTHROPIC_JUDGE_MODEL = "claude-sonnet-5"
-JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v19"
+DEFAULT_ANTHROPIC_JUDGE_MODEL = "claude-sonnet-5-5"
+JUDGE_PROMPT_RELEASE = "semantic-rubric-judge-v20"
 _ANTHROPIC_OUTPUT_TOKEN_LIMIT = 16384
+_JUDGE_MAX_PROMPT_CHARS = 160_000
 INPUT_USD_PER_MILLION = 0.75
 OUTPUT_USD_PER_MILLION = 4.50
 _JUDGE_PRICING_USD_PER_MILLION = {
     ("openai", DEFAULT_JUDGE_MODEL): (INPUT_USD_PER_MILLION, OUTPUT_USD_PER_MILLION),
     ("anthropic", DEFAULT_ANTHROPIC_JUDGE_MODEL): (2.00, 10.00),
+    ("anthropic", "claude-sonnet-5"): (2.00, 10.00),
     ("anthropic", "claude-opus-5"): (5.00, 25.00),
+    ("anthropic", "claude-opus-5-5"): (4.00, 20.00),
 }
 _RETRYABLE_JUDGE_ERRORS = (
     TimeoutError,
@@ -123,11 +126,12 @@ def _response_schema(
 
 
 def _anthropic_response_schema(value: Any) -> Any:
+    # Anthropic supports minItems=1; the upper evidence bound remains local.
     if isinstance(value, dict):
         return {
             key: _anthropic_response_schema(child)
             for key, child in value.items()
-            if key not in {"minItems", "maxItems"}
+            if key != "maxItems"
         }
     if isinstance(value, list):
         return [_anthropic_response_schema(child) for child in value]
@@ -352,8 +356,11 @@ For every dimension, return one to three evidence citations and keep the rationa
     }
     # Keep case and rubrics ahead of evidence, and numbered source chunks in source order.
     user = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
-    if len(user) > 80_000:
-        raise RuntimeError("judge evidence packet exceeds the bounded prompt size")
+    if len(user) > _JUDGE_MAX_PROMPT_CHARS:
+        raise RuntimeError(
+            "judge evidence packet exceeds the bounded prompt size "
+            f"(actual_chars={len(user)}, limit_chars={_JUDGE_MAX_PROMPT_CHARS})"
+        )
     return system, user
 
 

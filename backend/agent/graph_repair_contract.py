@@ -5,6 +5,9 @@ import re
 from typing import Any
 
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
+from agent.staged_graph_contract import (
+    COMPONENT_RESPONSIBILITY_MAX_CHARS as _NODE_DESCRIPTION_CHARS,
+)
 
 REPAIR_LAYERS = ("components", "connections", "composition", "render")
 COMPOSITION_FIELDS = ("title", "groups", "sequence", "assumptions")
@@ -17,7 +20,6 @@ REPAIR_LAYER_PATCH_FIELDS = {
 APPROVAL_SCORE = 0.78
 _NODE_LABEL_CHARS = 60
 _NODE_TECHNOLOGY_CHARS = 60
-_NODE_DESCRIPTION_CHARS = 220
 _NODE_TYPES = frozenset(
     {
         "client",

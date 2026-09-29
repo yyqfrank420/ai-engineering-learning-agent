@@ -86,9 +86,19 @@ def _nullable_nonnegative_int(value: Any) -> int | None:
         return None
 
 
+def _eval_web_search_requests(usage: dict[str, Any]) -> int:
+    value = usage.get("web_search_requests", 0)
+    return value if type(value) is int and value >= 0 else 0
+
+
 def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
     fields = {"input_tokens", "output_tokens"} | (
-        {"cache_creation_input_tokens", "cache_read_input_tokens"} & usage.keys()
+        {
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "web_search_requests",
+        }
+        & usage.keys()
     )
     if "incomplete_usage" in str(usage.get("status") or "") or any(
         type(usage.get(field)) is not int or usage[field] < 0 for field in fields
@@ -99,7 +109,21 @@ def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
     return complete if isinstance(complete, bool) else None
 
 
-def _eval_web_search_usage(usage: dict[str, Any]) -> dict[str, Any]:
+def _eval_web_search_usage(
+    usage: dict[str, Any], *, standalone: bool
+) -> dict[str, Any]:
+    if not standalone:
+        return {
+            "web_search_requests": _eval_web_search_requests(usage),
+            **(
+                {
+                    "web_search_usage_complete": usage["web_search_usage_complete"]
+                    is True
+                }
+                if "web_search_usage_complete" in usage
+                else {}
+            ),
+        }
     count = usage.get("web_search_requests")
     valid_count = type(count) is int and count in (0, 1)
     return {
@@ -404,27 +428,33 @@ async def dashboard_eval_telemetry(
         if row.get("thread_id") not in wanted:
             continue
         metadata = row.get("metadata") or {}
-        native_search = metadata.get("web_search") is True or any(
-            key in metadata
-            for key in ("web_search_requests", "web_search_usage_complete")
+        standalone_search = row["model"] == "moonshot-web-search-basic"
+        native_search = (standalone_search and row["provider"] == "moonshot") or (
+            metadata.get("web_search") is True
+            and row["provider"] == "anthropic"
+            and str(row["model"]).startswith("claude-")
         )
+        search_usage = _eval_web_search_usage(metadata, standalone=standalone_search)
         attempts = []
         for attempt in metadata.get("attempts") or []:
             if not isinstance(attempt, dict):
                 continue
             attempts.append(
                 {
-                    **(
-                        _eval_web_search_usage(attempt)
-                        if native_search
-                        or "web_search_requests" in attempt
-                        or "web_search_usage_complete" in attempt
-                        else {}
-                    ),
                     "attempt": max(
                         1, _nonnegative_int(attempt.get("attempt"), default=1)
                     ),
-                    "provider": str(attempt.get("provider") or "unknown")[:64],
+                    "provider": str(
+                        attempt.get("provider")
+                        or (
+                            row["provider"]
+                            if standalone_search
+                            and attempt.get("model") == row["model"]
+                            and len(metadata.get("attempts") or []) == 1
+                            and not row["used_fallback"]
+                            else "unknown"
+                        )
+                    )[:64],
                     "model": str(attempt.get("model") or "unknown")[:128],
                     "status": str(attempt.get("status") or "unknown")[:32],
                     "accepted": (
@@ -446,6 +476,10 @@ async def dashboard_eval_telemetry(
                         attempt.get("cache_read_input_tokens")
                     ),
                     "output_tokens": _nonnegative_int(attempt.get("output_tokens")),
+                    **_eval_web_search_usage(
+                        attempt,
+                        standalone=attempt.get("model") == "moonshot-web-search-basic",
+                    ),
                     "queue_wait_ms": _nonnegative_int(attempt.get("queue_wait_ms")),
                     "duration_ms": _nonnegative_int(attempt.get("duration_ms")),
                     "first_reasoning_delta_ms": _nullable_nonnegative_int(
@@ -473,11 +507,7 @@ async def dashboard_eval_telemetry(
         )
         calls.append(
             {
-                **(
-                    {"web_search": True, **_eval_web_search_usage(metadata)}
-                    if native_search
-                    else {}
-                ),
+                **({"web_search": True} if native_search else {}),
                 "thread_id": row.get("thread_id"),
                 "operation": row["operation"],
                 "provider": row["provider"],
@@ -503,9 +533,30 @@ async def dashboard_eval_telemetry(
                 ),
                 "fallback": row["used_fallback"],
                 "usage_complete": (
-                    all(attempt["usage_complete"] is not False for attempt in attempts)
-                    if attempts
-                    else _eval_usage_complete(metadata)
+                    False
+                    if metadata.get("web_search") is True and not native_search
+                    else (
+                        all(
+                            attempt["usage_complete"] is not False
+                            for attempt in attempts
+                        )
+                        and (
+                            search_usage["web_search_usage_complete"]
+                            if standalone_search
+                            else True
+                        )
+                        and (
+                            type(metadata.get("web_search_requests", 0)) is int
+                            and metadata.get("web_search_requests", 0) >= 0
+                        )
+                        if attempts
+                        else (
+                            _eval_usage_complete(metadata)
+                            if not standalone_search
+                            or search_usage["web_search_usage_complete"]
+                            else False
+                        )
+                    )
                 ),
                 "input_tokens": _nonnegative_int(metadata.get("input_tokens")),
                 "cache_creation_input_tokens": _nonnegative_int(
@@ -515,6 +566,7 @@ async def dashboard_eval_telemetry(
                     metadata.get("cache_read_input_tokens")
                 ),
                 "output_tokens": _nonnegative_int(metadata.get("output_tokens")),
+                **search_usage,
                 "system_chars": _nonnegative_int(metadata.get("system_chars")),
                 "message_chars": _nonnegative_int(metadata.get("message_chars")),
                 "schema_chars": _nonnegative_int(metadata.get("schema_chars")),

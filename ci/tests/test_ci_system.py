@@ -1613,7 +1613,7 @@ def reviewed_calibration_files(tmp_path, monkeypatch):
     monkeypatch.setenv("SOURCE_COMMIT_SHA", "a" * 40)
     monkeypatch.setenv("CORPUS_SHA", behavior_sha)
     monkeypatch.setenv("JUDGE_PROVIDER", "anthropic")
-    monkeypatch.setenv("JUDGE_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("JUDGE_MODEL", "claude-sonnet-5-5")
     monkeypatch.setattr(
         "eval.quality_corpus.load_corpus",
         lambda **kwargs: load_corpus(path=corpus_path, **kwargs),
@@ -1993,10 +1993,10 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     workflow = (ROOT / ".github/workflows/live-eval.yml").read_text(encoding="utf-8")
     manifest = load_manifest()
 
-    assert "timeout-minutes: 100" in workflow
+    assert "timeout-minutes: 135" in workflow
     budgets = manifest["live"]["budgets"]
     settings = Settings(_env_file=None)
-    assert settings.agent_timeout_s == 940
+    assert settings.agent_timeout_s == 1500
     assert settings.anthropic_max_concurrent_streams == 4
     assert budgets["application_turn_timeout_seconds"] == settings.agent_timeout_s + 30
     assert (
@@ -2012,12 +2012,12 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     assert sum(len(case["steps"]) for case in pr_cases) == 11
     # The shared quota includes input classification, generation, paid search,
     # repairs, and provider retries. Runtime behavior determines consumption.
-    assert budgets["application_calls"] == 78
+    assert budgets["application_calls"] == 129
     assert budgets["judge_calls"] == 16
     assert budgets["browser_infrastructure_retry_count"] == 0
-    assert budgets["browser_suite_max_timeout_seconds"] == 4200
+    assert budgets["browser_suite_max_timeout_seconds"] == 6300
     # Keep ten minutes for setup and artifacts around the browser and judge caps.
-    assert 100 * 60 >= (
+    assert 135 * 60 >= (
         budgets["browser_suite_max_timeout_seconds"]
         + budgets["semantic_suite_timeout_seconds"]
         + 10 * 60
@@ -2035,7 +2035,12 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     scheduled = (ROOT / ".github/workflows/scheduled-eval.yml").read_text(
         encoding="utf-8"
     )
-    assert "timeout-minutes: 150" in scheduled
+    assert "timeout-minutes: 190" in scheduled
+    assert 190 * 60 >= (
+        budgets["browser_suite_max_timeout_seconds"]
+        + budgets["semantic_full_suite_timeout_seconds"]
+        + 25 * 60
+    )
     assert (
         "- id: browser\n        name: Start frontend and capture journeys" in scheduled
     )
@@ -2055,7 +2060,7 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     request_timeout = terraform_variables.split(
         'variable "request_timeout_seconds"', 1
     )[1].split("}", 1)[0]
-    assert "default     = 1000" in request_timeout
+    assert "default     = 1560" in request_timeout
     deploy_workflows = "\n".join(
         (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
         for name in ("live-eval.yml", "scheduled-eval.yml", "deploy-production.yml")
@@ -2063,8 +2068,18 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     production = (ROOT / ".github/workflows/deploy-production.yml").read_text(
         encoding="utf-8"
     )
-    assert "timeout-minutes: 35" in production
-    assert deploy_workflows.count("--timeout 1000s") == 3
+    assert "timeout-minutes: 45" in production
+    smoke_cases = [
+        case for case in corpus["cases"]
+        if case["id"] in manifest["live"]["suites"]["smoke"]
+    ]
+    assert len(smoke_cases) == 1 and len(smoke_cases[0]["steps"]) == 1
+    assert 45 * 60 >= (
+        budgets["browser_suite_base_timeout_seconds"]
+        + budgets["application_turn_timeout_seconds"]
+        + 15 * 60
+    )
+    assert deploy_workflows.count("--timeout 1560s") == 3
     assert (
         f"EVALUATION_PROVIDER_ATTEMPT_LIMIT: {budgets['application_calls']}"
         in deploy_workflows

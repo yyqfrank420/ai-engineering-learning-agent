@@ -8,6 +8,7 @@
 # Outputs: `settings` singleton imported by other modules
 # ─────────────────────────────────────────────────────────────────────────────
 
+import math
 from pathlib import Path
 from typing import Literal
 
@@ -20,9 +21,9 @@ GRAPH_MAX_PROTOCOL_CORRECTIONS = 1
 GRAPH_MAX_CONTRACT_CORRECTIONS = 1
 GRAPH_MAX_CRITIC_CALLS = 1 + GRAPH_MAX_REPAIR_ROUNDS + GRAPH_MAX_CONTRACT_CORRECTIONS
 STAGED_COMPONENT_GENERATION_CALLS = 2
-STAGED_CONNECTION_GENERATION_CALLS = 2
-STAGED_GATE_CALLS = 4
-STAGED_RENDER_CALLS = 4
+STAGED_CONNECTION_GENERATION_CALLS = 3
+STAGED_GATE_CALLS = STAGED_COMPONENT_GENERATION_CALLS + STAGED_CONNECTION_GENERATION_CALLS
+STAGED_RENDER_CALLS = STAGED_GATE_CALLS
 
 
 class Settings(BaseSettings):
@@ -39,23 +40,28 @@ class Settings(BaseSettings):
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
 
     # General conversation roles retain their independent fallback policy.
-    orchestrator_model: str = "claude-opus-5"
+    orchestrator_model: str = "claude-opus-5-5"
     explanation_model: str = "claude-sonnet-5-5"
     service_expansion_model: str = "claude-opus-5-5"
     service_expansion_answer_timeout_s: float = 180.0
-    worker_model: str = "claude-opus-5"
+    worker_model: str = "claude-opus-5-5"
     # Applied-design roles are explicit so quality and cost changes cannot drift
     # behind a shared model setting.
-    architecture_model: str = "claude-opus-5"
-    graph_builder_model: str = "kimi-k3"
-    graph_qa_model: str = "claude-sonnet-5"
+    architecture_model: str = "claude-opus-5-5"
+    graph_builder_model: str = "claude-opus-5-5"
+    graph_qa_model: str = "claude-sonnet-5-5"
+    staged_gate_model: str = "claude-opus-5-5"
     # Applied graphs use staged review; legacy remains an explicit rollback.
     graph_pipeline_mode: Literal["legacy", "staged"] = "staged"
-    # Reserve one correction per staged layer. Generation and review may borrow
-    # saved time up to their shared maxima while preserving downstream reserves.
+    # Reserve one component correction and two connection corrections. Generation
+    # and review may borrow saved time while preserving downstream reserves.
     staged_component_timeout_s: float = 130.0
+    # Reserve less for the future correction; its actual call may borrow saved time.
+    staged_component_correction_reserve_s: float = 90.0
     staged_connection_timeout_s: float = 130.0
     staged_gate_timeout_s: float = 55.0
+    # Indexed audits may borrow unused time while preserving downstream reserves.
+    staged_connection_audit_max_timeout_s: float = 360.0
     # Extended thinking budget per agent call (tokens)
     # Extended reasoning budgets used by prototype and production design paths.
     # max_tokens must leave room for both hidden reasoning and the final answer.
@@ -88,8 +94,9 @@ class Settings(BaseSettings):
     architecture_max_completion_tokens: int = 12000
     graph_builder_max_completion_tokens: int = 65536
     graph_qa_max_completion_tokens: int = 16384
+    staged_connection_audit_max_completion_tokens: int = 32768
     # Hard timeout on the whole agent run (seconds); yields a timeout error event
-    agent_timeout_s: int = 940
+    agent_timeout_s: int = 1500
     # Graph work must leave fixed synthesis, persistence, and transport headroom.
     agent_terminal_headroom_s: float = 30.0
     # Stage admission keeps this time inside the terminal window for orchestration.
@@ -109,7 +116,7 @@ class Settings(BaseSettings):
     # reserves every remaining review, repair, and correction attempt.
     graph_critic_max_timeout_s: float = 195.0
     graph_patch_timeout_s: float = 90.0
-    # Kimi may use time saved by earlier stages up to this per-call ceiling.
+    # The builder may use time saved by earlier stages up to this per-call ceiling.
     # Deadline admission still preserves the complete downstream review path.
     graph_builder_max_timeout_s: float = 240.0
     # Keep removed names visible so stale deployment overrides fail at startup
@@ -431,13 +438,22 @@ class Settings(BaseSettings):
             "GRAPH_CRITIC_TIMEOUT_S": self.graph_critic_timeout_s,
             "GRAPH_CRITIC_MAX_TIMEOUT_S": self.graph_critic_max_timeout_s,
             "GRAPH_QA_MAX_COMPLETION_TOKENS": self.graph_qa_max_completion_tokens,
+            "STAGED_CONNECTION_AUDIT_MAX_COMPLETION_TOKENS": (
+                self.staged_connection_audit_max_completion_tokens
+            ),
             "GRAPH_PATCH_TIMEOUT_S": self.graph_patch_timeout_s,
             "GRAPH_SYNTHESIS_TIMEOUT_S": self.graph_synthesis_timeout_s,
             "SERVICE_EXPANSION_ANSWER_TIMEOUT_S": self.service_expansion_answer_timeout_s,
             "GRAPH_FINALIZATION_RESERVE_S": self.graph_finalization_reserve_s,
             "STAGED_COMPONENT_TIMEOUT_S": self.staged_component_timeout_s,
+            "STAGED_COMPONENT_CORRECTION_RESERVE_S": (
+                self.staged_component_correction_reserve_s
+            ),
             "STAGED_CONNECTION_TIMEOUT_S": self.staged_connection_timeout_s,
             "STAGED_GATE_TIMEOUT_S": self.staged_gate_timeout_s,
+            "STAGED_CONNECTION_AUDIT_MAX_TIMEOUT_S": (
+                self.staged_connection_audit_max_timeout_s
+            ),
             "LLM_MAX_RETRIES": self.llm_max_retries,
             "LLM_DEFAULT_MAX_TOKENS": self.llm_default_max_tokens,
             "LLM_MAX_TOKENS": self.llm_max_tokens,
@@ -470,6 +486,8 @@ class Settings(BaseSettings):
             "FAISS_ARTIFACT_MAX_EXTRACTED_BYTES": self.faiss_artifact_max_extracted_bytes,
             "FAISS_ARTIFACT_MAX_FILES": self.faiss_artifact_max_files,
         }
+        if not math.isfinite(self.staged_connection_audit_max_timeout_s):
+            raise RuntimeError("STAGED_CONNECTION_AUDIT_MAX_TIMEOUT_S must be finite.")
         invalid = sorted(name for name, value in positive_limits.items() if value <= 0)
         if invalid:
             raise RuntimeError(
@@ -484,6 +502,7 @@ class Settings(BaseSettings):
             self.graph_preview_design_timeout_s,
             self.graph_patch_timeout_s,
             self.staged_component_timeout_s,
+            self.staged_component_correction_reserve_s,
             self.staged_connection_timeout_s,
         ):
             raise RuntimeError(
@@ -522,7 +541,9 @@ class Settings(BaseSettings):
                 "and orchestration reserve."
             )
         complete_staged_pipeline_path_s = (
-            STAGED_COMPONENT_GENERATION_CALLS * self.staged_component_timeout_s
+            self.staged_component_timeout_s
+            + (STAGED_COMPONENT_GENERATION_CALLS - 1)
+            * self.staged_component_correction_reserve_s
             + STAGED_CONNECTION_GENERATION_CALLS * self.staged_connection_timeout_s
             + STAGED_GATE_CALLS * self.staged_gate_timeout_s
             + STAGED_RENDER_CALLS * self.diagram_evaluation_timeout_s
@@ -546,6 +567,9 @@ class Settings(BaseSettings):
                 self.graph_builder_max_completion_tokens
             ),
             "GRAPH_QA_MAX_COMPLETION_TOKENS": self.graph_qa_max_completion_tokens,
+            "STAGED_CONNECTION_AUDIT_MAX_COMPLETION_TOKENS": (
+                self.staged_connection_audit_max_completion_tokens
+            ),
         }
         above_hard_cap = sorted(
             name
