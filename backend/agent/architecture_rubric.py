@@ -305,8 +305,8 @@ def staged_review_requirements(
     excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
-    # Detail depth guides generation. The completed graph review owns production
-    # controls; component review checks scope, ownership, and feasibility.
+    # Component review establishes control ownership before components freeze;
+    # connection review checks the required contracts and transitions.
     excluded.update({"domain_specificity", "succinctness", "selected_depth"})
     requirements = {
         code: requirement
@@ -337,6 +337,23 @@ def staged_review_requirements(
             "for required runtime or control interactions."
         )
     if stage == "components":
+        if maturity == "production":
+            requirements["brief_coverage"] += (
+                " Give applicable required production controls executable ownership "
+                "before component responsibilities freeze. When this system owns an "
+                "update or release of a model, prompt, ranking, or live configuration, "
+                "require ownership of curated versioned evidence including hostile "
+                "traces, offline evaluation, reviewed immutable release, canary, "
+                "promotion, rollback, and recorded outcomes. Compatible controls may "
+                "share an existing executable owner. Upstream curation or evaluation "
+                "may be supplied by an explicitly declared external dependency with "
+                "those responsibilities. A metrics-only monitor, passive artifact "
+                "store, or the word 'reviewed' alone does not establish curation or "
+                "evaluation ownership. Assess responsibility feasibility at this stage; "
+                "do not require edges or transition proof before connections are "
+                "authored. Frozen inference without an owned update or release does "
+                "not require these learning and release controls."
+            )
         requirements["mece_scope"] = (
             "Give each material responsibility a clear executable owner. Block "
             "conflicting material ownership that makes required behavior or controls "

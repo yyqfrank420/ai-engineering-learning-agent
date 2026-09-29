@@ -739,7 +739,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v32"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v33"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 

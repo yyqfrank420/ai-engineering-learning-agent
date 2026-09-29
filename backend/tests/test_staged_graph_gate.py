@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v22"
+        "staged_component_gate_v23"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -487,6 +487,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
+        elif stage == "components" and maturity == "production" and code == "brief_coverage":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "before component responsibilities freeze" in requirement
+            assert "do not require edges or transition proof" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
