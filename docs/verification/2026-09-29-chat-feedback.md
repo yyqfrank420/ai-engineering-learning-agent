@@ -299,3 +299,24 @@ https://platform.claude.com/docs/en/build-with-claude/streaming
 Protected recovery still fails closed when the source base or evaluator code differs.
 Main has advanced and this transport file changed; the old run cannot be advertised
 as current protected approval. Neither review findings nor CI policy were altered.
+
+## Education streaming verification, 2026-09-29
+
+The user authorized one education-only call through the fixed stream path. It
+completed with one judge attempt, zero new application calls and full usage:
+23,987 input tokens,9,363 output tokens,$0.141604. No retry, no cached generation.
+The verdict remains manual_review: relevance borderline; correctness, grounding,
+instruction_following and domain_specificity pass. The relevance rationale again
+requests engineering-education pedagogy/curricular debate because retrieved research
+contains it, though the user's request is to explain AI engineering in education.
+This confirms streaming completed this previously failing long request; it does not
+prove all transport errors are resolved or convert the saved verdict into pass.
+Artifacts: work/component-repair-verification/education-stream-verification.
+
+## PyJWT security audit follow-up
+
+Current-head CI found PyJWT2.13.0 affected by CVE-2026-102274. Updated only its
+requirements pin to2.14.0, the upstream patched release (GHSA-w6j9-cwv2-h6wq).
+18 focused auth/runtime tests passed against the upgraded environment. The
+CI-equivalent pip_audit against backend/requirements.txt reports no known
+vulnerabilities. No authentication behavior or generation settings were changed.
