@@ -21,6 +21,7 @@ const edges: GraphEdge[] = [
 
 const props = {
   node,
+  nodes: [node, { ...node, id: 'store', label: 'Vector index' }, { ...node, id: 'other', label: 'Other node' }],
   edges,
   onClose: vi.fn(),
   onTellMeMore: vi.fn(),

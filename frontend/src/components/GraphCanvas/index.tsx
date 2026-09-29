@@ -417,6 +417,7 @@ export function GraphCanvas({
             <NodeDetailPopup
               key={inspectionRequestId}
               node={inspectedNode}
+              nodes={graphData.nodes}
               edges={graphData.edges}
               onClose={closeEditor}
               onTellMeMore={onTellMeMore}

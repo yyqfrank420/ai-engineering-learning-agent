@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 import type { GraphContentEdit, GraphEdge, GraphNode, NodeType } from '../../types';
 import { TYPE_STYLE } from '../../utils/graphColors';
+import { diagramConnections } from './diagramConnections';
 import './NodeDetailPopup.css';
 
 const NODE_TYPES: NodeType[] = [
@@ -38,6 +39,7 @@ type InvalidField = { field: 'name' | 'node-description' | 'edge-label' | 'edge-
 
 interface NodeDetailPopupProps {
   node: GraphNode;
+  nodes: GraphNode[];
   edges: GraphEdge[];
   onClose: () => void;
   onTellMeMore: (node: GraphNode) => void;
@@ -103,6 +105,7 @@ function editFromDraft(nodeId: string, before: Draft, after: Draft): GraphConten
 
 export function NodeDetailPopup({
   node,
+  nodes,
   edges,
   onClose,
   onTellMeMore,
@@ -141,6 +144,8 @@ export function NodeDetailPopup({
   const shownNode = dirty && node.id !== selection.node.id ? selection.node : node;
   const shownEdges = dirty && node.id !== selection.node.id ? selection.edges : edges;
   const connections = incidentEdges(shownNode.id, shownEdges);
+  const connectionGroups = diagramConnections(connections.map(({ edge }) => edge));
+  const nodeLabels = new Map(nodes.map(peer => [peer.id, peer.label]));
   const canEdit = Boolean(onSave) && !editingDisabled;
   const showExpandGraph = shownNode.type !== 'decision';
 
@@ -344,17 +349,30 @@ export function NodeDetailPopup({
         <button type="button" onClick={() => onTellMeMore(shownNode)}>Tell me more</button>
         {showExpandGraph && <button type="button" onClick={() => onExpandGraph(shownNode)}>Expand graph</button>}
       </div>
-      <p className="node-inspector__hint">{showExpandGraph
-        ? 'Ask the chat to explain this part or expand the nearby graph structure.'
-        : 'Ask the chat to explain this constraint more clearly.'}</p>
-      {connections.length > 0 && <section className="node-inspector__connections" aria-label="Connections">
+      {connectionGroups.length > 0 && <section className="node-inspector__connections" aria-label="Connections">
         <h3>Connections</h3>
-        {connections.map(({ edge, index }) => <div className="node-inspector__connection-summary" key={index}>
-          <span aria-hidden="true">{edge.source === shownNode.id ? '→' : '←'}</span>
-          <span>{edge.label}</span>
-          {edge.technology && <small>{edge.technology}</small>}
-          {edge.sync === 'async' && <small>ASYNC</small>}
-        </div>)}
+        {connectionGroups.map(connection => {
+          const peerId = connection.edge.source === shownNode.id ? connection.edge.target : connection.edge.source;
+          const peerLabel = nodeLabels.get(peerId) || peerId;
+          const selfLoop = peerId === shownNode.id;
+          const direction = connection.bidirectional ? 'To and from' : connection.edge.source === shownNode.id ? 'To' : 'From';
+          return <details className="node-inspector__connection" key={JSON.stringify([shownNode.id, connection.id])}>
+            <summary className="node-inspector__connection-summary">
+              <span>{selfLoop ? 'Within this component' : <><span className="node-inspector__peer-direction">{direction}</span>{' '}{peerLabel}</>}</span>
+              <svg className="node-inspector__disclosure" aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="m6 4 4 4-4 4" /></svg>
+            </summary>
+            <ul className="node-inspector__connection-details">
+              {connection.members.map((edge, index) => <li key={index}>
+                <p className="node-inspector__edge-context">{selfLoop ? 'Within this component' : `${edge.source === shownNode.id ? 'To' : 'From'} ${peerLabel}`}</p>
+                <p>{edge.label}</p>
+                {(edge.technology || edge.sync === 'async') && <div className="node-inspector__edge-metadata">
+                  {edge.technology && <span>{edge.technology}</span>}
+                  {edge.sync === 'async' && <span>Asynchronous</span>}
+                </div>}
+              </li>)}
+            </ul>
+          </details>;
+        })}
       </section>}
     </div> : <form className="node-inspector__form" onSubmit={save}>
       <label>Name<input ref={nameRef} aria-label="Name" value={draft.node.label} maxLength={60}

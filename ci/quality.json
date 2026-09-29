@@ -236,6 +236,20 @@
     ],
     "reviewed_presentation_changes": [
       {
+        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
+        "before_blob": "71f61787daf79fcc28e4bc53396c75a516f72cec",
+        "after_blob": "66f48325c1538c382f52877415677bbd34f1e699",
+        "reason": "Style collapsed connection summaries, disclosure focus and expanded metadata within the interactive node inspector; graph rendering and capture styles are unchanged.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.tsx",
+        "before_blob": "697686d56e3073b94a4b7ebc52dc425291ceb8c7",
+        "after_blob": "94fdea24a13bbf2e445a17f3ae11b50baab504a7",
+        "reason": "Group read-only connection details into collapsed peer rows with explicit direction labels; preserve every directed record, editor index and existing action callback.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
         "before_blob": "a935d524899ba20cffb60813cb3e363062cf0ad6",
         "after_blob": "af35270fb964e9306cefc92c88778fde8144a627",
@@ -245,8 +259,8 @@
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
         "before_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
-        "after_blob": "c51d869e9695c78f6e7b14a096e383e51724cfc8",
-        "reason": "Reset pristine node inspectors on normal selection and rebind pane measurements; preserve dirty drafts and existing save/generation protocols.",
+        "after_blob": "8dd214987014f83406989165610bae073ff34f5e",
+        "reason": "Reset pristine node inspectors on normal selection, rebind pane measurements and pass peer labels to the detail view; preserve dirty drafts and existing save/generation protocols.",
         "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
