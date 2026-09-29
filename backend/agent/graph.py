@@ -196,7 +196,7 @@ def build_agent_workflow(
         existing = state.get("graph_data") or state.get("approved_graph_data")
         if routed.get("graph_intent") == "create" and existing:
             question = "Start a new chat for a different diagram, or extend the saved diagram?"
-            await state["send"]({"type": "response_delta", "delta": question})
+            await state["send"]({"type": "response_delta", "content": question})
             return {
                 **state,
                 "graph_data": existing,
@@ -988,7 +988,7 @@ async def run_agent(
             "Start a new chat for a different diagram, or extend the saved diagram?"
             if state.get("graph_data") else "Create a diagram first, then add the new layer."
         )
-        await state["send"]({"type": "response_delta", "delta": question})
+        await state["send"]({"type": "response_delta", "content": question})
         return {**state, "graph_changed": False, "graph_intent": None,
                 "graph_publication": "unchanged" if state.get("graph_data") else "none",
                 "response_text": question, "clarification_questions": [question],

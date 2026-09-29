@@ -992,11 +992,18 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setSelectedNode(null);
   }, []);
 
+  // Match the canvas choice: component-only edits keep the existing connected graph.
+  const displayedGraph = graphPreview?.edges.length === 0 && graphData?.edges.length
+    ? graphData : graphPreview ?? graphData;
+  const displayedGraphPainted = !!displayedGraph
+    && renderedGraphKey === graphStructureKey(displayedGraph);
+
   const stopGeneration = useCallback(() => {
     const review = reviewRef.current;
     const requestId = activeChatStreamIdRef.current;
-    if (review && requestId) {
-      if (review.status !== 'reviewing') return;
+    if (review && requestId && review.status !== 'reviewing') return;
+    if (review && requestId && graphPreview && displayedGraph === graphPreview
+      && displayedGraphPainted && displayedGraph.version === review.version) {
       if (agentTransport.acceptPreview(requestId, review.version)) {
         reviewRef.current = { ...review, status: 'pending' };
         setIsFinishingDiagram(true);
@@ -1042,7 +1049,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         authSession,
       );
     }
-  }, [authSession, publishGraph]);
+  }, [authSession, publishGraph, displayedGraphPainted, displayedGraph, graphPreview]);
 
   // Keep storage complete while the learner waits for the committed diagram to paint.
   // D3 acknowledges its layout after fonts and two animation frames have settled.
@@ -1060,11 +1067,6 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     || waitingForGraphPaint
   );
   const turnIndex = answerTurn ? messages.findIndex(message => message.id === answerTurn.userId) : -1;
-  // Match the canvas choice: component-only edits keep the existing connected graph.
-  const displayedGraph = graphPreview?.edges.length === 0 && graphData?.edges.length
-    ? graphData : graphPreview ?? graphData;
-  const displayedGraphPainted = !!displayedGraph
-    && renderedGraphKey === graphStructureKey(displayedGraph);
   const visibleMessages = answerPending && turnIndex >= 0
     ? messages.filter((message, index) => index <= turnIndex || message.role !== 'assistant'
       || (message.kind === 'explanation' && !!message.graphVersion && displayedGraphPainted

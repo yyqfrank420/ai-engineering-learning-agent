@@ -67,3 +67,28 @@ paid run. The live run validates the preceding frozen source plus the same gener
 
 The prior PR61 staging research connection-wire failure remains open. This change does not
 claim that the ordinary generation quality gate or production deployment has passed.
+
+## PR review corrections
+
+GPT-6 Sol at extra-high effort reviewed the full PR and found three defects:
+
+- A typed Extend request at graph capacity could fall through to a rebuild when the request
+  contained rebuild wording, including "do not rebuild". Scope failures now preserve the saved
+  graph and contract before interpreting that text or calling a generator.
+- Stop could accept a component preview hidden behind the saved connected graph. Acceptance
+  now requires the exact preview to be displayed, painted and matched to the review version.
+  Missing, hidden and unpainted previews retain cancellation behavior.
+- Both continuity clarification guards sent `response_delta.delta`, while the frontend reads
+  `response_delta.content`. Both writers and their regression tests now use the protocol field.
+
+The final frontend suite passed 550 tests across 43 files. Focused backend suites passed 202
+staged workflow tests and 121 agent workflow tests. Scoped lint, TypeScript and diff checks
+passed. The reviewer independently ran 16 backend regression scenarios and confirmed all
+three findings were resolved without a new regression.
+
+A provider-free browser fixture verified Stop on a painted component preview sends
+`accept_preview`, then receives connections and an answer. With an existing connected graph
+visible and a hidden component preview, Stop sends `stop` and preserves the saved diagram.
+The fixture deliberately reused a version identifier to check payload identity as well as
+version matching. Browser console checks found no warnings or errors. No paid model calls
+were used for these deterministic scope, protocol and interaction corrections.

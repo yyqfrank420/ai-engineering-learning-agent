@@ -3397,9 +3397,59 @@ async def test_late_create_routing_preserves_saved_graph_without_generation(
     assert result["graph_contract"] == contract
     assert result["graph_changed"] is False
     assert result["graph_publication"] == "unchanged"
+    assert result["graph_intent"] is None
     assert result["graph_operation"]["status"] == "needs_clarification"
+    assert result["response_text"] == (
+        "Start a new chat for a different diagram, or extend the saved diagram?"
+    )
     assert result["clarification_questions"] == [result["response_text"]]
     assert [event for event in events if event["type"] == "response_delta"] == [
-        {"type": "response_delta", "delta": result["response_text"]}
+        {"type": "response_delta", "content": result["response_text"]}
     ]
     forbidden.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["legacy", "staged"])
+@pytest.mark.parametrize("action", ["new", "extend"])
+async def test_early_continuity_guard_streams_question_without_changing_graph(
+    monkeypatch, mode, action
+):
+    from unittest.mock import Mock
+
+    from agent import graph as agent_graph
+    from config import settings
+
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    graph = (
+        {"version": "saved-v1", "nodes": [{"id": "saved"}], "edges": []}
+        if action == "new" else None
+    )
+    contract = {"graph_version": "saved-v1", "source": "staged"} if graph else None
+    forbidden = Mock(side_effect=AssertionError("clarification must stop before routing"))
+    monkeypatch.setattr(settings, "graph_pipeline_mode", mode)
+    monkeypatch.setattr(agent_graph, "build_agent_workflow", forbidden)
+    result = await agent_graph.run_agent(
+        {**_state(send), "graph_action": action, "graph_data": graph,
+         "graph_contract": contract},
+        [], [], [],
+    )
+
+    question = (
+        "Start a new chat for a different diagram, or extend the saved diagram?"
+        if graph else "Create a diagram first, then add the new layer."
+    )
+    assert result["graph_data"] == graph
+    assert result["graph_contract"] == contract
+    assert result["graph_changed"] is False
+    assert result["graph_intent"] is None
+    assert result["graph_publication"] == ("unchanged" if graph else "none")
+    assert result["graph_operation"]["status"] == "needs_clarification"
+    assert result["response_text"] == question
+    assert result["clarification_questions"] == [question]
+    assert events == [{"type": "response_delta", "content": question}]
+    forbidden.assert_not_called()

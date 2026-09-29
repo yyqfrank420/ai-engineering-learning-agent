@@ -807,6 +807,40 @@ describe('useAgentStream', () => {
     }
   });
 
+  it.each(['missing', 'unpainted', 'retained', 'same-version', 'components', 'connections'] as const)(
+    'accepts only the exact painted review preview: %s', scenario => {
+      mocks.acceptPreview.mockReturnValue(true);
+      const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+      const durable: GraphData = { ...graph('saved'), edges: [{ source: 'agent', target: 'agent', label: 'flow', technology: '', sync: 'sync', description: '' }] };
+      if (scenario === 'retained' || scenario === 'missing' || scenario === 'same-version') {
+        act(() => result.current.hydrateThread({ messages: [], graphData: durable }));
+      }
+      act(() => { result.current.sendMessage('design'); });
+      const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+      const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+      const candidate: GraphData = { ...graph(scenario === 'same-version' || scenario === 'missing' ? 'saved' : 'candidate'), edges: scenario === 'connections' ? durable.edges : [] };
+      if (scenario !== 'missing') emit({ type: 'graph_preview', data: candidate });
+      if (scenario !== 'unpainted') {
+        act(() => result.current.acknowledgeGraphRendered(graphStructureKey(
+          scenario === 'retained' || scenario === 'missing' || scenario === 'same-version' ? durable : candidate,
+        )));
+      }
+      emit({ type: 'graph_review_status', status: 'reviewing', graph_version: candidate.version!, stage: scenario === 'connections' ? 'connections' : 'components' });
+      act(() => result.current.stopGeneration());
+      if (scenario === 'components' || scenario === 'connections') {
+        expect(mocks.acceptPreview).toHaveBeenCalledExactlyOnceWith(clientRequestId, 'candidate');
+        expect(mocks.stopGeneration).not.toHaveBeenCalled();
+        expect(result.current.isFinishingDiagram).toBe(true);
+      } else {
+        expect(mocks.acceptPreview).not.toHaveBeenCalled();
+        expect(mocks.stopGeneration).toHaveBeenCalledExactlyOnceWith(clientRequestId);
+        expect(result.current.graphData).toEqual(scenario === 'unpainted' ? null : durable);
+        expect(result.current.graphPreview).toBeNull();
+        expect(result.current.isFinishingDiagram).toBe(false);
+      }
+    },
+  );
+
   it('accepts review once and keeps receiving synthesis until done', () => {
     mocks.acceptPreview.mockReturnValue(true);
     const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
@@ -814,6 +848,7 @@ describe('useAgentStream', () => {
     const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
     const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
     emit({ type: 'graph_preview', data: graph('v1') });
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphPreview)));
     emit({ type: 'graph_review_status', status: 'reviewing', graph_version: 'v1', stage: 'connections' });
     act(() => { result.current.stopGeneration(); result.current.stopGeneration(); });
     expect(mocks.acceptPreview).toHaveBeenCalledExactlyOnceWith(clientRequestId, 'v1');
@@ -836,6 +871,8 @@ describe('useAgentStream', () => {
     const { result, unmount } = renderHook(() => useAgentStream(session, 'thread-1'));
     act(() => { result.current.sendMessage('design'); });
     const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    act(() => mocks.eventHandler?.({ type: 'graph_preview', data: graph('v1') }, { kind: 'chat', clientRequestId }));
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphPreview)));
     act(() => mocks.eventHandler?.({ type: 'graph_review_status', status: 'reviewing', graph_version: 'v1', stage: 'connections' }, { kind: 'chat', clientRequestId }));
     act(() => result.current.stopGeneration());
     act(() => mocks.eventHandler?.({ type: 'command_rejected', command_type: 'accept_preview', reason: 'Review already ended' }, { kind: 'chat', clientRequestId }));

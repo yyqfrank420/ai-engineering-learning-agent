@@ -1242,6 +1242,15 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 add_only=state.get("graph_action") == "extend",
             )
         except ValueError:
+            if state.get("graph_action") == "extend":
+                return await _failed(
+                    state,
+                    "staged_extension_scope_unavailable",
+                    revision_instruction=(
+                        "I couldn't extend the saved diagram. "
+                        "Start a new chat for a separate diagram."
+                    ),
+                )
             if not _EXPLICIT_GRAPH_REBUILD.search(raw_request):
                 return await _failed(
                     state,

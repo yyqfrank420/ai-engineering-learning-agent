@@ -4709,3 +4709,35 @@ async def test_generation_feedback_completes_before_render_and_review(monkeypatc
         reviewed = next(i for i, e in enumerate(events)
                         if e.get("phase") == "review" and e.get("title") == f"Checking {stage}")
         assert completed < rendered < reviewed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capacity", ["nodes", "edges"])
+@pytest.mark.parametrize("user_request", [
+    "Add a monitoring layer; do not rebuild the graph.",
+    "Rebuild the graph with a monitoring layer.",
+])
+async def test_typed_extension_at_capacity_never_falls_back_to_rebuild(
+    monkeypatch, capacity, user_request
+):
+    calls = []
+    _install_success_boundaries(monkeypatch, events=calls)
+    saved = _accepted_staged_graph()
+    contract = {"maturity": "prototype", "capabilities": {}}
+    monkeypatch.setattr(workflow.settings, f"graph_safety_max_{capacity}", len(saved[capacity]))
+
+    result = await workflow.run_staged_graph_pipeline(_state(
+        graph_action="extend", graph_intent="edit", user_message=user_request, design_query=user_request,
+        graph_data=saved, approved_graph_data=saved,
+        graph_contract=contract, approved_graph_contract=contract,
+    ))
+
+    assert calls == []
+    assert result["graph_data"] == saved
+    assert result["graph_contract"] == contract
+    assert result["graph_changed"] is False
+    assert result["graph_publication"] == "preserved"
+    assert result["graph_operation"]["failure_code"] == "staged_extension_scope_unavailable"
+    assert result["graph_review"]["revision_instruction"] == (
+        "I couldn't extend the saved diagram. Start a new chat for a separate diagram."
+    )
