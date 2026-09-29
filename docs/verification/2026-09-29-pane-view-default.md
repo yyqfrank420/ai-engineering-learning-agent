@@ -42,7 +42,7 @@ recorded in ci/quality.json through the existing presentation review mechanism.
 
 The full frontend suite passes 496 tests in 41 files with coverage. Lint,
 TypeScript and the production build pass. Statement coverage is 93.37%, branch
-coverage 85.50%, function coverage 95.36% and line coverage 95.78%. Tests cover
+coverage 85.50%, function coverage 95.26% and line coverage 95.78%. Tests cover
 pointer activation, double-click suppression, retained F2 editing, DOM order during
 click and drag, clean reselection after all editing entry points, and dirty drafts.
 Connection checks cover hidden metadata, both directions, parallel exchanges,
@@ -73,9 +73,16 @@ completed save and reload successfully. These fixture lifecycle errors are separ
 from the pane change. Local evidence and fixture scripts remain in work/pane-view-check
 in the task workspace.
 
-## Existing dependency issue
+## Dependency audit
 
-The required npm audit reports one existing moderate advisory in the jsdom development dependency undici
-7.28.0-7.29.0 (GHSA-3wwx-pv8p-q78v). This patch leaves package.json and package-lock.json
-unchanged. The Node test runner also emits its existing experimental localStorage
-warning. Neither issue is introduced by this change.
+The first PR run passed frontend tests and build, then failed the required audit
+on an existing moderate advisory in jsdom's development dependency undici 7.29.0
+(GHSA-3wwx-pv8p-q78v). The lockfile now pins its patch release 7.29.1, using the
+registry's published tarball URL and integrity hash. No direct or production
+dependency changes. An isolated npm ci install, audit, all 496 frontend tests with
+coverage, lint and build pass; npm audit reports zero vulnerabilities. The shared
+dependency directory used by other worktrees was left unchanged.
+
+The lockfile change requires the existing protected staging evaluation before
+merge. The presentation review records do not exempt dependencies. The Node test
+runner still emits its existing experimental localStorage warning.
