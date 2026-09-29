@@ -96,12 +96,12 @@ type, range and 32-citation limits, including the requirement that empty candida
 have no cited indexes. Empty-array cardinality remains a runtime check because the
 provider removes maxItems. A fixed schema template keeps the review policy identity
 stable when a correction changes the number of records. Component and connection
-review prompt versions are v22 and v28.
+review prompt versions are v23 and v28.
 
 Recovery prompts preserve cited witness records when additions can resolve a
 finding. Connection corrections must preserve root-to-primary directed paths when
 removing or retargeting records. Component corrections receive only instructions
-within their stage's authority. Generation prompt versions are v32 and v28.
+within their stage's authority. Generation prompt versions are v33 and v28.
 The final reachability validator, correction permissions, attempt limits and
 provider budgets remain unchanged.
 
@@ -128,3 +128,42 @@ the manifest validates. Independent review found no outstanding defects. Existin
 Starlette BlockingPortal and LangChain import deprecations remain; neither
 dependency nor import was changed. Bandit also reports two existing redundant
 suppressions in the CI runner, with no security findings.
+
+## Production component ownership
+
+Production component generation and review now require executable ownership of
+applicable release controls before component responsibilities freeze. Evidence
+curation, offline evaluation and controlled release operations can share compatible
+owners. An explicitly declared upstream dependency may own curation or evaluation.
+Frozen inference without an owned update or release remains exempt. Connection
+review still owns contract and transition proof. The existing brief_coverage rule
+carries this requirement; no rules, model calls, attempt limits or budgets were
+added. Component generation v33 and component gate v23 identify this policy.
+A normal code deployment rollback restores the prior policy.
+
+Runtime revision a69cc062920359935c121b8fab2097ce63e303d7 passed fresh local
+browser verification on 2026-09-29 using the same isolated dev account, SQLite
+storage, retrieval artifacts and real providers at 127.0.0.1:5212. A serving request
+produced a five-component diagram and completed answer. Expanding its monitor added
+exactly one connected responsibility and retained the original components. The
+parent opened normal details, expanded a named connection, edited and saved the
+monitor's name, then reloaded and reopened the conversation. The six-component
+diagram, saved edit and both answers persisted.
+
+A separate request explicitly included an owned model release pipeline. Its
+accepted design included evidence curation and offline evaluation owners, a release
+controller, canary control, and recorded promotion and rollback outcomes. The
+parent inspected the complete rendered diagram and answer, then reloaded and
+reopened the saved conversation. Browser error and warning logs were empty.
+All three turns completed without an LLM provider failure or correction. The local
+iteration used 16 of its 24 permitted provider attempts. Web search reported a
+provider failure and an empty fallback; generation completed with available
+retrieval evidence. This does not establish general web-search reliability.
+
+Focused policy, generation, gate and regression checks passed 507 tests. The full
+backend suite passed 3,111 tests with two environment-dependent skips and 91.85%
+statement coverage. Ruff, Bandit and all three dependency audits passed. CI policy
+passed 368 tests with five skips, and the manifest validated. Independent source
+review found no actionable defects. Existing dependency deprecations and redundant
+Bandit suppressions are unchanged. Protected staging evaluation remains required
+before merge.
