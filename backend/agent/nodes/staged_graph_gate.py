@@ -26,7 +26,7 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v22"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v23"
 _CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v27"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
@@ -346,7 +346,14 @@ def _prompt(
     return (
         f"Review the {gate} candidate records for the requested architecture.\n"
         "Return only the JSON response defined by the supplied schema.\n"
-        "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
+        + (
+            "Evaluate capability_classification first from declared behavior, then assess "
+            "applicable ownership in the same pass even when the supplied flags are wrong. "
+            "Apply each downstream control only to the behavior covered by its own clauses; "
+            "a capability flag does not activate every clause or require unrelated features.\n"
+            if gate == "components" else ""
+        )
+        + "Return a rule_reviews array containing each required rule_code exactly once. Set satisfied from the "
         "candidate evidence, with one short reason identifying its concrete witness or "
         "explaining why the rule is inapplicable. Attribute mechanisms only when the "
         "cited records state them; identify unspecified detail without claiming it exists. "

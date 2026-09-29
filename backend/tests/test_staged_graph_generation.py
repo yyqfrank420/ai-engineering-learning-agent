@@ -874,7 +874,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v34"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v35"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2154,6 +2154,15 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
         review_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
     assert generated == reviewed == staged_review_requirements("components", maturity)
+    assert generated_input["acceptance_criteria_order"] == list(reviewed) == [
+        "capability_classification", "objective_fidelity", "mece_scope", "brief_coverage",
+    ]
+    assert "Evaluate capability_classification first from declared behavior" in review_prompt
+    assert "same pass even when the supplied flags are wrong" in review_prompt
+    assert "covered by its own clauses" in review_prompt
+    assert "A prior satisfied coverage review that depended on the old flags" in prompt
+    assert "Change only fields authorized by the write set and supplied schema" in prompt
+    assert "do not introduce capabilities or unrelated controls" in prompt
     assert (
         generated.keys() == staged_review_requirements("components", "prototype").keys()
     )
@@ -3255,6 +3264,7 @@ def test_targeted_global_criterion_has_explicit_metadata_scope(code, metadata):
         == {"updates", "additions", "capabilities"} | metadata
     )
     assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_4"}
+    assert "responsibility" in delta.schema["properties"]["updates"]["properties"]["slot_4"]["anyOf"][0]["properties"]
 
 
 @pytest.mark.asyncio

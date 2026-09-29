@@ -395,6 +395,10 @@ def staged_review_requirements(
             "respectively. Frozen inference without an owned update or release does "
             "not imply learning_or_release."
         )
+        requirements = {
+            "capability_classification": requirements["capability_classification"],
+            **{code: rule for code, rule in requirements.items() if code != "capability_classification"},
+        }
     elif maturity == "production":
         requirements["topology_enforced_guarantees"] = (
             "Show necessary directed contracts between components, including controls "

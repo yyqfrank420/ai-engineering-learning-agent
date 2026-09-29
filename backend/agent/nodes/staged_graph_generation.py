@@ -39,7 +39,7 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v34"
+_COMPONENT_PROMPT_VERSION = "staged_components_v35"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v28"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
@@ -852,6 +852,8 @@ def _attempt_prompt(
         "findings": findings if attempt == 1 else None,
         "prior_prompt_fingerprint": prior_prompt_fingerprint if attempt == 1 else None,
     }
+    if stage == "components":
+        prompt_input["acceptance_criteria_order"] = list(acceptance_criteria)
     if stage == "components" and maturity == "production":
         prompt_input["downstream_controls"] = STAGED_PRODUCTION_REQUIREMENTS
     if stage == "connections" and maturity == "production":
@@ -1033,6 +1035,11 @@ def _attempt_prompt(
             "an internal adapter to an external API remains internal. "
             "After adding or updating a component responsibility, reassess capabilities "
             "against all resulting responsibilities instead of retaining prior flags by default. "
+            "When correcting capabilities, reassess affected required owners in the same "
+            "authorized delta. A prior satisfied coverage review that depended on the old "
+            "flags does not establish those owners. Apply only the control clauses required "
+            "by declared behavior; do not introduce capabilities or unrelated controls to "
+            "satisfy a checkbox. Preserve unrelated content. "
             "Change only fields authorized by the write set and supplied schema; capability "
             "reassessment does not authorize changes to frozen responsibilities or metadata. "
             f"Use these integer codes: {codebook}."
