@@ -82,6 +82,7 @@ class GraphOperation(TypedDict):
 
 GraphPublicationDisposition = Literal[
     "approved",
+    "user_accepted",
     "preserved",
     "unchanged",
     "unreviewed",
@@ -102,6 +103,7 @@ class Chunk(TypedDict):
 
 
 class AgentState(TypedDict):
+    _graph_review_control: NotRequired[Any]
     # ── Input ─────────────────────────────────────────────────────────────────
     session_id: str  # thread identifier; field name kept for runtime compatibility
     user_id: str

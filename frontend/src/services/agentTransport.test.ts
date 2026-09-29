@@ -62,6 +62,25 @@ describe('AgentTransport WebSocket protocol', () => {
     vi.unstubAllGlobals();
   });
 
+  it('accepts an exact preview without closing or settling the active stream', async () => {
+    const transport = new AgentTransport();
+    const events: ServerEvent[] = [];
+    transport.onEvent(event => events.push(event));
+    const completed = transport.sendMessage(session, 'thread-1', 'design', undefined, 'request');
+    const socket = MockWebSocket.instances[0];
+    expect(transport.acceptPreview('request', 'v1')).toBe(false);
+    socket.open();
+    socket.receive({ type: 'ready' });
+    expect(transport.acceptPreview('stale', 'v1')).toBe(false);
+    expect(transport.acceptPreview('request', 'v1')).toBe(true);
+    expect(JSON.parse(socket.sent.at(-1)!)).toEqual({ type: 'accept_preview', client_request_id: 'request', graph_version: 'v1' });
+    expect(socket.readyState).toBe(MockWebSocket.OPEN);
+    socket.receive({ type: 'response_delta', content: 'Finished answer' });
+    socket.receive({ type: 'done' });
+    expect(await completed).toBe(true);
+    expect(events).toContainEqual({ type: 'response_delta', content: 'Finished answer' });
+  });
+
   it('authenticates in the first frame and sends steering on the active channel', async () => {
     const transport = new AgentTransport();
     const events: ServerEvent[] = [];

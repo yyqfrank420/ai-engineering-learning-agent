@@ -276,16 +276,19 @@ polling; late responses cannot update a different account or a newer attempt. A 
 same user does not restart preparation.
 
 Diagram-enabled turns retain the canvas after completion, including a clear empty state when no
-diagram is published. The conversation shows one short status derived from the latest server
-workflow event while generation runs. The canvas has no progress overlay. Internal event titles,
-details, and completed activity logs are omitted; terminal errors remain in the conversation.
-The frontend stores response messages as they arrive but withholds the current turn's assistant
-messages until the stream terminates and the committed graph has painted. D3 reports readiness
+diagram is published. The conversation shows short labels for concurrent active operations and
+the latest completed milestone. Each server phase owns its active and terminal events. Book
+retrieval runs off the event loop so web search and stream delivery can continue. The canvas has
+no progress overlay. Internal event titles, details, and completed activity logs are omitted;
+terminal errors remain in the conversation.
+The frontend reveals validated explanation sections while generation continues once each section's
+graph version matches the displayed, painted diagram. Generic or unversioned answer text waits
+for the terminal result and graph paint. D3 reports readiness
 after fonts and two animation frames, with a three-second terminal grace period in the hook.
 Private candidate evaluation measures synchronous SVG geometry without waiting for paint. Its
 evaluator remains mounted across chat and dashboard routes and bounds image capture to three
-seconds. A painted preview can satisfy readiness only when its exact
-structure becomes the committed graph. Text-only mode continues streaming normally; a terminal
+seconds. A painted preview can release matching versioned explanation sections before the final save;
+the terminal commit remains the authority for graph history. Text-only mode continues streaming normally; a terminal
 failure without a graph releases the available explanation instead of waiting for a missing graph.
 
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
@@ -350,7 +353,7 @@ only to graph answers. Internal evaluation captures the exact book and research 
 synthesis, including empty context, under the prompt release identity.
 
 Graph explanations use `EXPLANATION_MODEL` (default `claude-sonnet-5-5`) independently of
-`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v31` includes the user's September 28
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v32` includes the user's September 28
 writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
 authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
 original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
@@ -447,3 +450,24 @@ The distinction is orchestration versus concurrency, not framework versus no fra
 
 The older spec in `docs/superpowers/specs/2026-03-31-ai-learning-agent-design.md` is design history,
 not the current runtime contract.
+
+## Accepting a preview during review
+
+An explicit composer Stop during a rendered staged preview sends `accept_preview` with the
+active request ID and exact eligible graph version. It leaves the socket open. The request-scoped
+review control cancels only the active semantic reviewer, then the workflow finishes the answer
+and persists through the normal turn transaction. Component acceptance preserves that component
+candidate and generates its connections; deterministic validation and private rendering still run.
+The remaining semantic review is skipped.
+
+Publication uses `user_accepted`, with skipped review and accepted preview provenance in the
+server-owned graph contract. Skipped review is never represented as model approval or reused as
+completed review on a later edit. The UI disables repeated Stop and steering while finishing.
+Navigation, account changes, disconnects, and normal cancellation never imply acceptance.
+Stale request or candidate commands are rejected without cancelling the active turn.
+
+Live thinking uses provider-emitted text from the existing builder, reviewer, and explanation
+streams. It is request-scoped, bounded, and displayed as plain text in an expandable feed.
+Structured graph JSON, provider signatures, and tool results never enter that feed. Thinking
+is transient UI state; it is not saved in messages, graph history, or analytics. Provider
+reasoning can quote request context and should not be treated as a verified answer.

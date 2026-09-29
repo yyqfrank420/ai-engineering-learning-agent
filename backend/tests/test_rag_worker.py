@@ -36,7 +36,10 @@ async def test_rag_worker_invokes_search_tool_and_returns_chunks(monkeypatch):
         [tool],
     )
 
-    assert events == [{"type": "worker_status", "worker": "rag", "status": "Searching book…"}]
+    assert events[0] == {"type": "worker_status", "worker": "rag", "status": "Searching book…"}
+    assert [(event["phase"], event["status"]) for event in events if event["type"] == "workflow_progress"] == [
+        ("book", "active"), ("book", "complete"),
+    ]
     assert tool.calls == [{"query": "How do agents use tools?", "k": 7}]
     assert result["rag_chunks"] == chunks
     assert result["retrieval_relevance"] == "strong"
@@ -107,7 +110,7 @@ async def test_rag_worker_emits_bounded_source_evidence_for_allowlisted_internal
         [_Tool(chunks)],
     )
 
-    evidence = events[1]
+    evidence = next(event for event in events if event["type"] == "retrieval_evidence")
     assert evidence["type"] == "retrieval_evidence"
     assert evidence["query"] == "How should evaluation data grow?"
     assert evidence["chunks"][0]["page_number"] == 224
@@ -132,7 +135,7 @@ async def test_rag_worker_does_not_emit_source_evidence_for_non_allowlisted_iden
         [_Tool([{"text": "source"}])],
     )
 
-    assert [event["type"] for event in events] == ["worker_status"]
+    assert {event["type"] for event in events} == {"worker_status", "workflow_progress"}
 
 
 def test_retrieval_relevance_flags_indirect_single_hit():
@@ -161,3 +164,65 @@ def test_retrieval_relevance_treats_stopword_only_query_as_strong_when_chunks_ex
 
 def test_meaningful_terms_removes_stop_words_and_short_tokens():
     assert _meaningful_terms("How do AI agents use SQL in ops?") == ["agents", "use", "sql", "ops"]
+
+
+@pytest.mark.asyncio
+async def test_book_search_failure_closes_live_activity():
+    events = []
+
+    class BrokenTool:
+        name = "rag_search"
+
+        def invoke(self, _args):
+            raise RuntimeError("index unavailable")
+
+    async def send(event):
+        events.append(event)
+
+    with pytest.raises(RuntimeError, match="index unavailable"):
+        await rag_worker_node({"user_message": "agents", "send": send}, [BrokenTool()])
+    assert [event["status"] for event in events if event["type"] == "workflow_progress"] == [
+        "active", "degraded",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_book_and_web_search_can_progress_independently(monkeypatch):
+    import asyncio
+    import threading
+
+    from agent.pipeline_steps import run_parallel_research_phase
+
+    events = []
+    release_book = threading.Event()
+    web_finished = asyncio.Event()
+
+    class WaitingTool:
+        name = "rag_search"
+
+        def invoke(self, _args):
+            if not release_book.wait(timeout=3):
+                raise TimeoutError("web search could not progress")
+            return json.dumps([{"text": "Agents use tools."}])
+
+    async def send(event):
+        events.append(event)
+        if event.get("phase") == "web" and event.get("status") == "complete":
+            web_finished.set()
+
+    monkeypatch.setattr(
+        "agent.nodes.research_worker._run_ddgs_searches",
+        lambda *_: [{"href": "https://example.com/agents", "title": "Agents", "body": "Agents use tools."}],
+    )
+    task = asyncio.create_task(run_parallel_research_phase(
+        {"user_message": "agents", "send": send}, [WaitingTool()],
+    ))
+    try:
+        await asyncio.wait_for(web_finished.wait(), timeout=2)
+        book_events = [event["status"] for event in events if event.get("phase") == "book"]
+        assert book_events == ["active"]
+    finally:
+        release_book.set()
+        result = await task
+    assert result["research_status"] == "ready"
+    assert [event["status"] for event in events if event.get("phase") == "book"] == ["active", "complete"]

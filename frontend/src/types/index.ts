@@ -169,6 +169,7 @@ export interface Message {
   title?: string;
   relatedNodeIds?: string[];
   graphRevisionId?: string | null;
+  graphVersion?: string | null;
   clientRequestId?: string | null;
 }
 
@@ -224,6 +225,9 @@ export interface WorkerStatusEvent {
 
 export interface ThinkingDeltaEvent {
   type: 'thinking_delta';
+  operation_id?: string;
+  phase?: WorkflowPhase;
+  reset?: boolean;
   content: string;
 }
 
@@ -248,6 +252,13 @@ export interface DiagramEvaluationCriteria {
   minimum_text_px: number;
 }
 
+export interface GraphReviewStatusEvent {
+  type: 'graph_review_status';
+  status: 'reviewing' | 'accepted' | 'closed';
+  graph_version: string;
+  stage: 'components' | 'connections';
+}
+
 export interface GraphCandidateEvent {
   type: 'graph_candidate';
   evaluation_id: string;
@@ -257,6 +268,12 @@ export interface GraphCandidateEvent {
 }
 
 export type WorkflowPhase =
+  | 'context'
+  | 'book'
+  | 'web'
+  | 'components'
+  | 'connections'
+  | 'synthesis'
   | 'evidence'
   | 'architect'
   | 'challenger'
@@ -269,7 +286,7 @@ export type WorkflowPhase =
 export interface WorkflowProgressEvent {
   type: 'workflow_progress';
   phase: WorkflowPhase;
-  status: 'active' | 'complete' | 'retry' | 'rejected';
+  status: 'active' | 'complete' | 'retry' | 'rejected' | 'degraded';
   title: string;
   detail: string;
 }
@@ -353,6 +370,7 @@ export interface SteerAppliedEvent {
 }
 
 export interface CommandRejectedEvent {
+  command_type?: 'accept_preview';
   type: 'command_rejected';
   reason: string;
 }
@@ -368,6 +386,7 @@ export type ServerEvent =
   | GraphDataEvent
   | GraphPreviewEvent
   | GraphCandidateEvent
+  | GraphReviewStatusEvent
   | WorkflowProgressEvent
   | ExplanationBlockEvent
   | NodeDetailEvent
@@ -440,9 +459,15 @@ export interface GraphCandidate {
   data: GraphData;
 }
 
+export interface ThinkingProgress {
+  operationId: string;
+  phase: WorkflowPhase;
+  content: string;
+}
+
 export interface WorkflowProgress {
   phase: WorkflowPhase;
-  status: 'active' | 'complete' | 'retry' | 'rejected';
+  status: 'active' | 'complete' | 'retry' | 'rejected' | 'degraded';
   title: string;
   detail: string;
 }

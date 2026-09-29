@@ -637,7 +637,7 @@ def build_agent_workflow(
         except Exception as exc:
             if (
                 should_use_staged_graph_pipeline(state)
-                and state.get("graph_publication") == "approved"
+                and state.get("graph_publication") in {"approved", "user_accepted"}
             ):
                 graph = state.get("graph_data") or {}
                 labels = [

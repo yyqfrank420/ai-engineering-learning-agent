@@ -56,9 +56,12 @@ authorize a read-only replacement for the core diagram workflow.
   notes, repetitive caveats, and internal workflow jargon should not dominate answers.
 - Reduce initial information density without removing architectural depth. Keep
   component responsibilities and connection details available through interaction.
-- Show truthful generation activity directly while work runs. Keep one Stop control
-  in the composer and use an upward arrow for sending. Release the completed answer
-  after the graph renders, with a bounded wait if the browser cannot acknowledge it.
+- Show concise live activity for each concurrent operation while work runs. Keep one
+  Stop control in the composer and use an upward arrow for sending. Stop during a
+  rendered preview accepts that candidate and skips remaining AI reviews. If only
+  components are ready, preserve them and finish their connections and answer.
+  Structure, edit-authority, rendering, and persistence checks still apply. Reveal validated answer sections as soon as their matching diagram has painted, with a
+  bounded terminal wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
 - Extending a diagram retains saved components, connections, and positions. Uncertain
   follow-ups ask whether to extend or start in a new chat. Separate designs open a

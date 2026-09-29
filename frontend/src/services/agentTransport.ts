@@ -296,6 +296,16 @@ export class AgentTransport {
     return true;
   }
 
+  acceptPreview(clientRequestId: string, graphVersion: string): boolean {
+    const socket = this._chatSocket;
+    if (!socket || socket.readyState !== WebSocket.OPEN || !this._chatCommandsReady
+      || this._chatClientRequestId !== clientRequestId) return false;
+    socket.send(JSON.stringify({
+      type: 'accept_preview', client_request_id: clientRequestId, graph_version: graphVersion,
+    }));
+    return true;
+  }
+
   /** Cancel server-side work over the active command channel. */
   stopGeneration(clientRequestId?: string): boolean {
     const socket = this._chatSocket;

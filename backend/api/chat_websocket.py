@@ -20,6 +20,7 @@ from adapters.supabase_auth_adapter import get_current_user
 from agent.deadlines import WorkflowDeadlineExceeded
 from agent.graph import run_agent
 from agent.graph_review_budget import GraphReviewBudget
+from agent.graph_review_control import GraphReviewControl
 from agent.state import AgentState
 from analytics.events import enqueue_analytics_event
 from api.chat_guards import (
@@ -276,6 +277,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
         )
         steer_count = 0
         graph_review_budget = GraphReviewBudget()
+        graph_review_control = GraphReviewControl()
         started_at = session_started_at
 
         async def send(event: dict) -> None:
@@ -346,12 +348,13 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     command = await _receive_object(websocket)
                     if str(command.get("type") or "").startswith("diagram_evaluation_"):
                         diagram_channel.accept(command)
-                    elif command.get("type") in {"steer", "stop"}:
+                    elif command.get("type") in {"steer", "stop", "accept_preview"}:
                         if command.get("client_request_id") != body.client_request_id:
                             await send(
                                 {
                                     "type": "command_rejected",
                                     "reason": "Command does not match the active request",
+                                    **({"command_type": "accept_preview"} if command.get("type") == "accept_preview" else {}),
                                 }
                             )
                             continue
@@ -397,6 +400,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "graph_notice_sent": False,
                 "graph_revision_count": 0,
                 "_graph_review_budget": graph_review_budget,
+                "_graph_review_control": graph_review_control,
                 "research_context": "",
                 "response_text": "",
                 "send": send,
@@ -492,6 +496,15 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 if command_task in done:
                     command = command_task.result()
                     command_type = command.get("type")
+                    if command_type == "accept_preview":
+                        version = command.get("graph_version")
+                        if not isinstance(version, str) or not graph_review_control.accept(version):
+                            await send({
+                                "type": "command_rejected",
+                                "command_type": "accept_preview",
+                                "reason": "This diagram is no longer available to accept. Please try again.",
+                            })
+                        continue
                     if command_type in {"stop", "disconnect"}:
                         agent_task.cancel()
                         with suppress(asyncio.CancelledError):
@@ -513,6 +526,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
                             await send({"type": "stopped"})
                         return
 
+                    if graph_review_control.accepted_version is not None:
+                        await send({
+                            "type": "command_rejected",
+                            "reason": "The accepted diagram is finishing. Send your follow-up after the answer completes.",
+                        })
+                        continue
                     steering = " ".join(str(command.get("content") or "").split())
                     if (
                         not steering
@@ -532,6 +551,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     agent_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await agent_task
+                    graph_review_control = GraphReviewControl()
                     steer_count += 1
                     content = (
                         f"{content}\n\nUser steering update {steer_count}:\n{steering}"
@@ -584,7 +604,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
 
             final_graph = final_state.get("graph_data")
             has_new_graph = (
-                final_state.get("graph_publication") == "approved"
+                final_state.get("graph_publication") in {"approved", "user_accepted"}
                 and bool(final_graph and final_graph.get("nodes"))
                 and final_graph != approved_graph_at_request_start
             )

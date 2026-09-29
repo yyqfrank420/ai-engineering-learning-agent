@@ -101,6 +101,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     graphPreview,
     graphCandidate,
     workflowProgress,
+    thinkingProgress,
     retrievalNotice,
     graphNotice,
     selectedNode,
@@ -115,6 +116,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     saveGraphEdit,
     requestSearchTool,
     stopGeneration,
+    isFinishingDiagram,
   } = useAgentStream(authSession, activeThreadId);
 
   const graphEditBlocked = hasUnsavedGraphEdit || isSavingGraphEdit;
@@ -178,7 +180,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   }, [authSession, clearPreparedCache, graphEditBlocked, setAuthSession]);
 
   const handleSend = useCallback(async (content: string, action?: DiagramIntentAction) => {
-    if (backendReadiness !== 'ready' || graphEditBlocked || history.busy || history.preview || actionInFlight.current) {
+    if (backendReadiness !== 'ready' || isFinishingDiagram || graphEditBlocked || history.busy || history.preview || actionInFlight.current) {
       throw new Error('Finish the current diagram action before sending. Your message is saved here.');
     }
     actionInFlight.current = true;
@@ -221,7 +223,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       actionInFlight.current = false;
       setActionBusy(false);
     }
-  }, [backendReadiness, graphEditBlocked, history.busy, history.preview, flushLayout, context, authSession, selectionReferenceActive, selectionSuggestion, graphData, handleNewChat, startThreadAndSend, sendMessage, clearGraphSelection]);
+  }, [backendReadiness, isFinishingDiagram, graphEditBlocked, history.busy, history.preview, flushLayout, context, authSession, selectionReferenceActive, selectionSuggestion, graphData, handleNewChat, startThreadAndSend, sendMessage, clearGraphSelection]);
 
   const checkSubmission = useCallback(async (content: string) => {
     if (!authSession || !activeThreadId) throw new Error('Chat is not ready');
@@ -233,7 +235,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   // isStreaming: busy state used to disable sidebar/new-chat during loads
   const isStreaming = isGenerating || loadingThread || graphEditBlocked || actionBusy || history.busy;
   const composerLocked = loadingThread || isSavingGraphEdit;
-  const sendLocked = composerLocked || actionBusy || history.busy || !!history.preview || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
+  const sendLocked = composerLocked || isFinishingDiagram || actionBusy || history.busy || !!history.preview || graphEditBlocked || backendReadiness !== 'ready' || !activeThreadId;
   const readinessRetryDisabled = isGenerating || composerLocked || !authSession;
 
   const handleNodeClick = (node: GraphNode) => {
@@ -500,6 +502,8 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                   </Suspense>
                   <ThinkingIndicator
                     workflowProgress={workflowProgress}
+                    thinkingProgress={thinkingProgress}
+                    isFinishingDiagram={isFinishingDiagram}
                     isGenerating={isGenerating || answerPending}
                   />
                   <RetrievalNoticeBar
@@ -525,6 +529,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     onSend={handleSend}
                     checkSubmission={checkSubmission}
                     onStop={stopGeneration}
+                    isFinishingDiagram={isFinishingDiagram}
                     onRetryReadiness={prepareBackendNow}
                     threadId={activeThreadId}
                     isGenerating={isGenerating}

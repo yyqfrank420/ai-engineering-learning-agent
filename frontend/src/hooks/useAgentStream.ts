@@ -39,6 +39,7 @@ import type {
   ThreadDetail,
   WorkerStatus,
   WorkflowProgress,
+  ThinkingProgress,
 } from '../types';
 import { graphStructureKey } from '../utils/graphStructureKey';
 import { mapThreadMessages, type ThreadSnapshot } from '../utils/threadState';
@@ -83,6 +84,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   const [graphNotice, setGraphNotice] = useState<GraphNotice | null>(null);
   const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
   const [graphCandidate, setGraphCandidate] = useState<GraphCandidate | null>(null);
+  const reviewRef = useRef<{ version: string; status: 'reviewing' | 'pending' | 'accepted' } | null>(null);
+  const [isFinishingDiagram, setIsFinishingDiagram] = useState(false);
+  const [thinkingProgress, setThinkingProgress] = useState<readonly ThinkingProgress[]>([]);
   const [workflowProgress, setWorkflowProgress] = useState<WorkflowProgress[]>([]);
   const [answerTurn, setAnswerTurn] = useState<{ userId: string; diagram: boolean } | null>(null);
   const [paintGraceExpiredTurnId, setPaintGraceExpiredTurnId] = useState<string | null>(null);
@@ -157,6 +161,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setRetrievalNotice(null);
     setGraphNotice(null);
     setProviderNotice(null);
+    reviewRef.current = null;
+    setIsFinishingDiagram(false);
+    setThinkingProgress([]);
     setStreamStatus('connected');
   }, []);
 
@@ -345,6 +352,20 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         setWorkerStatus(prev => ({ ...prev, [event.worker]: event.status }));
         break;
 
+      case 'thinking_delta': {
+        if (meta.kind !== 'chat' || activeChatTerminalRef.current === meta.clientRequestId
+          || !event.operation_id || !event.phase) break;
+        const operationId = event.operation_id;
+        const phase = event.phase;
+        setThinkingProgress(previous => {
+          const existing = previous.find(item => item.operationId === operationId);
+          if (existing && existing.phase !== phase) return previous;
+          const content = `${event.reset ? '' : existing?.content ?? ''}${event.content}`.slice(-8000);
+          return [...previous.filter(item => item.operationId !== operationId), { operationId, phase, content }].slice(-8);
+        });
+        break;
+      }
+
       case 'response_delta': {
         if (meta.kind !== 'chat') break;
         turnOutputRef.current.text ||= event.content.trim().length > 0;
@@ -376,6 +397,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
       case 'response_reset':
         if (meta.kind !== 'chat') break;
+        reviewRef.current = null;
+        setIsFinishingDiagram(false);
         turnOutputRef.current.text = false;
         turnOutputRef.current.graph = false;
         if (streamingIdRef.current) {
@@ -393,6 +416,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         setGraphPreview(null);
         publishGraph(durableGraphDataRef.current);
         setWorkflowProgress([]);
+        setThinkingProgress([]);
         break;
 
       case 'workflow_progress':
@@ -405,9 +429,25 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
             title: event.title,
             detail: event.detail,
           };
-          if (index < 0) return [...prev, next].slice(-8);
+          if (index < 0) return [...prev, next];
           return [...prev.filter(item => item.phase !== next.phase), next];
         });
+        break;
+
+      case 'graph_review_status':
+        if (meta.kind !== 'chat') break;
+        if (event.status === 'reviewing') {
+          if (reviewRef.current && reviewRef.current.status !== 'reviewing') break;
+          reviewRef.current = { version: event.graph_version, status: 'reviewing' };
+          setIsFinishingDiagram(false);
+        } else if (reviewRef.current?.version === event.graph_version) {
+          if (event.status === 'accepted') {
+            reviewRef.current = { version: event.graph_version, status: 'accepted' };
+            setIsFinishingDiagram(true);
+          } else if (reviewRef.current.status === 'reviewing') {
+            reviewRef.current = null;
+          }
+        }
         break;
 
       case 'graph_candidate':
@@ -435,6 +475,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           title: event.title,
           content: event.content,
           relatedNodeIds: event.related_node_ids,
+          graphVersion: event.graph_version,
           clientRequestId: meta.clientRequestId,
         };
         activeExplanationMessageIdsRef.current.push(id);
@@ -449,6 +490,12 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
 
       case 'command_rejected':
         if (meta.kind !== 'chat') break;
+        if (event.command_type === 'accept_preview') {
+          reviewRef.current = null;
+          setIsFinishingDiagram(false);
+          setGraphNotice({ message: event.reason });
+          break;
+        }
         setMessages(prev => [...prev, {
           id: makeId(),
           role: 'assistant',
@@ -488,6 +535,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           setWorkerStatus(IDLE_WORKER_STATUS);
           setRetrievalNotice(null);
           setProviderNotice(null);
+          reviewRef.current = null;
+          setIsFinishingDiagram(false);
+          setThinkingProgress([]);
           setStreamStatus('connected');
           setGraphCandidate(null);
           setGraphPreview(null);
@@ -620,6 +670,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           setWorkerStatus(IDLE_WORKER_STATUS);
           setRetrievalNotice(null);
           setProviderNotice(null);
+          reviewRef.current = null;
+          setIsFinishingDiagram(false);
+          setThinkingProgress([]);
           setStreamStatus('connected');
           setGraphCandidate(null);
           setGraphPreview(null);
@@ -659,6 +712,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     const session = authSessionRef.current;
     if (!mountedRef.current) return false;
     if (graphEditInFlightRef.current) return false;
+    if (reviewRef.current && reviewRef.current.status !== 'reviewing') return false;
     if (!session || !targetThreadId) {
       setMessages(prev => [...prev, {
         id: makeId(), role: 'assistant', content: 'Error: You must be signed in with an active thread.', isStreaming: false,
@@ -697,7 +751,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setGraphNotice(null);
     setGraphCandidate(null);
     setWorkflowProgress([]);
+    setThinkingProgress([]);
     activeExplanationMessageIdsRef.current = [];
+    reviewRef.current = null;
+    setIsFinishingDiagram(false);
     setStreamStatus('generating');
     setWorkerStatus(OPTIMISTIC_CHAT_STATUS);
     const clientRequestId = makeId();
@@ -761,6 +818,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         setGraphCandidate(null);
         setGraphPreview(null);
         publishGraph(durableGraphDataRef.current);
+        reviewRef.current = null;
+        setIsFinishingDiagram(false);
+        setThinkingProgress([]);
         setStreamStatus('connected');
         if (activeChatTerminalRef.current !== clientRequestId) {
           activeChatTerminalRef.current = clientRequestId;
@@ -805,6 +865,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
       setGraphCandidate(null);
       setGraphPreview(null);
       publishGraph(durableGraphDataRef.current);
+      reviewRef.current = null;
+      setIsFinishingDiagram(false);
+      setThinkingProgress([]);
       setStreamStatus('connected');
       if (activeChatTerminalRef.current !== clientRequestId) {
         activeChatTerminalRef.current = clientRequestId;
@@ -930,6 +993,18 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   }, []);
 
   const stopGeneration = useCallback(() => {
+    const review = reviewRef.current;
+    const requestId = activeChatStreamIdRef.current;
+    if (review && requestId) {
+      if (review.status !== 'reviewing') return;
+      if (agentTransport.acceptPreview(requestId, review.version)) {
+        reviewRef.current = { ...review, status: 'pending' };
+        setIsFinishingDiagram(true);
+      } else {
+        setGraphNotice({ message: 'Could not accept the diagram. Please try again.' });
+      }
+      return;
+    }
     const analytics = activeChatAnalyticsRef.current;
     const clientRequestId = activeChatStreamIdRef.current;
     activeChatStreamIdRef.current = null;
@@ -947,6 +1022,9 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setProviderNotice(null);
     setGraphCandidate(null);
     setGraphPreview(null);
+    reviewRef.current = null;
+    setIsFinishingDiagram(false);
+    setThinkingProgress([]);
     setStreamStatus('connected');
     if (analytics) {
       activeChatTerminalRef.current = analytics.clientRequestId;
@@ -982,8 +1060,15 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     || waitingForGraphPaint
   );
   const turnIndex = answerTurn ? messages.findIndex(message => message.id === answerTurn.userId) : -1;
+  // Match the canvas choice: component-only edits keep the existing connected graph.
+  const displayedGraph = graphPreview?.edges.length === 0 && graphData?.edges.length
+    ? graphData : graphPreview ?? graphData;
+  const displayedGraphPainted = !!displayedGraph
+    && renderedGraphKey === graphStructureKey(displayedGraph);
   const visibleMessages = answerPending && turnIndex >= 0
-    ? messages.filter((message, index) => index <= turnIndex || message.role !== 'assistant')
+    ? messages.filter((message, index) => index <= turnIndex || message.role !== 'assistant'
+      || (message.kind === 'explanation' && !!message.graphVersion && displayedGraphPainted
+        && message.graphVersion === displayedGraph?.version))
     : messages;
 
   return {
@@ -998,6 +1083,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     graphPreview,
     graphCandidate,
     workflowProgress,
+    thinkingProgress,
+    isFinishingDiagram,
     workerStatus,
     retrievalNotice,
     graphNotice,

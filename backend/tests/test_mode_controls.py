@@ -1011,8 +1011,9 @@ class TestResearchWorkerResilience:
         result = asyncio.run(rw.research_worker_node(state))
 
         assert result["research_status"] == "ready"
-        assert state["_events"][-1]["sources"] == ["https://example.com/report"]
-        assert state["_events"][-1]["status"] == "Web search results available."
+        status = next(event for event in state["_events"] if "sources" in event)
+        assert status["sources"] == ["https://example.com/report"]
+        assert status["status"] == "Web search results available."
 
     def test_success_emits_bounded_research_evidence_for_allowlisted_internal_identity(
         self, monkeypatch
@@ -1042,7 +1043,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        evidence = state["_events"][-1]
+        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
         assert evidence == {
             "type": "research_evidence",
             "query": "RAG pipeline architecture",
@@ -1081,10 +1082,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        assert [event["type"] for event in state["_events"]] == [
-            "worker_status",
-            "worker_status",
-        ]
+        assert {event["type"] for event in state["_events"]} == {"worker_status", "workflow_progress"}
 
     def test_build_queries_uses_current_year_instead_of_hard_coded_year(
         self, monkeypatch
@@ -1183,7 +1181,7 @@ class TestResearchWorkerResilience:
 
         asyncio.run(rw.research_worker_node(state))
 
-        evidence = state["_events"][-1]
+        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
         assert len(evidence["results"]) == 6
         assert evidence["source_provenance"] == [
             {

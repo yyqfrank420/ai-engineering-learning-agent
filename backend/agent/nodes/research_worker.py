@@ -59,6 +59,9 @@ async def research_worker_node(state: AgentState) -> AgentState:
         {"type": "worker_status", "worker": "research", "status": "Searching the web…"}
     )
 
+    await send({"type": "workflow_progress", "phase": "web", "status": "active",
+                "title": "Searching web", "detail": ""})
+
     topic = _normalise_topic(state.get("design_query") or state["user_message"])
     queries = _build_queries(topic)
     # Keep the existing three-query result budget when one topic query suffices.
@@ -110,10 +113,14 @@ async def research_worker_node(state: AgentState) -> AgentState:
                 "source_provenance": provenance,
             }
         )
+    await send({"type": "workflow_progress", "phase": "web", "status": "complete",
+                "title": "Web sources found", "detail": ""})
     return {**state, "research_context": context, "research_status": "ready"}
 
 
 async def _send_unavailable(send) -> None:
+    await send({"type": "workflow_progress", "phase": "web", "status": "degraded",
+                "title": "Web search unavailable", "detail": "Continuing with book sources."})
     await send(
         {
             "type": "worker_status",

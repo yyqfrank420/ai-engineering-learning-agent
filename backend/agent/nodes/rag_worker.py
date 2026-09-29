@@ -10,6 +10,7 @@
 # Outputs: AgentState update: rag_chunks, retrieval_relevance, retrieval_notice
 # ─────────────────────────────────────────────────────────────────────────────
 
+import asyncio
 import json
 import re
 
@@ -37,14 +38,25 @@ async def rag_worker_node(state: AgentState, tools: list) -> AgentState:
     send = state["send"]
     await send({"type": "worker_status", "worker": "rag", "status": "Searching book…"})
 
+    await send({"type": "workflow_progress", "phase": "book", "status": "active",
+                "title": "Searching book", "detail": ""})
+
     tool_map = {t.name: t for t in tools}
     rag_chunks: list[dict] = []
 
     search_tool = tool_map.get("rag_search")
     query = state.get("design_query") or state["user_message"]
     if search_tool:
-        result_json = search_tool.invoke({"query": query, "k": settings.rag_top_k})
-        rag_chunks = json.loads(result_json)
+        try:
+            # Retrieval is synchronous; keep the stream and web search responsive.
+            result_json = await asyncio.to_thread(
+                search_tool.invoke, {"query": query, "k": settings.rag_top_k}
+            )
+            rag_chunks = json.loads(result_json)
+        except Exception:
+            await send({"type": "workflow_progress", "phase": "book", "status": "degraded",
+                        "title": "Book search failed", "detail": ""})
+            raise
 
     if _may_emit_eval_evidence(state):
         await send({
@@ -54,6 +66,10 @@ async def rag_worker_node(state: AgentState, tools: list) -> AgentState:
         })
 
     relevance, notice = _assess_retrieval_relevance(query, rag_chunks)
+    await send({"type": "workflow_progress", "phase": "book",
+                "status": "complete" if relevance == "strong" else "degraded",
+                "title": "Book sources found" if relevance == "strong" else "Book coverage is limited",
+                "detail": ""})
     return {
         **state,
         "rag_chunks": rag_chunks,

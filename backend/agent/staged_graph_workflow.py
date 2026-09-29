@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import copy
 from hashlib import sha256
 import json
@@ -14,6 +15,7 @@ from agent.architecture_playbook import format_evidence_bundle
 from agent.architecture_rubric import MAX_REVIEW_REASON_CHARS
 from agent.complexity import resolve_complexity
 from agent.deadlines import StageAdmissionDenied, staged_timeout_seconds
+from agent.graph_review_control import GraphReviewControl
 from agent.nodes.graph_critic import graph_render_gate_node
 from agent.nodes.graph_worker import (
     _attach_graph_version,
@@ -911,6 +913,88 @@ async def _render(
     )
 
 
+async def _stage_progress(state: AgentState, phase: str, status: str, title: str) -> None:
+    send = state.get("send")
+    if callable(send):
+        try:
+            await send({
+                "type": "workflow_progress", "phase": phase, "status": status,
+                "title": title, "detail": "",
+            })
+        except Exception:
+            logger.info("Stage progress could not be delivered", exc_info=True)
+
+
+
+async def _review_stage(
+    state: AgentState, stage: str, *, graph: GraphData, **arguments: Any
+) -> dict[str, Any]:
+    await _stage_progress(state, "review", "active", f"Checking {stage}")
+    result = None
+    try:
+        result = await _review_candidate(state, graph, stage=stage, **arguments)
+        return result
+    finally:
+        skipped = bool(result and result.get("skipped_by_user"))
+        passed = bool(result and result.get("approved"))
+        await _stage_progress(
+            state, "review", "complete" if passed else "degraded" if skipped else "rejected",
+            "Review skipped" if skipped else f"{stage.capitalize()} checked" if passed else "Review incomplete",
+        )
+
+
+def _skipped_review(control: GraphReviewControl, version: str) -> dict[str, Any]:
+    return {
+        "approved": False, "terminal": False, "skipped_by_user": True,
+        "graph_version": version, "accepted_preview_version": control.accepted_version,
+        "accepted_preview_stage": control.accepted_stage,
+    }
+
+
+async def _review_candidate(
+    state: AgentState, graph: GraphData, *, stage: str, **review_arguments: Any
+) -> dict[str, Any]:
+    control = state.get("_graph_review_control")
+    reviewer = review_components if stage == "components" else review_connections
+    if not isinstance(control, GraphReviewControl):
+        return await reviewer(**review_arguments)
+    version = graph["version"]
+    if control.accepted_version is not None:
+        return _skipped_review(control, version)
+    control.open(version, stage)
+    review_task = asyncio.create_task(reviewer(**review_arguments))
+    acceptance_task = asyncio.create_task(control.wait())
+    user_accepted = False
+    try:
+        await state["send"]({
+            "type": "graph_review_status", "status": "reviewing",
+            "graph_version": version, "stage": stage,
+        })
+        await asyncio.wait(
+            {review_task, acceptance_task}, return_when=asyncio.FIRST_COMPLETED
+        )
+        # Explicit acceptance wins a tie with the reviewer, as transport commands
+        # do at the turn boundary. Deterministic admission already finished.
+        if control.accepted_version == version:
+            user_accepted = True
+            return _skipped_review(control, version)
+        return review_task.result()
+    finally:
+        control.close(version)
+        for task in (review_task, acceptance_task):
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(review_task, acceptance_task, return_exceptions=True)
+        try:
+            await state["send"]({
+                "type": "graph_review_status",
+                "status": "accepted" if user_accepted else "closed",
+                "graph_version": version, "stage": stage,
+            })
+        except Exception:
+            logger.info("Graph review status could not be delivered", exc_info=True)
+
+
 def _may_emit_staged_diagnostics(state: AgentState) -> bool:
     email = str(state.get("user_email") or "").strip().lower()
     return email in settings.internal_test_email_allowlist
@@ -1001,6 +1085,8 @@ async def _failed(
 ) -> AgentState:
     if diagnostic:
         state = await _retain_staged_diagnostic(state, diagnostic)
+    phase = "connections" if "connection" in code else "components"
+    await _stage_progress(state, phase, "rejected", "Diagram incomplete")
     approved_graph = copy.deepcopy(state.get("approved_graph_data"))
     approved_contract = copy.deepcopy(state.get("approved_graph_contract"))
     intent = state.get("graph_intent")
@@ -1236,6 +1322,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
     for attempt in range(STAGED_COMPONENT_GENERATION_CALLS):
         recovery_mode = may_simplify and attempt > 0
         try:
+            await _stage_progress(working_state, "components", "active", "Building components")
             generated = await generate_component_candidate(
                 request=request,
                 resolved_maturity=maturity,
@@ -1261,6 +1348,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
             )
             if "clarification_questions" in generated:
+                await _stage_progress(working_state, "components", "degraded", "More detail needed")
                 if permissions is not None and state.get("graph_action") != "extend":
                     raise StagedGenerationError("edit_clarification_not_allowed")
                 return {
@@ -1392,6 +1480,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     },
                 )
             preview = _component_preview(assigned)
+            await _stage_progress(working_state, "components", "complete", "Components ready")
             rendered = await _render(
                 working_state, preview, preview_count=preview_count, stage="components"
             )
@@ -1423,7 +1512,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     permissions,
                 )
             reviewed_component_records = copy.deepcopy(assigned["components"])
-            component_gate = await review_components(
+            component_gate = await _review_stage(
+                rendered, "components", graph=preview,
                 previous_review=previous_component_review,
                 user_request=request,
                 evidence_bundle=component_evidence,
@@ -1437,7 +1527,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             previous_component_review = _review_snapshot(
                 "components", reviewed_component_records, component_evidence, component_gate
             )
-            if component_gate["approved"]:
+            if component_gate["approved"] or component_gate.get("skipped_by_user"):
                 component_build = assigned
                 component_recovered = recovery_mode
                 component_attempts = attempt + 1
@@ -1458,6 +1548,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                         candidate_records=reviewed_component_records,
                     ),
                 )
+            await _stage_progress(rendered, "components", "retry", "Refining components")
             correction_findings = _gate_findings(
                 component_gate["findings"], stage="components"
             )
@@ -1505,6 +1596,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 emit_gate_progress=True,
             )
+            await _stage_progress(working_state, "components", "retry", "Refining components")
             correction_findings = [_safe_finding(exc, stage="components")]
             previous_prompt = (
                 exc.prompt_fingerprint
@@ -1553,6 +1645,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
         recovery_mode = may_simplify and attempt > 0
         overview = component_recovered or recovery_mode
         try:
+            await _stage_progress(working_state, "connections", "active", "Connecting components")
             generated = await generate_connection_candidate(
                 request=request,
                 resolved_maturity=maturity,
@@ -1602,6 +1695,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
             )
             if "clarification_questions" in generated and state.get("graph_action") == "extend":
+                await _stage_progress(working_state, "connections", "degraded", "More detail needed")
                 return {**state, "graph_data": copy.deepcopy(approved_graph),
                         "graph_contract": copy.deepcopy(approved_contract), "graph_changed": False,
                         "graph_publication": "unchanged", "clarification_questions": generated["clarification_questions"],
@@ -1674,6 +1768,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             ):
                 # Recovery disclosure is server-owned, outside user-editable fields.
                 projected = {**projected, "detail_level": "overview"}
+            await _stage_progress(working_state, "connections", "complete", "Connections ready")
             rendered = await _render(
                 working_state, projected, preview_count=preview_count, stage="connections"
             )
@@ -1723,7 +1818,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 }
                 for edge in candidate_build["connections"]
             ]
-            connection_gate = await review_connections(
+            connection_gate = await _review_stage(
+                rendered, "connections", graph=projected,
                 previous_review=previous_connection_review,
                 user_request=request,
                 evidence_bundle=evidence,
@@ -1742,7 +1838,8 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
             reviewed_connection_wire = copy.deepcopy(generated["wire"])
             reviewed_connection_exchanges = connection_exchanges
-            if connection_gate["approved"]:
+            user_accepted = connection_gate.get("skipped_by_user") is True
+            if connection_gate["approved"] or user_accepted:
                 graph_contract = _contract(
                     candidate_build,
                     projected,
@@ -1757,6 +1854,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                         else request
                     ),
                 )
+                if user_accepted:
+                    graph_contract["acceptance"] = {
+                        "source": "user",
+                        "graph_version": projected["version"],
+                        "semantic_review": "skipped",
+                        "stage": connection_gate["accepted_preview_stage"],
+                        "preview_graph_version": connection_gate["accepted_preview_version"],
+                    }
                 operation = state.get("graph_operation") or {
                     "kind": state.get("graph_intent") or "create",
                     "status": "candidate",
@@ -1771,7 +1876,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     request_id=state.get("request_id"),
                     client_request_id=state.get("client_request_id"),
                     properties={
-                        "outcome": "recovered" if overview else "accepted",
+                        "outcome": "user_accepted" if user_accepted else "recovered" if overview else "accepted",
                         "detail_level": projected.get("detail_level", "standard"),
                         "intent": state.get("graph_intent"),
                         "component_attempts": component_attempts,
@@ -1785,14 +1890,15 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "graph_data": projected,
                     "graph_contract": graph_contract,
                     "graph_changed": True,
-                    "graph_publication": "approved",
+                    "graph_publication": "user_accepted" if user_accepted else "approved",
                     "graph_operation": {
                         **operation,
                         "status": "applied",
                         "failure_code": None,
                     },
                     "graph_review": {
-                        "approved": True,
+                        "approved": not user_accepted,
+                        "skipped_by_user": user_accepted,
                         "terminal": False,
                         "component_gate": component_gate,
                         "connection_gate": connection_gate,
@@ -1816,6 +1922,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                         candidate_records=reviewed_connection_records,
                     ),
                 )
+            await _stage_progress(rendered, "connections", "retry", "Refining connections")
             correction_findings = _gate_findings(
                 connection_gate["findings"], stage="connections"
             )
@@ -1863,6 +1970,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 emit_gate_progress=True,
             )
+            await _stage_progress(working_state, "connections", "retry", "Refining connections")
             correction_findings = [_safe_finding(exc, stage="connections")]
             previous_prompt = (
                 exc.prompt_fingerprint

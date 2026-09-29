@@ -16,6 +16,7 @@ interface ChatInputProps {
   sendDisabled?: boolean;   // blocks send while backend is not ready
   backendReadiness?: BackendReadiness;
   retryDisabled?: boolean;
+  isFinishingDiagram?: boolean;
   isGenerating?: boolean;   // LLM actively streaming; keep steering and Stop available
   readinessMessage?: string | null; // non-null while backend is warming up or failed
   selectionSuggestion?: string | null;
@@ -36,7 +37,7 @@ function clearDraft(
 }
 
 export function ChatInput({
-  onSend, checkSubmission, hasGraph = false, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating,
+  onSend, checkSubmission, hasGraph = false, onStop, onRetryReadiness, onDraftChange, threadId, disabled, isGenerating, isFinishingDiagram = false,
   sendDisabled, backendReadiness = 'ready', retryDisabled, readinessMessage,
   selectionSuggestion, selectionReferenceActive, onUseSelection, onDismissSelection, onClearSelectionReference,
 }: ChatInputProps) {
@@ -287,12 +288,13 @@ export function ChatInput({
             </button>
             <button
               onClick={onStop}
-              aria-label="Stop generation"
+              aria-label={isFinishingDiagram ? 'Finishing diagram' : 'Stop generation'}
+              disabled={isFinishingDiagram}
               style={stopButtonStyle}
               onMouseEnter={e => { e.currentTarget.style.background = 'rgba(248, 81, 73, 0.2)'; }}
               onMouseLeave={e => { e.currentTarget.style.background = 'rgba(248, 81, 73, 0.1)'; }}
             >
-              Stop
+              {isFinishingDiagram ? 'Finishing…' : 'Stop'}
             </button>
           </div>
         ) : backendReadiness === 'error' ? (

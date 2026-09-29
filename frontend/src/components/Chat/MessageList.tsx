@@ -6,7 +6,7 @@
 //          LaTeX ($...$ inline, $$...$$ block) is rendered via KaTeX.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -16,6 +16,7 @@ import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 import type { Message } from '../../types';
 import '../GraphHistoryControls.css';
+import './MessageList.css';
 
 interface MessageListProps {
   messages: Message[];
@@ -203,21 +204,82 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
 }
 
 export function MessageList({ messages, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false }: MessageListProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const followLatest = useRef(true);
+  const pointerDown = useRef(false);
+  const previous = useRef({ firstId: '', userId: '', messages: [] as Message[] });
+  const [hasNewContent, setHasNewContent] = useState(false);
+
+  const hasSelection = () => {
+    const selection = window.getSelection();
+    return !!selection && !selection.isCollapsed && !!listRef.current
+      && (listRef.current.contains(selection.anchorNode) || listRef.current.contains(selection.focusNode));
+  };
+  const nearBottom = (list: HTMLDivElement) => list.scrollHeight - list.scrollTop - list.clientHeight <= 48;
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+    const releasePointer = () => {
+      if (!pointerDown.current) return;
+      pointerDown.current = false;
+      if (listRef.current) followLatest.current = !hasSelection() && nearBottom(listRef.current);
+    };
+    const preserveSelection = () => {
+      if (hasSelection()) followLatest.current = false;
+    };
+    document.addEventListener('selectionchange', preserveSelection);
+    document.addEventListener('pointerup', releasePointer);
+    document.addEventListener('pointercancel', releasePointer);
+    return () => {
+      document.removeEventListener('selectionchange', preserveSelection);
+      document.removeEventListener('pointerup', releasePointer);
+      document.removeEventListener('pointercancel', releasePointer);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const firstId = messages[0]?.id ?? '';
+    const userId = [...messages].reverse().find(message => message.role === 'user')?.id ?? '';
+    const newConversation = firstId !== previous.current.firstId;
+    const newRequest = userId !== previous.current.userId;
+    const contentChanged = messages.length !== previous.current.messages.length || messages.some((message, index) => {
+      const old = previous.current.messages[index];
+      return message.id !== old?.id || message.content !== old.content || message.title !== old.title;
+    });
+    previous.current = { firstId, userId, messages };
+    if (!contentChanged) return;
+    if (newConversation || newRequest || (followLatest.current && !pointerDown.current && !hasSelection())) {
+      list.scrollTop = list.scrollHeight;
+      followLatest.current = true;
+      // Visibility depends on the committed scroll geometry, before paint.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setHasNewContent(false);
+    } else {
+      followLatest.current = false;
+      setHasNewContent(!nearBottom(list));
+    }
   }, [messages]);
 
+  const jumpToLatest = () => {
+    const list = listRef.current;
+    if (!list) return;
+    list.scrollTop = list.scrollHeight;
+    followLatest.current = true;
+    setHasNewContent(false);
+    list.focus({ preventScroll: true });
+  };
+
   return (
-    <div style={{
-      flex: 1,
-      overflowY: 'auto',
-      padding: '1rem',
-      display: 'flex',
-      flexDirection: 'column',
-      gap: '1rem',
-    }}>
+    <div className="message-list-shell">
+    <div ref={listRef} className="message-list" role="region" aria-label="Conversation" tabIndex={0}
+      onPointerDown={() => { pointerDown.current = true; }}
+      onScroll={() => {
+        const list = listRef.current;
+        if (!list) return;
+        followLatest.current = nearBottom(list) && !hasSelection() && !pointerDown.current;
+        if (nearBottom(list)) setHasNewContent(false);
+      }}>
       {messages.length === 0 && (
         <div style={{
           color: '#6e7681',
@@ -232,58 +294,20 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
       {messages.map(msg => (
         <div
           key={msg.id}
+          className="message-row"
           data-testid={`message-${msg.role}`}
           style={{
             display: 'flex',
             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
           }}
         >
-          <div style={{
-            maxWidth: '85%',
-            padding: '0.6rem 0.875rem',
-            borderRadius: msg.role === 'user' ? '12px 12px 2px 12px' : '12px 12px 12px 2px',
-            background: msg.role === 'user'
-              ? '#1c2d4f'
-              : msg.kind === 'explanation'
-                ? 'linear-gradient(145deg, rgba(22,27,34,0.98), rgba(20,27,43,0.92))'
-                : '#161b22',
-            border: msg.role === 'user'
-              ? '1px solid rgba(96, 165, 250, 0.15)'
-              : '1px solid #21262d',
-            color: '#8b949e',
-            fontSize: '0.875rem',
-            lineHeight: 1.65,
-          }}>
+          <div className={msg.role === 'user' ? 'message-user' : 'message-assistant'}>
             {msg.kind === 'explanation' && msg.title && (
-              <div style={{
-                color: '#d8dee9',
-                fontSize: '0.75rem',
-                fontWeight: 700,
-                letterSpacing: '0.01em',
-                marginBottom: '0.35rem',
-              }}>
-                {msg.title}
-              </div>
+              <h2 className="message-heading">{msg.title}</h2>
             )}
             <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
             {msg.role === 'assistant' && msg.graphRevisionId && revisionIds.includes(msg.graphRevisionId) && onViewDiagram && (
               <button className="message-diagram-link" aria-pressed={msg.graphRevisionId === viewedRevisionId} disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
-            )}
-            {msg.kind === 'explanation' && msg.relatedNodeIds && msg.relatedNodeIds.length > 0 && (
-              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: '0.45rem' }}>
-                {msg.relatedNodeIds.slice(0, 4).map(nodeId => (
-                  <span key={nodeId} style={{
-                    color: '#8bb5ff',
-                    background: 'rgba(96,165,250,0.08)',
-                    border: '1px solid rgba(96,165,250,0.15)',
-                    borderRadius: 999,
-                    padding: '1px 6px',
-                    fontSize: '0.58rem',
-                  }}>
-                    {nodeId.replaceAll('_', ' ')}
-                  </span>
-                ))}
-              </div>
             )}
             {msg.isStreaming && (
               <span style={{
@@ -300,7 +324,10 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
           </div>
         </div>
       ))}
-      <div ref={bottomRef} />
+    </div>
+    {hasNewContent && <button className="message-jump" aria-label="Jump to latest" title="Jump to latest" onClick={jumpToLatest}>
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6" /></svg>
+    </button>}
     </div>
   );
 }

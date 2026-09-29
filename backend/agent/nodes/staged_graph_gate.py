@@ -706,6 +706,8 @@ async def _review(
             ),
             max_output_tokens=settings.graph_qa_max_completion_tokens,
             provider_attempt_limit=1,
+            send=(telemetry_context or {}).get("send"),
+            thinking_phase="review",
         )
     except Exception as exc:
         result = _terminal_result(f"provider call failed: {type(exc).__name__}")

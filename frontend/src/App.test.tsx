@@ -275,6 +275,7 @@ const agentState = {
     graphPreview: null,
   graphCandidate: null,
   workflowProgress: [],
+  thinkingProgress: [],
   workerStatus: {
     rag: null,
     graph: null,
@@ -306,6 +307,7 @@ const agentState = {
   saveGraphEdit: vi.fn().mockResolvedValue(undefined),
   requestSearchTool: vi.fn(),
   stopGeneration: vi.fn(),
+  isFinishingDiagram: false,
 };
 
 
@@ -455,6 +457,14 @@ describe('App coordination', () => {
     expect(screen.queryByText('Preview')).toBeNull();
     expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
     expect(fetchGraphRevision).toHaveBeenCalledExactlyOnceWith(session, 'thread-1', 'old');
+  });
+
+  it('blocks steering while an accepted diagram is finishing', async () => {
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, streamStatus: 'generating', isFinishingDiagram: true });
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
   });
 
   it('blocks chat and thread changes while a graph edit draft is open', async () => {

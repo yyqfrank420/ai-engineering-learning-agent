@@ -237,6 +237,16 @@ describe('ChatInput', () => {
     expect(screen.getByRole('button', { name: 'Stop generation' })).toBeTruthy();
   });
 
+  it('disables repeated Stop requests while the accepted diagram is finishing', () => {
+    const onStop = vi.fn();
+    renderInput('thread-1', { isGenerating: true, isFinishingDiagram: true, onStop });
+    const button = screen.getByRole('button', { name: 'Finishing diagram' }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe('Finishing…');
+    fireEvent.click(button);
+    expect(onStop).not.toHaveBeenCalled();
+  });
+
   it('preserves focus feedback', () => {
     renderInput('thread-1');
     const input = screen.getByRole('textbox');

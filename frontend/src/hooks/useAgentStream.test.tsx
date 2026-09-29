@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   isChatActive: vi.fn(),
   steerGeneration: vi.fn(),
   stopGeneration: vi.fn(),
+  acceptPreview: vi.fn(),
   cancelNodeSelection: vi.fn(),
   useSearchTool: vi.fn(),
   trackEvent: vi.fn(),
@@ -35,6 +36,7 @@ vi.mock('../services/agentTransport', async importOriginal => ({
     isChatActive: mocks.isChatActive,
     steerGeneration: mocks.steerGeneration,
     stopGeneration: mocks.stopGeneration,
+    acceptPreview: mocks.acceptPreview,
     cancelNodeSelection: mocks.cancelNodeSelection,
     useSearchTool: mocks.useSearchTool,
   },
@@ -314,7 +316,50 @@ describe('useAgentStream', () => {
     expect(result.current.visibleMessages).toEqual([]);
   });
 
-  it('accepts an already-painted preview only after that graph is committed and the stream ends', () => {
+  it('reveals matching validated blocks as a preview paints without committing or ending the stream', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'progressive-preview'));
+    act(() => result.current.sendMessage('Draw a system'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    const block = (content: string, version: string): ServerEvent => ({ type: 'explanation_block', block_id: content, title: 'How it works', content, related_node_ids: [], evidence_refs: [], graph_version: version });
+    emit({ type: 'graph_preview', data: graph('preview') });
+    emit(block('First validated block', 'preview'));
+    expect(result.current.visibleMessages).toHaveLength(1);
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphPreview)));
+    expect(result.current.visibleMessages.map(message => message.content)).toContain('First validated block');
+    emit(block('Second validated block', 'preview'));
+    emit(block('Wrong graph block', 'other'));
+    emit({ type: 'response_delta', content: 'Unversioned partial' });
+    expect(result.current.visibleMessages.map(message => message.content)).toEqual(['Draw a system', 'First validated block', 'Second validated block']);
+    expect(result.current.graphData).toBeNull();
+    expect(result.current.publishedGraphKey).toBeNull();
+    expect(result.current.streamStatus).toBe('generating');
+    expect(result.current.answerPending).toBe(true);
+    emit({ type: 'graph_data', data: graph('rollback') });
+    expect(result.current.visibleMessages).toHaveLength(1);
+    emit({ type: 'response_reset' });
+    expect(result.current.messages.map(message => message.content)).toEqual(['Draw a system']);
+  });
+
+  it('matches explanation visibility to the retained connected graph during a component-only edit', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'progressive-edit'));
+    const existing: GraphData = { ...graph('existing'), edges: [{ source: 'agent', target: 'agent', label: 'flow', technology: '', sync: 'sync', description: '' }] };
+    act(() => result.current.hydrateThread({ messages: [], graphData: existing }));
+    act(() => result.current.sendMessage('Extend this diagram'));
+    const clientRequestId = mocks.sendMessage.mock.calls.at(-1)![4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    emit({ type: 'graph_preview', data: { ...graph('components'), edges: [] } });
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphPreview)));
+    emit({ type: 'explanation_block', block_id: 'one', title: 'Components', content: 'Hidden component preview', related_node_ids: [], evidence_refs: [], graph_version: 'components' });
+    expect(result.current.visibleMessages).toHaveLength(1);
+    act(() => result.current.acknowledgeGraphRendered(graphStructureKey(result.current.graphData)));
+    emit({ type: 'explanation_block', block_id: 'two', title: 'Existing', content: 'Visible existing diagram', related_node_ids: [], evidence_refs: [], graph_version: 'existing' });
+    expect(result.current.visibleMessages.map(message => message.content)).toEqual(['Extend this diagram', 'Visible existing diagram']);
+  });
+
+  it('holds unversioned explanations until that graph is committed and the stream ends', () => {
     mocks.sendMessage.mockReturnValue(new Promise(() => {}));
     const { result } = renderHook(() => useAgentStream(session, 'preview-handoff'));
     act(() => result.current.sendMessage('Draw a system'));
@@ -709,6 +754,97 @@ describe('useAgentStream', () => {
       expect(consoleError).toHaveBeenCalledWith('[sse] node-selected error:', expect.any(Error));
     });
     consoleError.mockRestore();
+  });
+
+  it('keeps thinking chunks separate by operation, resets attempts, and bounds recent text', () => {
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => { result.current.sendMessage('design'); });
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    for (const content of ['hel', 'lo ', '<script>plain</script>']) {
+      emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content });
+    }
+    emit({ type: 'thinking_delta', operation_id: 'two', phase: 'review', content: 'parallel' });
+    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: ' latest' });
+    expect(result.current.thinkingProgress.map(item => item.operationId)).toEqual(['two', 'one']);
+    expect(result.current.thinkingProgress[1].content).toBe('hello <script>plain</script> latest');
+    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'review', content: 'wrong phase' });
+    expect(result.current.thinkingProgress[1].phase).toBe('components');
+    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: 'fresh', reset: true });
+    expect(result.current.thinkingProgress[1].content).toBe('fresh');
+    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: 'x'.repeat(8001) });
+    expect(result.current.thinkingProgress[1].content).toBe('x'.repeat(8000));
+    for (let index = 0; index < 9; index++) {
+      emit({ type: 'thinking_delta', operation_id: `bounded-${index}`, phase: 'review', content: `${index}` });
+    }
+    expect(result.current.thinkingProgress).toHaveLength(8);
+    expect(result.current.thinkingProgress[0].operationId).toBe('bounded-1');
+    expect(result.current.messages).toHaveLength(1);
+  });
+
+  it.each(['done', 'error', 'stop', 'response_reset', 'thread'] as const)('clears transient thinking on %s', terminal => {
+    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), { initialProps: { threadId: 'thread-1' } });
+    act(() => { result.current.sendMessage('design'); });
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const event: ServerEvent = { type: 'thinking_delta', operation_id: 'operation', phase: 'review', content: 'Transient only' };
+    const emit = (value: ServerEvent, kind: 'chat' | 'node-selected' = 'chat', requestId = clientRequestId) => act(() => mocks.eventHandler?.(value, { kind, clientRequestId: requestId }));
+    emit({ type: 'thinking_delta', content: 'unscoped' });
+    act(() => result.current.selectNode(graph().nodes[0]));
+    const nodeRequestId = mocks.sendNodeSelected.mock.calls[0][5] as string;
+    emit(event, 'node-selected', nodeRequestId);
+    emit(event, 'chat', 'stale-request');
+    expect(result.current.thinkingProgress).toEqual([]);
+    emit(event);
+    expect(result.current.thinkingProgress).toHaveLength(1);
+    if (terminal === 'stop') act(() => result.current.stopGeneration());
+    else if (terminal === 'thread') rerender({ threadId: 'other' });
+    else if (terminal === 'error') emit({ type: 'error', content: 'failed' });
+    else emit({ type: terminal });
+    expect(result.current.thinkingProgress).toEqual([]);
+    if (terminal !== 'response_reset') {
+      emit(event);
+      expect(result.current.thinkingProgress).toEqual([]);
+    }
+  });
+
+  it('accepts review once and keeps receiving synthesis until done', () => {
+    mocks.acceptPreview.mockReturnValue(true);
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => { result.current.sendMessage('design'); });
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    emit({ type: 'graph_preview', data: graph('v1') });
+    emit({ type: 'graph_review_status', status: 'reviewing', graph_version: 'v1', stage: 'connections' });
+    act(() => { result.current.stopGeneration(); result.current.stopGeneration(); });
+    expect(mocks.acceptPreview).toHaveBeenCalledExactlyOnceWith(clientRequestId, 'v1');
+    expect(mocks.stopGeneration).not.toHaveBeenCalled();
+    expect(result.current.isFinishingDiagram).toBe(true);
+    expect(result.current.sendMessage('interrupt acceptance')).toBe(false);
+    expect(mocks.steerGeneration).not.toHaveBeenCalled();
+    expect(result.current.streamStatus).toBe('generating');
+    expect(result.current.graphPreview?.version).toBe('v1');
+    emit({ type: 'graph_review_status', status: 'accepted', graph_version: 'v1', stage: 'connections' });
+    emit({ type: 'graph_review_status', status: 'closed', graph_version: 'v1', stage: 'connections' });
+    emit({ type: 'response_delta', content: 'Finished answer' });
+    emit({ type: 'done' });
+    expect(result.current.messages.some(message => message.content === 'Finished answer')).toBe(true);
+    expect(result.current.isFinishingDiagram).toBe(false);
+  });
+
+  it('shows an acceptance rejection without cancelling and cancels on unmount', () => {
+    mocks.acceptPreview.mockReturnValue(true);
+    const { result, unmount } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => { result.current.sendMessage('design'); });
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    act(() => mocks.eventHandler?.({ type: 'graph_review_status', status: 'reviewing', graph_version: 'v1', stage: 'connections' }, { kind: 'chat', clientRequestId }));
+    act(() => result.current.stopGeneration());
+    act(() => mocks.eventHandler?.({ type: 'command_rejected', command_type: 'accept_preview', reason: 'Review already ended' }, { kind: 'chat', clientRequestId }));
+    expect(result.current.isFinishingDiagram).toBe(false);
+    expect(result.current.graphNotice?.message).toBe('Review already ended');
+    expect(result.current.streamStatus).toBe('generating');
+    expect(mocks.stopGeneration).not.toHaveBeenCalled();
+    unmount();
+    expect(mocks.stopGeneration).toHaveBeenCalledWith(clientRequestId);
   });
 
   it('stops generation and records stop analytics', () => {
