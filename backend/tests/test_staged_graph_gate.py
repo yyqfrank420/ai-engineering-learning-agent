@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v21"
+        "staged_component_gate_v24"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -409,7 +409,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
     assert "independent_risk_coverage" not in generated_criteria
     assert "selected_depth" not in generated_criteria
     assert "streaming_integrity" not in generated_criteria
-    schema = gate._response_schema(rule_codes=tuple(rules))
+    schema = gate._response_schema(rule_codes=tuple(rules), record_count=0)
     assert (
         "streaming_integrity"
         not in schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
@@ -487,6 +487,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
+        elif stage == "components" and maturity == "production" and code == "brief_coverage":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "before component responsibilities freeze" in requirement
+            assert "do not require edges or transition proof" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -647,7 +651,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v27"
+        == "staged_connection_gate_v29"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -1400,7 +1404,7 @@ def test_duplicate_json_review_keys_fail_closed(duplicate_at):
     )
     result = gate._review_result(
         response,
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
     )
@@ -1412,7 +1416,7 @@ def test_old_approval_response_is_not_a_supported_provider_shape():
     rules = gate.COMPONENT_RULE_CODES
     result = gate._review_result(
         _response({"approved": True, "checked_rules": list(rules), "findings": []}),
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
     )
@@ -1774,7 +1778,7 @@ def test_review_capture_send_failure_preserves_gate_result(
 def test_malformed_review_cannot_recover_from_unvalidated_findings(failure):
     guarantees = ["audit_and_provenance"]
     rules = gate._rules_for_connections("production", guarantees)
-    schema = gate._response_schema(rule_codes=rules)
+    schema = gate._response_schema(rule_codes=rules, record_count=1)
     payload = _rule_reviews(
         rules, [{"rule_code": "branch_completion", "reason": "Missing outcome."}]
     )
@@ -1904,7 +1908,7 @@ def test_rule_reviews_derive_ordered_failures_and_retain_passing_evidence():
     }
     result = gate._review_result(
         _response(payload),
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(rule_codes=rules, record_count=2),
         rule_codes=rules,
         records=[{"id": "request"}, {"id": "response"}],
     )
@@ -1956,7 +1960,7 @@ def test_provider_schema_uses_one_strict_uniform_item_for_any_rule_count():
     items = []
     for count in (1, 7, 13):
         codes = tuple(f"rule_{index}" for index in range(count))
-        schema = gate._response_schema(rule_codes=codes)
+        schema = gate._response_schema(rule_codes=codes, record_count=1)
         assert schema["required"] == ["rule_reviews"]
         assert schema["additionalProperties"] is False
         reviews = schema["properties"]["rule_reviews"]
@@ -1988,6 +1992,125 @@ def test_provider_schema_uses_one_strict_uniform_item_for_any_rule_count():
         item_without_codes["properties"]["rule_code"].pop("enum")
         items.append(item_without_codes)
     assert items[0] == items[1] == items[2]
+
+
+@pytest.mark.parametrize("record_count", [0, 1, 38])
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_provider_index_schema_tracks_candidate_positions(
+    monkeypatch, record_count, stage
+):
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    result = asyncio.run(
+        getattr(gate, f"review_{stage}")(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[
+                {"id": f"record_{index}"} for index in range(record_count)
+            ],
+        )
+    )
+    assert result["approved"] is True
+    assert result["review_identity"] == gate.review_identity(stage, "prototype")
+    schema = calls[0]["response_schema"]
+    indexes = schema["properties"]["rule_reviews"]["items"]["properties"][
+        "record_indexes"
+    ]
+    sanitized = _anthropic_response_schema(schema)
+    provider_indexes = sanitized["properties"]["rule_reviews"]["items"]["properties"][
+        "record_indexes"
+    ]
+    assert "maxItems" not in provider_indexes
+    if record_count:
+        assert indexes["maxItems"] == 32
+        assert provider_indexes["items"] == {
+            "type": "integer",
+            "enum": list(range(record_count)),
+        }
+        assert -1 not in provider_indexes["items"]["enum"]
+        assert record_count not in provider_indexes["items"]["enum"]
+    else:
+        assert indexes["maxItems"] == 0
+        assert provider_indexes["items"] == {"type": "integer"}
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_correction_with_more_records_keeps_review_policy_identity(monkeypatch, stage):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    review = getattr(gate, f"review_{stage}")
+    records = [{"id": "original"}]
+    first = asyncio.run(
+        review(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=records,
+        )
+    )
+    corrected = asyncio.run(
+        review(
+            user_request="Review",
+            evidence_bundle={},
+            resolved_maturity="prototype",
+            candidate_records=[*records, {"id": "added"}],
+            previous_review={
+                "stage": stage,
+                "review_identity": first["review_identity"],
+                "candidate_records": records,
+                "evidence_bundle": {},
+                "rule_reviews": first["rule_reviews"],
+            },
+        )
+    )
+    assert first["approved"] is corrected["approved"] is True
+    assert first["review_identity"] == corrected["review_identity"]
+    assert calls[0]["response_schema"] != calls[1]["response_schema"]
+
+
+@pytest.mark.parametrize(
+    "record_count,indexes,terminal",
+    [
+        (0, [], False),
+        (0, [0], True),
+        (38, [37], False),
+        (38, [38], True),
+        (38, list(range(32)), False),
+        (38, list(range(33)), True),
+        (38, [True], True),
+        (38, [1.0], True),
+        (38, [-1], True),
+    ],
+)
+def test_candidate_index_bounds_remain_enforced_after_provider_sanitizing(
+    record_count, indexes, terminal
+):
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    rules = ("brief_coverage",)
+    schema = _anthropic_response_schema(
+        gate._response_schema(rule_codes=rules, record_count=record_count)
+    )
+    result = gate._review_result(
+        _response(
+            {
+                "rule_reviews": [
+                    {
+                        "rule_code": rules[0],
+                        "satisfied": True,
+                        "reason": "Supplied evidence",
+                        "record_indexes": indexes,
+                    }
+                ]
+            }
+        ),
+        schema=schema,
+        rule_codes=rules,
+        records=[{} for _ in range(record_count)],
+    )
+    assert result["terminal"] is terminal
+    assert result["approved"] is (not terminal)
 
 
 def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkeypatch):
@@ -2067,7 +2190,7 @@ def test_rule_review_array_requires_every_rule_exactly_once(malformation):
         rows[1] = None
     result = gate._review_result(
         _response({"rule_reviews": rows}),
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
     )
@@ -2089,7 +2212,7 @@ def test_previous_keyed_provider_schema_is_rejected():
     )
     result = gate._review_result(
         response,
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
     )

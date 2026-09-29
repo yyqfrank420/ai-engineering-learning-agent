@@ -268,8 +268,14 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
         "it. For every producer of model-proposed actions, identify the executable owner "
         "that deterministically validates those proposals' structure and allowed constraints "
-        "before approval or execution. A shared validator may cover multiple producers when "
-        "their responsibilities or contracts establish that coverage. Validation of one "
+        "before approval or execution. A named compatible owner may perform this "
+        "deterministic validation internally. Its responsibility or a connection contract "
+        "may establish the covered producer, proposal structure and allowed constraints, "
+        "and validation before approval or execution. An explicit connection contract "
+        "does not need duplicate wording in the owner's responsibility. A shared "
+        "validator may cover multiple producers when their responsibilities or contracts "
+        "establish that coverage. A vague 'validate' label without an executable owner, "
+        "deterministic checks, and pre-execution order is insufficient. Validation of one "
         "producer does not establish validation of another. Typed proposals and human "
         "approval alone do not establish deterministic validation. Retain provenance and "
         "correlated audit evidence for material inputs, decisions, actions, and terminal "
@@ -305,8 +311,8 @@ def staged_review_requirements(
     excluded.update(RUBRIC_CODES[16:])
     # Staged construction has no independently reviewed upstream risk artifact.
     excluded.add("independent_risk_coverage")
-    # Detail depth guides generation. The completed graph review owns production
-    # controls; component review checks scope, ownership, and feasibility.
+    # Component review establishes control ownership before components freeze;
+    # connection review checks the required contracts and transitions.
     excluded.update({"domain_specificity", "succinctness", "selected_depth"})
     requirements = {
         code: requirement
@@ -337,6 +343,32 @@ def staged_review_requirements(
             "for required runtime or control interactions."
         )
     if stage == "components":
+        if maturity == "production":
+            requirements["brief_coverage"] += (
+                " Give applicable required production controls executable ownership "
+                "before component responsibilities freeze. When this system owns an "
+                "update or release of a model, prompt, ranking, or live configuration, "
+                "require ownership of curated versioned evidence including hostile "
+                "traces, offline evaluation, reviewed immutable release, canary, "
+                "promotion, rollback, and recorded outcomes. Compatible controls may "
+                "share an existing executable owner. Upstream curation or evaluation "
+                "may be supplied by an explicitly declared external dependency with "
+                "those responsibilities. A metrics-only monitor, passive artifact "
+                "store, or the word 'reviewed' alone does not establish curation or "
+                "evaluation ownership. Assess responsibility feasibility at this stage; "
+                "do not require edges or transition proof before connections are "
+                "authored. Frozen inference without an owned update or release does "
+                "not require these learning and release controls. For every producer "
+                "of model-proposed actions, require executable ownership of deterministic "
+                "validation of proposal structure and allowed constraints before approval "
+                "or execution. This applies independently of external_effects and "
+                "learning_or_release, including model-selected read-only tools, internal "
+                "tools, and code execution. A compatible existing owner may perform "
+                "this validation internally. At the component stage, establish ownership "
+                "and responsibility feasibility without requiring edges or transition "
+                "proof. Answer-only inference without model-proposed actions does not "
+                "require this per-action validation."
+            )
         requirements["mece_scope"] = (
             "Give each material responsibility a clear executable owner. Block "
             "conflicting material ownership that makes required behavior or controls "

@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -44,7 +45,7 @@ vi.mock('./D3Graph', () => ({
 }));
 
 import { updateThreadGraph } from '../../services/api';
-import type { AuthSession, GraphData } from '../../types';
+import type { AuthSession, GraphData, SelectedNode } from '../../types';
 import { GraphCanvas } from './index';
 
 
@@ -382,6 +383,38 @@ describe('GraphCanvas behavior', () => {
     fireEvent.click(screen.getByText('Edit rendered connection'));
     expect(document.activeElement).toBe(screen.getByRole('textbox', { name: 'Label' }));
   });
+
+  it.each(['Edit details', 'Edit rendered node', 'Edit rendered connection'])(
+    'returns to normal details when reselecting a node after opening %s', editButton => {
+      const onSaveGraphEdit = vi.fn().mockResolvedValue(undefined);
+      function SelectableCanvas() {
+        const [selectedNode, setSelectedNode] = useState<SelectedNode | null>(null);
+        return <GraphCanvas {...baseProps} graphData={graph} selectedNode={selectedNode}
+          onNodeClick={node => setSelectedNode({ node, suggestions: [] })}
+          onClosePopup={() => setSelectedNode(null)} onSaveGraphEdit={onSaveGraphEdit} />;
+      }
+      render(<SelectableCanvas />);
+
+      fireEvent.click(screen.getByText('Select rendered node'));
+      expect(screen.getByRole('button', { name: 'Edit details' })).toBeTruthy();
+      expect(screen.getByText('Retrieves RAG evidence.')).toBeTruthy();
+      expect(screen.queryByRole('textbox')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: editButton }));
+      expect(screen.getByRole('textbox', { name: 'Name' })).toBeTruthy();
+
+      fireEvent.click(screen.getByText('Select rendered node'));
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Edit details' })).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Tell me more' })).toHaveProperty('disabled', false);
+      expect(onSaveGraphEdit).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Close node detail' }));
+      expect(screen.queryByRole('region', { name: 'Node details' })).toBeNull();
+      fireEvent.click(screen.getByText('Select rendered node'));
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Edit details' })).toBeTruthy();
+    },
+  );
 
   it('keeps a dirty inspector on its current node when another node is selected', () => {
     const onNodeClick = vi.fn();

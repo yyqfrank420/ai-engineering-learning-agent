@@ -261,7 +261,7 @@ export function D3Graph({
   useEffect(() => {
     onNodeEditRef.current = onNodeEdit;
     renderStateRef.current?.nodeSel.attr('aria-description', onNodeEdit
-      ? 'Double-click or press F2 to edit.'
+      ? 'Press F2 to edit.'
       : null);
   }, [onNodeEdit, structureKey, viewportRevision]);
 
@@ -304,11 +304,6 @@ export function D3Graph({
 
     const svg = d3.select(svgRef.current);
     let dragView: Window | null = null;
-    let pendingNodeClick: ReturnType<typeof setTimeout> | null = null;
-    const clearPendingNodeClick = () => {
-      if (pendingNodeClick !== null) window.clearTimeout(pendingNodeClick);
-      pendingNodeClick = null;
-    };
     const trackDrag = (event: { sourceEvent: MouseEvent | TouchEvent }) => {
       if ('view' in event.sourceEvent) dragView = event.sourceEvent.view;
     };
@@ -1477,7 +1472,7 @@ export function D3Graph({
       .attr('role', 'button')
       .attr('tabindex', 0)
       .attr('aria-label', (d: RenderNode) => `Explore ${d.label}`)
-      .attr('aria-description', onNodeEditRef.current ? 'Double-click or press F2 to edit.' : null)
+      .attr('aria-description', onNodeEditRef.current ? 'Press F2 to edit.' : null)
       .attr('data-grouped', (d: RenderNode) => groupStyleByNodeId.has(d.id) ? 'true' : null)
       .attr('opacity', 1)
       .style('cursor', 'pointer')
@@ -1485,7 +1480,7 @@ export function D3Graph({
         d3.drag<SVGGElement, RenderNode>()
           .on('start', function(event, node) {
             trackDrag(event);
-            d3.select(this).raise().style('cursor', 'grabbing');
+            d3.select(this).style('cursor', 'grabbing');
             const visible = new Set(renderStateRef.current?.nodeSel.filter(function() {
               return this.getAttribute('aria-hidden') !== 'true';
             }).data().map(item => item.id) ?? nodes.map(item => item.id));
@@ -1497,7 +1492,9 @@ export function D3Graph({
             }
             nodeDragStarts.set(node.id, { x: node.x, y: node.y, targets });
           })
-          .on('drag', (event, d) => {
+          .on('drag', function(event, d) {
+            // Reparenting on mousedown prevents WebKit from dispatching the click.
+            d3.select(this).raise();
             stopCameraFollow();
             const start = nodeDragStarts.get(d.id)!;
             const constrain = navigation && event.sourceEvent.shiftKey;
@@ -1522,26 +1519,13 @@ export function D3Graph({
           })
       )
       .on('click', (event: MouseEvent, d: RenderNode) => {
-        if (onNodeEditRef.current) {
-          if (event.detail > 1) return;
-          clearPendingNodeClick();
-          pendingNodeClick = window.setTimeout(() => {
-            pendingNodeClick = null;
-            setSelectedConnectionId(null);
-            onNodeClickRef.current(d);
-          }, 350);
-          return;
-        }
+        if (event.detail > 1) return;
         setSelectedConnectionId(null);
         onNodeClickRef.current(d);
       })
-      .on('dblclick.edit', (event: MouseEvent, d: RenderNode) => {
-        if (!onNodeEditRef.current) return;
+      .on('dblclick', (event: MouseEvent) => {
         event.preventDefault();
         event.stopPropagation();
-        clearPendingNodeClick();
-        setSelectedConnectionId(null);
-        onNodeEditRef.current(d);
       })
       .on('focus', (_event: FocusEvent, d: RenderNode) => setFocusedNodeId(d.id))
       .on('blur', () => setFocusedNodeId(null))
@@ -1549,7 +1533,6 @@ export function D3Graph({
         if (event.key === 'F2' && onNodeEditRef.current) {
           event.preventDefault();
           event.stopPropagation();
-          clearPendingNodeClick();
           setSelectedConnectionId(null);
           onNodeEditRef.current(d);
           return;
@@ -2215,7 +2198,6 @@ export function D3Graph({
 
     return () => {
       cancelled = true;
-      clearPendingNodeClick();
       // D3 captures mouse drags on window; a chat switch can remove the canvas before mouseup.
       if (dragView) {
         d3.select(dragView).on('mousemove.drag mouseup.drag', null);

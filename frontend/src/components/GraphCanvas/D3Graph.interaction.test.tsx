@@ -1011,7 +1011,38 @@ describe('graph node activation', () => {
     expect(screen.queryByText('EXIT')).toBeNull();
   });
 
-  it('opens node editing on double-click or F2 without zooming or exploring', async () => {
+  it('preserves node order for pointer selection and raises a node only when dragged', async () => {
+    const onNodeClick = vi.fn();
+    const { container } = render(<D3Graph graphData={cameraGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={onNodeClick} navigation
+      initialViewState={cameraViewState} />);
+    const node = container.querySelector('[data-node-id="a"]')!;
+    const order = () => Array.from(container.querySelectorAll('g.node'), item => item.getAttribute('data-node-id'));
+    const initialOrder = order();
+    expect(initialOrder).toEqual(['a', 'b', 'c']);
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number) => {
+      const event = createEvent[type](target, { clientX, clientY: 200, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(target, event);
+    };
+
+    mouse(node, 'mouseDown', 200);
+    expect(order()).toEqual(initialOrder);
+    mouse(window, 'mouseUp', 200);
+    fireEvent.click(node, { detail: 1 });
+    expect(order()).toEqual(initialOrder);
+    expect(onNodeClick).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'a' }));
+
+    mouse(node, 'mouseDown', 200);
+    expect(order()).toEqual(initialOrder);
+    mouse(window, 'mouseMove', 240);
+    expect(order()).toEqual(['b', 'c', 'a']);
+    mouse(window, 'mouseUp', 240);
+    // D3 suppresses the click after dragging until the next event-loop turn.
+    await new Promise(resolve => window.setTimeout(resolve, 0));
+  });
+
+  it('opens details once on double-click and reserves editing for F2 without zooming', () => {
     const onNodeClick = vi.fn();
     const onNodeEdit = vi.fn();
     const saveView = vi.fn();
@@ -1019,29 +1050,30 @@ describe('graph node activation', () => {
       navigation onNodeClick={onNodeClick} onNodeEdit={onNodeEdit} onViewStateChange={saveView} />);
     const node = screen.getByRole('button', { name: 'Explore Sensor Gateway' });
     const initialViewport = saveView.mock.lastCall![0].viewport;
-    expect(node.getAttribute('aria-description')).toContain('F2');
+    expect(node.getAttribute('aria-description')).toBe('Press F2 to edit.');
 
     fireEvent.click(node, { detail: 1 });
     fireEvent.click(node, { detail: 2 });
     fireEvent.doubleClick(node);
-    expect(onNodeEdit).toHaveBeenCalledTimes(1);
-    expect(onNodeClick).not.toHaveBeenCalled();
+    expect(onNodeEdit).not.toHaveBeenCalled();
+    expect(onNodeClick).toHaveBeenCalledTimes(1);
+    expect(onNodeClick).toHaveBeenCalledWith(expect.objectContaining({ id: 'sensor_gateway' }));
     expect(saveView.mock.lastCall![0].viewport).toEqual(initialViewport);
-    await new Promise(resolve => window.setTimeout(resolve, 380));
-    expect(onNodeClick).not.toHaveBeenCalled();
 
     fireEvent.keyDown(node, { key: 'F2' });
-    expect(onNodeEdit).toHaveBeenCalledTimes(2);
-    fireEvent.keyDown(node, { key: 'Enter' });
+    expect(onNodeEdit).toHaveBeenCalledTimes(1);
+    expect(onNodeEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'sensor_gateway' }));
     expect(onNodeClick).toHaveBeenCalledTimes(1);
+    fireEvent.keyDown(node, { key: 'Enter' });
+    expect(onNodeClick).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a single-click node exploration available when editing is enabled', async () => {
+  it('opens node details immediately on single-click when editing is enabled', () => {
     const onNodeClick = vi.fn();
     render(<D3Graph graphData={graph} currentStep={-1} activeNodeIds={new Set<string>()}
       navigation onNodeClick={onNodeClick} onNodeEdit={() => undefined} />);
     fireEvent.click(screen.getByRole('button', { name: 'Explore Sensor Gateway' }), { detail: 1 });
-    await waitFor(() => expect(onNodeClick).toHaveBeenCalledTimes(1));
+    expect(onNodeClick).toHaveBeenCalledTimes(1);
   });
 
   it('fits feedback-only node titles without assigning runtime entry badges', () => {

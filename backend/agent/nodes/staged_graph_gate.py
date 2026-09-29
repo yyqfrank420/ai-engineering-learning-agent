@@ -25,8 +25,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v21"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v27"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v24"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v29"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -55,9 +55,16 @@ def _strict_object_schema(properties: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _response_schema(*, rule_codes: Sequence[str]) -> dict[str, Any]:
+def _response_schema(
+    *, rule_codes: Sequence[str], record_count: int
+) -> dict[str, Any]:
     # Per-rule objects exceeded Anthropic's grammar limit at 13 production rules.
     # Keep one item schema and enforce complete rule coverage in the parser.
+    # Anthropic strips numeric bounds but preserves enums. Empty candidates have
+    # no valid index enum; their empty array is enforced by the runtime parser.
+    index_items: dict[str, Any] = {"type": "integer"}
+    if record_count:
+        index_items["enum"] = list(range(record_count))
     return _strict_object_schema(
         {
             "rule_reviews": {
@@ -75,8 +82,8 @@ def _response_schema(*, rule_codes: Sequence[str]) -> dict[str, Any]:
                         },
                         "record_indexes": {
                             "type": "array",
-                            "items": {"type": "integer", "minimum": 0},
-                            "maxItems": _MAX_RECORD_INDEXES,
+                            "items": index_items,
+                            "maxItems": _MAX_RECORD_INDEXES if record_count else 0,
                         },
                     }
                 ),
@@ -178,8 +185,9 @@ def review_identity(
                 {"review_scope": {"trusted_baseline": False}},
             )
         ],
+        # Fingerprint a fixed schema template so candidate edits retain identity.
         "response_schema": _response_schema(
-            rule_codes=tuple(requirements),
+            rule_codes=tuple(requirements), record_count=1,
         ),
     }
     payload = json.dumps(identity, sort_keys=True, separators=(",", ":"))
@@ -659,7 +667,7 @@ async def _review(
     records = _normalise_records(candidate_records)
     guarantees = _normalise_guarantees(maturity, required_production_guarantees)
     schema = _response_schema(
-        rule_codes=rule_codes,
+        rule_codes=rule_codes, record_count=len(records),
     )
     identity = review_identity(gate, maturity, guarantees)
     evidence_bundle = deepcopy(dict(evidence_bundle))

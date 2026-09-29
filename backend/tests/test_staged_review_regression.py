@@ -86,7 +86,10 @@ def test_review_parser_retains_both_blockers_in_synthetic_combined_response(
             provider="test",
             model="test",
         ),
-        schema=gate._response_schema(rule_codes=rules),
+        schema=gate._response_schema(
+            rule_codes=rules,
+            record_count=len(marketing_review["initial_candidate"]),
+        ),
         rule_codes=rules,
         records=marketing_review["initial_candidate"],
     )

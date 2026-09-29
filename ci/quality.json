@@ -236,11 +236,32 @@
     ],
     "reviewed_presentation_changes": [
       {
+        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
+        "before_blob": "71f61787daf79fcc28e4bc53396c75a516f72cec",
+        "after_blob": "b1083d56fee0ac6b411ca76737d2cb4ce2aeb2d3",
+        "reason": "Style compact connection disclosures and a muted header Edit control within the interactive node inspector; graph rendering and capture styles are unchanged.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.tsx",
+        "before_blob": "697686d56e3073b94a4b7ebc52dc425291ceb8c7",
+        "after_blob": "6c7d2eb5efe0f712af8585c3cc93bc70c5f5c513",
+        "reason": "Group read-only connections into collapsed peer rows with explicit directions and move Edit beside Close; preserve every directed record, editor index, action callback and focus behavior.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
+        "before_blob": "a935d524899ba20cffb60813cb3e363062cf0ad6",
+        "after_blob": "af35270fb964e9306cefc92c88778fde8144a627",
+        "reason": "Open normal details on pointer selection, retain explicit F2 editing, and defer node reparenting until drag movement; capture geometry and generation protocols are unchanged.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "6051f7ce48c0073ce9703d9b9fd8094c1c3f7d74",
-        "after_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
-        "reason": "Remove the canvas status overlay and its presentation-only progress prop.",
-        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+        "before_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
+        "after_blob": "8dd214987014f83406989165610bae073ff34f5e",
+        "reason": "Reset pristine node inspectors on normal selection, rebind pane measurements and pass peer labels to the detail view; preserve dirty drafts and existing save/generation protocols.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphGenerationStatus.tsx",
