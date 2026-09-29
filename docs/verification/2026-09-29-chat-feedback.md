@@ -45,7 +45,9 @@ replay are separate future work; changing transport alone does not provide resum
 
 Full offline checks passed 3,199 backend tests (92% coverage), 543 frontend tests and 368 CI
 policy tests. Subsequent targeted runs passed 108 provider/adapter tests, 90 thinking/hook tests
-and 198 staged workflow tests. Lint, TypeScript and production build passed.
+and 198 staged workflow tests. Lint, TypeScript and production build passed. CI then exposed a timing-sensitive App test:
+the mock allowed sending while history was loading. A deferred-history regression reproduced
+it, the mock now honors the disabled control, and the final full frontend suite passed 544 tests.
 
 Fresh local run `local-stop-accept-d07f91f2-02ab-43a6-99c8-dfe701016e2c` used an empty SQLite
 store and one new tutoring prompt. Real provider thinking appeared in the browser. Stop during

@@ -120,6 +120,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
     onDismissSelection,
     onClearSelectionReference,
     backendReadiness,
+    sendDisabled,
   }: {
     onSend: (content: string, action?: 'ask' | 'new_chat') => Promise<void>;
     onStop: () => void;
@@ -128,11 +129,12 @@ vi.mock('./components/Chat/ChatInput', () => ({
     onDismissSelection: () => void;
     onClearSelectionReference: () => void;
     backendReadiness: string;
+    sendDisabled?: boolean;
   }) => (
     <div>
-      <button onClick={() => { void onSend('User question').catch(() => {}); }}>Send message</button>
-      <button onClick={() => { void onSend('AI trading bot?', 'ask').catch(() => {}); }}>Send broad request</button>
-      <button onClick={() => { void onSend('Separate topic', 'new_chat').catch(() => {}); }}>Send in new chat</button>
+      <button disabled={sendDisabled} onClick={() => { void onSend('User question').catch(() => {}); }}>Send message</button>
+      <button disabled={sendDisabled} onClick={() => { void onSend('AI trading bot?', 'ask').catch(() => {}); }}>Send broad request</button>
+      <button disabled={sendDisabled} onClick={() => { void onSend('Separate topic', 'new_chat').catch(() => {}); }}>Send in new chat</button>
       <button onClick={onStop}>Stop generation</button>
       {backendReadiness === 'error' && <button onClick={onRetryReadiness}>Retry connection</button>}
       <button onClick={onUseSelection}>Use selection</button>
@@ -405,6 +407,7 @@ describe('App coordination', () => {
     flushPendingLayout.mockRejectedValue(new Error('Layout save failed'));
     render(<App />);
     await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Select thread')); });
     expect(threadState.handleSelectThread).not.toHaveBeenCalled();
     expect(screen.getByRole('alert').textContent).toBe('Layout save failed');
@@ -415,10 +418,27 @@ describe('App coordination', () => {
     flushPendingLayout.mockReturnValue(new Promise<void>(done => { resolve = done; }));
     const view = render(<App />);
     await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByText('New chat'));
+    expect(flushPendingLayout).toHaveBeenCalledOnce();
     view.unmount();
     await act(async () => resolve());
     expect(threadState.handleNewChat).not.toHaveBeenCalled();
+  });
+
+  it('waits for initial history before sending into a new chat', async () => {
+    let resolveHistory!: (value: { current_revision_id: null; revisions: [] }) => void;
+    vi.mocked(fetchGraphHistory).mockReturnValueOnce(new Promise(done => { resolveHistory = done; }));
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    expect(screen.getByText('Updating history…')).toBeTruthy();
+    expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+    await act(async () => resolveHistory({ current_revision_id: null, revisions: [] }));
+    expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
+    expect(threadState.handleNewChat).toHaveBeenCalledWith({ preserveCurrentView: true });
   });
 
   it('accepts its created thread when React commits that selection before creation resolves', async () => {
@@ -427,6 +447,7 @@ describe('App coordination', () => {
     vi.mocked(useThreadSession).mockReturnValue({ ...threadState, handleNewChat: create });
     const view = render(<App />);
     await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
     expect(create).toHaveBeenCalledWith({ preserveCurrentView: true });
     const created: ThreadDetail = {
