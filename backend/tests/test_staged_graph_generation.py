@@ -70,6 +70,86 @@ def test_connection_container_and_duplicate_diagnostics(wire, limit, reason, pat
 
 
 @pytest.mark.parametrize(
+    "path,value,reason",
+    [
+        ("title", None, "title_type"), ("title", " ", "title_length"),
+        ("assumptions", None, "assumptions_type"),
+        ("assumptions", ["a"] * 17, "assumptions_count"),
+        ("assumptions.0", None, "assumption_type"),
+        ("assumptions.0", " ", "assumption_length"),
+        ("root_index", True, "root_type"), ("root_index", 9, "root_range"),
+        ("capabilities", None, "capabilities_type"),
+        ("capabilities", {}, "capabilities_keys"),
+        ("capabilities.external_effects", 1, "capability_type"),
+        ("components", None, "components_type"),
+        ("components", [], "components_count"),
+        ("components.0", None, "component_type"),
+        ("components.0", {}, "component_keys"),
+        ("components.0.label", None, "label_type"),
+        ("components.0.label", " ", "label_length"),
+        ("components.0.responsibility", None, "responsibility_type"),
+        ("components.0.responsibility", " ", "responsibility_length"),
+        ("components.0.group_label", None, "group_label_type"),
+        ("components.0.group_label", " ", "group_label_length"),
+        ("components.0.type", True, "component_type_enum"),
+        ("components.0.group_kind", 999, "group_kind_enum"),
+        ("components.0.primary_flow_member", 1, "primary_flow_type"),
+        ("components.0.primary_flow_member", False, "root_not_primary"),
+    ],
+)
+def test_component_rejection_diagnostics(path, value, reason):
+    from agent import staged_graph_workflow as workflow
+
+    wire = _component_wire()
+    wire["assumptions"] = ["private source detail"]
+    target = wire
+    parts = path.split(".")
+    for part in parts[:-1]:
+        target = target[int(part) if part.isdigit() else part]
+    target[int(parts[-1]) if parts[-1].isdigit() else parts[-1]] = value
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=5)
+    error = caught.value
+    code = "staged_generation_schema_invalid" if reason in {
+        "capabilities_type", "capabilities_keys", "component_type", "component_keys"
+    } else "component_wire_invalid"
+    expected_path = "root_index" if reason == "root_not_primary" else path
+    assert str(error) == error.code == code
+    assert error.diagnostic_reason == reason
+    assert error.diagnostic_path == expected_path
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="components", attempt=2, candidate=_component_wire(),
+    )
+    assert diagnostic["reason"] == reason
+    assert diagnostic["path"] == expected_path
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    assert diagnostic["candidate_fingerprint"] != generation._fingerprint(_component_wire())
+    assert "private source detail" not in json.dumps(diagnostic)
+    assert workflow._safe_finding(error, stage="components") == {
+        "code": code, "path": "components", "rule": "contract_validation", "reason": code,
+    }
+
+
+@pytest.mark.parametrize("case,reason", [
+    ("keys", "component_wire_keys"), ("duplicate", "duplicate_component"),
+    ("capacity", "components_count"),
+])
+def test_component_diagnostic_identity_and_capacity(case, reason):
+    wire = _component_wire()
+    if case == "keys":
+        wire["private key"] = "private output"
+    else:
+        wire["components"].append(dict(wire["components"][0]))
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=1 if case == "capacity" else 5)
+    error = caught.value
+    assert error.diagnostic_reason == reason
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert error.diagnostic_path == ("components.1" if case == "duplicate" else "components")
+    assert "private" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
     "connection_key", ["initial_connections", "corrected_connections"]
 )
 def test_retained_closed_loop_primary_reachability(connection_key):
@@ -794,7 +874,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v32"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v34"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2089,6 +2169,7 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= generated.keys()
     if maturity == "prototype":
         assert "downstream_controls" not in generated_input
+        assert "downstream_controls" not in review_prompt
     else:
         controls = generated_input["downstream_controls"]
         assert controls == STAGED_PRODUCTION_REQUIREMENTS
@@ -2117,7 +2198,10 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
             for code, guidance in controls.items()
             if code != "streaming_integrity"
         }
-        assert "downstream_controls" not in review_prompt
+        reviewed_controls = json.loads(
+            review_prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0]
+        )
+        assert reviewed_controls == controls == STAGED_PRODUCTION_REQUIREMENTS
         assert (
             "Do not add external effects, retrieval, learning, or streaming solely "
             "to satisfy unrelated guidance"

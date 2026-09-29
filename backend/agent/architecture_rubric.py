@@ -337,6 +337,22 @@ def staged_review_requirements(
             "for required runtime or control interactions."
         )
     if stage == "components":
+        if maturity == "production":
+            requirements["brief_coverage"] += (
+                " Before responsibilities freeze, check executable ownership feasibility "
+                "for downstream_controls activated by the declared behavior and "
+                "responsibilities, including when a capability flag needs correction in "
+                "this review. Each applicable control operation needs a compatible "
+                "declared owner; storage of evidence alone does not own evaluation or "
+                "approval. Compatible operations may share an existing owner; do not "
+                "require separate components. Assess ownership only here, not edges, "
+                "sequence, or payload proofs. Do not introduce capabilities or features "
+                "solely to satisfy conditional guidance. Report all missing or incompatible "
+                "owners in this pass, citing the affected component indexes and the "
+                "declared behavior that activates each obligation. Respect supplied edit "
+                "scope: a finding about frozen baseline responsibilities grants no "
+                "authority to change them."
+            )
         requirements["mece_scope"] = (
             "Give each material responsibility a clear executable owner. Block "
             "conflicting material ownership that makes required behavior or controls "

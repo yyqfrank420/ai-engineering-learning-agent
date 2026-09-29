@@ -39,7 +39,7 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v32"
+_COMPONENT_PROMPT_VERSION = "staged_components_v34"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v28"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
@@ -1059,9 +1059,10 @@ def _attempt_prompt(
         if connection_addition_plan and connection_addition_plan.get("mode") == "extension":
             instructions += (
                 " This is an add-only extension of the saved architecture. Keep every existing "
-                "component, connection, group, root, title and assumption unchanged. Add the "
+                "component, connection, root, title and assumption unchanged. Add the "
                 "complete requested layer within the stated ceilings; the ceiling is not a target "
-                "count. Place new components in new groups and connect them to appropriate saved "
+                "count. Place new components in compatible existing groups or new groups; "
+                "preserve saved group labels, kinds, and existing member order. Connect them to appropriate saved "
                 "components without adding connections solely between existing components. "
                 "Return candidate containing only the authorized delta with clarification_questions=[]; "
                 "if the requested layer or its attachment is uncertain, return candidate=null and "
@@ -1916,82 +1917,79 @@ def _connection_edit_delta(
 
 def _parse_component_wire(text: str, *, component_limit: int) -> dict[str, Any]:
     payload = _parse_json(text)
-    _require_exact_keys(
-        payload,
-        {"title", "assumptions", "root_index", "capabilities", "components"},
-    )
-    if not isinstance(payload["title"], str) or not (
-        0 < len(payload["title"].strip()) <= TITLE_MAX_CHARS
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+
+    def rejected(reason: str, path: str, *, schema: bool = False) -> StagedGenerationError:
+        return StagedGenerationError(
+            "staged_generation_schema_invalid" if schema else "component_wire_invalid",
+            diagnostic_reason=reason,
+            diagnostic_path=path,
+            rejected_wire_fingerprint=_fingerprint(payload),
+        )
+
+    if set(payload) != {"title", "assumptions", "root_index", "capabilities", "components"}:
+        raise rejected("component_wire_keys", "components", schema=True)
+    if not isinstance(payload["title"], str):
+        raise rejected("title_type", "title")
+    if not (0 < len(payload["title"].strip()) <= TITLE_MAX_CHARS):
+        raise rejected("title_length", "title")
     assumptions = payload["assumptions"]
-    if (
-        not isinstance(assumptions, list)
-        or len(assumptions) > _MAX_ASSUMPTIONS
-        or any(
-            not isinstance(item, str)
-            or not (0 < len(item.strip()) <= ASSUMPTION_MAX_CHARS)
-            for item in assumptions
-        )
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(assumptions, list):
+        raise rejected("assumptions_type", "assumptions")
+    if len(assumptions) > _MAX_ASSUMPTIONS:
+        raise rejected("assumptions_count", "assumptions")
+    for index, item in enumerate(assumptions):
+        if not isinstance(item, str):
+            raise rejected("assumption_type", f"assumptions.{index}")
+        if not (0 < len(item.strip()) <= ASSUMPTION_MAX_CHARS):
+            raise rejected("assumption_length", f"assumptions.{index}")
     if not _is_integer(payload["root_index"]):
-        raise StagedGenerationError("component_wire_invalid")
+        raise rejected("root_type", "root_index")
     capabilities = payload["capabilities"]
-    _require_exact_keys(
-        capabilities,
-        {"external_effects", "retrieval_or_reuse", "learning_or_release"},
-    )
-    if any(not isinstance(value, bool) for value in capabilities.values()):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(capabilities, dict):
+        raise rejected("capabilities_type", "capabilities", schema=True)
+    if set(capabilities) != {"external_effects", "retrieval_or_reuse", "learning_or_release"}:
+        raise rejected("capabilities_keys", "capabilities", schema=True)
+    for field, value in capabilities.items():
+        if not isinstance(value, bool):
+            raise rejected("capability_type", f"capabilities.{field}")
     components = payload["components"]
-    if (
-        not isinstance(components, list)
-        or not components
-        or len(components) > component_limit
-        or not 0 <= payload["root_index"] < len(components)
-    ):
-        raise StagedGenerationError("component_wire_invalid")
+    if not isinstance(components, list):
+        raise rejected("components_type", "components")
+    if not components or len(components) > component_limit:
+        raise rejected("components_count", "components")
+    if not 0 <= payload["root_index"] < len(components):
+        raise rejected("root_range", "root_index")
     identities: set[tuple[str, int]] = set()
-    for component in components:
-        _require_exact_keys(
-            component,
-            {
-                "label",
-                "type",
-                "responsibility",
-                "group_label",
-                "group_kind",
-                "primary_flow_member",
-            },
-        )
-        if (
-            not isinstance(component["label"], str)
-            or not (0 < len(component["label"].strip()) <= COMPONENT_LABEL_MAX_CHARS)
-            or not _is_integer(component["type"])
-            or component["type"] not in NODE_TYPE_CODES
-            or not isinstance(component["responsibility"], str)
-            or not (
-                0
-                < len(component["responsibility"].strip())
-                <= COMPONENT_RESPONSIBILITY_MAX_CHARS
-            )
-            or not isinstance(component["group_label"], str)
-            or not (0 < len(component["group_label"].strip()) <= GROUP_LABEL_MAX_CHARS)
-            or not _is_integer(component["group_kind"])
-            or component["group_kind"] not in GROUP_KIND_CODES
-            or not isinstance(component["primary_flow_member"], bool)
+    for index, component in enumerate(components):
+        path = f"components.{index}"
+        if not isinstance(component, dict):
+            raise rejected("component_type", path, schema=True)
+        if set(component) != {"label", "type", "responsibility", "group_label", "group_kind", "primary_flow_member"}:
+            raise rejected("component_keys", path, schema=True)
+        for field, limit in (
+            ("label", COMPONENT_LABEL_MAX_CHARS),
+            ("responsibility", COMPONENT_RESPONSIBILITY_MAX_CHARS),
+            ("group_label", GROUP_LABEL_MAX_CHARS),
         ):
-            raise StagedGenerationError("component_wire_invalid")
+            if not isinstance(component[field], str):
+                raise rejected(f"{field}_type", f"{path}.{field}")
+            if not (0 < len(component[field].strip()) <= limit):
+                raise rejected(f"{field}_length", f"{path}.{field}")
+        if not _is_integer(component["type"]) or component["type"] not in NODE_TYPE_CODES:
+            raise rejected("component_type_enum", f"{path}.type")
+        if not _is_integer(component["group_kind"]) or component["group_kind"] not in GROUP_KIND_CODES:
+            raise rejected("group_kind_enum", f"{path}.group_kind")
+        if not isinstance(component["primary_flow_member"], bool):
+            raise rejected("primary_flow_type", f"{path}.primary_flow_member")
         identity = (
             " ".join(component["label"].split()).casefold(),
             component["type"],
         )
         if identity in identities:
-            raise StagedGenerationError("component_wire_invalid")
+            raise rejected("duplicate_component", path)
         identities.add(identity)
     if not components[payload["root_index"]]["primary_flow_member"]:
-        raise StagedGenerationError("component_wire_invalid")
+        raise rejected("root_not_primary", "root_index")
     return payload
 
 

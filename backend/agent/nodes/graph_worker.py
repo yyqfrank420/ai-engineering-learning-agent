@@ -3327,7 +3327,7 @@ def staged_edit_scope(
 
 def admit_graph_extension(existing: GraphData, candidate: GraphData,
                           permissions: dict[str, Any]) -> GraphData:
-    """Admit additions only, retaining every saved record and its full contents."""
+    """Retain saved records; groups may append membership for new components."""
     if permissions.get("kind") != "extension":
         raise ValueError("extension requires explicit server-owned authority")
     old_nodes = existing.get("nodes") or []
@@ -3336,8 +3336,7 @@ def admit_graph_extension(existing: GraphData, candidate: GraphData,
     edges = candidate.get("edges") or []
     old_groups = existing.get("groups") or []
     groups = candidate.get("groups") or []
-    for field, before, after in (("nodes", old_nodes, nodes), ("edges", old_edges, edges),
-                                 ("groups", old_groups, groups)):
+    for field, before, after in (("nodes", old_nodes, nodes), ("edges", old_edges, edges)):
         if len(after) < len(before) or after[:len(before)] != before:
             raise ValueError(f"extension changed saved {field}")
     for field in set(existing) - {"nodes", "edges", "groups", "version"}:
@@ -3354,15 +3353,39 @@ def admit_graph_extension(existing: GraphData, candidate: GraphData,
     _validate_added_record_scope(patch, permissions)
     old_ids = {node["id"] for node in old_nodes}
     new_ids = set(ids) - old_ids
+    if len(groups) < len(old_groups):
+        raise ValueError("extension changed saved groups")
+    for before, after in zip(old_groups, groups):
+        before_members = before.get("nodeIds") or []
+        after_members = after.get("nodeIds") or []
+        if (
+            {key: value for key, value in before.items() if key != "nodeIds"}
+            != {key: value for key, value in after.items() if key != "nodeIds"}
+            or not isinstance(after_members, list)
+            or after_members[:len(before_members)] != before_members
+            or any(
+                not isinstance(member, str) or member not in new_ids
+                for member in after_members[len(before_members):]
+            )
+        ):
+            raise ValueError("extension changed saved groups")
     group_ids = [group.get("id") for group in groups]
     if len(group_ids) != len(set(group_ids)):
         raise ValueError("extension group identities must be unique")
-    for group in groups[len(old_groups):]:
-        if not set(group.get("nodeIds") or []).issubset(new_ids):
+    membership: set[str] = set()
+    for index, group in enumerate(groups):
+        members = group.get("nodeIds") or []
+        if not isinstance(members, list) or any(
+            not isinstance(member, str) or member not in ids for member in members
+        ):
+            raise ValueError("extension group membership must name existing components")
+        if len(members) != len(set(members)) or membership.intersection(members):
+            raise ValueError("extension group membership must be unique")
+        membership.update(members)
+        if index >= len(old_groups) and not set(members).issubset(new_ids):
             raise ValueError("new groups cannot change saved membership")
-    for node_id in new_ids:
-        if sum(node_id in (group.get("nodeIds") or []) for group in groups) != 1:
-            raise ValueError("each extension component requires exactly one group")
+    if not new_ids.issubset(membership):
+        raise ValueError("each extension component requires exactly one group")
     return copy.deepcopy(candidate)
 
 

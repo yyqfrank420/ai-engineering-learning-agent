@@ -18,9 +18,12 @@ current graph version. A new diagram cannot replace an existing diagram in the s
 Stale clients get a visible conflict. Agent entry also enforces this invariant for steering
 and internal callers.
 
-Additive extension has server-owned mutation permissions. Existing components, directed
-connections and groups retain their identities and content. The builder may add records
-within remaining safety limits and connect the added layer to existing components. Exact
+Additive extension has server-owned mutation permissions. Existing components and directed
+connections retain their identities and content. Existing groups retain their order,
+metadata and prior members; new components may append to a compatible group or join a new
+group. An extension cannot move, remove or reorder existing members. Each new component
+belongs to exactly one group. The builder may add records within remaining safety limits
+and connect the added layer to existing components. Exact
 field edits retain their separate existing authority. Structural checks, private rendering
 and graph review still apply. Unresolved model questions preserve the accepted graph.
 

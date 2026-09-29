@@ -20,8 +20,20 @@ function nodeRole(node: GraphNode): RegionRole {
 }
 
 /** Generic model categories are split by concrete roles only in the live presentation. */
-export function architectureRegions(nodes: GraphNode[], groups: GraphGroup[]): GraphGroup[] {
+export function architectureRegions(nodes: GraphNode[], groups: GraphGroup[], savedRegionIds: readonly string[] = []): GraphGroup[] {
   const byId = new Map(nodes.map(node => [node.id, node]));
+  const savedIds = new Set(savedRegionIds);
+  const savedOrigins = new Map<RegionRole, GraphGroup>();
+  // Keep resized region identities when an earlier group gains the same role.
+  for (const group of groups) {
+    if (!/^(runtime|data|operations|external)$/i.test(group.label.trim())) continue;
+    for (const id of group.nodeIds) {
+      const node = byId.get(id);
+      if (!node) continue;
+      const role = nodeRole(node);
+      if (!savedOrigins.has(role) && savedIds.has(`${group.id}:${role}`)) savedOrigins.set(role, group);
+    }
+  }
   const result: GraphGroup[] = [];
   const generic = new Map<RegionRole, GraphGroup>();
   for (const group of groups) {
@@ -35,7 +47,8 @@ export function architectureRegions(nodes: GraphNode[], groups: GraphGroup[]): G
       const role = nodeRole(node);
       let region = generic.get(role);
       if (!region) {
-        region = { ...group, id: `${group.id}:${role}`, label: REGION_LABELS[role], nodeIds: [] };
+        const origin = savedOrigins.get(role) ?? group;
+        region = { ...origin, id: `${origin.id}:${role}`, label: REGION_LABELS[role], nodeIds: [] };
         generic.set(role, region);
         result.push(region);
       }

@@ -178,6 +178,40 @@ describe('graph node activation', () => {
     expect(save.mock.lastCall![0]).toEqual(lockedView);
   });
 
+  it('retains resized data region padding and node positions through an appended store and reload', () => {
+    const data = { ...graph, design_origin: 'applied' as const,
+      nodes: [
+        { ...graph.nodes[0], id: 'api', label: 'API', type: 'service' as const },
+        { ...graph.nodes[0], id: 'old', label: 'Existing store', type: 'datastore' as const },
+        { ...graph.nodes[0], id: 'new', label: 'New store', type: 'datastore' as const },
+      ], edges: [], sequence: [], groups: [
+        { id: 'runtime', label: 'Runtime', kind: 'runtime' as const, nodeIds: ['api', 'new'] },
+        { id: 'data', label: 'Data', kind: 'data' as const, nodeIds: ['old'] },
+      ] };
+    const saved = { layoutVersion: 17, nodePositions: { api: { x: 200, y: 100 }, old: { x: 500, y: 300 } },
+      viewport: { x: 0, y: 0, k: 1 }, zonePadding: { 'data:datastore': { left: 100, right: 20, top: 30, bottom: 10 } } };
+    const save = vi.fn();
+    const props = { graphData: data, currentStep: -1, activeNodeIds: new Set<string>(), onNodeClick: () => undefined,
+      navigation: true, onViewStateChange: save };
+    const view = render(<D3Graph {...props} initialViewState={saved} />);
+    const emitted = save.mock.lastCall![0];
+    expect(emitted.nodePositions.api).toEqual(saved.nodePositions.api);
+    expect(emitted.nodePositions.old).toEqual(saved.nodePositions.old);
+    expect(emitted.zonePadding['data:datastore']).toEqual(saved.zonePadding['data:datastore']);
+    const rect = view.container.querySelector('[data-group-id="data:datastore"] > rect')!;
+    expect(rect).not.toBeNull();
+    const bounds = ['x', 'y', 'width', 'height'].map(attr => Number(rect.getAttribute(attr)));
+    for (const id of ['old', 'new']) {
+      const { x, y } = emitted.nodePositions[id];
+      expect(x).toBeGreaterThan(bounds[0]); expect(x).toBeLessThan(bounds[0] + bounds[2]);
+      expect(y).toBeGreaterThan(bounds[1]); expect(y).toBeLessThan(bounds[1] + bounds[3]);
+    }
+    view.unmount();
+    const restored = render(<D3Graph {...props} initialViewState={emitted} />);
+    expect(save.mock.lastCall![0]).toEqual(emitted);
+    expect(restored.container.querySelector('[data-group-id="data:datastore"]')).not.toBeNull();
+  });
+
   it('restores asymmetric saved padding and exact node positions without frame drift', () => {
     const props = { graphData: { ...graph, nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
       groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['a', 'b'] }] },

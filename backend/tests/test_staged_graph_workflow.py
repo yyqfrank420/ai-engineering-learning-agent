@@ -4516,6 +4516,8 @@ def test_extension_preserves_group_metadata_without_masking_semantic_changes(cha
     _, permissions = workflow.staged_edit_scope(
         "Add a monitoring layer", saved, resolved_complexity="prototype", add_only=True
     )
+    permissions["minimum_new_node_count"] = 0
+    permissions["minimum_new_edge_count"] = 0
     preserved = workflow._preserve_existing_presentation(
         candidate, saved, edit_permissions=permissions
     )
@@ -4530,6 +4532,45 @@ def test_extension_preserves_group_metadata_without_masking_semantic_changes(cha
         assert preserved["groups"] == saved["groups"]
         preserved["groups"][0]["custom_style"]["padding"] = 99
         assert saved["groups"][0]["custom_style"]["padding"] == 24
+
+
+@pytest.mark.parametrize("change", ["append", "remove", "reorder", "duplicate", "unknown", "move", "label", "kind"])
+def test_extension_existing_zone_append_preserves_metadata_only_for_valid_membership(change):
+    saved = _accepted_staged_graph()
+    saved["groups"] = [
+        {"id": "zone", "label": "Runtime", "kind": "runtime", "nodeIds": ["n1", "n2"],
+         "color": "blue", "custom_style": {"padding": 24}},
+        {"id": "other", "label": "Other", "kind": "runtime", "nodeIds": ["n3"]},
+    ]
+    saved["nodes"].append({**saved["nodes"][0], "id": "n3"})
+    candidate = copy.deepcopy(saved)
+    candidate["nodes"].append({**saved["nodes"][0], "id": "n4"})
+    group = candidate["groups"][0]
+    del group["color"]
+    del group["custom_style"]
+    group["nodeIds"] = {
+        "append": ["n1", "n2", "n4"], "remove": ["n1", "n4"],
+        "reorder": ["n2", "n1", "n4"], "duplicate": ["n1", "n2", "n4", "n4"],
+        "unknown": ["n1", "n2", "missing"], "move": ["n1", "n2", "n3"],
+        "label": ["n1", "n2", "n4"], "kind": ["n1", "n2", "n4"],
+    }[change]
+    if change in {"label", "kind"}:
+        group[change] = "changed"
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions={"kind": "extension"},
+    )
+    actual = preserved["groups"][0]
+    assert actual["nodeIds"] == group["nodeIds"]
+    assert actual["label"] == group["label"]
+    assert actual["kind"] == group["kind"]
+    if change == "append":
+        assert actual["color"] == "blue"
+        assert actual["custom_style"] == {"padding": 24}
+        actual["custom_style"]["padding"] = 99
+        assert saved["groups"][0]["custom_style"]["padding"] == 24
+    else:
+        assert "color" not in actual
+        assert "custom_style" not in actual
 
 
 @pytest.mark.asyncio

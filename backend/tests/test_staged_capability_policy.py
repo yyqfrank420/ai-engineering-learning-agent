@@ -15,6 +15,46 @@ from agent.nodes import staged_graph_generation as generation
 from agent.staged_graph_contract import production_proofs_for_capabilities
 
 
+def test_production_component_coverage_checks_owners_before_connections():
+    criterion = staged_review_requirements("components", "production")["brief_coverage"]
+    assert "declared behavior and responsibilities" in criterion
+    assert "including when a capability flag needs correction" in criterion
+    assert "storage of evidence alone does not own evaluation or approval" in criterion
+    assert "Report all missing or incompatible owners in this pass" in criterion
+    assert "affected component indexes" in criterion
+    assert "Compatible operations may share an existing owner" in criterion
+    assert "do not require separate components" in criterion
+    assert "not edges, sequence, or payload proofs" in criterion
+    assert "Do not introduce capabilities or features" in criterion
+    assert "frozen baseline responsibilities grants no authority to change them" in criterion
+    assert staged_review_requirements("components", "prototype")["brief_coverage"] == (
+        RUBRIC_CRITERIA["brief_coverage"][1]
+    )
+    assert "brief_coverage" not in staged_review_requirements("connections", "production")
+
+
+@pytest.mark.parametrize("declares_release", [False, True])
+def test_component_owner_guidance_does_not_depend_on_correct_capability_flags(declares_release):
+    records = [
+        {"label": "Rollout Manager", "responsibility": "Owns model canary, promotion and rollback."},
+        {"label": "Telemetry Store", "responsibility": "Stores serving logs and rollout outcomes."},
+    ]
+    evidence = {"candidate_context": {"capabilities": {
+        "external_effects": False, "retrieval_or_reuse": False,
+        "learning_or_release": declares_release,
+    }}}
+    prompt = gate._prompt(
+        gate="components", user_request="Design production model serving.",
+        evidence_bundle=evidence, resolved_maturity="production",
+        candidate_records=records, required_production_guarantees=(),
+    )
+    controls = json.loads(prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0])
+    assert controls == STAGED_PRODUCTION_REQUIREMENTS
+    assert "reviewed immutable release" in controls["learning_and_release"]
+    assert "including when a capability flag needs correction" in prompt
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
+
+
 _PREVIOUS_CAPABILITY_CRITERION = (
     "Classify capabilities from the candidate responsibilities and assumptions: "
     "external_effects means it can mutate an external system; retrieval_or_reuse "

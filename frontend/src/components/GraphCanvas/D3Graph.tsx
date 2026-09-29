@@ -482,7 +482,7 @@ export function D3Graph({
     }
 
     const groups = navigation && renderGraphData.design_origin === 'applied'
-      ? architectureRegions(nodes, renderGraphData.groups ?? [])
+      ? architectureRegions(nodes, renderGraphData.groups ?? [], Object.keys(restoreViewState?.zonePadding ?? {}))
       : renderGraphData.groups ?? [];
     for (const group of groups) {
       const saved = restoreViewState?.zonePadding?.[group.id];

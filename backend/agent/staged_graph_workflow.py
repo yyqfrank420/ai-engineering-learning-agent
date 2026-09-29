@@ -142,10 +142,20 @@ def _failure_diagnostic(
             "wire_keys", "edges_type", "edges_count", "edge_type", "edge_keys",
             "endpoint_type", "endpoint_missing", "self_loop", "label_type",
             "label_length", "flow_enum", "sync_enum", "duplicate_edge",
+            "component_wire_keys", "title_type", "title_length", "assumptions_type",
+            "assumptions_count", "assumption_type", "assumption_length", "root_type",
+            "capabilities_type", "capabilities_keys", "capability_type", "components_type",
+            "components_count", "root_range", "component_type", "component_keys",
+            "responsibility_type", "responsibility_length", "group_label_type",
+            "group_label_length", "component_type_enum", "group_kind_enum",
+            "primary_flow_type", "duplicate_component", "root_not_primary",
         }:
             diagnostic_reason = exc.diagnostic_reason
         if isinstance(exc.diagnostic_path, str) and re.fullmatch(
-            r"edges(?:\.[0-9]+(?:\.(?:source_index|target_index|label|flow|sync))?)?",
+            r"(?:edges(?:\.[0-9]+(?:\.(?:source_index|target_index|label|flow|sync))?)?"
+            r"|components(?:\.[0-9]+(?:\.(?:label|type|responsibility|group_label|group_kind|primary_flow_member))?)?"
+            r"|title|root_index|assumptions(?:\.[0-9]+)?"
+            r"|capabilities(?:\.(?:external_effects|retrieval_or_reuse|learning_or_release))?)",
             exc.diagnostic_path,
         ):
             raw_path = exc.diagnostic_path
@@ -831,10 +841,28 @@ def _preserve_existing_presentation(
         for group in existing.get("groups") or []
         if isinstance(group, Mapping)
     }
+    added_node_ids = {
+        node["id"] for node in preserved.get("nodes") or []
+        if isinstance(node, Mapping) and isinstance(node.get("id"), str)
+        and node["id"] not in existing_nodes
+    }
     for group in preserved.get("groups") or []:
         prior = prior_groups.get(group.get("id"))
-        if prior is not None and all(
-            group.get(field) == prior.get(field) for field in group_fields
+        if prior is None:
+            continue
+        prior_members = prior.get("nodeIds")
+        members = group.get("nodeIds")
+        appended_members = (
+            (edit_permissions or {}).get("kind") == "extension"
+            and isinstance(prior_members, list)
+            and isinstance(members, list)
+            and members[:len(prior_members)] == prior_members
+            and all(isinstance(member, str) for member in members)
+            and len(set(members)) == len(members)
+            and all(member in added_node_ids for member in members[len(prior_members):])
+        )
+        if (members == prior_members or appended_members) and all(
+            group.get(field) == prior.get(field) for field in ("id", "label", "kind")
         ):
             for field, value in prior.items():
                 if field not in group_fields:

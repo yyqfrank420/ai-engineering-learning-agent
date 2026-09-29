@@ -6571,6 +6571,63 @@ def test_additive_extension_preserves_saved_records_and_positions(title):
     assert result["view_state"] == base["view_state"]
 
 
+@pytest.mark.parametrize("new_group", [False, True])
+def test_extension_appends_members_to_saved_group_and_can_add_new_group(new_group):
+    base, candidate, permissions = _extension_fixture()
+    base["groups"][0].update({"kind": "operations", "color": "blue", "style": {"padding": 12}})
+    candidate["groups"][0] = copy.deepcopy(base["groups"][0])
+    candidate["groups"][0]["nodeIds"].extend(["b"] if new_group else ["b", "c"])
+    candidate["groups"] = candidate["groups"][:1] + (
+        [{"id": "h", "label": "New layer", "nodeIds": ["c"]}] if new_group else []
+    )
+    result = graph_worker.admit_graph_extension(base, candidate, permissions)
+    assert result == candidate
+    assert result["nodes"][0] == base["nodes"][0]
+    assert result["groups"][0]["style"] == {"padding": 12}
+    assert base["groups"][0]["nodeIds"] == ["a"]
+
+
+@pytest.mark.parametrize("defect", [
+    "label", "kind", "metadata", "removed_metadata", "remove_member", "reorder_members",
+    "move_member", "reorder_groups", "foreign_id", "duplicate_within", "duplicate_across",
+    "old_id_in_new_group", "ungrouped_new", "invalid_member",
+])
+def test_extension_group_membership_preserves_baseline_and_unique_new_members(defect):
+    base, candidate, permissions = _extension_fixture()
+    old_extra = {"id": "old-extra", "label": "Another saved owner"}
+    base["nodes"].append(old_extra)
+    candidate["nodes"].insert(1, copy.deepcopy(old_extra))
+    base["groups"][0].update({"nodeIds": ["a", "old-extra"], "kind": "runtime", "color": "blue"})
+    candidate["groups"][0] = copy.deepcopy(base["groups"][0])
+    if defect in {"label", "kind", "metadata"}:
+        candidate["groups"][0]["color" if defect == "metadata" else defect] = "changed"
+    elif defect == "removed_metadata":
+        del candidate["groups"][0]["color"]
+    elif defect == "remove_member":
+        candidate["groups"][0]["nodeIds"].pop()
+    elif defect == "reorder_members":
+        candidate["groups"][0]["nodeIds"].reverse()
+    elif defect == "move_member":
+        candidate["groups"][0]["nodeIds"].remove("old-extra")
+        candidate["groups"][1]["nodeIds"].append("old-extra")
+    elif defect == "reorder_groups":
+        candidate["groups"].reverse()
+    elif defect == "foreign_id":
+        candidate["groups"][1]["nodeIds"].append("missing")
+    elif defect == "duplicate_within":
+        candidate["groups"][1]["nodeIds"].append("b")
+    elif defect == "duplicate_across":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "old_id_in_new_group":
+        candidate["groups"][1]["nodeIds"].append("a")
+    elif defect == "ungrouped_new":
+        candidate["groups"][1]["nodeIds"].remove("c")
+    else:
+        candidate["groups"][0]["nodeIds"].append({"id": "b"})
+    with pytest.raises(ValueError):
+        graph_worker.admit_graph_extension(base, candidate, permissions)
+
+
 @pytest.mark.parametrize("defect", ["delete", "rename", "id", "position", "group", "cap", "disconnected", "endpoint", "old_edge"])
 def test_additive_extension_rejects_changes_outside_add_only_authority(defect):
     from agent.nodes.graph_worker import admit_graph_extension

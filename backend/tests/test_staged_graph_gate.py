@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v21"
+        "staged_component_gate_v22"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -403,6 +403,13 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         reviewed_prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
     assert generated_criteria == reviewed_criteria
+    if stage == "components" and maturity == "production":
+        reviewed_controls = json.loads(
+            reviewed_prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0]
+        )
+        assert reviewed_controls == generated_input["downstream_controls"]
+    else:
+        assert "downstream_controls: " not in reviewed_prompt
     assert generated_criteria == staged_review_requirements(stage, maturity, guarantees)
     assert set(generated_criteria) == set(rules)
     assert set(guarantees) <= set(rules)
@@ -487,6 +494,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
+        elif stage == "components" and maturity == "production" and code == "brief_coverage":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "check executable ownership feasibility" in requirement
+            assert "including when a capability flag needs correction" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:

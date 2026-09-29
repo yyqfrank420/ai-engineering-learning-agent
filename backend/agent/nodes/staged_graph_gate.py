@@ -17,6 +17,7 @@ from typing import Any
 from adapters.llm_adapter import build_telemetry, is_provider_unavailable_error
 from agent.architecture_rubric import (
     MAX_REVIEW_REASON_CHARS,
+    STAGED_PRODUCTION_REQUIREMENTS,
     STAGED_REVIEW_STANDARD,
     staged_review_requirements,
     TOPOLOGY_PROOF_REQUIREMENTS,
@@ -25,7 +26,7 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v21"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v22"
 _CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v27"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
@@ -384,7 +385,14 @@ def _prompt(
             ensure_ascii=False,
         )
         + "\n"
-        f"User request: {json.dumps(user_request, ensure_ascii=False)}\n"
+        + (
+            "downstream_controls: "
+            + json.dumps(STAGED_PRODUCTION_REQUIREMENTS, ensure_ascii=False)
+            + "\n"
+            if gate == "components" and resolved_maturity == "production"
+            else ""
+        )
+        + f"User request: {json.dumps(user_request, ensure_ascii=False)}\n"
         f"Evidence bundle: {json.dumps(dict(evidence_bundle), ensure_ascii=False, separators=(',', ':'))}\n"
         f"Immutable candidate records: {json.dumps([{'record_index': index, 'record': record} for index, record in enumerate(candidate_records)], ensure_ascii=False, separators=(',', ':'))}"
         + (
