@@ -149,6 +149,7 @@ def _failure_diagnostic(
             "responsibility_type", "responsibility_length", "group_label_type",
             "group_label_length", "component_type_enum", "group_kind_enum",
             "primary_flow_type", "duplicate_component", "root_not_primary",
+            "primary_flow_unreachable",
         }:
             diagnostic_reason = exc.diagnostic_reason
         if isinstance(exc.diagnostic_path, str) and re.fullmatch(
@@ -865,7 +866,9 @@ def _preserve_existing_presentation(
             group.get(field) == prior.get(field) for field in ("id", "label", "kind")
         ):
             for field, value in prior.items():
-                if field not in group_fields:
+                if field not in group_fields and (
+                    (edit_permissions or {}).get("kind") != "extension" or field not in group
+                ):
                     group[field] = copy.deepcopy(value)
     semantic_fields = ("source", "target", "label", "sync", "flow")
     indexed_edges = [
@@ -1402,6 +1405,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 structural_findings=correction_findings,
                 base_components=base_build,
+                baseline_connections=_connection_prompt_base(base_build)
+                if permissions is not None
+                else None,
                 edit_permissions=permissions,
                 rejected_candidate=rejected_component_candidate,
                 recovery_mode=recovery_mode,

@@ -18,14 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from functools import lru_cache
 import hashlib
 import inspect
 import json
 import logging
+import math
 import random
+import re
 import time
+from urllib.parse import urlparse
 
 from config import settings
 
@@ -209,6 +212,138 @@ class EvaluationProviderAttemptLimitExceeded(RuntimeError):
     pass
 
 
+class WebSearchUnavailableError(RuntimeError):
+    """The provider did not return usable, attributable web evidence."""
+
+
+class _WebSearchEvidence:
+    def __init__(self) -> None:
+        self.blocks: dict[int, object] = {}
+        self.input_fragments: dict[int, str] = {}
+        self.queries: dict[str, str] = {}
+        self.results: list[tuple[str, object]] = []
+        self.citations: list[object] = []
+        self.stop_reason: str | None = None
+        self.message_stopped = False
+        self.unavailable_reason: str | None = None
+
+    def accept(self, event: object) -> None:
+        event_type = _field(event, "type", None)
+        if event_type == "error":
+            raise WebSearchUnavailableError("provider_stream_error")
+        if event_type == "content_block_start":
+            index = _field(event, "index", None)
+            block = _field(event, "content_block", None)
+            if not isinstance(index, int) or block is None:
+                raise WebSearchUnavailableError("malformed_tool_output")
+            self.blocks[index] = block
+            block_type = _field(block, "type", None)
+            if block_type == "web_search_tool_result":
+                content = _field(block, "content", None)
+                if not isinstance(content, list) or not content:
+                    self.unavailable_reason = "tool_error_or_empty_result"
+                    return
+                tool_use_id = _field(block, "tool_use_id", None)
+                if not isinstance(tool_use_id, str) or not tool_use_id:
+                    raise WebSearchUnavailableError("malformed_tool_output")
+                for result in content:
+                    if _field(result, "type", None) != "web_search_result":
+                        self.unavailable_reason = "tool_error_or_unsupported_result"
+                    else:
+                        self.results.append((tool_use_id, result))
+            elif block_type == "text":
+                self.citations.extend(_field(block, "citations", None) or [])
+        elif event_type == "content_block_delta":
+            index = _field(event, "index", None)
+            delta = _field(event, "delta", None)
+            delta_type = _field(delta, "type", None)
+            if delta_type == "input_json_delta" and index in self.blocks:
+                self.input_fragments[index] = (
+                    self.input_fragments.get(index, "")
+                    + str(_field(delta, "partial_json", ""))
+                )
+            elif delta_type == "citations_delta":
+                if _field(self.blocks.get(index), "type", None) != "text":
+                    raise WebSearchUnavailableError("malformed_citation")
+                self.citations.append(_field(delta, "citation", None))
+        elif event_type == "content_block_stop":
+            index = _field(event, "index", None)
+            block = self.blocks.get(index)
+            if _field(block, "type", None) == "server_tool_use":
+                if _field(block, "name", None) != "web_search":
+                    raise WebSearchUnavailableError("unsupported_tool")
+                tool_id = _field(block, "id", None)
+                tool_input = _field(block, "input", None)
+                fragment = self.input_fragments.get(index)
+                if fragment:
+                    try:
+                        tool_input = json.loads(fragment)
+                    except (TypeError, ValueError) as exc:
+                        raise WebSearchUnavailableError("malformed_search_query") from exc
+                query = _field(tool_input, "query", None)
+                if (
+                    not isinstance(tool_id, str)
+                    or not isinstance(query, str)
+                    or not query.strip()
+                ):
+                    raise WebSearchUnavailableError("malformed_search_query")
+                self.queries[tool_id] = query.strip()
+        elif event_type == "message_delta":
+            self.stop_reason = _field(_field(event, "delta", None), "stop_reason", None)
+        elif event_type == "message_stop":
+            self.message_stopped = True
+
+    def sources(self) -> list[dict[str, str]]:
+        if self.stop_reason != "end_turn" or not self.message_stopped:
+            raise WebSearchUnavailableError("incomplete_search_response")
+        if self.unavailable_reason is not None:
+            raise WebSearchUnavailableError(self.unavailable_reason)
+        rows_by_url: dict[str, dict[str, str]] = {}
+        seen: set[tuple[str, str]] = set()
+        for tool_use_id, result in self.results:
+            href = _field(result, "url", None)
+            title = _field(result, "title", None)
+            query = self.queries.get(tool_use_id)
+            try:
+                parsed = urlparse(href) if isinstance(href, str) else None
+            except ValueError as exc:
+                raise WebSearchUnavailableError("malformed_search_result") from exc
+            if (
+                parsed is None
+                or parsed.scheme not in {"http", "https"}
+                or not parsed.netloc
+                or parsed.username
+                or parsed.password
+            ):
+                raise WebSearchUnavailableError("malformed_search_result")
+            if not isinstance(title, str) or not title.strip() or not query:
+                raise WebSearchUnavailableError("malformed_search_result")
+            for citation in self.citations:
+                if _field(citation, "type", None) != "web_search_result_location":
+                    continue
+                if _field(citation, "url", None) != href:
+                    continue
+                excerpt = _field(citation, "cited_text", None)
+                if not isinstance(excerpt, str) or not excerpt.strip():
+                    continue
+                key = (href, excerpt.strip())
+                if key not in seen:
+                    if href in rows_by_url:
+                        rows_by_url[href]["body"] += "\n" + excerpt.strip()
+                    else:
+                        rows_by_url[href] = {
+                            "href": href,
+                            "title": title.strip(),
+                            "body": excerpt.strip(),
+                            "query": query,
+                            "backend": "anthropic_web_search",
+                        }
+                    seen.add(key)
+        if not rows_by_url:
+            raise WebSearchUnavailableError("no_cited_search_sources")
+        return list(rows_by_url.values())
+
+
 def _reserve_evaluation_provider_attempt() -> None:
     run_id = settings.evaluation_run_id.strip()
     limit = settings.evaluation_provider_attempt_limit
@@ -224,7 +359,7 @@ def _reserve_evaluation_provider_attempt() -> None:
         identifier=run_id,
         event_type="llm_provider_attempt",
         limit=limit,
-        window_s=24 * 60 * 60,
+        window_s=None,
     ),))
     if reservation is None:
         raise EvaluationProviderAttemptLimitExceeded(
@@ -326,19 +461,43 @@ def _is_non_retryable_anthropic_error(exc: Exception) -> bool:
     return getattr(exc, "status_code", None) in {400, 401, 403, 404, 422}
 
 
-def _anthropic_error_diagnostics(
+def _provider_error_diagnostics(
     exc: Exception,
-) -> tuple[object, object, object, str | None]:
-    # Provider error messages are untrusted. Return only stable fields and known
-    # structural diagnoses so logs cannot copy request content.
+) -> tuple[int | None, str | None, str | None, str | int | None, float | None, str | None]:
+    # Provider messages and bodies are untrusted. Log only bounded identifiers
+    # and known structural diagnoses, never request content or credentials.
+    def identifier(value: object) -> str | None:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value):
+            return None
+        if value.lower().startswith(("sk-", "sk_", "bearer", "authorization", "api_key", "api-key")):
+            return None
+        return value
+
     error_body = getattr(exc, "body", None)
-    error_payload = error_body.get("error") if isinstance(error_body, dict) else None
-    provider_error = (
-        error_payload.get("type") if isinstance(error_payload, dict) else None
-    )
-    provider_message = (
-        error_payload.get("message") if isinstance(error_payload, dict) else None
-    )
+    nested = error_body.get("error") if isinstance(error_body, dict) else None
+    error_payload = nested if isinstance(nested, dict) else error_body
+    if not isinstance(error_payload, dict):
+        error_payload = {}
+    provider_error = identifier(error_payload.get("type"))
+    code = error_payload.get("code")
+    provider_code = code if type(code) is int and 0 <= code <= 999999 else identifier(code)
+    status = getattr(exc, "status_code", None)
+    status = status if type(status) is int and 100 <= status <= 599 else None
+    request_id = identifier(getattr(exc, "request_id", None))
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = headers.get("retry-after") if isinstance(headers, Mapping) else None
+    retry_after_s = None
+    if type(retry_after) in (str, int, float) and (
+        not isinstance(retry_after, str) or len(retry_after) <= 64
+    ):
+        try:
+            parsed = float(retry_after)
+            if math.isfinite(parsed) and parsed >= 0:
+                retry_after_s = parsed
+        except (ValueError, OverflowError):
+            pass
+    provider_message = error_payload.get("message")
     normalized_message = (
         " ".join(provider_message.lower().split())
         if isinstance(provider_message, str)
@@ -350,12 +509,7 @@ def _anthropic_error_diagnostics(
         or "schema is too complex for compilation" in normalized_message
         else None
     )
-    return (
-        getattr(exc, "status_code", None),
-        getattr(exc, "request_id", None),
-        provider_error,
-        diagnostic,
-    )
+    return status, request_id, provider_error, provider_code, retry_after_s, diagnostic
 
 
 def _is_non_retryable_chat_error(exc: Exception) -> bool:
@@ -374,6 +528,7 @@ def stream_response_compat(streamer, **kwargs):
         "response_schema": kwargs.pop("response_schema", None),
         "allow_fallback": kwargs.pop("allow_fallback", None),
         "provider_attempt_limit": kwargs.pop("provider_attempt_limit", None),
+        "web_search": kwargs.pop("web_search", None),
     }
     try:
         params = inspect.signature(streamer).parameters.values()
@@ -638,6 +793,7 @@ async def stream_response(
     response_schema: dict | None = None,
     allow_fallback: bool = True,
     provider_attempt_limit: int | None = None,
+    web_search: bool = False,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """
     Stream a response with automatic retry + OpenAI fallback.
@@ -653,17 +809,24 @@ async def stream_response(
     - Yields ("provider_switch", "openai") before the first OpenAI token
       so callers can surface a "falling back to GPT" UI notice.
     - If no OpenAI client is configured, raises the last Anthropic exception.
+    - Web search uses one Anthropic request and emits only attributable cited
+      sources after an end_turn with complete usage. It never retries or falls back.
 
     Yields (event_type, content) tuples:
     - ("thinking", text)             — extended thinking deltas (Anthropic only)
     - ("text", token)                — response text deltas
     - ("done", "")                   — signals stream completion
     - ("provider_switch", provider)  — signals fallback to another provider
+    - ("web_search_sources", JSON)   — cited source rows for web search
     """
     if max_output_tokens is not None and max_output_tokens <= 0:
         raise ValueError("max_output_tokens must be positive")
     if provider_attempt_limit is not None and provider_attempt_limit <= 0:
         raise ValueError("provider_attempt_limit must be positive")
+    if web_search and (_is_openai_model(model) or _is_kimi_model(model)):
+        raise WebSearchUnavailableError("unsupported_provider")
+    if web_search and response_schema is not None:
+        raise WebSearchUnavailableError("unsupported_response_schema")
     effective_max_output_tokens = min(
         (
             max_output_tokens
@@ -746,6 +909,12 @@ async def stream_response(
             "schema": _anthropic_response_schema(response_schema),
         }
         kwargs["output_config"] = output_config
+    if web_search:
+        kwargs["tools"] = [{
+            "type": "web_search_20250305",
+            "name": "web_search",
+            "max_uses": 1,
+        }]
 
     last_exc: Exception | None = None
     started_at = time.perf_counter()
@@ -754,6 +923,7 @@ async def stream_response(
     cache_creation_input_tokens = 0
     cache_read_input_tokens = 0
     output_tokens = 0
+    web_search_requests = 0
     provider_attempts = 0
     attempts: list[dict[str, object]] = []
     used_fallback = False
@@ -788,6 +958,7 @@ async def stream_response(
             "cache_creation_input_tokens": cache_creation_input_tokens,
             "cache_read_input_tokens": cache_read_input_tokens,
             "output_tokens": output_tokens,
+            "web_search_requests": web_search_requests,
             "provider_attempts": provider_attempts,
             "queue_wait_ms": sum(
                 int(attempt.get("queue_wait_ms") or 0) for attempt in attempts
@@ -834,6 +1005,7 @@ async def stream_response(
                 "output_chars": output_chars,
                 "used_fallback": used_fallback,
                 "provider_attempts": provider_attempts,
+                "web_search_requests": web_search_requests,
                 "queue_wait_ms": metadata["queue_wait_ms"],
                 "error_type": error_type,
                 "message_count": len(messages),
@@ -1004,6 +1176,23 @@ async def stream_response(
                 attempt_usage["duration_ms"] = max(
                     1, int((time.perf_counter() - attempt_started) * 1000)
                 )
+                status, request_id, provider_error, provider_code, retry_after_s, diagnostic = (
+                    _provider_error_diagnostics(exc)
+                )
+                logger.warning(
+                    "[llm] %s attempt %s/%s failed: %s status=%s request_id=%s "
+                    "provider_error=%s provider_code=%s retry_after_s=%s diagnostic=%s",
+                    provider,
+                    route_attempt,
+                    attempt_limit,
+                    type(exc).__name__,
+                    status,
+                    request_id,
+                    provider_error,
+                    provider_code,
+                    retry_after_s,
+                    diagnostic,
+                )
                 can_retry = (
                     not accepted
                     and not _is_non_retryable_chat_error(exc)
@@ -1033,7 +1222,7 @@ async def stream_response(
             yield event
         return
 
-    anthropic_attempt_limit = settings.llm_max_retries
+    anthropic_attempt_limit = 1 if web_search else settings.llm_max_retries
     if provider_attempt_limit is not None:
         anthropic_attempt_limit = min(
             anthropic_attempt_limit,
@@ -1053,6 +1242,7 @@ async def stream_response(
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
             "output_tokens": 0,
+            "web_search_requests": 0,
             "queue_wait_ms": 0,
             "first_reasoning_delta_ms": None,
             "first_text_delta_ms": None,
@@ -1060,6 +1250,10 @@ async def stream_response(
             "usage_complete": False,
         }
         attempts.append(attempt_usage)
+        search_evidence = _WebSearchEvidence() if web_search else None
+        search_usage_fields_seen: set[str] = set()
+        search_usage_invalid = False
+        search_final_request_count_seen = False
 
         def observe_queue_wait(queue_wait_ms: int) -> None:
             attempt_usage["queue_wait_ms"] = queue_wait_ms
@@ -1068,41 +1262,77 @@ async def stream_response(
             async for event in _anthropic_stream_once(
                 {**kwargs, "_queue_wait_observer": observe_queue_wait}
             ):
+                if search_evidence is not None:
+                    search_evidence.accept(event)
                 if event.type == "message_start":
                     attempt_usage["accepted"] = True
                     usage = getattr(getattr(event, "message", None), "usage", None)
-                    attempt_usage["input_tokens"] = int(
-                        getattr(usage, "input_tokens", 0) or 0
-                    )
-                    attempt_usage["cache_creation_input_tokens"] = int(
-                        getattr(usage, "cache_creation_input_tokens", 0) or 0
-                    )
-                    attempt_usage["cache_read_input_tokens"] = int(
-                        getattr(usage, "cache_read_input_tokens", 0) or 0
-                    )
+                    for field in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                        "output_tokens",
+                    ):
+                        value = _field(usage, field, None)
+                        if value is not None:
+                            attempt_usage[field] = int(value)
+                            search_usage_fields_seen.add(field)
+                    tool_usage = _field(usage, "server_tool_use", None)
+                    requests = _field(tool_usage, "web_search_requests", None)
+                    if requests is not None:
+                        if type(requests) is int and requests >= 0:
+                            attempt_usage["web_search_requests"] = requests
+                            search_usage_fields_seen.add("web_search_requests")
+                        else:
+                            search_usage_invalid = True
                     (
                         input_tokens,
                         cache_creation_input_tokens,
                         cache_read_input_tokens,
                         output_tokens,
                     ) = _aggregate_attempt_token_usage(attempts)
+                    web_search_requests = sum(
+                        int(row.get("web_search_requests") or 0)
+                        for row in attempts
+                    )
                 elif event.type == "message_delta":
                     attempt_usage["accepted"] = True
-                    attempt_usage["usage_complete"] = True
                     usage = getattr(event, "usage", None)
-                    attempt_usage["output_tokens"] = int(
-                        getattr(usage, "output_tokens", 0) or 0
-                    )
+                    if not web_search or _field(usage, "output_tokens", None) is not None:
+                        attempt_usage["usage_complete"] = True
+                    for field in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                        "output_tokens",
+                    ):
+                        value = _field(usage, field, None)
+                        if value is not None:
+                            attempt_usage[field] = int(value)
+                            search_usage_fields_seen.add(field)
+                    tool_usage = _field(usage, "server_tool_use", None)
+                    requests = _field(tool_usage, "web_search_requests", None)
+                    if requests is not None:
+                        if type(requests) is int and requests >= 0:
+                            attempt_usage["web_search_requests"] = requests
+                            search_usage_fields_seen.add("web_search_requests")
+                            search_final_request_count_seen = True
+                        else:
+                            search_usage_invalid = True
                     (
                         input_tokens,
                         cache_creation_input_tokens,
                         cache_read_input_tokens,
                         output_tokens,
                     ) = _aggregate_attempt_token_usage(attempts)
+                    web_search_requests = sum(
+                        int(row.get("web_search_requests") or 0)
+                        for row in attempts
+                    )
                     stop_reason = getattr(getattr(event, "delta", None), "stop_reason", None)
                     if isinstance(stop_reason, str):
                         finish_reason = stop_reason
-                if event.type == "content_block_delta":
+                if event.type == "content_block_delta" and not web_search:
                     attempt_usage["accepted"] = True
                     delta = event.delta
                     if delta.type == "thinking_delta":
@@ -1120,6 +1350,15 @@ async def stream_response(
                         )
                         output_chars += len(delta.text)
                         yield ("text", delta.text)
+            if search_evidence is not None:
+                if search_usage_invalid or not search_final_request_count_seen or not attempt_usage["usage_complete"] or not {
+                    "input_tokens", "output_tokens", "web_search_requests"
+                }.issubset(search_usage_fields_seen):
+                    attempt_usage["usage_complete"] = False
+                    raise WebSearchUnavailableError("incomplete_search_usage")
+                sources = search_evidence.sources()
+                if attempt_usage["web_search_requests"] != 1:
+                    raise WebSearchUnavailableError("unexpected_search_request_count")
             attempt_usage["status"] = (
                 "success_incomplete_usage"
                 if attempt_usage["accepted"]
@@ -1130,6 +1369,10 @@ async def stream_response(
                 1, int((time.perf_counter() - attempt_started) * 1000)
             )
             _record("success")
+            if search_evidence is not None:
+                yield ("web_search_sources", json.dumps(sources))
+                yield ("done", "")
+                return
             if response_schema is not None:
                 yield (
                     "response_metadata",
@@ -1148,6 +1391,9 @@ async def stream_response(
             _record_cancellation(attempt_usage, attempt_started)
             raise
         except Exception as exc:
+            provider_exc = exc
+            if web_search and not isinstance(exc, WebSearchUnavailableError):
+                exc = WebSearchUnavailableError("provider_request_failed")
             last_exc = exc
             attempt_usage["status"] = (
                 "error_incomplete_usage"
@@ -1159,25 +1405,33 @@ async def stream_response(
             attempt_usage["duration_ms"] = max(
                 1, int((time.perf_counter() - attempt_started) * 1000)
             )
-            status, request_id, provider_error, diagnostic = (
-                _anthropic_error_diagnostics(exc)
+            status, request_id, provider_error, provider_code, retry_after_s, diagnostic = (
+                _provider_error_diagnostics(provider_exc)
             )
             logger.warning(
                 "[llm] Anthropic attempt %s/%s failed: %s status=%s "
-                "request_id=%s provider_error=%s diagnostic=%s",
+                "request_id=%s provider_error=%s provider_code=%s "
+                "retry_after_s=%s diagnostic=%s",
                 attempt,
                 anthropic_attempt_limit,
                 type(exc).__name__,
                 status,
                 request_id,
                 provider_error,
+                provider_code,
+                retry_after_s,
                 diagnostic,
             )
             if attempt_usage["accepted"]:
                 # `message_start` means the provider accepted the request. Never
                 # replay accepted work, even when no visible delta arrived.
                 _record("error", error_type=type(exc).__name__)
+                if web_search:
+                    raise exc
                 raise
+            if web_search:
+                _record("error", error_type=type(exc).__name__)
+                raise exc
             if _is_non_retryable_anthropic_error(exc):
                 break
             if attempt < anthropic_attempt_limit:

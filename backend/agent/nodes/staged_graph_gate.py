@@ -27,8 +27,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v31"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v36"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v43"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -167,7 +167,7 @@ def review_identity(
     identity = {
         "gate": gate,
         "resolved_maturity": maturity,
-        "model": settings.graph_qa_model,
+        "model": settings.staged_gate_model,
         "prompt_version": (
             _COMPONENT_GATE_PROMPT_VERSION
             if gate == "components"
@@ -314,6 +314,51 @@ def _prompt(
         and "authorization_and_compensation" in required_production_guarantees
         else ""
     )
+    production_audit_origin_instructions = (
+        "When audit_and_provenance is applicable, its satisfied reason must enumerate "
+        "every audit-producing component and cite the declared source of each recorded "
+        "operation, material input, and terminal outcome: an operation it owns or a "
+        "payload received through a compatible declared path. Cite the owning "
+        "responsibility or relevant contract record indexes. Naming events in an outgoing "
+        "log contract or incidental reachability does not prove data origin. An "
+        "unsatisfied reason must identify each missing producer or delivery path. "
+        "Keep the reason concise while covering every audit producer. "
+        if gate == "connections"
+        and resolved_maturity == "production"
+        and "audit_and_provenance" in required_production_guarantees
+        else ""
+    )
+    production_runtime_trust_instructions = (
+        "When retrieval_and_reuse_trust applies, enumerate the retrieved or recalled "
+        "content consumed by each runtime component, including tool observations and "
+        "working-memory recall when declared. For each applicable consumer path, a "
+        "satisfied reason must cite the owning responsibility or incoming contract that "
+        "declares untrusted-data treatment. An assumption, a declaration on another "
+        "independent input path, or this review's treatment of supplied evidence cannot "
+        "establish that witness. Compatible relays may preserve a declared treatment; "
+        "do not require a duplicate declaration on each transport-only hop. "
+        if gate == "connections"
+        and resolved_maturity == "production"
+        and "retrieval_and_reuse_trust" in required_production_guarantees
+        else ""
+    )
+    production_recovery_witness_instructions = (
+        "For state_effect_reconciliation, first identify the recovery mechanism declared "
+        "for each applicable write. When authoritative read-back is required or declared "
+        "across components, a satisfied reason must cite the contract that requests status "
+        "from its authoritative owner and the contract that returns that status, as well "
+        "as the resulting reconciliation outcomes. A write invocation, a response listing "
+        "status outcomes, or a responsibility promising read-back cannot supply the "
+        "missing status-query invocation. Direct, delegated, or combined request contracts "
+        "are valid. When one component owns both the lookup and the authoritative status, "
+        "its declared internal lookup needs no synthetic edge. "
+        "Atomic durable effect and same-operation deduplication with safe replay, or safe "
+        "target-side idempotency, need no separate read-back unless the design declares it. "
+        "Do not infer retries or uncertain-commit recovery from an ordinary write "
+        "acknowledgment. "
+        if gate == "connections" and resolved_maturity == "production"
+        else ""
+    )
     review_scope = evidence_bundle.get("review_scope")
     candidate_context = evidence_bundle.get("candidate_context")
     overview_instructions = (
@@ -353,6 +398,22 @@ def _prompt(
                 "Prior approval of this baseline is unverified. Perform a full review of "
                 "all current candidate records under every allowed rule. The edit scope "
                 "does not exempt unchanged records from review. "
+            )
+        if gate == "components":
+            scope_instructions += (
+                "Use review_scope.edit_permissions to assess whether each new "
+                "responsibility's required inputs and outcomes are achievable within "
+                "the permitted endpoints, counts, and directions. Explicit delegation "
+                "back through an attachment anchor may use that anchor's unchanged "
+                "existing contracts in review_scope.baseline_connections. Preserve their "
+                "exact payload and control meaning and the anchor's frozen responsibility; "
+                "an evaluation-feedback contract does not by itself establish a rollback invocation. "
+                "Do not transfer ownership or invent connections outside "
+                "review_scope.edit_permissions. Reject a specific incompatible responsibility "
+                "under objective_fidelity before component acceptance. Assess feasibility "
+                "from responsibilities and permitted contracts; do not require authored "
+                "connection-stage edges. A truthful one-way attachment or sink needs no "
+                "return or downstream action unless its responsibility declares one. "
             )
         scope_instructions += (
             "Finding indexes refer to the full current candidate records."
@@ -426,29 +487,74 @@ def _prompt(
                 "\nUse evidence_bundle.candidate_context.capabilities and "
                 "evidence_bundle.candidate_context.assumptions with the accepted "
                 "candidate component responsibilities in evidence_bundle.candidate_components. "
-                "Resolved maturity remains authoritative. "
+                "Resolved maturity remains authoritative. For topic, mechanism, and lifecycle "
+                "maps, assess actual causal, adaptation, or lifecycle relationships. Abstract "
+                "topics do not own network requests or returns. One-way relationships need "
+                "no reverse RPC edge; actual request/response interactions still require "
+                "their authoritative reply. Distinguish offline fine-tuning that changes "
+                "model parameters from live inference using those parameters. "
+                "When the request or applicable rubric requires factual claim validation, "
+                "assess the declared check of generated material claims "
+                "against retrieved evidence before delivery or reuse. Grounded generation or "
+                "citations alone do not establish that check; identify its declared owner and "
+                "failure outcome. Do not require independent verification of the retrieved "
+                "source's truth or deterministic semantic entailment unless explicitly required. "
+                "A compatible declared model-assisted or human review may own the factual check. "
+                "Do not transfer the deterministic structure and allowed-constraint guarantee "
+                "for model-proposed actions to free-form explanations. Preserve that guarantee "
+                "where action proposals make it applicable. "
                 "evidence_bundle.connection_exchanges, when present, is server-derived "
                 "pairing of model-authored connection contracts: request_record_index "
                 "is the forward contract (which may be a request, event, or write) and "
                 "response_record_index is its explicit paired reply. Pairing does not "
                 "prove the forward contract's semantic role or that the declared behavior runs. "
+                "A forward contract may also represent a one-way causal or lifecycle relationship. "
                 "An unclassified record has unknown role; assess its contract and source "
                 "responsibility without assuming it is a request or rejecting it for "
                 "missing pairing metadata. "
                 "Apply edge_semantics to each forward contract and actual paired reply "
                 "against both accepted component responsibilities, including supporting "
-                "and deployment exchanges. Each data-returning alternative in a combined "
+                "and deployment exchanges. For each paired data or policy exchange, identify "
+                "the authoritative data or decision owner and check which component sends "
+                "each contract. A requester-to-owner lookup with an owner-to-requester payload "
+                "reply is valid. An owner-to-consumer payload may be one-way; its consumer "
+                "cannot create that owner's payload or approval decision. Trace each payload's "
+                "authoritative origin through declared incoming and outgoing contracts and "
+                "compatible responsibilities. An intermediary may forward already received "
+                "data without owning its original authority; compatible relay contracts can "
+                "establish forwarding without naming every peer in the responsibility. This "
+                "does not authorize a consumer to create a policy or approval decision, "
+                "substitute generated citations for canonical source data, or perform an "
+                "incompatible transformation. Block an absent producer or delivery path, "
+                "incompatible transformation, or required-control bypass. An authoritative "
+                "owner may deliver directly to multiple compatible consumers. A high-level "
+                "responsibility need not name every peer; missing peer names alone do not "
+                "prove an incompatible contract. When rejecting direct delivery, cite the "
+                "actual ownership or required-control restriction it violates. Do not invent "
+                "a mandatory client relay or other intermediary, and preserve declared trust "
+                "boundaries and required controls. "
+                "A reversed authoritative result is a contradictory "
+                "direction, even if the forward edge already carries that result. In the "
+                "edge_semantics reason, identify each ownership-conflicting pair by record "
+                "indexes, the declared owner, and the incorrect sender. "
+                "Each data-returning alternative in a combined "
                 "contract needs its payload reply or a separate contract; a write verdict "
                 "is not read data. One-way events need no reply; a redundant processed-artifact "
-                "return is advisory without concrete behavior or control harm. "
+                "return is advisory without concrete behavior or control harm. This advisory "
+                "exception requires correct ownership and direction, including declared "
+                "intermediary relays; a wrong-owner or reversed-authority return is not advisory. "
                 "A paired reply or incidental reachability cannot invoke a separate action. "
                 "For each required action, check its actual trigger or change input. "
                 "A proposal service's declared metric pull with reply is a valid normal "
                 "input; do not demand a redundant push or timer. "
                 + production_effect_input_instructions
+                + production_audit_origin_instructions
+                + production_runtime_trust_instructions
+                + production_recovery_witness_instructions
                 + "When one component owns normal and compensation proposals, review their "
                 "initiation separately; the normal input does not initiate rollback. "
-                "Compensation needs a declared operator, incident, event, or explicit "
+                "When compensation is required or declared, it needs a declared operator, "
+                "incident, event, or explicit "
                 "autonomous responsibility and an original or applied operation reference "
                 "or recovery input reaching its producer, directly, by delegation, or through "
                 "declared same-owner internal behavior. Combined contracts can cover both "
@@ -702,7 +808,7 @@ async def _review(
     response: StructuredLLMResponse
     try:
         response = await stream_structured_llm(
-            model=settings.graph_qa_model,
+            model=settings.staged_gate_model,
             system=_GATE_SYSTEM,
             messages=[
                 {

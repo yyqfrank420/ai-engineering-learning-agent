@@ -640,7 +640,7 @@ async def test_live_evaluation_records_projected_graph_review_diagnostics(monkey
     monkeypatch.setattr(
         live_runner,
         "SemanticJudge",
-        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
     )
 
     report, exit_code = await evaluate(
@@ -750,7 +750,7 @@ async def test_live_evaluation_records_projected_staged_gate_diagnostics(monkeyp
     monkeypatch.setattr(
         live_runner,
         "SemanticJudge",
-        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+        lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
     )
 
     report, exit_code = await evaluate(
@@ -1011,6 +1011,7 @@ def test_judge_schema_local_refs_expand_to_previous_exact_contract():
     anthropic_schema = _anthropic_response_schema(schema)
     assert anthropic_schema["$defs"]["dimension"]["properties"]["evidence"] == {
         "type": "array",
+        "minItems": 1,
         "items": dimension_schema["properties"]["evidence"]["items"],
     }
     assert anthropic_schema["properties"]["dimensions"]["required"] == list(dimensions)
@@ -1122,7 +1123,8 @@ def test_judge_prompt_excludes_human_approval_labels():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch):
+@pytest.mark.parametrize("empty_evidence", [False, True])
+async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch, empty_evidence):
     corpus = load_corpus()
     case = corpus.cases[0]
     response = SimpleNamespace(
@@ -1134,7 +1136,7 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
                             "dimensions": {
                                 dimension: {
                                     "grade": "pass",
-                                    "evidence": [{"source_id": "answer-1"}],
+                                    "evidence": [] if empty_evidence else [{"source_id": "answer-1"}],
                                     "rationale": "The cited artifact satisfies the rubric.",
                                 }
                                 for dimension in case.rubric_dimensions
@@ -1161,7 +1163,13 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "anthropic-test-key")
     monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
 
-    judgment = await SemanticJudge().judge(corpus, case, {"answer": "Artifact text."})
+    judgment = None
+    if empty_evidence:
+        with pytest.raises(ValueError, match="evidence"):
+            await SemanticJudge().judge(corpus, case, {"answer": "Artifact text."})
+    else:
+        judgment = await SemanticJudge().judge(corpus, case, {"answer": "Artifact text."})
+    assert create.await_count == 1
 
     assert constructor_calls == [{"api_key": "anthropic-test-key"}]
     request = create.await_args.kwargs
@@ -1187,14 +1195,15 @@ async def test_anthropic_judge_uses_direct_structured_output_schema(monkeypatch)
         },
     }
     anthropic_schema = request["output_config"]["format"]["schema"]
-    assert "minItems" not in __import__("json").dumps(anthropic_schema)
+    assert anthropic_schema["$defs"]["dimension"]["properties"]["evidence"]["minItems"] == 1
     assert "maxItems" not in __import__("json").dumps(anthropic_schema)
     assert "response_format" not in request
     assert "posthog_properties" not in request
-    assert judgment.provider == "anthropic"
-    assert judgment.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
-    assert judgment.input_tokens == 123
-    assert judgment.output_tokens == 45
+    if not empty_evidence:
+        assert judgment.provider == "anthropic"
+        assert judgment.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
+        assert judgment.input_tokens == 123
+        assert judgment.output_tokens == 45
 
 
 @pytest.mark.asyncio
@@ -1262,7 +1271,7 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(
     target = "https://approved-evidence.example"
     judgment = {
         "provider": "anthropic",
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "prompt_release": JUDGE_PROMPT_RELEASE,
         "input_tokens": 10,
         "output_tokens": 5,
@@ -1313,7 +1322,7 @@ def test_semantic_replay_reuses_only_identity_bound_valid_judgments(
         return _load_resume_evaluations(
             args,
             corpus,
-            SimpleNamespace(provider="anthropic", model="claude-sonnet-5"),
+            SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"),
             [case.id],
             deterministic_failures_by_case={case.id: capture_failures},
         )
@@ -1336,7 +1345,7 @@ def test_anthropic_judge_requires_its_provider_key(monkeypatch):
         SemanticJudge()
 
 
-def test_semantic_judge_defaults_to_sonnet_5(monkeypatch):
+def test_semantic_judge_defaults_to_sonnet_5_5(monkeypatch):
     client = SimpleNamespace(messages=SimpleNamespace())
     monkeypatch.delenv("EVAL_JUDGE_PROVIDER", raising=False)
     monkeypatch.delenv("EVAL_JUDGE_MODEL", raising=False)
@@ -1350,7 +1359,7 @@ def test_semantic_judge_defaults_to_sonnet_5(monkeypatch):
     judge = SemanticJudge()
 
     assert judge.provider == "anthropic"
-    assert judge.model == DEFAULT_ANTHROPIC_JUDGE_MODEL
+    assert judge.model == DEFAULT_ANTHROPIC_JUDGE_MODEL == "claude-sonnet-5-5"
 
 
 @pytest.mark.asyncio
@@ -2553,7 +2562,7 @@ def _passing_replay_judge(monkeypatch, *, critical_failure=False):
                 )
             ),
             provider="anthropic",
-            model="claude-sonnet-5",
+            model="claude-sonnet-5-5",
         )
 
     monkeypatch.setattr(live_runner, "SemanticJudge", lambda: object())
@@ -2671,7 +2680,7 @@ async def test_replay_retains_priced_source_usage_without_spending_application_b
             {
                 "thread_id": row["id"],
                 "operation": "synthesis",
-                "model": "claude-sonnet-5",
+                "model": "claude-sonnet-5-5",
                 "status": "success",
                 "provider_attempts": 100,
                 "input_tokens": 100,
@@ -2992,13 +3001,13 @@ async def test_pending_corpus_automated_outcomes_keep_failure_boundaries(
         if outcome == "infrastructure":
             raise RuntimeError("provider unavailable")
         if outcome == "critical":
-            return replace(result(("safety", "fail", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+            return replace(result(("safety", "fail", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5-5")
         if outcome == "mixed_confirmed":
-            return replace(result(("correctness", "fail", False), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
-        return replace(result(("safety", "pass", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5")
+            return replace(result(("correctness", "fail", False), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5-5")
+        return replace(result(("safety", "pass", True), ("relevance", "borderline", False)), provider="anthropic", model="claude-sonnet-5-5")
 
     monkeypatch.setattr(live_runner, "_load_capture", lambda _args: capture)
-    monkeypatch.setattr(live_runner, "SemanticJudge", lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5"))
+    monkeypatch.setattr(live_runner, "SemanticJudge", lambda: SimpleNamespace(provider="anthropic", model="claude-sonnet-5-5"))
     monkeypatch.setattr(live_runner, "judge_with_transport_retry", judge)
     monkeypatch.setattr(live_runner, "account_application_cost", lambda *_args: {"total": {"estimated_usd": 0}, "price_release": "test"})
     monkeypatch.setattr(live_runner, "evaluate_cost_policy", lambda *_args: {
@@ -3031,3 +3040,35 @@ async def test_optional_approved_corpus_flag_still_rejects_pending_before_judgin
     ])
     with pytest.raises(RuntimeError, match="pending human review"):
         await evaluate(args)
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_cost"),
+    [
+        ("claude-sonnet-5", 0.00007),
+        ("claude-sonnet-5-5", 0.00007),
+        ("claude-opus-5", 0.000175),
+        ("claude-opus-5-5", 0.00014),
+    ],
+)
+def test_judge_prices_current_models_and_preserves_historical_rates(model, expected_cost):
+    judgment = replace(
+        result(("correctness", "pass", False)),
+        provider="anthropic",
+        model=model,
+    )
+
+    assert estimated_judge_cost_usd(judgment) == pytest.approx(expected_cost)
+
+
+@pytest.mark.parametrize("rule_code", ["artifact_reuse_lifecycle", "invented_lifecycle"])
+def test_staged_lifecycle_diagnostic_preserves_known_rule_only(rule_code):
+    diagnostic = {
+        "schema_version": 1, "kind": "staged_gate", "stage": "connections", "attempt": 1,
+        "code": "gate_rejected", "candidate_fingerprint": "a" * 64,
+        "findings": [{"rule_code": rule_code, "record_paths": ["connections.0"]}],
+    }
+    events = [{"type": "workflow_progress", "diagnostic": diagnostic}]
+    assert _graph_review_diagnostics_from_events(events) == (
+        [diagnostic] if rule_code == "artifact_reuse_lifecycle" else []
+    )

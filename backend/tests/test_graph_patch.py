@@ -6550,7 +6550,7 @@ def _extension_fixture():
         "edges": [], "groups": [{"id": "g", "label": "Saved", "nodeIds": ["a"]}],
         "view_state": {"zoom": 0.8},
     }
-    _, permissions = staged_edit_scope("Add a layer", base, resolved_complexity="prototype", add_only=True)
+    _, permissions = staged_edit_scope("Extend this diagram", base, resolved_complexity="prototype", add_only=True)
     candidate = copy.deepcopy(base)
     candidate["version"] = "new"
     candidate["nodes"] += [{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}]
@@ -6652,3 +6652,160 @@ def test_additive_extension_rejects_changes_outside_add_only_authority(defect):
         candidate["edges"].append({"source": "a", "target": "a", "label": "Rewrite old flow"})
     with pytest.raises(ValueError):
         admit_graph_extension(base, candidate, permissions)
+
+
+def test_extension_keeps_exact_single_addition_authority():
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    query = "Add node cache_node connected to Saved service"
+    exact_contract, exact = staged_edit_scope(query, base, resolved_complexity="prototype")
+    contract, permissions = staged_edit_scope(
+        query, base, resolved_complexity="prototype", add_only=True
+    )
+    assert contract == exact_contract
+    assert permissions == exact
+    assert permissions["allowed_new_node_count"] == 1
+    assert permissions.get("kind") != "extension"
+
+
+@pytest.mark.parametrize("query", [
+    "Rename Saved service to Better service",
+    "Remove Saved service",
+])
+def test_extension_rejects_exact_mutation_of_saved_nodes(query):
+    base, _, _ = _extension_fixture()
+    base["nodes"].append({"id": "store", "label": "Saved store"})
+    base["edges"].append({"source": "a", "target": "store", "label": "Persist"})
+    base["groups"][0]["nodeIds"].append("store")
+    _, ordinary_permissions = graph_worker.staged_edit_scope(
+        query, base, resolved_complexity="prototype"
+    )
+    assert ordinary_permissions["editable_node_ids"] == ["a"]
+    with pytest.raises(ValueError, match="extension requires additions"):
+        graph_worker.staged_edit_scope(
+            query, base, resolved_complexity="prototype", add_only=True
+        )
+
+
+def test_invalid_precise_addition_cannot_broaden_to_extension():
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    with pytest.raises(ValueError):
+        staged_edit_scope(
+            "Add exactly one cache node to this diagram linked from Saved service to Missing service",
+            base,
+            resolved_complexity="prototype",
+            add_only=True,
+        )
+
+
+@pytest.mark.parametrize("query", [
+    "Add a single component to this diagram",
+    "Add six components to this diagram",
+    "Add only one cache component to this diagram",
+    "Add exactly ten responsibilities to this diagram",
+])
+def test_failed_explicit_cardinality_does_not_gain_broad_extension_authority(query):
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    with pytest.raises(ValueError):
+        staged_edit_scope(query, base, resolved_complexity="prototype", add_only=True)
+
+
+def test_observed_tutor_progress_extension_compiles_additive_authority():
+    import json
+    from pathlib import Path
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    saved = json.loads(
+        (Path(__file__).parent / "fixtures" / "education_tutor_progress_baseline.json").read_text()
+    )
+    query = (
+        "Extend this diagram to remember learner progress across devices. "
+        "Preserve the existing course retrieval flow and components. "
+        "Add the smallest storage and identity mechanism needed, and explain only what changed."
+    )
+    contract, permissions = staged_edit_scope(
+        query, saved, resolved_complexity="prototype", add_only=True
+    )
+    assert contract is None
+    assert permissions["kind"] == "extension"
+    assert permissions["minimum_new_node_count"] == 1
+    assert permissions["allowed_new_node_count"] > 1
+    assert permissions["editable_node_ids"] == []
+    assert permissions["removable_node_ids"] == []
+
+@pytest.mark.parametrize("use_new_group", [False, True])
+def test_extension_adds_members_to_saved_groups_without_changing_saved_metadata(use_new_group):
+
+    base, candidate, permissions = _extension_fixture()
+    base["groups"][0]["color"] = candidate["groups"][0]["color"] = "blue"
+    candidate["groups"][0]["nodeIds"].append("b")
+    if use_new_group:
+        candidate["groups"][1]["nodeIds"] = ["c"]
+    else:
+        candidate["groups"][0]["nodeIds"].append("c")
+        candidate["groups"].pop()
+
+    result = graph_worker.admit_graph_extension(base, candidate, permissions)
+
+    assert result == candidate
+    assert result["groups"][0]["color"] == "blue"
+    assert base["groups"][0]["nodeIds"] == ["a"]
+    assert result is not candidate
+    result["groups"][0]["nodeIds"].append("outside")
+    assert "outside" not in candidate["groups"][0]["nodeIds"]
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "remove", "reorder_members", "duplicate_old", "duplicate_new",
+        "move_old", "import_old", "reorder_groups", "label", "kind", "metadata",
+        "duplicate_across_groups",
+    ],
+)
+def test_extension_group_membership_rejects_changes_to_saved_members_and_metadata(defect):
+    import copy
+
+    base, _, _ = _extension_fixture()
+    base["nodes"].extend([{"id": "d", "label": "Saved store"}, {"id": "e", "label": "Saved log"}])
+    base["edges"] = [{"source": "a", "target": "d", "label": "Read"},
+                     {"source": "d", "target": "e", "label": "Log"}]
+    base["groups"][0].update(nodeIds=["a", "d"], kind="runtime", color="blue")
+    base["groups"].append({"id": "old_log", "label": "Saved log", "kind": "operations", "nodeIds": ["e"]})
+    _, permissions = graph_worker.staged_edit_scope(
+        "Extend this diagram", base, resolved_complexity="prototype", add_only=True
+    )
+    candidate = copy.deepcopy(base)
+    candidate["nodes"].extend([{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}])
+    candidate["edges"].extend([{"source": "a", "target": "b", "label": "Invoke"},
+                               {"source": "b", "target": "c", "label": "Persist"}])
+    candidate["groups"][0]["nodeIds"].append("b")
+    candidate["groups"].append({"id": "new", "label": "New store", "nodeIds": ["c"]})
+    if defect == "remove":
+        candidate["groups"][0]["nodeIds"].remove("d")
+    elif defect == "reorder_members":
+        candidate["groups"][0]["nodeIds"] = ["d", "a", "b"]
+    elif defect == "duplicate_old":
+        candidate["groups"][0]["nodeIds"].append("a")
+    elif defect == "duplicate_new":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "move_old":
+        candidate["groups"][0]["nodeIds"].remove("d")
+        candidate["groups"][1]["nodeIds"].append("d")
+    elif defect == "import_old":
+        candidate["groups"][-1]["nodeIds"].append("a")
+    elif defect == "reorder_groups":
+        candidate["groups"][:2] = reversed(candidate["groups"][:2])
+    elif defect in {"label", "kind", "metadata"}:
+        field = "color" if defect == "metadata" else defect
+        candidate["groups"][0][field] = "changed"
+    else:
+        candidate["groups"][-1]["nodeIds"].append("b")
+
+    with pytest.raises(ValueError):
+        graph_worker.admit_graph_extension(base, candidate, permissions)

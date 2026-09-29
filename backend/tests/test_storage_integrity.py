@@ -1,15 +1,25 @@
 import json
+import math
+import sqlite3
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 
-from adapters.database_adapter import execute, init_db
+import pytest
+
+from adapters.database_adapter import execute, fetchall, init_db
 from storage import (
     analytics_event_store,
     product_analytics_store,
+    rate_limit_store,
     runtime_state_store,
     telemetry_store,
 )
 from storage.profile_store import upsert_profile
-from storage.rate_limit_store import RateLimitDimension, reserve_rate_limit
+from storage.rate_limit_store import (
+    RateLimitDimension,
+    release_rate_limit,
+    reserve_rate_limit,
+)
 from storage.retention import prune_expired_observability_data
 from storage.thread_store import (
     create_thread,
@@ -93,6 +103,159 @@ def test_concurrent_rate_limit_reservations_admit_only_one(temp_data_dir):
         )
 
     assert sum(reservation is not None for reservation in reservations) == 1
+
+
+def test_lifetime_provider_quota_counts_expired_historical_rows(temp_data_dir):
+    init_db()
+    old_window = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-1",
+        event_type="llm_provider_attempt",
+        limit=1,
+        window_s=10,
+    )
+    lifetime = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-1",
+        event_type="llm_provider_attempt",
+        limit=1,
+        window_s=None,
+    )
+
+    old_ids = reserve_rate_limit((old_window,), created_at_epoch=100)
+    assert old_ids is not None
+    assert reserve_rate_limit((lifetime,), created_at_epoch=200) is None
+    rows = fetchall(
+        "SELECT id, created_at_epoch, expires_at_epoch FROM rate_limit_events"
+    )
+    assert rows == [
+        {"id": old_ids[0], "created_at_epoch": 100, "expires_at_epoch": 110}
+    ]
+
+
+def test_unrelated_cleanup_preserves_provider_history(temp_data_dir):
+    init_db()
+    provider = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-1",
+        event_type="llm_provider_attempt",
+        limit=2,
+        window_s=10,
+    )
+    ordinary = RateLimitDimension(
+        scope="otp-verify-email",
+        identifier="friend@example.com",
+        event_type="otp_verify_email",
+        limit=1,
+        window_s=10,
+    )
+    provider_ids = reserve_rate_limit((provider,), created_at_epoch=100)
+    ordinary_ids = reserve_rate_limit((ordinary,), created_at_epoch=100)
+
+    assert reserve_rate_limit((ordinary,), created_at_epoch=200) is not None
+    remaining_ids = {row["id"] for row in fetchall("SELECT id FROM rate_limit_events")}
+    assert provider_ids is not None and provider_ids[0] in remaining_ids
+    assert ordinary_ids is not None and ordinary_ids[0] not in remaining_ids
+
+
+def test_lifetime_provider_quota_stops_at_cap_across_days(temp_data_dir):
+    init_db()
+    dimension = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-2",
+        event_type="llm_provider_attempt",
+        limit=3,
+        window_s=None,
+    )
+    for day in range(3):
+        assert reserve_rate_limit((dimension,), created_at_epoch=100 + day * 86400)
+    assert reserve_rate_limit((dimension,), created_at_epoch=100 + 3 * 86400) is None
+    rows = fetchall("SELECT created_at_epoch, expires_at_epoch FROM rate_limit_events")
+    assert len(rows) == 3
+    assert all(math.isinf(row["expires_at_epoch"]) for row in rows)
+
+
+def test_concurrent_lifetime_provider_quota_admits_only_cap(temp_data_dir):
+    init_db()
+    dimension = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-3",
+        event_type="llm_provider_attempt",
+        limit=2,
+        window_s=None,
+    )
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        reservations = list(
+            executor.map(
+                lambda _: reserve_rate_limit((dimension,), created_at_epoch=100),
+                range(8),
+            )
+        )
+    assert sum(reservation is not None for reservation in reservations) == 2
+
+
+@pytest.mark.parametrize(
+    "scope,event_type",
+    [
+        ("evaluation_run", "otp_verify_email"),
+        ("otp-verify-email", "llm_provider_attempt"),
+    ],
+)
+def test_lifetime_window_rejected_for_other_dimensions(scope, event_type):
+    dimension = RateLimitDimension(
+        scope=scope,
+        identifier="id",
+        event_type=event_type,
+        limit=1,
+        window_s=None,
+    )
+    with pytest.raises(ValueError, match="Lifetime quota"):
+        reserve_rate_limit((dimension,), created_at_epoch=100)
+
+
+def test_lifetime_provider_quota_cannot_be_bypassed():
+    dimension = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-4",
+        event_type="llm_provider_attempt",
+        limit=1,
+        window_s=None,
+    )
+    with pytest.raises(ValueError, match="cannot be bypassed"):
+        reserve_rate_limit((dimension,), bypass_limits=True, created_at_epoch=100)
+
+
+def test_release_rejects_mixed_provider_batch_without_deleting_any_row(temp_data_dir):
+    init_db()
+    provider = RateLimitDimension(
+        scope="evaluation_run",
+        identifier="run-5",
+        event_type="llm_provider_attempt",
+        limit=1,
+        window_s=None,
+    )
+    ordinary = RateLimitDimension(
+        scope="otp-verify-email",
+        identifier="friend@example.com",
+        event_type="otp_verify_email",
+        limit=1,
+        window_s=60,
+    )
+    provider_ids = reserve_rate_limit((provider,), created_at_epoch=100)
+    ordinary_ids = reserve_rate_limit((ordinary,), created_at_epoch=100)
+    assert provider_ids is not None and ordinary_ids is not None
+
+    with pytest.raises(ValueError, match="cannot be released"):
+        release_rate_limit((ordinary_ids[0], provider_ids[0]))
+    assert {row["id"] for row in fetchall("SELECT id FROM rate_limit_events")} == {
+        ordinary_ids[0],
+        provider_ids[0],
+    }
+
+    release_rate_limit(ordinary_ids)
+    assert {row["id"] for row in fetchall("SELECT id FROM rate_limit_events")} == {
+        provider_ids[0],
+    }
 
 
 def test_persist_turn_commits_messages_metadata_and_graph_together(temp_data_dir):
@@ -616,3 +779,80 @@ def test_observability_retention_prunes_old_rows_atomically(temp_data_dir):
         row["event_name"]
         for row in analytics_event_store.list_recent_analytics_events(since_epoch=0)
     ] == ["new"]
+
+
+@pytest.mark.parametrize("include_provider", [False, True])
+def test_release_large_batches_prechecks_all_chunks_and_deduplicates(
+    temp_data_dir, monkeypatch, include_provider
+):
+    init_db()
+    ordinary_ids = tuple(f"ordinary-{index}" for index in range(1201))
+    rows = [
+        (event_id, "key", "otp_verify_email", 100, 160) for event_id in ordinary_ids
+    ]
+    if include_provider:
+        rows.append(("protected-provider", "key", "llm_provider_attempt", 100, 160))
+    original_connect = rate_limit_store._connect
+    with original_connect() as conn:
+        conn.executemany("INSERT INTO rate_limit_events VALUES (?, ?, ?, ?, ?)", rows)
+    statements = []
+
+    @contextmanager
+    def bounded_connect():
+        with original_connect() as conn:
+            if hasattr(conn, "setlimit"):
+                conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 500)
+            conn.set_trace_callback(lambda query: statements.append(query.split()[0]))
+            yield conn
+
+    monkeypatch.setattr(rate_limit_store, "_connect", bounded_connect)
+    requested_ids = ordinary_ids + ordinary_ids[:2]
+    if include_provider:
+        requested_ids += ("protected-provider",)
+        with pytest.raises(ValueError, match="cannot be released"):
+            release_rate_limit(requested_ids)
+        assert "DELETE" not in statements
+        assert len(fetchall("SELECT id FROM rate_limit_events")) == len(rows)
+    else:
+        release_rate_limit(requested_ids)
+        assert statements.count("DELETE") == 3
+        assert fetchall("SELECT id FROM rate_limit_events") == []
+    assert statements.count("SELECT") == 3
+
+
+
+def test_release_delete_preserves_provider_inserted_after_precheck(
+    temp_data_dir, monkeypatch
+):
+    init_db()
+    execute(
+        "INSERT INTO rate_limit_events VALUES (?, ?, ?, ?, ?)",
+        ("ordinary", "key", "otp_verify_email", 100, 160),
+    )
+    original_connect = rate_limit_store._connect
+    inserted = []
+
+    class InterleavedConnection:
+        def __init__(self, conn):
+            self.conn = conn
+
+        def execute(self, query, params=()):
+            if query.startswith("DELETE"):
+                self.conn.execute(
+                    "INSERT INTO rate_limit_events VALUES (?, ?, ?, ?, ?)",
+                    ("later-provider", "key", "llm_provider_attempt", 100, 160),
+                )
+                inserted.append("later-provider")
+            return self.conn.execute(query, params)
+
+    @contextmanager
+    def interleaved_connect():
+        with original_connect() as conn:
+            yield InterleavedConnection(conn)
+
+    monkeypatch.setattr(rate_limit_store, "_connect", interleaved_connect)
+    release_rate_limit(("ordinary", "later-provider"))
+    assert inserted == ["later-provider"]
+    assert [row["id"] for row in fetchall("SELECT id FROM rate_limit_events")] == [
+        "later-provider"
+    ]

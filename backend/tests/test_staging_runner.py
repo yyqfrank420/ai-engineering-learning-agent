@@ -258,8 +258,19 @@ def test_graph_off_staging_case_avoids_brittle_keyword_requirements():
 def test_pr_live_eval_is_globally_serial_with_optional_manual_review():
     workflow = Path(".github/workflows/live-eval.yml").read_text(encoding="utf-8")
 
-    assert "group: staging-live-eval-global" in workflow
-    assert "cancel-in-progress: false" in workflow
+    for filename in ("live-eval.yml", "scheduled-eval.yml"):
+        queued_workflow = Path(".github/workflows", filename).read_text(
+            encoding="utf-8"
+        )
+        assert (
+            "      group: staging-live-eval-global\n"
+            "      cancel-in-progress: false\n"
+            "      queue: max\n"
+        ) in queued_workflow
+    assert (
+        "  group: live-eval-${{ github.event.pull_request.number || github.event.merge_group.head_sha || github.ref }}\n"
+        "  cancel-in-progress: true\n"
+    ) in workflow
     assert "./scripts/ci browser --suite pr" in workflow
     assert "--require-approved-corpus" not in workflow
     assert "--manual-review-policy report-only" in workflow

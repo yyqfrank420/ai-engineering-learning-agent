@@ -303,7 +303,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_JUDGE_PROVIDER: anthropic
-          EVAL_JUDGE_MODEL: claude-sonnet-5
+          EVAL_JUDGE_MODEL: claude-sonnet-5-5
           REPLAY_MODE: ${{ inputs.mode }}
           SELECTED_CASES_JSON: ${{ inputs.selected_cases_json }}
         run: |

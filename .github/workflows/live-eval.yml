@@ -150,6 +150,7 @@ jobs:
     concurrency:
       group: staging-live-eval-global
       cancel-in-progress: false
+      queue: max
     env:
       EVALUATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVALUATION_PROVIDER_ATTEMPT_LIMIT: 78
@@ -363,7 +364,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_JUDGE_PROVIDER: anthropic
-          EVAL_JUDGE_MODEL: claude-sonnet-5
+          EVAL_JUDGE_MODEL: claude-sonnet-5-5
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: backend
         run: |

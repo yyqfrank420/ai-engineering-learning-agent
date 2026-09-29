@@ -227,6 +227,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 "cache_creation_input_tokens": 1_024,
                 "cache_read_input_tokens": 2_048,
                 "output_tokens": 5,
+                "web_search_requests": 0,
                 "system_chars": 120,
                 "message_chars": 56,
                 "schema_chars": 0,
@@ -244,6 +245,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                         "cache_creation_input_tokens": 1_024,
                         "cache_read_input_tokens": 2_048,
                         "output_tokens": 5,
+                        "web_search_requests": 0,
                         "queue_wait_ms": 23,
                         "duration_ms": 100,
                         "first_reasoning_delta_ms": 37,
@@ -257,7 +259,9 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
         | {"thread_id": "thread-1"},
         _llm("routing", "openai", "gpt") | {"thread_id": "another-thread"},
     ]
-    monkeypatch.setattr(dashboard, "list_recent_llm_telemetry", lambda since_epoch: rows)
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: rows
+    )
 
     payload = await dashboard.dashboard_eval_telemetry(
         since_epoch=900,
@@ -284,6 +288,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 "cache_creation_input_tokens": 1_024,
                 "cache_read_input_tokens": 2_048,
                 "output_tokens": 5,
+                "web_search_requests": 0,
                 "system_chars": 120,
                 "message_chars": 56,
                 "schema_chars": 0,
@@ -299,6 +304,7 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                         "cache_creation_input_tokens": 1_024,
                         "cache_read_input_tokens": 2_048,
                         "output_tokens": 5,
+                        "web_search_requests": 0,
                         "queue_wait_ms": 23,
                         "duration_ms": 100,
                         "first_reasoning_delta_ms": 37,
@@ -506,3 +512,36 @@ async def test_dashboard_self_improvement_surfaces_latency_scores_and_errors(
     assert payload["output_shapes"] == [
         {"label": "chat_response / graph:True / retrieval:strong", "count": 1}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "count,expected,complete",
+    [(2, 2, True), (-1, 0, False), ("2", 0, False), (True, 0, False), (None, 0, False)],
+)
+async def test_eval_telemetry_sanitizes_web_search_counts(
+    monkeypatch, count, expected, complete
+):
+    usage = {
+        "input_tokens": 10,
+        "output_tokens": 5,
+        "usage_complete": True,
+        "web_search_requests": count,
+    }
+    row = _llm(
+        "research",
+        "anthropic",
+        "claude-sonnet-5-5",
+        metadata={**usage, "attempts": [usage]},
+    ) | {"thread_id": "thread-1"}
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread-1"], _user={"email": "admin@example.com"}
+    )
+    call = payload["calls"][0]
+    assert call["web_search_requests"] == expected
+    assert call["usage_complete"] is complete
+    assert call["attempts"][0]["web_search_requests"] == expected
+    assert call["attempts"][0]["usage_complete"] is complete

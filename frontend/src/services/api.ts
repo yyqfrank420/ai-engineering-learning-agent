@@ -41,13 +41,20 @@ export async function fetchThread(session: AuthSession, threadId: string): Promi
 }
 
 export async function checkDiagramIntent(session: AuthSession, threadId: string, message: string): Promise<DiagramIntentAction> {
-  const response = await authedFetch(`/api/threads/${threadId}/diagram-intent`, session, {
-    method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(5000),
-  });
-  if (!response.ok) throw new Error('Could not check diagram intent');
-  const data = await response.json();
-  if (!['send', 'answer', 'ask', 'extend', 'new_chat'].includes(data.action)) throw new Error('Invalid diagram intent');
-  return data.action;
+  try {
+    const response = await authedFetch(`/api/threads/${threadId}/diagram-intent`, session, {
+      method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error('Could not check diagram intent');
+    const data = await response.json();
+    if (!['send', 'answer', 'ask', 'extend', 'new_chat'].includes(data.action)) throw new Error('Invalid diagram intent');
+    return data.action;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'TimeoutError') {
+      throw new Error('Checking your request timed out. Your draft is saved. Please try again.');
+    }
+    throw error;
+  }
 }
 
 export async function createThread(session: AuthSession, title = 'New chat'): Promise<ThreadDetail> {

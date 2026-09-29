@@ -29,6 +29,279 @@ def _clear_client_caches(llm):
             clear()
 
 
+def _search_stream_events(*, fragmented_query=False, stop_reason="end_turn", citation_url="https://example.org/source", result_content=None):
+    def event(type, **fields):
+        return SimpleNamespace(type=type, **fields)
+    tool_input = {} if fragmented_query else {"query": "education agents"}
+    result = event("web_search_result", url="https://example.org/source", title="Source title", encrypted_content="private")
+    content = [result] if result_content is None else result_content
+    events = [
+        event("message_start", message=event("message", usage=event("usage", input_tokens=8, cache_creation_input_tokens=3, cache_read_input_tokens=4, output_tokens=0, server_tool_use=event("server_tool_use", web_search_requests=0)))),
+        event("content_block_start", index=0, content_block=event("server_tool_use", id="tool-1", name="web_search", input=tool_input)),
+    ]
+    if fragmented_query:
+        events.extend([
+            event("content_block_delta", index=0, delta=event("input_json_delta", partial_json='{"query":"education')),
+            event("content_block_delta", index=0, delta=event("input_json_delta", partial_json=' agents"}')),
+        ])
+    events.extend([
+        event("content_block_stop", index=0),
+        event("content_block_start", index=1, content_block=event("web_search_tool_result", tool_use_id="tool-1", content=content)),
+        event("content_block_stop", index=1),
+        event("content_block_start", index=2, content_block=event("text", text="Generated prose must not be evidence", citations=None)),
+        event("content_block_delta", index=2, delta=event("citations_delta", citation=event("web_search_result_location", url=citation_url, title="Source title", cited_text="Exact cited passage", encrypted_index="private"))),
+        event("message_delta", delta=event("delta", stop_reason=stop_reason), usage=event("usage", input_tokens=11, cache_creation_input_tokens=None, cache_read_input_tokens=None, output_tokens=7, server_tool_use=event("server_tool_use", web_search_requests=1))),
+        event("message_stop"),
+    ])
+    return events
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fragmented_query", [False, True])
+async def test_web_search_returns_only_url_matched_cited_evidence(monkeypatch, fragmented_query):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    monkeypatch.setattr(settings, "llm_max_retries", 3)
+    calls = []
+
+    async def fake_stream(kwargs):
+        calls.append(kwargs)
+        for event in _search_stream_events(fragmented_query=fragmented_query):
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    events = await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+
+    assert len(calls) == 1
+    assert calls[0]["tools"] == [{"type": "web_search_20250305", "name": "web_search", "max_uses": 1}]
+    assert events == [
+        ("web_search_sources", json.dumps([{"href": "https://example.org/source", "title": "Source title", "body": "Exact cited passage", "query": "education agents", "backend": "anthropic_web_search"}])),
+        ("done", ""),
+    ]
+    metadata = telemetry_records[0]["metadata"]
+    assert metadata["input_tokens"] == 11
+    assert metadata["cache_creation_input_tokens"] == 3
+    assert metadata["cache_read_input_tokens"] == 4
+    assert metadata["output_tokens"] == 7
+    assert metadata["web_search_requests"] == 1
+    assert metadata["attempts"][0]["web_search_requests"] == 1
+    assert len(telemetry_records) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("events,reason", [
+    (_search_stream_events(stop_reason="pause_turn"), "incomplete_search_response"),
+    (_search_stream_events(stop_reason="max_tokens"), "incomplete_search_response"),
+    (_search_stream_events(citation_url="https://other.example/source"), "no_cited_search_sources"),
+    (_search_stream_events(result_content=[SimpleNamespace(type="web_search_tool_result_error", error_code="unavailable")]), "tool_error_or_unsupported_result"),
+    (_search_stream_events(result_content=[]), "tool_error_or_empty_result"),
+    (_search_stream_events(result_content=[SimpleNamespace(type="web_search_result", url="bad-url", title="Title")]), "malformed_search_result"),
+])
+async def test_web_search_unavailable_never_retries_or_falls_back(monkeypatch, events, reason):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    monkeypatch.setattr(settings, "llm_max_retries", 3)
+    monkeypatch.setattr(llm, "_FALLBACK_MODELS", {"claude-test": "gpt-test"})
+    calls = 0
+
+    async def fake_stream(_kwargs):
+        nonlocal calls
+        calls += 1
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    monkeypatch.setattr(llm, "_get_openai_client", lambda: (_ for _ in ()).throw(AssertionError("fallback attempted")))
+    with pytest.raises(llm.WebSearchUnavailableError, match=reason):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    assert calls == 1
+    assert len(telemetry_records) == 1
+    if reason.startswith("tool_error"):
+        metadata = telemetry_records[0]["metadata"]
+        assert metadata["input_tokens"] == 11
+        assert metadata["output_tokens"] == 7
+        assert metadata["web_search_requests"] == 1
+        assert metadata["attempts"][0]["usage_complete"] is True
+
+
+@pytest.mark.asyncio
+async def test_web_search_rejects_other_route_and_quota_before_provider(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    async def forbidden(_kwargs):
+        raise AssertionError("provider started")
+        yield
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", forbidden)
+    with pytest.raises(llm.WebSearchUnavailableError, match="unsupported_provider"):
+        await _collect(llm.stream_response("kimi-k3", "system", [], web_search=True))
+    monkeypatch.setattr(llm, "_reserve_evaluation_provider_attempt", lambda: (_ for _ in ()).throw(llm.EvaluationProviderAttemptLimitExceeded("limit")))
+    with pytest.raises(llm.EvaluationProviderAttemptLimitExceeded):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+
+
+@pytest.mark.asyncio
+async def test_web_search_cancellation_records_incomplete_usage_once(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+
+    async def cancelled(_kwargs):
+        yield _search_stream_events()[0]
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", cancelled)
+    with pytest.raises(asyncio.CancelledError):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    assert len(telemetry_records) == 1
+    assert telemetry_records[0]["metadata"]["attempts"][0]["status"] == "cancelled_incomplete_usage"
+
+
+@pytest.mark.asyncio
+async def test_web_search_requires_final_usage_and_stream_completion(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    events = _search_stream_events()
+    events[-2].usage = SimpleNamespace(input_tokens=None, output_tokens=None, server_tool_use=None)
+
+    async def fake_stream(_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    with pytest.raises(llm.WebSearchUnavailableError, match="incomplete_search_usage"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    assert telemetry_records[0]["metadata"]["attempts"][0]["status"] == "error_incomplete_usage"
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    events[-2].usage.output_tokens = 7
+    events[-2].usage.server_tool_use = SimpleNamespace(web_search_requests=1)
+    events.pop()
+    with pytest.raises(llm.WebSearchUnavailableError, match="incomplete_search_response"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+
+
+@pytest.mark.asyncio
+async def test_web_search_provider_error_is_typed_and_single_attempt(monkeypatch, caplog):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    calls = 0
+
+    async def fake_stream(_kwargs):
+        nonlocal calls
+        calls += 1
+        error = RuntimeError("untrusted provider content")
+        error.status_code = 503
+        error.request_id = "provider-request-1"
+        error.body = {"error": {"type": "overloaded_error", "message": "untrusted provider content"}}
+        raise error
+        yield
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    with pytest.raises(llm.WebSearchUnavailableError, match="provider_request_failed"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    assert calls == 1
+    assert len(telemetry_records) == 1
+    assert "status=503 request_id=provider-request-1 provider_error=overloaded_error" in caplog.text
+    assert "untrusted provider content" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("count", [True, 0.5, -1])
+async def test_web_search_rejects_malformed_request_count(monkeypatch, count):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    events = _search_stream_events()
+    events[-2].usage.server_tool_use.web_search_requests = count
+
+    async def fake_stream(_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    with pytest.raises(llm.WebSearchUnavailableError, match="incomplete_search_usage"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    attempt = telemetry_records[0]["metadata"]["attempts"][0]
+    assert attempt["usage_complete"] is False
+    assert attempt["web_search_requests"] == 0
+
+
+def test_web_search_dedupes_citations_and_accepts_citation_at_block_start():
+    import adapters.llm_adapter as llm
+
+    evidence = llm._WebSearchEvidence()
+    events = _search_stream_events()
+    citation = events[-3].delta.citation
+    second_citation = SimpleNamespace(
+        type="web_search_result_location",
+        url="https://example.org/source",
+        cited_text="Second cited passage",
+    )
+    events[-4].content_block.citations = [citation, citation]
+    events.insert(-2, SimpleNamespace(type="content_block_delta", index=2, delta=SimpleNamespace(type="citations_delta", citation=citation)))
+    events.insert(-2, SimpleNamespace(type="content_block_delta", index=2, delta=SimpleNamespace(type="citations_delta", citation=second_citation)))
+    for event in events:
+        evidence.accept(event)
+    assert evidence.sources() == [{
+        "href": "https://example.org/source",
+        "title": "Source title",
+        "body": "Exact cited passage\nSecond cited passage",
+        "query": "education agents",
+        "backend": "anthropic_web_search",
+    }]
+
+
+@pytest.mark.asyncio
+async def test_web_search_requires_server_tool_usage_count(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    events = _search_stream_events()
+    events[-2].usage.server_tool_use = None
+
+    async def fake_stream(_kwargs):
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    with pytest.raises(llm.WebSearchUnavailableError, match="incomplete_search_usage"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    assert telemetry_records[0]["metadata"]["attempts"][0]["usage_complete"] is False
+
+
+@pytest.mark.asyncio
+async def test_web_search_tool_error_with_zero_search_fees_keeps_complete_usage(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    telemetry_records, _ = _patch_llm_telemetry(monkeypatch)
+    events = _search_stream_events(result_content=[SimpleNamespace(
+        type="web_search_tool_result_error", error_code="max_uses_exceeded",
+    )])
+    events[-2].usage.server_tool_use.web_search_requests = 0
+    calls = 0
+
+    async def fake_stream(_kwargs):
+        nonlocal calls
+        calls += 1
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", fake_stream)
+    with pytest.raises(llm.WebSearchUnavailableError, match="tool_error_or_unsupported_result"):
+        await _collect(llm.stream_response("claude-test", "system", [], web_search=True))
+    metadata = telemetry_records[0]["metadata"]
+    assert calls == metadata["provider_attempts"] == 1
+    assert metadata["input_tokens"] == 11
+    assert metadata["output_tokens"] == 7
+    assert metadata["web_search_requests"] == 0
+    assert metadata["attempts"][0]["usage_complete"] is True
+
+
 class _Delta:
     def __init__(self, type_: str, *, text: str = "", thinking: str = ""):
         self.type = type_
@@ -392,7 +665,7 @@ async def test_stream_response_success_records_thinking_text_and_done(monkeypatc
     telemetry_records, metric_records = _patch_llm_telemetry(monkeypatch)
 
     async def fake_anthropic_stream_once(kwargs):
-        assert kwargs["output_config"] == {"effort": "high"}
+        assert kwargs["output_config"] == {"effort": "medium"}
         assert "temperature" not in kwargs
         yield _Event("content_block_delta", _Delta("thinking_delta", thinking="plan"))
         yield _Event("content_block_delta", _Delta("text_delta", text="answer"))
@@ -500,12 +773,13 @@ def test_application_model_roles_default_to_calibrated_models():
 
     configured = Settings(_env_file=None)
 
-    assert configured.orchestrator_model == "claude-opus-5"
+    assert configured.orchestrator_model == "claude-opus-5-5"
     assert configured.explanation_model == "claude-sonnet-5-5"
-    assert configured.worker_model == "claude-opus-5"
-    assert configured.architecture_model == "claude-opus-5"
+    assert configured.worker_model == "claude-opus-5-5"
+    assert configured.architecture_model == "claude-opus-5-5"
     assert configured.graph_builder_model == "kimi-k3"
-    assert configured.graph_qa_model == "claude-sonnet-5"
+    assert configured.graph_qa_model == "claude-sonnet-5-5"
+    assert configured.staged_gate_model == "claude-opus-5-5"
     assert configured.graph_builder_model not in llm._FALLBACK_MODELS
     assert configured.graph_qa_model not in llm._FALLBACK_MODELS
     assert configured.anthropic_max_concurrent_streams == 4
@@ -1361,6 +1635,7 @@ def test_evaluation_provider_attempt_reservation_uses_shared_atomic_store(monkey
     assert captured[0][0].identifier == "run-123-attempt-1"
     assert captured[0][0].event_type == "llm_provider_attempt"
     assert captured[0][0].limit == 64
+    assert captured[0][0].window_s is None
 
 
 @pytest.mark.asyncio
@@ -1713,3 +1988,101 @@ async def test_opus_55_uses_always_on_adaptive_request_without_legacy_sampling(
     assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & requests[0].keys()
     assert ("text", "answer") in events
     assert events[-1] == ("done", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["kimi-k3", "gpt-5.4-mini"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("secret_metadata", [False, True])
+async def test_chat_provider_error_warning_retains_safe_metadata_without_replay(
+    monkeypatch, caplog, model, nested, accepted, secret_metadata,
+):
+    import httpx
+    import openai
+    import adapters.llm_adapter as llm
+
+    monkeypatch.setattr(settings, "llm_max_retries", 2)
+    _patch_llm_telemetry(monkeypatch)
+    error = {"type": "rate_limit_error", "code": "capacity_limit", "message": "PRIVATE_PROMPT sk-secret-credential"}
+    if secret_metadata:
+        error.update(type={"secret": "credential"}, code="Bearer sk-secret-credential")
+    response = httpx.Response(429, headers={
+        "x-request-id": "Bearer sk-secret-credential" if secret_metadata else "req_safe-123",
+        "retry-after": "Bearer sk-secret-credential" if secret_metadata else "2.5",
+    }, request=httpx.Request("POST", "https://provider.test"))
+    failure = openai.RateLimitError("PRIVATE_PROMPT sk-secret-credential", response=response, body={"error": error} if nested else error)
+    calls = 0
+
+    async def failing_stream(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if accepted:
+            yield "text", "accepted output"
+        raise failure
+
+    monkeypatch.setattr(llm, "_kimi_stream", failing_stream)
+    monkeypatch.setattr(llm, "_openai_stream", failing_stream)
+    with pytest.raises(openai.RateLimitError):
+        await _collect(llm.stream_response(model, "system", [], provider_attempt_limit=2 if accepted else 1))
+    assert calls == 1
+    if secret_metadata:
+        assert "status=429 request_id=None" in caplog.text
+        assert "provider_error=None provider_code=None retry_after_s=None" in caplog.text
+    else:
+        assert "status=429 request_id=req_safe-123" in caplog.text
+        assert "provider_error=rate_limit_error provider_code=capacity_limit retry_after_s=2.5" in caplog.text
+    assert "PRIVATE_PROMPT" not in caplog.text
+    assert "sk-secret" not in caplog.text
+
+
+@pytest.mark.parametrize("retry_after, expected", [
+    ("0", 0.0), ("2.5", 2.5), ("1e2", 100.0), ("-1", None),
+    ("NaN", None), ("inf", None), ("Wed, 21 Oct 2015 07:28:00 GMT", None),
+    ("sk-secret", None), (True, None), ({"secret": "credential"}, None),
+    ("0" * 1000 + "1", None),
+])
+def test_provider_diagnostics_accept_only_finite_nonnegative_numeric_retry_after(retry_after, expected):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    failure.response = SimpleNamespace(headers={"retry-after": retry_after})
+    assert llm._provider_error_diagnostics(failure)[4] == expected
+
+
+@pytest.mark.parametrize("value", [
+    {"secret": "credential"}, ["credential"], "Bearer sk-secret", "sk-secret",
+    "authorization", "line\nsecret", "x" * 129, True,
+])
+def test_provider_diagnostics_drop_malformed_and_secret_bearing_identifiers(value):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    failure.status_code = value
+    failure.request_id = value
+    failure.body = {"error": {"type": value, "code": value, "message": "PRIVATE_MESSAGE"}}
+    assert llm._provider_error_diagnostics(failure) == (None, None, None, None, None, None)
+
+
+@pytest.mark.parametrize("headers", [None, [], "PRIVATE_HEADER", 429])
+def test_provider_diagnostics_ignore_malformed_headers_and_absent_response(headers):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    if headers is not None:
+        failure.response = SimpleNamespace(headers=headers)
+    assert llm._provider_error_diagnostics(failure) == (None, None, None, None, None, None)
+
+
+@pytest.mark.parametrize("override", ["GRAPH_QA_MODEL", "STAGED_GATE_MODEL"])
+def test_staged_and_legacy_qa_model_overrides_are_independent(monkeypatch, override):
+    monkeypatch.delenv("GRAPH_QA_MODEL", raising=False)
+    monkeypatch.delenv("STAGED_GATE_MODEL", raising=False)
+    monkeypatch.setenv(override, "configured-review-model")
+    configured = Settings(_env_file=None)
+    assert configured.graph_qa_model == (
+        "configured-review-model" if override == "GRAPH_QA_MODEL" else "claude-sonnet-5-5"
+    )
+    assert configured.staged_gate_model == (
+        "configured-review-model" if override == "STAGED_GATE_MODEL" else "claude-opus-5-5"
+    )

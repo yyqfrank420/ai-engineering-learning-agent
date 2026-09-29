@@ -106,6 +106,29 @@ describe('ChatInput', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('keeps a timed-out intent draft, blocks duplicate submits, and waits for an explicit retry', async () => {
+    let reject!: (error: Error) => void;
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn()
+      .mockImplementationOnce(() => new Promise<'send'>((_, fail) => { reject = fail; }))
+      .mockResolvedValue('send');
+    renderInput('thread-1', { onSend, checkSubmission });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Keep my question' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    const message = 'Checking your request timed out. Your draft is saved. Please try again.';
+    await act(async () => reject(new Error(message)));
+    expect(screen.getByRole('alert').textContent).toBe(message);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Keep my question');
+    expect(onSend).not.toHaveBeenCalled();
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('Keep my question', 'send'));
+    expect(checkSubmission).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+  });
+
   it.each(['draft', 'disabled', 'sendDisabled', 'thread', 'unmount'] as const)('ignores an intent response after %s changes', async change => {
     let resolve!: (action: 'ask') => void;
     const onSend = vi.fn();

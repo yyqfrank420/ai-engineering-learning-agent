@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v26"
+        "staged_component_gate_v36"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -195,6 +195,9 @@ def test_review_uses_explicit_timeout_independently_of_telemetry(
         else timeout_seconds
     )
     assert calls[0]["provider_attempt_limit"] == 1
+    assert calls[0]["model"] == gate.settings.staged_gate_model
+    assert calls[0]["effort"] == "medium"
+    assert calls[0]["max_output_tokens"] == gate.settings.graph_qa_max_completion_tokens
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -244,6 +247,11 @@ def test_component_gate_acceptance_uses_named_subject_scope(maturity):
         in objective
     )
     assert "A single assumed product cannot replace that subject" in objective
+    assert "Abstract topics such as Prompt engineering, Fine-tuning" in objective
+    assert "not runtime services that own network requests or returns" in objective
+    assert "Distinguish offline fine-tuning that changes model parameters" in objective
+    assert "preserve retained group names" in objective
+    assert "For applied system designs, select the initiating primary runtime actor" in objective
     prompt = gate._prompt(
         gate="components",
         user_request=(
@@ -491,6 +499,11 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
                 "unless the component responsibilities contradict that handoff"
                 in requirement
             )
+        elif stage == "connections" and code == "runtime_completeness":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "each material requested or declared executable operation" in requirement
+            assert "New outcome or update data" in requirement
+            assert "Do not require a separate edge or component per operation" in requirement
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
@@ -500,6 +513,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             assert "including when a capability flag needs correction" in requirement
             assert "before component responsibilities freeze" in requirement
             assert "do not require edges or transition proof" in requirement
+        elif stage == "components" and code == "objective_fidelity":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "factual claims drawn from supplied sources" in requirement
+            assert "Distinguish proposed design choices" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -660,7 +677,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v31"
+        == "staged_connection_gate_v43"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -707,9 +724,6 @@ def test_executor_identity_proof_applies_only_to_selected_production_guarantee(
     )
     criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
 
-    assert (
-        "For each required action, check its actual trigger or change input" in prompt
-    )
     assert "declared metric pull with reply is a valid normal input" in prompt
     if requires_identity:
         assert "authorization_and_compensation" in criteria
@@ -753,6 +767,7 @@ def test_connection_gate_receives_request_scoped_exchange_evidence(monkeypatch):
     assert len(calls) == 1
     assert evidence["connection_exchanges"] == pairs
     assert "A paired reply or incidental reachability cannot invoke" in prompt
+    assert "For each required action, check its actual trigger or change input" in prompt
     assert "proposal producer's exact-action presentation" in prompt
     assert "When human review or human approval is requested or declared" in prompt
     assert "human review surface or declared human decision boundary" in prompt
@@ -767,7 +782,15 @@ def test_connection_gate_receives_request_scoped_exchange_evidence(monkeypatch):
     assert "including supporting and deployment exchanges" in prompt
     assert "a write verdict is not read data" in prompt
     assert "One-way events need no reply" in prompt
+    assert "Abstract topics do not own network requests or returns" in prompt
+    assert "One-way relationships need no reverse RPC edge" in prompt
+    assert "actual request/response interactions still require their authoritative reply" in prompt
+    assert "one-way causal or lifecycle relationship" in prompt
     assert "redundant processed-artifact return is advisory" in prompt
+    assert "owner may deliver directly to multiple compatible consumers" in prompt
+    assert "missing peer names alone do not prove an incompatible contract" in prompt
+    assert "actual ownership or required-control restriction it violates" in prompt
+    assert "preserve declared trust boundaries and required controls" in prompt
 
 
 @pytest.mark.parametrize(
@@ -898,6 +921,10 @@ def test_connection_review_prompt_assembles_problematic_exchange_evidence(
     assert "a write verdict is not read data" in prompt
     assert "redundant processed-artifact return is advisory" in prompt
     assert "One-way events need no reply" in prompt
+    assert "Abstract topics do not own network requests or returns" in prompt
+    assert "One-way relationships need no reverse RPC edge" in prompt
+    assert "actual request/response interactions still require their authoritative reply" in prompt
+    assert "one-way causal or lifecycle relationship" in prompt
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -1119,7 +1146,7 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
     baseline = gate.review_identity(stage, "production")
     assert gate.review_identity(stage, "production") == baseline
     if change == "model":
-        monkeypatch.setattr(gate.settings, "graph_qa_model", "different-review-model")
+        monkeypatch.setattr(gate.settings, "staged_gate_model", "different-review-model")
     elif change == "temperature":
         monkeypatch.setattr(
             gate.settings, "graph_temperature", gate.settings.graph_temperature + 0.1
@@ -2448,3 +2475,221 @@ def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reas
     assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
     assert result["findings"][0]["record_indexes"] == [0]
     assert len(calls) == 1
+
+
+def test_factual_review_preserves_separate_action_validation_obligation():
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Design a factual answer service with retrieved evidence.",
+        evidence_bundle={},
+        resolved_maturity="production",
+        candidate_records=[],
+        required_production_guarantees=(
+            "audit_and_provenance",
+            "retrieval_and_reuse_trust",
+        ),
+    )
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+
+    assert "retrieval_and_reuse_trust" in criteria
+    assert "deterministically validates those proposals' structure" in criteria["audit_and_provenance"]
+    assert "When the request or applicable rubric requires factual claim validation" in prompt
+    assert "Grounded generation or citations alone do not establish that check" in prompt
+    assert "identify its declared owner and failure outcome" in prompt
+    assert "model-assisted or human review may own the factual check" in prompt
+    assert "Do not transfer the deterministic structure and allowed-constraint guarantee" in prompt
+    assert "Preserve that guarantee where action proposals make it applicable" in prompt
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_scoped_component_gate_assesses_attachment_feasibility_with_server_permissions(
+    monkeypatch, stage,
+):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    permissions = {
+        "added_edge_anchor_node_ids": ["n6"],
+        "allowed_new_node_count": 1,
+        "allowed_new_edge_count": 2,
+        "minimum_new_edge_count": 1,
+        "connection_addition_mode": "attachment",
+        "editable_edges": [],
+    }
+    scope = {
+        "trusted_baseline": True,
+        "baseline_components": [{"server_id": "n6", "label": "Serving Monitor"}],
+        "baseline_connections": [{"source_id": "n6", "target_id": "n4"}],
+        "edit_permissions": permissions,
+    }
+    review = gate.review_components if stage == "components" else gate.review_connections
+    asyncio.run(review(
+        user_request="Expand Serving Monitor with one directly connected responsibility.",
+        resolved_maturity="production",
+        candidate_records=[{"label": "Alert Triage"}],
+        evidence_bundle={"review_scope": scope},
+    ))
+    prompt = calls[0]["messages"][0]["content"]
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["review_scope"] == scope
+    assert ("Use review_scope.edit_permissions" in prompt) == (stage == "components")
+    if stage == "components":
+        assert "required inputs and outcomes are achievable" in prompt
+        assert "permitted endpoints, counts, and directions" in prompt
+        assert "attachment anchor may use that anchor's unchanged existing contracts" in prompt
+        assert "Do not transfer ownership or invent connections outside review_scope.edit_permissions" in prompt
+        assert "Preserve their exact payload and control meaning" in prompt
+        assert "an evaluation-feedback contract does not by itself establish a rollback invocation" in prompt
+        assert "Reject a specific incompatible responsibility under objective_fidelity" in prompt
+        assert "do not require authored connection-stage edges" in prompt
+        assert "A truthful one-way attachment or sink needs no return" in prompt
+
+
+@pytest.mark.parametrize("coverage", ["complete", "missing", "duplicate", "unknown"])
+def test_reuse_gate_requires_independent_complete_lifecycle_review(coverage):
+    rules = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    reason = "Cross-session recall has no executable access-scope check or invalidation owner."
+    payload = _rule_reviews(rules, [{
+        "rule_code": "artifact_reuse_lifecycle", "reason": reason, "record_indexes": [0],
+    }])
+    rows = [{"rule_code": code, **row} for code, row in payload["rule_reviews"].items()]
+    index = next(i for i, row in enumerate(rows) if row["rule_code"] == "artifact_reuse_lifecycle")
+    if coverage == "missing":
+        rows.pop(index)
+    elif coverage == "duplicate":
+        rows[index]["rule_code"] = "retrieval_and_reuse_trust"
+    elif coverage == "unknown":
+        rows[index]["rule_code"] = "invented_lifecycle"
+    result = gate._review_result(
+        _response({"rule_reviews": rows}),
+        schema=gate._response_schema(rule_codes=rules, record_count=1),
+        rule_codes=rules, records=[{"source": "store", "target": "consumer"}],
+    )
+    assert result["approved"] is False
+    if coverage == "complete":
+        assert result["terminal"] is False
+        assert result["rule_reviews"]["retrieval_and_reuse_trust"]["satisfied"] is True
+        assert result["findings"] == [{
+            "rule_code": "artifact_reuse_lifecycle", "reason": reason, "record_indexes": [0],
+        }]
+    else:
+        assert result["terminal"] is True
+        assert result["diagnostics"] == ["provider response has an incomplete or unknown rule review"]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_legacy_qa_model_does_not_change_staged_review_identity(monkeypatch, stage):
+    before = gate.review_identity(stage, "production")
+    monkeypatch.setattr(gate.settings, "graph_qa_model", "independent-legacy-review")
+    assert gate.review_identity(stage, "production") == before
+
+
+@pytest.mark.parametrize("stage,maturity,guarantees,expected", [
+    ("connections", "production", ("audit_and_provenance",), True),
+    ("connections", "production", (), False),
+    ("connections", "prototype", ("audit_and_provenance",), False),
+    ("components", "production", ("audit_and_provenance",), False),
+])
+def test_audit_origin_witness_instructions_follow_stage_and_selected_guarantee(
+    stage, maturity, guarantees, expected,
+):
+    records = [
+        {"source": "recall", "target": "store", "label": "Invalidate stale memory"},
+        {"source": "writer", "target": "logs", "label": "Record memory writes and invalidation outcomes"},
+    ]
+    components = [
+        {"id": "recall", "responsibility": "Owns memory invalidation."},
+        {"id": "writer", "responsibility": "Owns memory persistence and audit production."},
+    ]
+    prompt = gate._prompt(
+        gate=stage, user_request="Review memory audit coverage.",
+        evidence_bundle={"candidate_components": components}, resolved_maturity=maturity,
+        candidate_records=records, required_production_guarantees=guarantees,
+    )
+    instruction = (
+        "When audit_and_provenance is applicable, its satisfied reason must enumerate "
+        "every audit-producing component and cite the declared source of each recorded "
+        "operation, material input, and terminal outcome: an operation it owns or a "
+        "payload received through a compatible declared path. Cite the owning "
+        "responsibility or relevant contract record indexes. Naming events in an outgoing "
+        "log contract or incidental reachability does not prove data origin. An "
+        "unsatisfied reason must identify each missing producer or delivery path. "
+        "Keep the reason concise while covering every audit producer. "
+    )
+    assert (instruction in prompt) is expected
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])["candidate_components"] == components
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity, guarantees)
+
+
+@pytest.mark.parametrize("stage,maturity,guarantees,expected", [
+    ("connections", "production", ("retrieval_and_reuse_trust",), True),
+    ("connections", "production", (), False),
+    ("connections", "prototype", ("retrieval_and_reuse_trust",), False),
+    ("components", "production", ("retrieval_and_reuse_trust",), False),
+])
+def test_runtime_trust_witnesses_cover_each_declared_consumer_path_only_when_applicable(
+    stage, maturity, guarantees, expected,
+):
+    records = [
+        {"source": "executor", "target": "context", "label": "Return tool observations"},
+        {"source": "working_memory", "target": "context", "label": "Recall working memory"},
+        {"source": "long_term_memory", "target": "planner", "label": "Return scoped memories as untrusted data"},
+    ]
+    evidence = {
+        "candidate_context": {"assumptions": ["All tool observations and memory recall are untrusted data."]},
+        "candidate_components": [
+            {"id": "context", "responsibility": "Integrates tool observations and working-memory recall."},
+            {"id": "planner", "responsibility": "Treats recalled long-term memories as untrusted data."},
+        ],
+    }
+    prompt = gate._prompt(
+        gate=stage, user_request="Review runtime input trust.", evidence_bundle=evidence,
+        resolved_maturity=maturity, candidate_records=records,
+        required_production_guarantees=guarantees,
+    )
+    instruction = (
+        "When retrieval_and_reuse_trust applies, enumerate the retrieved or recalled "
+        "content consumed by each runtime component, including tool observations and "
+        "working-memory recall when declared. For each applicable consumer path, a "
+        "satisfied reason must cite the owning responsibility or incoming contract that "
+        "declares untrusted-data treatment. An assumption, a declaration on another "
+        "independent input path, or this review's treatment of supplied evidence cannot "
+        "establish that witness. Compatible relays may preserve a declared treatment; "
+        "do not require a duplicate declaration on each transport-only hop. "
+    )
+    assert (instruction in prompt) is expected
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity, guarantees)
+    if stage == "components":
+        assert "not edges, sequence, or payload proofs" in criteria["brief_coverage"]
+
+
+@pytest.mark.parametrize("stage,maturity,expected", [
+    ("connections", "production", True),
+    ("connections", "prototype", False),
+    ("components", "production", False),
+])
+def test_recovery_witness_instructions_follow_stage_and_maturity_without_selected_guarantees(
+    stage, maturity, expected,
+):
+    prompt = gate._prompt(
+        gate=stage, user_request="Review recovery mechanisms.", evidence_bundle={},
+        resolved_maturity=maturity, candidate_records=[], required_production_guarantees=(),
+    )
+    for instruction in (
+        "For state_effect_reconciliation, first identify the recovery mechanism declared for each applicable write",
+        "cite the contract that requests status from its authoritative owner and the contract that returns that status",
+        "A write invocation, a response listing status outcomes, or a responsibility promising read-back cannot supply the missing status-query invocation",
+        "Direct, delegated, or combined request contracts are valid",
+        "When one component owns both the lookup and the authoritative status, its declared internal lookup needs no synthetic edge",
+        "target-side idempotency, need no separate read-back unless the design declares it",
+        "Do not infer retries or uncertain-commit recovery from an ordinary write acknowledgment",
+    ):
+        assert (instruction in prompt) is expected
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity)
+    assert ("state_effect_reconciliation" in criteria) is expected

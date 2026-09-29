@@ -111,6 +111,7 @@ _DESIGN_FOLLOWUP_PHRASES = (
     "add nodes",
     "all agents",
     "expand",
+    "extend",
     "go deeper",
     "more detail",
     "show all",
@@ -122,7 +123,7 @@ _GRAPH_EDIT_ACTION = re.compile(
     r"\b(?:"
     r"add(?:s|ed|ing)?|adjust(?:s|ed|ing)?|chang(?:e|es|ed|ing)|"
     r"connect(?:s|ed|ing)?|correct(?:s|ed|ing)?|delet(?:e|es|ed|ing)|"
-    r"disconnect(?:s|ed|ing)?|edit(?:s|ed|ing)?|expand(?:s|ed|ing)?|"
+    r"disconnect(?:s|ed|ing)?|edit(?:s|ed|ing)?|expand(?:s|ed|ing)?|extend(?:s|ed|ing)?|"
     r"enhanc(?:e|es|ed|ing)|fix(?:es|ed|ing)?|link(?:s|ed|ing)?|"
     r"moderniz(?:e|es|ed|ing)|modify|modifies|modified|modifying|"
     r"improv(?:e|es|ed|ing)|includ(?:e|es|ed|ing)|"
@@ -412,20 +413,34 @@ def is_graph_extension_request(query: str, graph_data: dict | None) -> bool:
     """Recognize contextual additions without guessing an authored target."""
     if not graph_data or requests_no_diagram(query):
         return False
+    if resolve_graph_operation(query, graph_data) == "create":
+        return False
     text = _routing_intent_text(query)
     clauses = _intent_clauses(text)
-    eligible = [clause for clause in clauses
-                if not _NEGATED_GRAPH_EDIT_CLAUSE.match(clause)
-                and not _GRAPH_ARTIFACT_CHANGE_FORBIDDEN.search(clause)
-                and not _EXPLANATION_REQUEST.match(clause)]
-    non_additive = re.compile(r"\b(?:remove|delete|rename|replace|rebuild|redesign|update|change|edit|disconnect|unlink)\w*\b")
+    eligible = [
+        clause
+        for clause in clauses
+        if not _NEGATED_GRAPH_EDIT_CLAUSE.match(clause)
+        and not _GRAPH_ARTIFACT_CHANGE_FORBIDDEN.search(clause)
+        and not _EXPLANATION_REQUEST.match(clause)
+    ]
+    non_additive = re.compile(
+        r"\b(?:remove|delete|rename|replace|rebuild|redesign|update|change|edit|disconnect|unlink)\w*\b"
+    )
     if any(non_additive.search(clause) for clause in eligible):
         return False
     for clause in eligible:
-        if _NON_MUTATING_QUESTION.match(clause) and not re.match(r"^(?:what\s+if|could\s+we)\b", clause):
+        if _NON_MUTATING_QUESTION.match(clause) and not re.match(
+            r"^(?:what\s+if|could\s+we)\b", clause
+        ):
             continue
-        if re.search(r"\b(?:add(?:ed|ing)?|expand|extend|include|augment)\b", clause) and (
-            re.search(r"\b(?:this|current|existing|original|our|my)\b|\bon\s+top\s+of\b|\balongside\b", clause)
+        if re.search(
+            r"\b(?:add(?:ed|ing)?|expand|extend|include|augment)\b", clause
+        ) and (
+            re.search(
+                r"\b(?:this|current|existing|original|our|my)\b|\bon\s+top\s+of\b|\balongside\b",
+                clause,
+            )
             or resolve_graph_operation(clause, graph_data) == "edit"
         ):
             return True

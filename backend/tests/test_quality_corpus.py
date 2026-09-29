@@ -256,7 +256,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v18", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v18", "anthropic", "claude-sonnet-5-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -1461,8 +1461,8 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
                 f"composer locator must not depend on textarea: {selector}"
             )
 
-        def get_by_role(self, role, *, name, exact=True):
-            assert role == "button" and exact
+        def get_by_role(self, role, *, name=None, exact=True):
+            assert (role == "button" and exact) or (role == "alert" and name is None)
             return Control(name)
 
         async def click(self):
@@ -1483,8 +1483,8 @@ async def test_graph_output_deadline_stops_the_active_browser_turn(monkeypatch):
 
     class Page:
         def locator(self, selector):
-            assert selector == ".split-pane__conversation"
-            return Control("conversation")
+            assert selector in {".split-pane__conversation", ".chat-composer"}
+            return Control(selector)
 
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
@@ -1519,8 +1519,8 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(monkeypat
                 f"composer locator must not depend on textarea: {selector}"
             )
 
-        def get_by_role(self, role, *, name, exact=True):
-            assert role == "button" and exact
+        def get_by_role(self, role, *, name=None, exact=True):
+            assert (role == "button" and exact) or (role == "alert" and name is None)
             return Control(name)
 
         async def fill(self, _value):
@@ -1551,8 +1551,8 @@ async def test_send_step_accepts_done_before_composer_stop_is_observed(monkeypat
 
     class Page:
         def locator(self, selector):
-            assert selector == ".split-pane__conversation"
-            return Control("conversation")
+            assert selector in {".split-pane__conversation", ".chat-composer"}
+            return Control(selector)
 
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
@@ -1575,6 +1575,7 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
     placeholder_changed = asyncio.Event()
     stop_seen = asyncio.Event()
     stop_hidden = asyncio.Event()
+    alert_cancelled = False
 
     class Control:
         def __init__(self, name):
@@ -1583,8 +1584,10 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
         def locator(self, selector):
             raise AssertionError(f"Stop must not depend on textarea: {selector}")
 
-        def get_by_role(self, role, *, name, exact=True):
-            assert role == "button" and name == "Stop generation" and exact
+        def get_by_role(self, role, *, name=None, exact=True):
+            assert (role == "button" and name == "Stop generation" and exact) or (
+                role == "alert" and name is None
+            )
             return Control(name)
 
         async def fill(self, _value):
@@ -1609,6 +1612,7 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
                 placeholder_changed.set()
 
         async def wait_for(self, *, state, timeout):
+            nonlocal alert_cancelled
             del timeout
             if self.name == "Stop generation" and state == "visible":
                 assert placeholder_changed.is_set()
@@ -1616,12 +1620,16 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
             elif self.name == "Stop generation" and state == "hidden":
                 await stop_hidden.wait()
             else:
-                await asyncio.Future()
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    alert_cancelled = True
+                    raise
 
     class Page:
         def locator(self, selector):
-            assert selector == ".split-pane__conversation"
-            return Control("conversation")
+            assert selector in {".split-pane__conversation", ".chat-composer"}
+            return Control(selector)
 
         def get_by_placeholder(self, _pattern):
             return Control("textarea")
@@ -1635,6 +1643,140 @@ async def test_send_step_tracks_stop_after_composer_placeholder_changes(monkeypa
     frames.append({"direction": "received", "message": {"type": "done"}})
     stop_hidden.set()
     assert await asyncio.wait_for(turn, timeout=2) == [{"type": "done"}]
+    assert alert_cancelled
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("alert_text", "expected_code", "is_infrastructure"),
+    [
+        (
+            "Checking your request timed out. Your draft is saved. Please try again.",
+            "browser_submission_timeout",
+            True,
+        ),
+        ("Please choose a valid course.", "browser_submission_failed", False),
+    ],
+)
+async def test_send_step_reports_submission_alert_before_stop(
+    alert_text, expected_code, is_infrastructure
+):
+    from eval.browser_runner import (
+        BrowserInfrastructureError,
+        BrowserQualityError,
+        _send_step,
+    )
+
+    case = load_corpus().by_id["graph-expansion"]
+    alert_shown = asyncio.Event()
+    stop_cancelled = False
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def get_by_role(self, role, *, name=None, exact=True):
+            assert (role == "button" and exact) or (role == "alert" and name is None)
+            return Control(name)
+
+        async def fill(self, _value):
+            return None
+
+        async def click(self):
+            assert self.name == "Send message"
+            alert_shown.set()
+
+        async def wait_for(self, *, state, timeout):
+            nonlocal stop_cancelled
+            assert timeout == 20_000 and state == "visible"
+            if self.name is None:
+                await alert_shown.wait()
+                return
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                stop_cancelled = True
+                raise
+
+        async def inner_text(self):
+            assert self.name is None
+            return alert_text
+
+    class Page:
+        def locator(self, selector):
+            assert selector in {".split-pane__conversation", ".chat-composer"}
+            return Control(selector)
+
+        def get_by_placeholder(self, _pattern):
+            return Control("textarea")
+
+        def get_by_label(self, name):
+            return Control(name)
+
+    error_type = (
+        BrowserInfrastructureError if is_infrastructure else BrowserQualityError
+    )
+    with pytest.raises(error_type) as raised:
+        await asyncio.wait_for(_send_step(Page(), case, 0, [], timeout_seconds=1), 2)
+
+    assert raised.value.code == expected_code
+    assert alert_text in str(raised.value)
+    if is_infrastructure:
+        assert raised.value.retryable
+    assert stop_cancelled
+
+
+@pytest.mark.asyncio
+async def test_send_step_does_not_reclassify_stop_timeout_without_submission_alert():
+    from playwright.async_api import TimeoutError as PlaywrightTimeoutError
+
+    from eval.browser_runner import BrowserQualityError, _send_step
+
+    case = load_corpus().by_id["graph-expansion"]
+    alert_cancelled = False
+
+    class Control:
+        def __init__(self, name):
+            self.name = name
+
+        def get_by_role(self, role, *, name=None, exact=True):
+            assert (role == "button" and exact) or (role == "alert" and name is None)
+            return Control(name)
+
+        async def fill(self, _value):
+            return None
+
+        async def click(self):
+            assert self.name == "Send message"
+
+        async def wait_for(self, *, state, timeout):
+            nonlocal alert_cancelled
+            assert timeout == 20_000 and state == "visible"
+            if self.name == "Stop generation":
+                await asyncio.sleep(0)
+                raise PlaywrightTimeoutError("Stop generation was not observed")
+            try:
+                await asyncio.Future()
+            except asyncio.CancelledError:
+                alert_cancelled = True
+                raise
+
+    class Page:
+        def locator(self, selector):
+            assert selector in {".split-pane__conversation", ".chat-composer"}
+            return Control(selector)
+
+        def get_by_placeholder(self, _pattern):
+            return Control("textarea")
+
+        def get_by_label(self, name):
+            return Control(name)
+
+    with pytest.raises(BrowserQualityError) as raised:
+        await asyncio.wait_for(_send_step(Page(), case, 0, [], timeout_seconds=1), 2)
+
+    assert raised.value.code == "browser_ui_interaction_failed"
+    assert alert_cancelled
 
 
 @pytest.mark.asyncio
@@ -3776,3 +3918,133 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
     assert [(item["kind"], item["code"]) for item in result["failure_details"]] == (
         [] if expected_failure is None else [expected_failure]
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [None, "whitespace", "http", "truncated", "empty", "error", "fallback", "fallback_allowed", "dom", "body_timeout", "clone"])
+async def test_node_followup_waits_for_completed_refinement_and_matching_chips(monkeypatch, failure):
+    from eval.browser_runner import _node_followup_interaction_failure_details
+
+    questions = ["Explain the policy boundary", "Expand the executor", "Compare validation and approval"]
+    if failure == "whitespace":
+        questions = [" " + question + " \n" for question in questions]
+    if failure == "body_timeout":
+        monkeypatch.setattr("eval.browser_runner.application_turn_timeout_seconds", lambda: 0.02)
+    events = [{"type": "suggested_questions", "questions": questions}, {"type": "done"}]
+    if failure == "truncated":
+        events.pop()
+    elif failure == "empty":
+        events[0]["questions"] = []
+    elif failure in {"error", "fallback", "fallback_allowed"}:
+        events.insert(0, {"type": "error" if failure == "error" else "provider_switch"})
+    response_pending = asyncio.Event()
+    body_pending = asyncio.Event()
+    dom_pending = asyncio.Event()
+    response_started = asyncio.Event()
+    body_started = asyncio.Event()
+    dom_started = asyncio.Event()
+
+    class Request:
+        method = "POST"
+        url = "https://example.test/api/node-selected"
+        post_data_json = {"client_request_id": "selected-node-request"}
+
+        async def response(self):
+            raise AssertionError("SSE capture must not use CDP response-body retention")
+
+    class RequestInfo:
+        @property
+        def value(self):
+            async def captured():
+                return Request()
+            return captured()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            pass
+
+    class Page:
+        first = None
+
+        def __init__(self):
+            self.first = self
+            self.capture_installed = False
+            self.capture_cleaned = False
+            self.chips = ["Immediate default one", "Immediate default two", "Immediate default three"]
+
+        def get_by_role(self, role, *, name):
+            assert role == "button"
+            assert name.match("Explore Validator")
+            return self
+
+        def expect_request(self, predicate, *, timeout):
+            assert predicate(Request())
+            assert timeout == 10_000
+            return RequestInfo()
+
+        async def press(self, key, *, timeout):
+            assert key == "Enter"
+
+        def locator(self, *_args):
+            raise AssertionError("default chip presence cannot prove fresh completion")
+
+        async def evaluate(self, expression, arg=None):
+            if "originalFetch: window.fetch" in expression:
+                self.capture_installed = True
+            elif "delete window.__evaluationNodeFollowupCapture" in expression:
+                self.capture_cleaned = True
+                self.capture_installed = False
+            else:
+                assert arg == {"url": Request.url, "client_request_id": "selected-node-request"}
+                return [{"status": 500 if failure == "http" else 200,
+                         "body": "".join("data: " + json.dumps(event) + "\n\n" for event in events),
+                         "error": "clone failed" if failure == "clone" else None}]
+
+        async def wait_for_function(self, expression, *, arg, timeout):
+            if "records.some" in expression:
+                response_started.set()
+                await response_pending.wait()
+                body_started.set()
+                await body_pending.wait()
+                return
+            assert "chip.textContent.trim()" in expression
+            assert "JSON.stringify(chips) === JSON.stringify(questions)" in expression
+            assert arg == [question.strip() for question in questions]
+            dom_started.set()
+            await dom_pending.wait()
+            if failure == "dom":
+                raise TimeoutError("chips never matched returned questions")
+            self.chips = list(arg)
+
+    page = Page()
+    original_case = load_corpus().by_id["node-followup"]
+    case = original_case.model_copy(update={
+        "deterministic": original_case.deterministic.model_copy(update={
+            "provider_fallback_allowed": failure == "fallback_allowed",
+        }),
+    })
+    task = asyncio.create_task(_node_followup_interaction_failure_details(
+        page, case, {"nodes": [{}]}, [],
+    ))
+    await asyncio.wait_for(response_started.wait(), timeout=1)
+    assert not task.done()
+    response_pending.set()
+    await asyncio.wait_for(body_started.wait(), timeout=1)
+    assert not task.done()
+    if failure != "body_timeout":
+        body_pending.set()
+    if failure in {None, "whitespace", "fallback_allowed", "dom"}:
+        await asyncio.wait_for(dom_started.wait(), timeout=1)
+        assert not task.done()
+        assert page.chips != questions
+        dom_pending.set()
+    result = await asyncio.wait_for(task, timeout=1)
+    assert page.capture_cleaned
+    assert not page.capture_installed
+    if failure in {None, "whitespace", "fallback_allowed"}:
+        assert result == []
+        assert page.chips == [question.strip() for question in questions]
+    else:
+        assert [detail["code"] for detail in result] == ["node_followup_interaction_failed"]

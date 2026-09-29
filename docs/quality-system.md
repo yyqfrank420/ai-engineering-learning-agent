@@ -113,7 +113,12 @@ Environment-bearing OIDC subject, can read only staging secrets, and cannot
 impersonate the separate production deployer. The `production` Environment has an
 independently bound identity. Production accepts only successful push or manual
 workflow runs from this repository's `main` branch, checked before source checkout.
-Staging mutation is globally serialized. A database
+Staging mutation is globally serialized. Protected PR and scheduled evaluations
+share `staging-live-eval-global` with `queue: max` and cancellation disabled, so up
+to 100 pending evaluations can wait without replacing an earlier pending job.
+[GitHub processes this queue](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/control-workflow-concurrency)
+in the order jobs start waiting on the group; dispatch order can differ. A new push
+still cancels the superseded run for the same PR. A database
 advisory lock is held while the constant `staging` schema is dropped, recreated,
 and migrated from scratch. `DB_SCHEMA` accepts only `public` or `staging`;
 application connections and Alembic both pin their search path. Before and after
@@ -150,10 +155,11 @@ oversized input stay in deterministic API tests and spend no model calls.
 The education journey replaces the removed graph-off control journey. The seven
 graph-bearing turns need four batches at the two-case graph concurrency limit.
 Four 970-second turn deadlines plus 180 seconds of setup require 4,060 seconds;
-the browser suite cap is 4,200 seconds. The application attempt cap is 78, covering
-70 logical calls plus the allowed adapter retries on complete successful paths.
-The first-pass path uses 42 calls. Additional failure recovery can exhaust the cap
-and must fail the run. Judge calls remain capped at 16; infrastructure retries stay
+the browser suite cap is 4,200 seconds. The application attempt cap remains 78.
+Official web research adds at most ten requests to the earlier 42-call first-pass
+path, giving a first-pass upper bound of 52. Research consumes existing correction
+and retry headroom; some complete repair paths can exhaust the cap and must fail.
+Judge calls remain capped at 16; infrastructure retries stay
 disabled. These are ceilings, not target spending.
 The staging job allows 100 minutes: 70 for browser work, 20 for semantic review,
 and 10 for setup and evidence upload.
@@ -262,13 +268,22 @@ artifact digest, replay commit/actor, reviewer, and reason. Selective replay is
 review evidence only and does not itself publish an image approval or deploy.
 
 PR evaluation limits are eight cases, 78 application provider attempts, and 16
-judge provider attempts. The current PR corpus has 42 first-pass calls and up to 70
-logical application calls on its complete repair paths. Allowed retries and fallbacks
-raise the successful-path allowance to 78 provider attempts. The tagged staging
-revision atomically reserves one shared quota record before each provider request
-and rejects attempt 79 before it is sent. Failed-turn recovery can exhaust this
-quota. Production traffic does not set this
-evaluation-only quota. The timeout chain is deliberately nested: the backend
+judge provider attempts. Each enabled research phase consumes one application
+attempt and permits one server search, without adapter retry or continuation.
+The tagged staging revision atomically reserves a shared record before each
+provider request and rejects attempt 79 before it is sent. This evaluation quota
+counts the run's lifetime, including historical reservations with expired rate
+windows. Rate-limit cleanup preserves those records; ordinary user limits retain
+their rolling windows. Local runs retain their original run ID and cumulative
+ledger when an approved cap is extended. Quota keys use the rate limiter's HMAC
+secret; keep its value and selection fixed throughout the run. A resumed run must
+use only the new runtime because an older writer can delete historical finite-window
+reservations. Verify the preserved rows and matching key before resuming. Stop an
+active evaluation before reverting the quota change. No schema migration is needed.
+Production traffic does not set this evaluation-only quota. Server-search counts
+are exported with token usage, and
+cost accounting adds the provider's $0.01 per search fee without charging aggregate
+and attempt counters twice. The timeout chain is deliberately nested: the backend
 agent envelope is 940 seconds, with model work stopping at 910 seconds to retain persistence
 headroom. The Playwright turn waits at most 970 seconds so it can capture the typed terminal event,
 and Cloud Run accepts a request for at most 1000
@@ -343,7 +358,7 @@ errors, missing accounting, and configured blocking cost limits still fail.
 
 The corpus may retain `pending_human_review` metadata while automated checks run.
 That status records the absence of human labels; it is not a release prerequisite.
-`semantic-rubric-judge-v17`, Anthropic, and `claude-sonnet-5` are the versioned judge
+`semantic-rubric-judge-v18`, Anthropic, and `claude-sonnet-5-5` are the versioned judge
 selection. The Anthropic request uses high reasoning effort with a 16384-token
 budget shared by reasoning and structured output. Its prompt directs the judge
 to reserve room for complete schema output. The judge receives the case
