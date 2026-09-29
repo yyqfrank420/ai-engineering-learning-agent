@@ -252,7 +252,7 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= set(
         generated_criteria
     )
-    schema = gate._response_schema(rule_codes=tuple(reviewed_criteria))
+    schema = gate._response_schema(rule_codes=tuple(reviewed_criteria), record_count=0)
     codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
         "enum"
     ]
@@ -992,7 +992,7 @@ def test_streaming_guidance_is_absent_from_staged_blocking_schema(stage, maturit
         maturity=maturity,
     )
     requirements = staged_review_requirements(stage, maturity, guarantees)
-    schema = gate._response_schema(rule_codes=tuple(requirements))
+    schema = gate._response_schema(rule_codes=tuple(requirements), record_count=0)
     codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
         "enum"
     ]

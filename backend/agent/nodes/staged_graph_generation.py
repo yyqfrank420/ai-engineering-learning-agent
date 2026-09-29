@@ -39,8 +39,8 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v31"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v27"
+_COMPONENT_PROMPT_VERSION = "staged_components_v32"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v28"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -907,9 +907,7 @@ def _attempt_prompt(
         edit_rule = (
             " The rejected_candidate is preserved by the server. Return only the "
             "correction delta defined by correction_slots: additions, every listed update "
-            "slot, and explicitly exposed metadata fields. Cited record indexes define repair "
-            "scope, not mandatory rewrites. Use null to preserve a slot's original record; "
-            "witness records may remain null when additions resolve a missing control. "
+            "slot, and explicitly exposed metadata fields. "
             "For a changed slot, supply the complete authorized object. slot_N refers to original record "
             "index N. The server retains all original records in order; never return a full "
             "replacement or remove records. Preserve unrelated values within editable records. "
@@ -930,6 +928,19 @@ def _attempt_prompt(
                 "root_addition_index refers to the zero-based additions array. Set "
                 "at most one, or set both null to retain the original root. A removed "
                 "root must have a replacement selection."
+            )
+        edit_rule += (
+            " Cited record indexes define repair scope, not mandatory rewrites. "
+            "Use null to preserve a slot's original record; witness records may remain "
+            "null when additions resolve a missing control."
+        )
+        if stage == "connections":
+            edit_rule += (
+                " Before removing records or changing connection endpoints, provide "
+                "replacement directed paths that preserve reachability from the root "
+                "to every primary-flow component. Preserve valid entry, request, "
+                "response, and final-result paths unless an explicit finding requires "
+                "their correction."
             )
         rejected_candidate_rule = (
             " The rejected_candidate is diagnostic context. For a component response, put the "
