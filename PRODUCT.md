@@ -61,8 +61,8 @@ authorize a read-only replacement for the core diagram workflow.
   after the graph renders, with a bounded wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
 - Direct editing should let learners revise component names, types, subtitles, and
-  descriptions, plus each directed connection's label and metadata. Selection reveals
-  the relevant fields; double-clicking a node or pressing F2 focuses its name.
+  descriptions, plus each directed connection's label and metadata. Clicking a node
+  opens its details; Edit details or F2 opens editing and focuses its name.
   Save and Cancel are explicit. Failed saves retain the draft and show the failure.
   Edits preserve graph identity, topology, and layout. A subsequent generation starts
   from the saved edit and receives a fresh review.

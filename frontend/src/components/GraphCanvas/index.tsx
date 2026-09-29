@@ -93,6 +93,7 @@ export function GraphCanvas({
     requestId: number;
   } | null>(null);
   const editRequestCounterRef = useRef(0);
+  const [inspectionRequestId, setInspectionRequestId] = useState(0);
   const [isSavingGraphContent, setIsSavingGraphContent] = useState(false);
   const savingGraphContentRef = useRef(false);
   const editDirtyRef = useRef(false);
@@ -171,6 +172,8 @@ export function GraphCanvas({
   const handleNodeClick = (node: GraphNode) => {
     if (editDirtyRef.current) { focusInspector(); return; }
     setEditTarget(null);
+    // A fresh inspection resets a pristine editor, including same-node selections.
+    setInspectionRequestId(previous => previous + 1);
     onNodeClick(node);
   };
   const closeEditor = () => {
@@ -254,7 +257,7 @@ export function GraphCanvas({
     observer.observe(canvas);
     observer.observe(panel);
     return () => observer.disconnect();
-  }, [activeThreadId, graphContentKey, inspectedNodeId]);
+  }, [activeThreadId, graphContentKey, inspectedNodeId, inspectionRequestId]);
 
   useEffect(() => {
     if (
@@ -412,6 +415,7 @@ export function GraphCanvas({
         {inspectedNode && (
           <div ref={inspectorRef}>
             <NodeDetailPopup
+              key={inspectionRequestId}
               node={inspectedNode}
               edges={graphData.edges}
               onClose={closeEditor}

@@ -236,11 +236,18 @@
     ],
     "reviewed_presentation_changes": [
       {
+        "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
+        "before_blob": "a935d524899ba20cffb60813cb3e363062cf0ad6",
+        "after_blob": "af35270fb964e9306cefc92c88778fde8144a627",
+        "reason": "Open normal details on pointer selection, retain explicit F2 editing, and defer node reparenting until drag movement; capture geometry and generation protocols are unchanged.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+      },
+      {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "6051f7ce48c0073ce9703d9b9fd8094c1c3f7d74",
-        "after_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
-        "reason": "Remove the canvas status overlay and its presentation-only progress prop.",
-        "verification": "docs/verification/2026-09-28-quiet-generation.md"
+        "before_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
+        "after_blob": "c51d869e9695c78f6e7b14a096e383e51724cfc8",
+        "reason": "Reset pristine node inspectors on normal selection and rebind pane measurements; preserve dirty drafts and existing save/generation protocols.",
+        "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphGenerationStatus.tsx",
