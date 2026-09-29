@@ -252,6 +252,13 @@ def test_generation_and_gate_receive_shared_capability_policy(maturity):
             "metrics-only monitor", "passive artifact store", "word 'reviewed' alone",
             "do not require edges or transition proof",
             "Frozen inference without an owned update or release",
+            "For every producer of model-proposed actions",
+            "deterministic validation of proposal structure and allowed constraints",
+            "independently of external_effects and learning_or_release",
+            "model-selected read-only tools, internal tools, and code execution",
+            "compatible existing owner may perform this validation internally",
+            "without requiring edges or transition proof",
+            "Answer-only inference without model-proposed actions does not require this per-action validation",
         ):
             assert obligation in brief
     else:
@@ -1145,4 +1152,129 @@ def test_production_component_ownership_changes_only_component_review_policy(
         assert current == previous_requirements("connections", maturity, guarantees)
     assert set(staged_review_requirements("components", "production")) == set(
         staged_review_requirements("components", "prototype")
+    )
+
+
+@pytest.mark.parametrize(
+    "evidence_location", ["responsibility", "contract", "vague_label"]
+)
+def test_shared_validation_review_preserves_owner_and_contract_evidence(
+    evidence_location,
+):
+    from agent.staged_graph_workflow import _decode_connections
+
+    # Synthetic evidence exercises the wire boundary, not semantic model acceptance.
+    control = "For planner and recovery proposals, executor deterministically validates proposal structure and allowed constraints before approval or execution."
+    components = [
+        {"id": "0", "label": "Planner", "responsibility": "Proposes bounded tool calls."},
+        {"id": "1", "label": "Recovery", "responsibility": "Proposes recovery tool calls."},
+        {"id": "2", "label": "Executor", "responsibility": "Executes accepted bounded tool calls."},
+    ]
+    wire = {
+        "edges": [
+            {
+                "source_index": index,
+                "target_index": 2,
+                "label": "Submit proposed tool call",
+                "flow": 400,
+                "sync": 500,
+            }
+            for index in (0, 1)
+        ]
+    }
+    if evidence_location == "responsibility":
+        components[-1]["responsibility"] += " " + control
+    elif evidence_location == "contract":
+        for edge, producer in zip(wire["edges"], ("Planner", "Recovery"), strict=True):
+            edge["label"] = (
+                f"Executor deterministically checks {producer} call schema and allowed tool args before execution"
+            )
+    else:
+        for edge in wire["edges"]:
+            edge["label"] = "Validate"
+    accepted = [
+        {"index": index, **component} for index, component in enumerate(components)
+    ]
+    parsed = generation._parse_connection_wire(
+        json.dumps(wire),
+        accepted_components=accepted,
+        edge_limit=2,
+    )
+    assert parsed == wire
+    records = [
+        {
+            "source": edge["source_id"],
+            "target": edge["target_id"],
+            "label": edge["label"],
+            "flow": edge["flow"],
+            "sync": edge["sync"],
+        }
+        for edge in _decode_connections(parsed)
+    ]
+    assert [record["label"] for record in records] == [
+        edge["label"] for edge in wire["edges"]
+    ]
+    assert all(
+        len(record["label"]) <= generation.CONNECTION_LABEL_MAX_CHARS
+        for record in records
+    )
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Review the tool execution contracts.",
+        evidence_bundle={"candidate_components": components},
+        resolved_maturity="production",
+        candidate_records=records,
+        required_production_guarantees=("audit_and_provenance",),
+    )
+    assert json.loads(prompt.split("Evidence bundle: ")[1].split("\n", 1)[0]) == {
+        "candidate_components": components
+    }
+    assert json.loads(
+        prompt.split("Immutable candidate records: ")[1].split("\n", 1)[0]
+    ) == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    criterion = json.loads(prompt.split("Acceptance criteria: ")[1].split("\n", 1)[0])[
+        "audit_and_provenance"
+    ]
+    assert criterion == STAGED_PRODUCTION_REQUIREMENTS["audit_and_provenance"]
+    for obligation in (
+        "named compatible owner may perform this deterministic validation internally",
+        "responsibility or a connection contract",
+        "covered producer, proposal structure and allowed constraints",
+        "validation before approval or execution",
+        "does not need duplicate wording in the owner's responsibility",
+        "vague 'validate' label without an executable owner, deterministic checks, and pre-execution order is insufficient",
+        "Validation of one producer does not establish validation of another",
+    ):
+        assert obligation in criterion
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_action_validation_policy_changes_production_identity_only(
+    monkeypatch, stage, maturity
+):
+    guarantees = ("audit_and_provenance",)
+    current = gate.review_identity(stage, maturity, guarantees)
+
+    def previous_requirements(stage, maturity, required=()):
+        requirements = staged_review_requirements(stage, maturity, required)
+        if stage == "components" and maturity == "production":
+            requirements["brief_coverage"] = requirements["brief_coverage"].split(
+                " For every producer of model-proposed actions", 1
+            )[0]
+        if stage == "connections" and "audit_and_provenance" in requirements:
+            requirements["audit_and_provenance"] = requirements[
+                "audit_and_provenance"
+            ].replace(
+                "A named compatible owner may perform this deterministic validation internally. ",
+                "",
+            )
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    assert (gate.review_identity(stage, maturity, guarantees) != current) is (
+        maturity == "production"
     )
