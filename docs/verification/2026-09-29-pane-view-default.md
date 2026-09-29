@@ -96,12 +96,12 @@ type, range and 32-citation limits, including the requirement that empty candida
 have no cited indexes. Empty-array cardinality remains a runtime check because the
 provider removes maxItems. A fixed schema template keeps the review policy identity
 stable when a correction changes the number of records. Component and connection
-review prompt versions are v23 and v28.
+review prompt versions are v24 and v29.
 
 Recovery prompts preserve cited witness records when additions can resolve a
 finding. Connection corrections must preserve root-to-primary directed paths when
 removing or retargeting records. Component corrections receive only instructions
-within their stage's authority. Generation prompt versions are v33 and v28.
+within their stage's authority. Generation prompt versions are v34 and v29.
 The final reachability validator, correction permissions, attempt limits and
 provider budgets remain unchanged.
 
@@ -166,4 +166,42 @@ statement coverage. Ruff, Bandit and all three dependency audits passed. CI poli
 passed 368 tests with five skips, and the manifest validated. Independent source
 review found no actionable defects. Existing dependency deprecations and redundant
 Bandit suppressions are unchanged. Protected staging evaluation remains required
+before merge.
+
+## Model-action validation ownership
+
+Production component generation and review now require an executable owner for
+model-proposed action validation before component responsibilities freeze. The
+owner deterministically checks proposal structure and allowed constraints before
+approval or execution. This applies to model-selected read-only tools, internal
+tools and code execution independently of external-effect or release capabilities.
+Answer-only inference without model-proposed actions does not require per-action
+validation. Existing compatible owners can perform the checks internally; component
+review assesses ownership and feasibility without requiring connection proof.
+
+Connection review accepts explicit responsibilities or connection contracts as
+evidence of the validator, covered producers, deterministic checks and execution
+order. An explicit contract does not need repeated wording in the owner's
+responsibility. A vague validation label is insufficient. The existing
+brief_coverage and audit_and_provenance criteria carry these changes. No rules,
+calls, attempt limits or budgets were added. Component generation/gate v34/v24 and
+connection generation/gate v29/v29 identify this policy. A normal deployment
+rollback restores the prior policy.
+
+Runtime revision cb693e8838827b14022d9b33e48ba091119923e2 passed fresh local
+browser verification on 2026-09-29 with the isolated dev account and real providers
+at 127.0.0.1:5212. The research request produced nine nodes, 23 edges and a completed
+answer. Component and connection stages both completed on their first attempt.
+The parent opened normal details, expanded a named connection disclosure, entered
+Edit and confirmed Name received focus. Saving the name "Tool action validator"
+then reloading and reopening the conversation retained the diagram, name and
+answer. Browser error and warning logs were empty. The local iteration used six
+of its 24 permitted provider attempts, all successful. The local fixture confirmed
+the persisted name, nine nodes, 23 edges and messages, with no errors or active
+streams; the reload returned HTTP 200.
+
+The full backend suite passed 3,118 tests with two environment-dependent skips and
+91.8529% statement coverage. Static checks and dependency audits passed. CI policy
+passed 368 tests with five skips, and the manifest validated. Independent source
+review found no actionable defects. Protected staging evaluation remains required
 before merge.
