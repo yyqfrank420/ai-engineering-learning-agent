@@ -1713,6 +1713,12 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 edit_permissions=permissions,
                 rejected_candidate=rejected_connection_candidate,
+                prior_connection_exchanges=(
+                    reviewed_connection_exchanges
+                    if reviewed_connection_wire == rejected_connection_candidate
+                    and reviewed_connection_exchanges
+                    else None
+                ),
                 recovery_mode=recovery_mode,
                 state=state,
                 timeout_seconds=staged_timeout_seconds(

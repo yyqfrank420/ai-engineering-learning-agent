@@ -554,7 +554,10 @@ async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch)
         return json.dumps(
             {
                 "additions": [],
-                "updates": {"slot_0": {**edge, "label": "submits approved payment"}},
+                "updates": {"slot_0": {
+                    "label": "submits approved payment", "response_label": None,
+                    "flow": edge["flow"], "sync": edge["sync"],
+                }},
                 "removals": [],
             }
         )
@@ -596,12 +599,14 @@ async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch)
     assert [
         generation._generation_schema_version("connections", call["schema"])
         for call in generation_calls
-    ] == ["staged_connections_exchanges_v1", "staged_connections_recovery_delta_v1"]
+    ] == ["staged_connections_exchanges_v1", "staged_connections_exchange_correction_v1"]
     assert [call["attempt"] for call in generation_calls] == [0, 1]
     assert connection_reviews[0]["evidence_bundle"]["connection_exchanges"] == [
         {"request_record_index": 0, "response_record_index": None}
     ]
-    assert "connection_exchanges" not in connection_reviews[1]["evidence_bundle"]
+    assert connection_reviews[1]["evidence_bundle"]["connection_exchanges"] == [
+        {"request_record_index": 0, "response_record_index": None}
+    ]
     assert [
         review["evidence_bundle"]["candidate_context"]["detail_level"]
         for review in connection_reviews

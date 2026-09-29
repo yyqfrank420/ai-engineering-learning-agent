@@ -544,6 +544,7 @@ async def generate_connection_candidate(
     gate_findings: Sequence[Mapping[str, Any]] = (),
     base_connections: Mapping[str, Any] | Sequence[Any] | None = None,
     rejected_candidate: Mapping[str, Any] | None = None,
+    prior_connection_exchanges: list[ConnectionExchange] | None = None,
     edit_permissions: Mapping[str, Any] | None = None,
     recovery_mode: bool = False,
     state: Mapping[str, Any] | None = None,
@@ -577,6 +578,7 @@ async def generate_connection_candidate(
             accepted_components=accepted,
             accepted_context=context,
             recovery_mode=recovery_mode,
+            connection_exchanges=prior_connection_exchanges,
         )
         if edit_permissions is None
         else None
@@ -634,7 +636,13 @@ async def generate_connection_candidate(
             if "candidate" not in outcome:
                 return {**outcome, "prompt_fingerprint": prompt_fingerprint}
             response = _canonical_json(outcome["candidate"])
-        if delta or correction:
+        if correction and correction.record_key == "exchanges":
+            wire, connection_exchanges = _parse_connection_response(
+                _canonical_json(correction.assemble(response)),
+                accepted_components=accepted,
+                edge_limit=edge_limit,
+            )
+        elif delta or correction:
             wire = _parse_connection_wire(
                 _canonical_json((delta or correction).assemble(response)),
                 accepted_components=accepted,
@@ -659,6 +667,8 @@ async def generate_connection_candidate(
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
     properties = schema["properties"]
     if "additions" in properties:
+        if "response_label" in properties["additions"]["items"].get("properties", {}):
+            return "staged_connections_exchange_correction_v1"
         if "removals" in properties:
             return f"staged_{stage}_recovery_delta_v1"
         nullable_updates = any(
@@ -855,6 +865,19 @@ def _attempt_prompt(
         )
     if correction_delta is not None:
         prompt_input["correction_slots"] = correction_delta.schema["properties"]
+        if correction_delta.record_key == "exchanges":
+            prompt_input["correction_exchanges"] = correction_delta.base["exchanges"]
+            _, exchange_map = _parse_connection_response(
+                _canonical_json(correction_delta.base),
+                accepted_components=accepted_components or [],
+                edge_limit=_write_limits(write_set)["edge_limit"],
+            )
+            prompt_input["original_edge_to_exchange_slot"] = {
+                str(edge_index): f"slot_{slot}"
+                for slot, exchange in enumerate(exchange_map)
+                for edge_index in exchange.values()
+                if edge_index is not None
+            }
     codebook = " ".join(
         f"{name}: " + ",".join(f"{code}={value}" for code, value in values.items())
         for name, values in (
@@ -969,6 +992,19 @@ def _attempt_prompt(
             if stage == "components"
             else " The rejected_candidate is diagnostic context; return the correction delta."
         )
+        if correction_delta.record_key == "exchanges":
+            edit_rule += (
+                " Each slot_N refers to original exchange N in correction_exchanges. "
+                "Finding record indexes refer to original canonical edges; use "
+                "original_edge_to_exchange_slot to locate their exchange. Repair the request "
+                "and reply together, preserving every valid contract in that exchange. "
+                "Updates retain original endpoints and any existing reply. To change "
+                "participants, direction, or remove a reply, explicitly remove the cited "
+                "exchange and add its complete replacement. "
+                "A removal removes the whole exchange. Each exchange counts as one edge "
+                "plus one when response_label is nonnull; the final expanded graph must "
+                "fit the edge_limit."
+            )
     recovery_rule = (
         " Recovery mode applies only to this new graph's second generation attempt. "
         "Produce the simplest complete overview of the original request at the selected "
@@ -1060,7 +1096,9 @@ def _attempt_prompt(
         connection_format = (
             "Propose canonical edges in the delta. Represent both directions of a synchronous "
             "request-response as distinct edges. "
-            if edit_delta is not None or correction_delta is not None
+            if edit_delta is not None or (
+                correction_delta is not None and correction_delta.record_key != "exchanges"
+            )
             else "Propose exchanges only. Author each request and its actual reply once in the "
             "same exchange: label describes the outbound contract and response_label describes "
             "the return contract. Expected read payloads and replies belong in response_label, "
@@ -1219,6 +1257,10 @@ class _EditDelta:
                         else update_fields[slot]
                     )
                     _require_exact_keys(update, set(slot_schema["properties"]))
+                    if self.record_key == "exchanges" and record["response_label"] is not None and (
+                        not isinstance(update["response_label"], str) or not update["response_label"].strip()
+                    ):
+                        raise StagedGenerationError("connection_exchange_reply_required")
                     record.update(update)
             records.append(record)
         return {
@@ -1262,6 +1304,10 @@ class _EditDelta:
             if slot in update_fields and update is not None:
                 slot_schema = update_fields[slot]["anyOf"][0]
                 _require_exact_keys(update, set(slot_schema["properties"]))
+                if self.record_key == "exchanges" and record["response_label"] is not None and (
+                    not isinstance(update["response_label"], str) or not update["response_label"].strip()
+                ):
+                    raise StagedGenerationError("connection_exchange_reply_required")
                 record.update(update)
             records.append(record)
         result = {
@@ -1415,6 +1461,44 @@ def _edit_delta(
     )
 
 
+def _connection_exchange_base(
+    wire: Mapping[str, Any],
+    provenance: list[ConnectionExchange],
+    *,
+    accepted_components: list[dict[str, Any]],
+    edge_limit: int,
+) -> dict[str, Any]:
+    """Recover exchange authoring units only from exact validated provenance."""
+    edges = wire["edges"]
+    if not isinstance(provenance, list):
+        raise StagedGenerationError("invalid_connection_exchange_provenance")
+    exchanges = []
+    for pair in provenance:
+        if not isinstance(pair, Mapping) or set(pair) != {
+            "request_record_index", "response_record_index"
+        }:
+            raise StagedGenerationError("invalid_connection_exchange_provenance")
+        request = pair["request_record_index"]
+        response = pair["response_record_index"]
+        if not _is_integer(request) or not 0 <= request < len(edges) or (
+            response is not None and (
+                not _is_integer(response) or not 0 <= response < len(edges)
+            )
+        ):
+            raise StagedGenerationError("invalid_connection_exchange_provenance")
+        exchanges.append({
+            **edges[request],
+            "response_label": edges[response]["label"] if response is not None else None,
+        })
+    base = {"exchanges": exchanges}
+    expanded, checked = _parse_connection_response(
+        _canonical_json(base), accepted_components=accepted_components, edge_limit=edge_limit,
+    )
+    if expanded != wire or checked != provenance:
+        raise StagedGenerationError("invalid_connection_exchange_provenance")
+    return base
+
+
 def _semantic_correction_delta(
     *,
     stage: str,
@@ -1427,6 +1511,7 @@ def _semantic_correction_delta(
     accepted_components: list[dict[str, Any]] | None = None,
     accepted_context: AcceptedContext | None = None,
     recovery_mode: bool = False,
+    connection_exchanges: list[ConnectionExchange] | None = None,
 ) -> _EditDelta | None:
     """Scope semantic create repairs to cited records in the rejected wire."""
     semantic_findings = [
@@ -1493,6 +1578,24 @@ def _semantic_correction_delta(
     if global_finding:
         targets = set(range(count))
         metadata.update(("title", "assumptions", "root_index", "capabilities"))
+    # Global findings have no removal authority, so keep their existing endpoint edits.
+    if stage == "connections" and connection_exchanges is not None and recovery_mode and not global_finding:
+        exchange_base = _connection_exchange_base(
+            base, connection_exchanges,
+            accepted_components=accepted_components or [], edge_limit=capacity,
+        )
+        targets = {
+            index for index, exchange in enumerate(connection_exchanges)
+            if any(edge in targets for edge in exchange.values() if edge is not None)
+        }
+        deletion_targets = {
+            index for index, exchange in enumerate(connection_exchanges)
+            if any(edge in deletion_targets for edge in exchange.values() if edge is not None)
+        }
+        base = exchange_base
+        record_key = "exchanges"
+        count = len(base[record_key])
+        schema = _connection_create_response_schema(schema)
     fields = schema["properties"][record_key]["items"]["properties"]
     delta = _edit_delta(
         base=base,
@@ -1500,7 +1603,10 @@ def _semantic_correction_delta(
         selectors=[str(index) for index in range(count)],
         permissions={
             f"editable_{kind}_fields": {
-                str(index): list(fields) for index in sorted(targets)
+                str(index): [
+                    field for field in fields
+                    if record_key != "exchanges" or field not in {"source_index", "target_index"}
+                ] for index in sorted(targets)
             },
             f"allowed_new_{kind}_count": capacity - count,
             f"minimum_new_{kind}_count": 0,
@@ -1515,6 +1621,13 @@ def _semantic_correction_delta(
         return delta
     recovery_schema = deepcopy(delta.schema)
     properties = recovery_schema["properties"]
+    if record_key == "exchanges":
+        for index in targets:
+            if base[record_key][index]["response_label"] is not None:
+                slot = properties["updates"]["properties"][f"slot_{index}"]["anyOf"][0]
+                slot["properties"]["response_label"] = deepcopy(
+                    schema["properties"][record_key]["items"]["properties"]["label"]
+                )
     properties["removals"] = {
         "type": "array",
         "minItems": 0,

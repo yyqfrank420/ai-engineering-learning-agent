@@ -65,8 +65,8 @@ After that run, operation feedback was corrected to mark component/connection ge
 complete before rendering and review. The focused ordering regression passed without another
 paid run. The live run validates the preceding frozen source plus the same generation behavior.
 
-The prior PR61 staging research connection-wire failure remains open. This change does not
-claim that the ordinary generation quality gate or production deployment has passed.
+At that point, the prior PR61 staging research connection-wire failure remained open.
+The Stop test did not establish ordinary semantic approval or production readiness.
 
 ## PR review corrections
 
@@ -104,3 +104,52 @@ scoped Ruff and diff checks passed before the authorized fresh release evaluatio
 An independent old/new parser comparison matched accepted payloads, rejection codes and
 repair findings across 33,024 cases, including malformed inputs, duplicate edges and root
 reachability checks. All 13 diagnostic reasons were exercised.
+
+## Preserve exchanges during semantic repair
+
+Protected run `36564110437` passed seven browser journeys and failed research. Both research
+connection candidates validated and rendered, but the repair changed a planner-to-executor
+request into a second executor-to-planner reply. Its paired reply remained unchanged. The
+semantic gate correctly rejected the missing tool invocation. This run did not reproduce the
+earlier malformed-wire failure.
+
+Initial generation authors request/reply exchanges. New-graph semantic recovery now retains
+that representation when exact exchange provenance and cited edge findings are available.
+Findings map to whole exchange slots. Updates preserve endpoints and existing replies;
+rewiring requires an explicit cited removal plus a complete replacement. Uncited exchanges
+and accepted components remain intact. Expanded edge limits still apply. Global or mixed
+global findings, missing provenance, and explicit user edits retain their existing canonical
+edge behavior. Review rules and attempt limits are unchanged.
+
+The two affected suites passed 422 tests. Broader checks passed 2,431 agent/RAG/LLM tests,
+411 evaluation-quality tests and 260 API integration tests, plus repository Ruff and Bandit.
+GPT-6 Sol at extra-high effort independently verified 1,548 mapping/removal cases, 496 fallback
+parity cases, 5,160 endpoint/reply guard cases, 620 malformed provenance cases, expanded edge
+capacity and 15 changed or explicit-edit regressions. It found no actionable defects.
+
+Local verification used HEAD `2f296503271e04530a75b3254497a48d4654147e` plus source diff SHA256
+`d51ebfd33b566c7de6ef55a6e1131446a2cae061c40f6b88c1d40347ad0652bd`. Separate empty SQLite
+stores and unique run IDs prevented generation reuse. Both tests used the current frontend,
+normal deterministic/render checks and current model settings. Neither used Stop acceptance.
+
+- `local-connection-fixture-5e81a963-a44b-4df5-87c3-90c6df7b0543` replayed the historical
+  components and first rejected connections. One live repair and one live review produced an
+  approved 11-node, 36-edge graph. The lost invocation and its reply remained byte-for-byte
+  intact. This establishes repair behavior, not fresh generation. Two provider attempts,
+  estimated cost $0.102104 with complete usage.
+- `local-connection-fresh-f07ef8dc-ef76-4747-bb23-d17208705a1d` submitted the research request
+  in a new empty chat. Its 9-node, 18-edge graph passed both semantic gates on the first
+  attempt, followed by the Sonnet 5.5 answer. Five provider attempts, no repairs or fallbacks,
+  estimated cost $0.132967 with complete usage.
+
+Both diagrams were inspected in the browser, saved as one revision, and reopened after
+reload. Nodes, edges, contracts, messages and provider-attempt counts remained unchanged.
+The fresh graph retained the Fit camera adjustment made during inspection; the fixture
+graph was byte-identical. Private render reports recorded no overlap or clipping. Prices
+use the repository's `2026-09-28` price release. These local checks precede the new protected
+release evaluation.
+
+Local test lesson: parallel shards in one checkout can share `data/sessions.db`. Their
+autouse rate-limit cleanup caused two false OTP failures. The API shard passed all 260 tests
+alone with the same order and source. Run local shards sequentially or use distinct
+`DATA_DIR` values; CI jobs already use separate checkouts.

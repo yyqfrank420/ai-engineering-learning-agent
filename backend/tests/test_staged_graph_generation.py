@@ -2585,6 +2585,129 @@ def test_semantic_correction_rejects_authority_expansion(mutation):
         delta.assemble(json.dumps(response))
 
 
+def _paired_recovery(indexes=(0, 1), *, limit=8, provenance=None, global_finding=False):
+    exchanges = {"exchanges": [
+        {"source_index": 0, "target_index": 1, "label": "Invoke tool",
+         "response_label": "Tool result", "flow": 400, "sync": 500},
+        {"source_index": 1, "target_index": 0, "label": "Publish event",
+         "response_label": None, "flow": 402, "sync": 501},
+    ]}
+    wire, pairs = generation._parse_connection_response(
+        json.dumps(exchanges), accepted_components=_accepted_components(), edge_limit=limit,
+    )
+    write_set = generation.create_write_set(component_limit=4, edge_limit=limit)
+    findings = [{"code": "edge_semantics", "path": "connections",
+                 "rule": "semantic_gate", "record_indexes": list(indexes)}]
+    if global_finding:
+        findings.append({**findings[0], "record_indexes": []})
+    delta = generation._semantic_correction_delta(
+        stage="connections", maturity="prototype", write_set=write_set, attempt=1,
+        rejected_candidate=wire, findings=findings,
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=_accepted_components(),
+        accepted_context=generation._accepted_context(_accepted_context()),
+        recovery_mode=True, connection_exchanges=pairs if provenance is None else provenance,
+    )
+    return delta, wire, pairs, write_set, findings
+
+
+@pytest.mark.asyncio
+async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
+    delta, original, pairs, write_set, findings = _paired_recovery()
+    assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_0"}
+    update = {"label": "Invoke tool", "response_label": "Validated tool result",
+              "flow": 400, "sync": 500}
+
+    async def fake_stream(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        assert '"original_edge_to_exchange_slot":{"0":"slot_0","1":"slot_0","2":"slot_1"}' in prompt
+        return _response({"updates": {"slot_0": update}, "additions": [], "removals": []})
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    result = await generation.generate_connection_candidate(
+        request="Repair the tool return", resolved_maturity="prototype", write_set=write_set,
+        upstream_fingerprint="a" * 64, accepted_components=_accepted_components(),
+        accepted_context=_accepted_context(), attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        gate_findings=findings, rejected_candidate=original,
+        prior_connection_exchanges=pairs, recovery_mode=True,
+    )
+    assert result["wire"]["edges"][0] == original["edges"][0]
+    assert result["wire"]["edges"][1]["label"] == "Validated tool result"
+    assert result["wire"]["edges"][2] == original["edges"][2]
+    assert result["connection_exchanges"] == pairs
+    assert generation._generation_schema_version("connections", delta.schema) == "staged_connections_exchange_correction_v1"
+
+
+@pytest.mark.parametrize("change", [{"response_label": None}, {"response_label": " "},
+                                  {"source_index": 1, "target_index": 0}])
+def test_paired_recovery_rejects_lost_request_or_reply(change):
+    delta, *_ = _paired_recovery()
+    update = {"label": "Invoke tool", "response_label": "Tool result", "flow": 400, "sync": 500} | change
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps({"updates": {"slot_0": update}, "additions": [], "removals": []}))
+
+
+def test_paired_recovery_removal_reindexes_and_allows_explicit_rewire():
+    delta, original, *_ = _paired_recovery()
+    replacement = {"source_index": 1, "target_index": 0, "label": "Request check",
+                   "response_label": "Check outcome", "flow": 400, "sync": 501}
+    wire, pairs = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({"updates": {"slot_0": None},
+            "additions": [replacement], "removals": [0]}))),
+        accepted_components=_accepted_components(), edge_limit=8,
+    )
+    assert wire["edges"][0] == original["edges"][2]
+    assert pairs == [{"request_record_index": 0, "response_record_index": None},
+                     {"request_record_index": 1, "response_record_index": 2}]
+    assert wire["edges"][1]["sync"] == wire["edges"][2]["sync"] == 501
+
+
+def test_paired_recovery_checks_expanded_edge_capacity():
+    delta, *_ = _paired_recovery(limit=3)
+    addition = {"source_index": 0, "target_index": 1, "label": "Another request",
+                "response_label": "Another reply", "flow": 401, "sync": 500}
+    assembled = delta.assemble(json.dumps({"updates": {"slot_0": None},
+        "additions": [addition], "removals": []}))
+    with pytest.raises(generation.StagedGenerationError, match="connection_wire_invalid"):
+        generation._parse_connection_response(json.dumps(assembled),
+            accepted_components=_accepted_components(), edge_limit=3)
+
+
+@pytest.mark.parametrize("indexes,global_finding", [((), False), ((0,), True)])
+def test_global_full_capacity_recovery_retains_canonical_endpoint_authority(indexes, global_finding):
+    delta, *_ = _paired_recovery(indexes=indexes, limit=3, global_finding=global_finding)
+    assert delta.record_key == "edges"
+    slot = delta.schema["properties"]["updates"]["properties"]["slot_0"]["anyOf"][0]
+    assert {"source_index", "target_index"} <= set(slot["properties"])
+
+
+def test_one_way_exchange_may_add_async_reply_and_new_exchange():
+    delta, original, *_ = _paired_recovery(indexes=(2,))
+    result, pairs = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({
+            "updates": {"slot_1": {"label": "Publish event", "response_label": "Receipt",
+                                   "flow": 402, "sync": 501}},
+            "removals": [], "additions": [{"source_index": 0, "target_index": 1,
+                "label": "Deploy release", "response_label": None, "flow": 403, "sync": 501}],
+        }))), accepted_components=_accepted_components(), edge_limit=8,
+    )
+    assert result["edges"][:2] == original["edges"][:2]
+    assert pairs == [{"request_record_index": 0, "response_record_index": 1},
+                     {"request_record_index": 2, "response_record_index": 3},
+                     {"request_record_index": 4, "response_record_index": None}]
+
+
+@pytest.mark.parametrize("pairs", [[], [{"request_record_index": True, "response_record_index": 1}],
+    [{"request_record_index": 1, "response_record_index": 0}],
+    [{"request_record_index": 0, "response_record_index": None},
+     {"request_record_index": 2, "response_record_index": None}]])
+def test_paired_recovery_rejects_malformed_provenance(pairs):
+    with pytest.raises(generation.StagedGenerationError, match="invalid_connection_exchange_provenance"):
+        _paired_recovery(provenance=pairs)
+
+
 def _recovery_components():
     original = _component_wire()
     original["components"] = [
