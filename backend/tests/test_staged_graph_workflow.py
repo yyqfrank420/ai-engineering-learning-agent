@@ -19,6 +19,44 @@ from agent.staged_graph_contract import (
 )
 
 
+def test_wire_diagnostic_fingerprints_rejected_wire_without_changing_repair_input():
+    wire = {"edges": [{"source_index": 0, "target_index": 9,
+                       "label": "private output", "flow": 400, "sync": 500}]}
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}], edge_limit=5,
+        )
+    error = caught.value
+    prior = {"edges": []}
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="connections", attempt=2, candidate=prior,
+    )
+    assert diagnostic["reason"] == "endpoint_missing"
+    assert diagnostic["path"] == "edges.0.target_index"
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    assert diagnostic["candidate_fingerprint"] != workflow._fingerprint(prior)
+    assert "private output" not in json.dumps(diagnostic)
+    assert workflow._safe_finding(error, stage="connections") == {
+        "code": "connection_wire_invalid", "path": "connections",
+        "rule": "contract_validation", "reason": "connection_wire_invalid",
+    }
+
+
+def test_failure_diagnostic_rejects_unsafe_optional_details():
+    error = generation.StagedGenerationError(
+        "connection_wire_invalid", diagnostic_reason="private output",
+        diagnostic_path="edges.private_output.label",
+        rejected_wire_fingerprint="private output",
+    )
+    diagnostic = workflow._failure_diagnostic(
+        error, stage="connections", attempt=1, candidate={"edges": []},
+    )
+    assert "reason" not in diagnostic
+    assert diagnostic["path"] == "connections"
+    assert diagnostic["candidate_fingerprint"] == workflow._fingerprint({"edges": []})
+    assert "private" not in json.dumps(diagnostic)
+
+
 def test_captured_gate_reason_reaches_correction_without_losing_route_context():
     capture = json.loads(
         (

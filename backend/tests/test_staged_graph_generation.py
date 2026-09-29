@@ -15,6 +15,61 @@ def _fingerprint(value: str) -> str:
 
 
 @pytest.mark.parametrize(
+    "change,reason,path",
+    [
+        ({"source_index": True}, "endpoint_type", "edges.0.source_index"),
+        ({"target_index": 9}, "endpoint_missing", "edges.0.target_index"),
+        ({"target_index": 0}, "self_loop", "edges.0"),
+        ({"label": None}, "label_type", "edges.0.label"),
+        ({"label": " "}, "label_length", "edges.0.label"),
+        ({"label": "x" * 1000}, "label_length", "edges.0.label"),
+        ({"flow": 999}, "flow_enum", "edges.0.flow"),
+        ({"sync": False}, "sync_enum", "edges.0.sync"),
+    ],
+)
+def test_connection_rejection_diagnostics_do_not_change_repair_errors(change, reason, path):
+    wire = {"edges": [{"source_index": 0, "target_index": 1,
+                       "label": "private label", "flow": 400, "sync": 500} | change]}
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            edge_limit=5,
+        )
+    error = caught.value
+    assert str(error) == error.code == "connection_wire_invalid"
+    assert error.diagnostic_reason == reason
+    assert error.diagnostic_path == path
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert "private label" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
+    "wire,limit,reason,path,code",
+    [
+        ({"secret": "private label"}, 5, "wire_keys", "edges", "staged_generation_schema_invalid"),
+        ({"edges": {}}, 5, "edges_type", "edges", "connection_wire_invalid"),
+        ({"edges": [None]}, 0, "edges_count", "edges", "connection_wire_invalid"),
+        ({"edges": [None]}, 5, "edge_type", "edges.0", "staged_generation_schema_invalid"),
+        ({"edges": [{"secret": "private label"}]}, 5, "edge_keys", "edges.0", "staged_generation_schema_invalid"),
+        ({"edges": [{"source_index": 0, "target_index": 1, "label": label,
+                     "flow": 400, "sync": 500} for label in ("private label", "PRIVATE  LABEL")]},
+         5, "duplicate_edge", "edges.1", "connection_wire_invalid"),
+    ],
+)
+def test_connection_container_and_duplicate_diagnostics(wire, limit, reason, path, code):
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            edge_limit=limit,
+        )
+    error = caught.value
+    assert str(error) == error.code == code
+    assert (error.diagnostic_reason, error.diagnostic_path) == (reason, path)
+    assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
+    assert "private label" not in json.dumps(vars(error))
+
+
+@pytest.mark.parametrize(
     "connection_key", ["initial_connections", "corrected_connections"]
 )
 def test_retained_closed_loop_primary_reachability(connection_key):

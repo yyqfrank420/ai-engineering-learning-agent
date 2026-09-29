@@ -92,3 +92,15 @@ visible and a hidden component preview, Stop sends `stop` and preserves the save
 The fixture deliberately reused a version identifier to check payload identity as well as
 version matching. Browser console checks found no warnings or errors. No paid model calls
 were used for these deterministic scope, protocol and interaction corrections.
+
+## Connection failure diagnostics
+
+The earlier staging failure retained only `connection_wire_invalid` and a fingerprint of
+the preceding candidate. Connection validation now records a constant reason, an indexed
+field path and the canonical fingerprint of the rejected wire. Raw model output and labels
+stay out of the diagnostic. Error codes, exception messages, repair findings, validation
+decisions and retry limits are unchanged. Generation and workflow suites passed 409 tests;
+scoped Ruff and diff checks passed before the authorized fresh release evaluation.
+An independent old/new parser comparison matched accepted payloads, rejection codes and
+repair findings across 33,024 cases, including malformed inputs, duplicate edges and root
+reachability checks. All 13 diagnostic reasons were exercised.

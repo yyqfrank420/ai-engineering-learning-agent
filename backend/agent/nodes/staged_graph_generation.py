@@ -108,10 +108,22 @@ class AcceptedContext:
 class StagedGenerationError(ValueError):
     """A safe, stable error for a rejected generation boundary."""
 
-    def __init__(self, code: str, *, prompt_fingerprint: str | None = None) -> None:
+    def __init__(
+        self,
+        code: str,
+        *,
+        prompt_fingerprint: str | None = None,
+        diagnostic_reason: str | None = None,
+        diagnostic_path: str | None = None,
+        rejected_wire_fingerprint: str | None = None,
+    ) -> None:
         super().__init__(code)
         self.code = code
         self.prompt_fingerprint = prompt_fingerprint
+        # Separate telemetry from the findings sent back to the model for repair.
+        self.diagnostic_reason = diagnostic_reason
+        self.diagnostic_path = diagnostic_path
+        self.rejected_wire_fingerprint = rejected_wire_fingerprint
 
 
 def create_write_set(*, component_limit: int, edge_limit: int) -> dict[str, Any]:
@@ -1877,37 +1889,52 @@ def _parse_connection_wire(
     edge_limit: int,
 ) -> dict[str, Any]:
     payload = _parse_json(text)
-    _require_exact_keys(payload, {"edges"})
+
+    def rejected(reason: str, path: str, *, schema: bool = False) -> StagedGenerationError:
+        return StagedGenerationError(
+            "staged_generation_schema_invalid" if schema else "connection_wire_invalid",
+            diagnostic_reason=reason,
+            diagnostic_path=path,
+            rejected_wire_fingerprint=_fingerprint(payload),
+        )
+
+    if set(payload) != {"edges"}:
+        raise rejected("wire_keys", "edges", schema=True)
     edges = payload["edges"]
     accepted_indexes = {item["index"] for item in accepted_components}
-    if not isinstance(edges, list) or len(edges) > edge_limit:
-        raise StagedGenerationError("connection_wire_invalid")
+    if not isinstance(edges, list):
+        raise rejected("edges_type", "edges")
+    if len(edges) > edge_limit:
+        raise rejected("edges_count", "edges")
     identities: set[tuple[int, int, str]] = set()
-    for edge in edges:
-        _require_exact_keys(
-            edge, {"source_index", "target_index", "label", "flow", "sync"}
-        )
-        if (
-            not _is_integer(edge["source_index"])
-            or not _is_integer(edge["target_index"])
-            or edge["source_index"] not in accepted_indexes
-            or edge["target_index"] not in accepted_indexes
-            or edge["source_index"] == edge["target_index"]
-            or not isinstance(edge["label"], str)
-            or not (0 < len(edge["label"].strip()) <= CONNECTION_LABEL_MAX_CHARS)
-            or not _is_integer(edge["flow"])
-            or edge["flow"] not in FLOW_CODES
-            or not _is_integer(edge["sync"])
-            or edge["sync"] not in SYNC_CODES
-        ):
-            raise StagedGenerationError("connection_wire_invalid")
+    for index, edge in enumerate(edges):
+        path = f"edges.{index}"
+        if not isinstance(edge, dict):
+            raise rejected("edge_type", path, schema=True)
+        if set(edge) != {"source_index", "target_index", "label", "flow", "sync"}:
+            raise rejected("edge_keys", path, schema=True)
+        for field in ("source_index", "target_index"):
+            if not _is_integer(edge[field]):
+                raise rejected("endpoint_type", f"{path}.{field}")
+            if edge[field] not in accepted_indexes:
+                raise rejected("endpoint_missing", f"{path}.{field}")
+        if edge["source_index"] == edge["target_index"]:
+            raise rejected("self_loop", path)
+        if not isinstance(edge["label"], str):
+            raise rejected("label_type", f"{path}.label")
+        if not (0 < len(edge["label"].strip()) <= CONNECTION_LABEL_MAX_CHARS):
+            raise rejected("label_length", f"{path}.label")
+        if not _is_integer(edge["flow"]) or edge["flow"] not in FLOW_CODES:
+            raise rejected("flow_enum", f"{path}.flow")
+        if not _is_integer(edge["sync"]) or edge["sync"] not in SYNC_CODES:
+            raise rejected("sync_enum", f"{path}.sync")
         identity = (
             edge["source_index"],
             edge["target_index"],
             " ".join(edge["label"].split()).casefold(),
         )
         if identity in identities:
-            raise StagedGenerationError("connection_wire_invalid")
+            raise rejected("duplicate_edge", path)
         identities.add(identity)
     root_indexes = {
         item["index"] for item in accepted_components if item.get("is_root") is True

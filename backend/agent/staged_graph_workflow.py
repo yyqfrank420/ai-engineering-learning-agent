@@ -135,6 +135,24 @@ def _failure_diagnostic(
     candidate: Mapping[str, Any] | None,
 ) -> dict[str, Any]:
     raw_path = getattr(exc, "path", None) or stage
+    diagnostic_reason = None
+    candidate_fingerprint = _fingerprint(candidate or {})
+    if isinstance(exc, StagedGenerationError):
+        if exc.diagnostic_reason in {
+            "wire_keys", "edges_type", "edges_count", "edge_type", "edge_keys",
+            "endpoint_type", "endpoint_missing", "self_loop", "label_type",
+            "label_length", "flow_enum", "sync_enum", "duplicate_edge",
+        }:
+            diagnostic_reason = exc.diagnostic_reason
+        if isinstance(exc.diagnostic_path, str) and re.fullmatch(
+            r"edges(?:\.[0-9]+(?:\.(?:source_index|target_index|label|flow|sync))?)?",
+            exc.diagnostic_path,
+        ):
+            raw_path = exc.diagnostic_path
+        if isinstance(exc.rejected_wire_fingerprint, str) and re.fullmatch(
+            r"[0-9a-f]{64}", exc.rejected_wire_fingerprint
+        ):
+            candidate_fingerprint = exc.rejected_wire_fingerprint
     path = _safe_path(raw_path, fallback=stage)
     if isinstance(exc, StagedGenerationError):
         code = (
@@ -158,7 +176,8 @@ def _failure_diagnostic(
         "code": code,
         "path": path[:96],
         "path_fingerprint": _fingerprint(path),
-        "candidate_fingerprint": _fingerprint(candidate or {}),
+        "candidate_fingerprint": candidate_fingerprint,
+        **({"reason": diagnostic_reason} if diagnostic_reason else {}),
         "fingerprint_disposition": (
             "matches_prior_candidate"
             if code == "candidate_repeated"
