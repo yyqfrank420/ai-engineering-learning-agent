@@ -237,3 +237,22 @@ adoption trends absent from the request. Independent review found no supported
 material relevance defect. Its existing verdict is retained; neither the answer nor
 the evaluation corpus is changed. A fresh end-to-end research run and unresolved
 protected evaluation decisions remain required before merge.
+
+## Fresh v36 research verification
+
+One fresh local research request on clean runtime commit574a309 produced nine nodes,
+37 connections and six zones. Both stage reviews passed first attempt with zero
+findings. The answer and one graph revision persisted. Five single-attempt provider
+calls cost $0.252224 with complete usage; no repair, fallback or cache tokens.
+
+The parent submitted through the browser against an initially empty local database,
+inspected the diagram and answer, selected Fit, reloaded and reopened the conversation.
+Thread graph/contract, revision, messages, telemetry and all five provider ledger rows
+were unchanged after reload. Two ordinary non-provider rate events were added.
+Browser warnings/errors were empty before and after reload. This is one fresh
+end-to-end success, not a guarantee across all future generations or a protected
+CI pass. Artifact directory: research-v36/fresh in local verification work.
+
+Run: local-research-v36-da610f2f-333c-4859-b1ab-9867963742ea.
+Thread: dbfcbf1f-1703-4c63-84d5-293c8d358d35.
+Runtime180fileSHA256:19c34d27fa6c88d69e8b5bd3dac84bb629fac404083f17672431ce0ed9e3bae7.
