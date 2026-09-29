@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v23"
+        "staged_component_gate_v24"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -658,7 +658,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v27"
+        == "staged_connection_gate_v28"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -2306,3 +2306,24 @@ def test_previous_review_prompt_metadata_does_not_duplicate_unchanged_large_evid
     serialized = json.dumps(result)
     assert records[0]["description"] not in serialized
     assert evidence["architecture_context"] not in serialized
+
+
+@pytest.mark.parametrize("reason", [
+    "The factual RAG answer is delivered without entailment validation or a required-evidence failure outcome.",
+    "The private answer cache reuses answers across requests without access scope or invalidation ownership.",
+])
+def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reason):
+    calls = _stub_response(monkeypatch, {"findings": [{
+        "rule_code": "retrieval_and_reuse_trust", "reason": reason,
+        "record_indexes": [0],
+    }]})
+    result = asyncio.run(gate.review_connections(
+        user_request="Design a production factual RAG system with a private answer cache.",
+        evidence_bundle={}, resolved_maturity="production",
+        candidate_records=[{"source": "retriever", "target": "answer"}],
+        required_production_guarantees=("retrieval_and_reuse_trust",),
+    ))
+    assert result["approved"] is False
+    assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
+    assert result["findings"][0]["record_indexes"] == [0]
+    assert len(calls) == 1

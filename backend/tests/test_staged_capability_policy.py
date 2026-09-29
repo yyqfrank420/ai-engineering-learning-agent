@@ -1080,3 +1080,49 @@ def test_staged_edge_policy_invalidates_legacy_connection_approval(
 
     monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
     assert gate.review_identity("connections", maturity) != current
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("behavior", [
+    "An agent calls a generic search tool for optional brainstorming.",
+    "A factual RAG answer requires retrieved private evidence.",
+    "A private answer cache reuses validated answers across requests.",
+])
+def test_retrieval_applicability_is_shared_by_generation_and_review(stage, behavior):
+    context = generation.AcceptedContext(
+        assumptions=(behavior,), external_effects=False,
+        retrieval_or_reuse=True, learning_or_release=False,
+    )
+    guarantees = ("retrieval_and_reuse_trust",)
+    prompt, _ = generation._attempt_prompt(
+        stage=stage, request=behavior, resolved_maturity="production",
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0,
+        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+        structural_findings=[], gate_findings=[], base=None,
+        rejected_candidate=None, accepted_context=context,
+        architecture_context=behavior if stage == "components" else None,
+    )
+    generated = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    reviewed = gate._prompt(
+        gate=stage, user_request=behavior,
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity="production", candidate_records=[],
+        required_production_guarantees=guarantees,
+    )
+    field = "downstream_controls" if stage == "components" else "acceptance_criteria"
+    rule = generated[field]["retrieval_and_reuse_trust"]
+    assert rule == STAGED_PRODUCTION_REQUIREMENTS["retrieval_and_reuse_trust"]
+    assert json.dumps(rule)[1:-1] in reviewed
+    for boundary in (
+        "Establish applicability separately for each obligation",
+        "generic retriever or tool mention does not establish reusable artifacts or a factual-answer dependency",
+        "For a declared path that consumes retrieved bytes",
+        "Identify the material factual claim or required factual-retrieval dependency",
+        "artifact reused across requests or releases and its consuming path",
+        "A factual RAG answer activates claim validation",
+        "a private answer cache reused across requests activates access",
+        "overview label does not exempt declared behavior",
+        "fresh generation through the same validation and approval controls",
+    ):
+        assert boundary in rule

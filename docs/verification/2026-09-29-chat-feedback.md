@@ -212,3 +212,28 @@ that run. New judging uses the existing shared call and time limits. No retries
 are added to the application. Independent helper review covered adversarial
 provenance mutations and budget boundaries; cloud integration remains a separate
 required check.
+
+## Retrieval review applicability, v36
+
+The failed research review treated generic retriever use as proof of factual-answer
+and artifact-reuse obligations. Its first finding required every trust clause; the
+second demanded access/version reuse and factual-retrieval failure handling without
+identifying those behaviors. The shared rule now requires each obligation's declared
+path, artifact and consumer. Factual RAG and private cache controls remain explicit;
+an overview label grants no exemption. Stages, schemas, retry limits and publication
+logic are unchanged. Components/connections prompts are v36/v29; gates are v24/v28.
+
+546 focused tests, Ruff and independent criterion-parity review passed. Two approved
+Sonnet gate-only calls then tested modified saved fixtures: the original comparison
+with its retrieval capability corrected passed, while an explicit factual-answer and
+private-cache variant with missing owners failed. Full usage cost was $0.107498,
+with no retries, fallback or cache tokens. This is saved-fixture review evidence,
+not fresh graph generation. Artifacts: research-scope-v36b under the local verification
+work directory. The first harness attempt failed argument validation locally; its
+empty provider ledger and artifacts are preserved separately in research-scope-v36.
+
+Education's recorded borderline relevance rationale asks for curricular debates and
+adoption trends absent from the request. Independent review found no supported
+material relevance defect. Its existing verdict is retained; neither the answer nor
+the evaluation corpus is changed. A fresh end-to-end research run and unresolved
+protected evaluation decisions remain required before merge.
