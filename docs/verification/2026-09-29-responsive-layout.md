@@ -24,7 +24,7 @@ Scores describe the reviewed surfaces and evidence, not a WCAG certification.
 | Implementation integrity | 2/4 | 3/4 | Component CSS replaces conflicting global overrides; retained typography and quote styling are deliberate |
 | Total | 10/20 | 14/20 | Good within the reviewed scope |
 
-Seven findings were prioritized: two P1 and five P2. No P0 was found.
+Eight findings were prioritized: two P1 and six P2. No P0 was found.
 
 | Priority | Location | Impact | Resolution |
 | --- | --- | --- | --- |
@@ -35,6 +35,7 @@ Seven findings were prioritized: two P1 and five P2. No P0 was found.
 | P2 | `App.tsx`, `ChatInput.tsx` | Fixed viewport sizing and small fields risk an obscured composer and focus zoom | VisualViewport fallback and 16px touch fields; device testing remains |
 | P2 | `ContextBar.tsx`, `MessageList.tsx` | Long labels and math can extend past their pane | Wrapping labels and local rich-content overflow |
 | P2 | `ChatInput.tsx` | Enter while composing non-Latin text can send an unfinished draft | Ignore composing Enter; regression verifies normal submission afterward |
+| P2 | `D3Graph.tsx` | Reordering a node on mouse-down suppresses its first native click | Raise the node only after nonzero pointer movement; preserve click and edit behavior |
 
 The recurring issue was desktop-sized chrome consuming narrow workspace space.
 The existing D3 resize handling, measured inspector camera exclusion, private
@@ -87,10 +88,10 @@ Browser checks used the current source, Chrome 154.0.8037.58, and the local `dev
 | Long URL, code, table, and math | Prose wraps; rich-content overflow stays local | Pass: 320px and 768px; code, table and math scroll locally |
 | Glossary and deletion confirmation | Content and action buttons fit at narrow widths | Pass: browser matrix |
 | Touch and keyboard controls | Common controls meet the 44px design target and display visible focus | Pass: browser matrix and 390px emulated touch node tap |
-| Save and reopen edited graph | Node edit survives save, reload and history reopen | Pass: 390px emulated touch flow with offline persistence |
-| Desktop mouse node activation | Single mouse click opens node inspector | Pre-existing failure in current and baseline Chrome fixture; Enter opens inspector in both |
+| Save and reopen edited graph | Node edit survives save, reload and history reopen | Pass: 390px touch and 1024px native mouse flows with offline persistence |
+| Desktop mouse node activation | Single mouse click opens node inspector | Pass: first click and zero-displacement mouse move; drag, double-click and keyboard behavior retained |
 | Empty, streaming, error, and completed states | Existing status and graph behavior remain intact | Existing unit regressions pass; completed state browser-checked with offline graph |
-| Frontend tests, types, lint, build, and relevant repository checks | Required checks pass | 507 tests, lint, type/build and audit pass; 368 CI policy tests pass, 5 expected skips |
+| Frontend tests, types, lint, build, and relevant repository checks | Required checks pass | 508 tests, lint, type/build and audit pass; 368 CI policy tests pass, 5 expected skips |
 | Impeccable review and diff review | Remaining layout issues are resolved or documented before PR | Completed; retained incumbent styling noted below |
 
 ## Evidence and review
@@ -107,13 +108,38 @@ Its progress row scrolls locally and the last step remains reachable. At 390px,
 a native emulated touch tap opened a node, editing and saving succeeded, and the
 edited value survived reload followed by reopening its saved thread.
 
-A 1024px native mouse test emitted pointer down/up without a click event, so the
-inspector did not open. The same test against isolated baseline commit `99c2b6d`
-reproduced the failure with matching node bounds. No delayed node-click timer was
-scheduled in either case; this was not a timer cancelled by the responsive layout.
-Keyboard Enter opened the inspector on both revisions. The renderer is unchanged
-in this PR. Desktop mouse activation needs a separate renderer investigation;
-1024px save/reload was not claimed after that failed activation.
+A 1024px native mouse test initially emitted pointer down/up without a click
+event. The same test against isolated baseline commit `99c2b6d` reproduced the
+failure. The debugging pass found that raising the node on mouse-down reparents
+its SVG group before the browser dispatches a click. The first click failed;
+the second succeeded because the node was already last in drawing order. A fresh
+page with only the reparent operation suppressed restored the first click while
+D3's other event handling remained active. The node kept its identity throughout,
+which ruled out renderer replacement as the cause.
+
+Moving the raise operation into the drag handler alone was insufficient. D3 can
+emit a drag event for a mouse move with unchanged coordinates. Native Chrome and
+a three-node regression both reproduced the lost click in that case. The fix
+raises the node only when `event.dx` or `event.dy` is nonzero. Click timing,
+double-click editing, F2, keyboard selection, snapping and persistence callbacks
+remain unchanged. PR #62 contains the related drag-only change; this branch also
+covers the zero-displacement case.
+
+After the fix, six native Chrome journeys passed without page or console errors:
+1024px first click, double-click editing, drag followed by click, Enter/F2,
+edit/save/reload with history reopening, and 390px touch activation. Separate
+stationary-pointer checks passed with and without a zero-displacement mousemove.
+The source tests ran on `fdc162c` plus this commit's two-file pointer patch.
+All 508 frontend tests, lint, TypeScript and the production build passed;
+independent review found no further issue in the patch.
+
+The live-evaluation investigation found no failed test in run `36565582959`.
+Its evaluation job was queued behind PR #62 in `staging-live-eval-global`, with
+no pending environment approval. The obsolete run was cancelled before updating
+the fix. The live browser suite uses a 1440 by 960 viewport and Enter-based node
+selection, so mobile tab transitions and native pointer activation require the
+separate local checks. Forty existing frontend readiness/layout tests and four
+backend selector/follow-up tests passed during this investigation.
 
 Independent source review caught one breakpoint transition defect: a retained
 Diagram tab could hide a focused chat input when returning to compact layout.
@@ -130,7 +156,7 @@ npm run build
 npm audit --audit-level=low
 ```
 
-Coverage: 93.86% statements, 85.86% branches, 96.05% functions, 96.43% lines.
+Coverage: 93.86% statements, 85.88% branches, 96.05% functions, 96.43% lines.
 Repository command: `./scripts/ci offline --group pipeline-policy`.
 The policy suite passed 368 tests with 5 expected skips; the manifest validates.
 `git diff --check` passes.
@@ -157,6 +183,7 @@ Real iOS Safari, iPadOS Safari, Android Chrome keyboards, VoiceOver, and TalkBac
 were not available. Browser emulation and synthetic viewport tests do not replace
 those device checks. No live model evaluation was invoked locally: prompts,
 provider settings, graph data, renderer algorithms, and transport are unchanged.
+The pointer fix changes when an existing node is raised in SVG drawing order.
 CI retains its existing conservative path classification and required gates.
 
 No database migration or backend change is involved. Revert the PR to restore the

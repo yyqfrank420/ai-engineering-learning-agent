@@ -1485,7 +1485,7 @@ export function D3Graph({
         d3.drag<SVGGElement, RenderNode>()
           .on('start', function(event, node) {
             trackDrag(event);
-            d3.select(this).raise().style('cursor', 'grabbing');
+            d3.select(this).style('cursor', 'grabbing');
             const visible = new Set(renderStateRef.current?.nodeSel.filter(function() {
               return this.getAttribute('aria-hidden') !== 'true';
             }).data().map(item => item.id) ?? nodes.map(item => item.id));
@@ -1497,7 +1497,9 @@ export function D3Graph({
             }
             nodeDragStarts.set(node.id, { x: node.x, y: node.y, targets });
           })
-          .on('drag', (event, d) => {
+          .on('drag', function(event, d) {
+            // Reparenting before the pointer moves cancels the browser's native click.
+            if (event.dx !== 0 || event.dy !== 0) d3.select(this).raise();
             stopCameraFollow();
             const start = nodeDragStarts.get(d.id)!;
             const constrain = navigation && event.sourceEvent.shiftKey;

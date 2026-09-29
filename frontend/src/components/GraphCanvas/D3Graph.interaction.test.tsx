@@ -1011,6 +1011,35 @@ describe('graph node activation', () => {
     expect(screen.queryByText('EXIT')).toBeNull();
   });
 
+  it('keeps node order stable for clicks and raises a node only when dragging', async () => {
+    const onNodeClick = vi.fn();
+    const { container } = render(<D3Graph graphData={cameraGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={onNodeClick} navigation initialViewState={cameraViewState} />);
+    const node = container.querySelector('[data-node-id="a"]')!;
+    const card = node.querySelector('.node-card')!;
+    const order = () => Array.from(container.querySelectorAll('g.node'), element => element.getAttribute('data-node-id'));
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number, clientY: number) => {
+      const event = createEvent[type](target, { clientX, clientY, button: 0 });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(target, event);
+    };
+
+    expect(order()).toEqual(['a', 'b', 'c']);
+    mouse(card, 'mouseDown', 200, 200);
+    expect(order()).toEqual(['a', 'b', 'c']);
+    mouse(window, 'mouseMove', 200, 200);
+    expect(order()).toEqual(['a', 'b', 'c']);
+    mouse(window, 'mouseUp', 200, 200);
+    expect(order()).toEqual(['a', 'b', 'c']);
+
+    mouse(card, 'mouseDown', 200, 200);
+    mouse(window, 'mouseMove', 240, 220);
+    expect(order()).toEqual(['b', 'c', 'a']);
+    mouse(window, 'mouseUp', 240, 220);
+    expect(onNodeClick).not.toHaveBeenCalled();
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); });
+  });
+
   it('opens node editing on double-click or F2 without zooming or exploring', async () => {
     const onNodeClick = vi.fn();
     const onNodeEdit = vi.fn();
