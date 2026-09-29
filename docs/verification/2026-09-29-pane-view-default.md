@@ -1,9 +1,12 @@
 # Open node panes in normal view with compact connections
 
 Clicking a node now opens its detail pane immediately. Double-clicking keeps that
-view and does not zoom or enter editing. Edit details and F2 explicitly enter the
-existing form. Reselecting a node resets a pristine editor to normal details.
-Unsaved drafts remain protected by the existing selection guard.
+view and does not zoom or enter editing. A muted Edit button sits beside Close.
+Edit and F2 explicitly enter the existing form. Reselecting a node resets a
+pristine editor to normal details.
+Unsaved drafts remain protected by the existing selection guard. The Edit button
+retains its accessible name, focus restoration and permission checks; it appears
+only in the normal view and has no accent fill or border.
 
 Node dragging now raises the SVG node after movement starts. Raising it on
 mousedown reparented the element before click dispatch, which swallowed the first
@@ -58,7 +61,9 @@ Edit details in the scrollable pane, and return to normal details after Done.
 The compact Connections list was checked on desktop and at 390x844: rows start
 collapsed, name their direction, and reveal both exchanges when opened. Enter
 and Space toggle the focused disclosure. Long labels wrap inside the scrollable
-pane. The preview was left at its normal desktop size with connections collapsed.
+pane. The muted header Edit control was checked on desktop and at 390x844; it
+opens the form, focuses Name, and receives focus again after Done. The preview
+was left at its normal desktop size with connections collapsed.
 No paid model calls were made. The fixture reports provider_calls=0 and does not
 import application backend/provider clients or connect to production storage.
 

@@ -326,10 +326,14 @@ export function NodeDetailPopup({
         <h2>{shownNode.label}</h2>
         {!editing && shownNode.technology && <p className="node-inspector__subtitle">{shownNode.technology}</p>}
       </div>
-      <button type="button" className="node-inspector__icon-button" onClick={requestClose}
-        aria-label="Close node detail" disabled={saving}>
-        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
-      </button>
+      <div className="node-inspector__header-actions">
+        {!editing && canEdit && <button ref={editButtonRef} type="button" className="node-inspector__edit-button"
+          aria-label="Edit details" onClick={beginEditing}>Edit</button>}
+        <button type="button" className="node-inspector__icon-button" onClick={requestClose}
+          aria-label="Close node detail" disabled={saving}>
+          <svg aria-hidden="true" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"><path d="m4 4 8 8M12 4l-8 8" /></svg>
+        </button>
+      </div>
     </header>
 
     {showDiscard && <div className="node-inspector__discard" role="alert">
@@ -342,7 +346,6 @@ export function NodeDetailPopup({
 
     {!editing ? <div className="node-inspector__body">
       {shownNode.description && <p className="node-inspector__description">{shownNode.description}</p>}
-      {canEdit && <button ref={editButtonRef} type="button" className="node-inspector__edit-button" onClick={beginEditing}>Edit details</button>}
       {saved && <p className="node-inspector__status" role="status">Changes saved</p>}
       {sourceDetail}
       <div className="node-inspector__learning-actions">

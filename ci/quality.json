@@ -238,15 +238,15 @@
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
         "before_blob": "71f61787daf79fcc28e4bc53396c75a516f72cec",
-        "after_blob": "66f48325c1538c382f52877415677bbd34f1e699",
-        "reason": "Style collapsed connection summaries, disclosure focus and expanded metadata within the interactive node inspector; graph rendering and capture styles are unchanged.",
+        "after_blob": "b1083d56fee0ac6b411ca76737d2cb4ce2aeb2d3",
+        "reason": "Style compact connection disclosures and a muted header Edit control within the interactive node inspector; graph rendering and capture styles are unchanged.",
         "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.tsx",
         "before_blob": "697686d56e3073b94a4b7ebc52dc425291ceb8c7",
-        "after_blob": "94fdea24a13bbf2e445a17f3ae11b50baab504a7",
-        "reason": "Group read-only connection details into collapsed peer rows with explicit direction labels; preserve every directed record, editor index and existing action callback.",
+        "after_blob": "6c7d2eb5efe0f712af8585c3cc93bc70c5f5c513",
+        "reason": "Group read-only connections into collapsed peer rows with explicit directions and move Edit beside Close; preserve every directed record, editor index, action callback and focus behavior.",
         "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {

@@ -71,23 +71,23 @@
   outline: 2px solid #c4b5fd;
   outline-offset: 2px;
 }
-.node-inspector__icon-button {
-  flex: none;
+.node-inspector__header-actions { display: flex; flex: none; gap: 4px; }
+.node-inspector__header-actions button {
   display: grid;
   place-items: center;
-  width: 30px;
   height: 30px;
   border: 0;
   border-radius: 6px;
   background: transparent;
   color: #b8c5d8;
 }
-.node-inspector__icon-button:hover:not(:disabled) { background: #263047; color: #fff; }
+.node-inspector__header-actions button:hover:not(:disabled) { background: #263047; color: #fff; }
+.node-inspector__icon-button { width: 30px; }
+.node-inspector__edit-button { padding: 0 6px; font-weight: 400; }
 
 .node-inspector__body,
 .node-inspector__form { padding: 14px; }
 .node-inspector__description { color: #c1cbda; line-height: 1.55; }
-.node-inspector__edit-button,
 .node-inspector__done {
   margin-top: 12px;
   border: 1px solid #7763a8;
@@ -97,7 +97,6 @@
   color: #e5d9ff;
   font-weight: 600 !important;
 }
-.node-inspector__edit-button:hover:not(:disabled),
 .node-inspector__done:hover:not(:disabled) { background: #34294f; }
 .node-inspector__source-detail {
   margin-top: 16px;
@@ -239,5 +238,5 @@
 @media (pointer: coarse) {
   .node-inspector button,
   .node-inspector__connection-summary { min-height: 44px; }
-  .node-inspector__icon-button { min-width: 44px; }
+  .node-inspector__header-actions button { min-width: 44px; }
 }

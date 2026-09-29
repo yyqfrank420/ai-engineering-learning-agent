@@ -62,7 +62,8 @@ authorize a read-only replacement for the core diagram workflow.
 - Editing should preserve the surrounding system and existing learner work.
 - Direct editing should let learners revise component names, types, subtitles, and
   descriptions, plus each directed connection's label and metadata. Clicking a node
-  opens its details; Edit details or F2 opens editing and focuses its name.
+  opens its details. A muted Edit button sits beside Close. Edit or F2 opens the
+  form and focuses its name.
   Connections start as compact rows naming the other component and their direction.
   Expanding a row reveals every directed exchange and its technical metadata.
   Save and Cancel are explicit. Failed saves retain the draft and show the failure.
