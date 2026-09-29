@@ -27,12 +27,25 @@ def _fingerprint(value: str) -> str:
         ({"sync": False}, "sync_enum", "edges.0.sync"),
     ],
 )
-def test_connection_rejection_diagnostics_do_not_change_repair_errors(change, reason, path):
-    wire = {"edges": [{"source_index": 0, "target_index": 1,
-                       "label": "private label", "flow": 400, "sync": 500} | change]}
+def test_connection_rejection_diagnostics_do_not_change_repair_errors(
+    change, reason, path
+):
+    wire = {
+        "edges": [
+            {
+                "source_index": 0,
+                "target_index": 1,
+                "label": "private label",
+                "flow": 400,
+                "sync": 500,
+            }
+            | change
+        ]
+    }
     with pytest.raises(generation.StagedGenerationError) as caught:
         generation._parse_connection_wire(
-            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            json.dumps(wire),
+            accepted_components=[{"index": 0}, {"index": 1}],
             edge_limit=5,
         )
     error = caught.value
@@ -40,7 +53,14 @@ def test_connection_rejection_diagnostics_do_not_change_repair_errors(change, re
     assert error.diagnostic_reason == reason
     assert error.diagnostic_path == path
     assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
-    assert "private label" not in json.dumps(vars(error))
+    assert "private label" not in json.dumps(
+        (
+            error.code,
+            error.diagnostic_reason,
+            error.diagnostic_path,
+            error.rejected_wire_fingerprint,
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -56,17 +76,27 @@ def test_connection_rejection_diagnostics_do_not_change_repair_errors(change, re
          5, "duplicate_edge", "edges.1", "connection_wire_invalid"),
     ],
 )
-def test_connection_container_and_duplicate_diagnostics(wire, limit, reason, path, code):
+def test_connection_container_and_duplicate_diagnostics(
+    wire, limit, reason, path, code
+):
     with pytest.raises(generation.StagedGenerationError) as caught:
         generation._parse_connection_wire(
-            json.dumps(wire), accepted_components=[{"index": 0}, {"index": 1}],
+            json.dumps(wire),
+            accepted_components=[{"index": 0}, {"index": 1}],
             edge_limit=limit,
         )
     error = caught.value
     assert str(error) == error.code == code
     assert (error.diagnostic_reason, error.diagnostic_path) == (reason, path)
     assert error.rejected_wire_fingerprint == generation._fingerprint(wire)
-    assert "private label" not in json.dumps(vars(error))
+    assert "private label" not in json.dumps(
+        (
+            error.code,
+            error.diagnostic_reason,
+            error.diagnostic_path,
+            error.rejected_wire_fingerprint,
+        )
+    )
 
 
 @pytest.mark.parametrize(
@@ -126,7 +156,7 @@ def test_component_rejection_diagnostics(path, value, reason):
     assert diagnostic["candidate_fingerprint"] != generation._fingerprint(_component_wire())
     assert "private source detail" not in json.dumps(diagnostic)
     assert workflow._safe_finding(error, stage="components") == {
-        "code": code, "path": "components", "rule": "contract_validation", "reason": code,
+        "code": code, "path": expected_path, "rule": "contract_validation", "reason": reason,
     }
 
 
@@ -326,6 +356,7 @@ def _component_wire() -> dict:
                 "label": "Request gateway",
                 "type": 101,
                 "responsibility": "Accepts the request.",
+                "parent_index": None,
                 "group_label": "Runtime",
                 "group_kind": 600,
                 "primary_flow_member": True,
@@ -346,225 +377,6 @@ def _connection_wire() -> dict:
             }
         ]
     }
-
-
-def _owned_component_wire() -> dict:
-    wire = _component_wire()
-    template = wire["components"][0]
-    wire["components"] = [
-        {**template, "label": "Student client", "type": 100},
-        {**template, "label": "Cache", "type": 102, "primary_flow_member": False},
-        {**template, "label": "Tutoring service", "type": 101},
-        {
-            **template,
-            "label": "Conversation coordinator",
-            "type": 109,
-            "parent_index": 2,
-        },
-    ]
-    return wire
-
-
-@pytest.mark.parametrize("removed_index", [1, 2])
-@pytest.mark.parametrize("recovery", [False, True])
-def test_component_removal_reindexes_owned_internals(removed_index, recovery):
-    original = _owned_component_wire()
-    if recovery:
-        delta = _recovery_delta("components", original, [removed_index])
-        response = {
-            "additions": [],
-            "updates": {f"slot_{removed_index}": None},
-            "capabilities": original["capabilities"],
-            "removals": [removed_index],
-        }
-    else:
-        base = {
-            **original,
-            "components": [
-                {
-                    **component,
-                    "type": generation.NODE_TYPE_CODES[component["type"]],
-                    "group_kind": "runtime",
-                    "model_index": index,
-                    "server_id": f"n{index}",
-                }
-                for index, component in enumerate(original["components"])
-            ],
-        }
-        permissions = _permissions(removable_node_ids=[f"n{removed_index}"])
-        delta = generation._component_edit_delta(
-            base,
-            permissions,
-            generation.component_generation_schema(
-                generation.create_write_set(component_limit=4, edge_limit=4),
-            ),
-        )
-        response = {
-            "additions": [],
-            "updates": {},
-            "capabilities": original["capabilities"],
-        }
-    if removed_index == 2:
-        with pytest.raises(
-            generation.StagedGenerationError, match="component_parent_removed"
-        ):
-            delta.assemble(json.dumps(response))
-        return
-    assembled = delta.assemble(json.dumps(response))
-    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
-    assert parsed["components"][2]["parent_index"] == 1
-    assert parsed["components"][1]["label"] == "Tutoring service"
-
-
-@pytest.mark.parametrize("parent", [None, True, "2", 2.0, -1, 1, 3, 9])
-def test_component_wire_requires_a_valid_application_service_parent(parent):
-    wire = _owned_component_wire()
-    wire["components"][3]["parent_index"] = parent
-    with pytest.raises(
-        generation.StagedGenerationError, match="component_wire_invalid"
-    ) as caught:
-        generation._parse_component_wire(json.dumps(wire), component_limit=4)
-    assert caught.value.diagnostic_reason == "component_parent_invalid"
-    assert caught.value.diagnostic_path == "components.3.parent_index"
-
-
-def test_component_wire_forbids_parent_on_application_service():
-    wire = _owned_component_wire()
-    wire["components"][2]["parent_index"] = 0
-    with pytest.raises(
-        generation.StagedGenerationError, match="component_wire_invalid"
-    ) as caught:
-        generation._parse_component_wire(json.dumps(wire), component_limit=4)
-    assert caught.value.diagnostic_reason == "component_parent_forbidden"
-    assert caught.value.diagnostic_path == "components.2.parent_index"
-
-
-@pytest.mark.parametrize("index,parent", [(2, None), (3, 2)])
-def test_component_correction_schema_requires_parent_field_in_nonnull_updates(
-    index, parent
-):
-    original = _owned_component_wire()
-    write_set = generation.create_write_set(component_limit=4, edge_limit=4)
-    delta = generation._semantic_correction_delta(
-        stage="components",
-        maturity="prototype",
-        write_set=write_set,
-        attempt=1,
-        rejected_candidate=original,
-        findings=[
-            {
-                "code": "mece_scope",
-                "path": "components",
-                "rule": "semantic_gate",
-                "record_indexes": [index],
-            }
-        ],
-        schema=generation.component_generation_schema(write_set),
-    )
-    slot = f"slot_{index}"
-    update_schema = delta.schema["properties"]["updates"]["properties"][slot]["anyOf"][
-        0
-    ]
-    assert "parent_index" in update_schema["required"]
-    update = {**original["components"][index], "parent_index": parent}
-    response = {**delta.extract(original), "updates": {slot: update}}
-    assembled = delta.assemble(json.dumps(response))
-    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
-    assert parsed["components"][index]["parent_index"] == parent
-    del update["parent_index"]
-    with pytest.raises(
-        generation.StagedGenerationError, match="staged_generation_schema_invalid"
-    ):
-        delta.assemble(json.dumps(response))
-
-
-def test_component_wire_requires_explicit_parent_without_inference():
-    wire = _owned_component_wire()
-    del wire["components"][3]["parent_index"]
-    with pytest.raises(generation.StagedGenerationError) as caught:
-        generation._parse_component_wire(json.dumps(wire), component_limit=4)
-    assert caught.value.diagnostic_reason == "component_parent_invalid"
-    assert caught.value.diagnostic_path == "components.3.parent_index"
-
-
-@pytest.mark.parametrize("forbidden", [False, True])
-def test_component_parent_failure_reaches_retry_prompt(forbidden):
-    from agent import staged_graph_workflow as workflow
-
-    wire = _owned_component_wire()
-    index = 2 if forbidden else 3
-    wire["components"][index]["parent_index"] = 0
-    with pytest.raises(generation.StagedGenerationError) as caught:
-        generation._parse_component_wire(json.dumps(wire), component_limit=4)
-    reason = "component_parent_forbidden" if forbidden else "component_parent_invalid"
-    path = f"components.{index}.parent_index"
-    diagnostic = workflow._failure_diagnostic(
-        caught.value,
-        stage="components",
-        attempt=1,
-        candidate=None,
-    )
-    assert diagnostic["reason"] == reason
-    assert diagnostic["path"] == path
-    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
-    finding = workflow._safe_finding(caught.value, stage="components")
-    assert finding["reason"] == reason
-    assert finding["path"] == path
-    prompt, _ = generation._attempt_prompt(
-        stage="components",
-        request="Expand tutoring internals.",
-        resolved_maturity="prototype",
-        write_set=_write_set(),
-        upstream_fingerprint="a" * 64,
-        attempt=1,
-        prior_prompt_fingerprint="b" * 64,
-        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
-        structural_findings=[finding],
-        gate_findings=[],
-        base=None,
-        rejected_candidate=None,
-        architecture_context=_architecture_context(),
-    )
-    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
-    assert payload["findings"]["structural"][0]["reason"] == reason
-    assert payload["findings"]["structural"][0]["path"] == path
-
-
-def test_component_correction_can_assign_an_added_service_owner():
-    original = _owned_component_wire()
-    delta = _recovery_delta("components", original, [1], component_limit=5)
-    new_service = {**original["components"][2], "label": "Cache service"}
-    updated = {**original["components"][1], "type": 109, "parent_index": 4}
-    response = {
-        "updates": {"slot_1": updated},
-        "additions": [new_service],
-        "capabilities": original["capabilities"],
-        "removals": [],
-    }
-    assembled = delta.assemble(json.dumps(response))
-    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
-    assert parsed["components"][1]["parent_index"] == 4
-    assert parsed["components"][4]["label"] == "Cache service"
-
-
-def test_component_correction_preserves_explicit_parent_after_removal():
-    original = _owned_component_wire()
-    practice_service = {**original["components"][2], "label": "Practice service"}
-    original["components"].insert(3, practice_service)
-    delta = _recovery_delta("components", original, [1, 4], component_limit=5)
-    response = {
-        "updates": {
-            "slot_1": None,
-            "slot_4": {**original["components"][4], "parent_index": 2},
-        },
-        "additions": [],
-        "capabilities": original["capabilities"],
-        "removals": [1],
-    }
-    assembled = delta.assemble(json.dumps(response))
-    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
-    assert parsed["components"][3]["parent_index"] == 2
-    assert parsed["components"][2]["label"] == "Practice service"
 
 
 def _connection_exchanges() -> dict:
@@ -668,6 +480,11 @@ def test_provider_schema_uses_authoritative_server_contract_limits():
     assert (
         component_record["responsibility"]["maxLength"]
         == contract.COMPONENT_RESPONSIBILITY_MAX_CHARS
+    )
+    assert component_record["responsibility"]["description"] == (
+        "Use short, complete clauses for this owner's work and applicable controls. "
+        "Plan wording below 160 characters before emitting the string; "
+        "never cut a clause to fit."
     )
     assert (
         component_record["group_label"]["maxLength"] == contract.GROUP_LABEL_MAX_CHARS
@@ -836,11 +653,19 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
         assert "shared evidence and review frame" in prompt
         assert "Avoid vague group labels such as Runtime, Data, or Operations" in prompt
         assert "an internal adapter to an external API remains internal" in prompt
+        assert "Name each new group for the requested domain" in prompt
+        assert "Never rename retained groups" in prompt
     else:
         assert prompt_input["architecture_context"] is None
         assert "its reverse response edge with the same flow and sync" in prompt
         assert "Pairing is independent of sync" in prompt
         assert "edge_limit counts expanded edges" in prompt
+        assert "Each exchange represents an actual directed relationship" in prompt
+        assert "For an actual request expecting a reply" in prompt
+        assert "Use response_label=null only when no return contract is needed" in prompt
+        assert "including one-way causal, adaptation, or lifecycle relationships" in prompt
+        assert "manufacture reverse RPC edges between abstract topics" in prompt
+        assert "live inference uses them without performing training" in prompt
         assert (
             "Route each supporting branch to a rejoin or observable outcome" in prompt
         )
@@ -848,8 +673,9 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("attempt", [0, 1, 2])
 async def test_connection_prompt_carries_authoritative_accepted_context(
-    monkeypatch, maturity
+    monkeypatch, maturity, attempt
 ):
     from agent.architecture_rubric import STAGED_PRODUCTION_REQUIREMENTS
 
@@ -867,15 +693,55 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
         upstream_fingerprint="b" * 64,
         accepted_components=_accepted_components(),
         accepted_context=_accepted_context(),
+        attempt=attempt,
+        prior_prompt_fingerprint="a" * 64 if attempt else None,
+        prior_write_set_fingerprint=(
+            generation._fingerprint(_write_set()) if attempt else None
+        ),
+        structural_findings=(
+            [{"code": "invalid_contract", "path": "candidate", "rule": "contract_validation"}]
+            if attempt else ()
+        ),
+        rejected_candidate=_connection_wire() if attempt else None,
+        timeout_seconds=240,
+        max_output_tokens=65536,
     )
 
+    assert len(calls) == 1
+    assert calls[0]["effort"] == ("high" if attempt else "low")
+    assert calls[0]["timeout_seconds"] == 240
+    assert calls[0]["max_output_tokens"] == 65536
+    assert calls[0]["provider_attempt_limit"] == 1
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v40"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v74"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
+    assert prompt_input["rejected_candidate"] == (_connection_wire() if attempt else None)
+    assert prompt_input["prior_prompt_fingerprint"] == ("a" * 64 if attempt else None)
+    if attempt:
+        assert prompt_input["findings"]["structural"] == [{
+            "code": "invalid_contract", "path": "candidate",
+            "rule": "contract_validation",
+        }]
+        assert "Repair each finding's full criterion throughout the candidate" in prompt
+    assert "correction_component_record_indexes" not in prompt_input
+    assert prompt_input["acceptance_criteria"]["runtime_completeness"] == (
+        generation.staged_review_requirements("connections", maturity)["runtime_completeness"]
+    )
+    assert "refer to owners by accepted component names or unambiguous endpoint roles" in prompt
+    assert "never numeric indexes, server IDs, or correction slots" in prompt
+    assert "Labels are displayed verbatim; indexes belong only in structured fields" in prompt
+    assert (
+        "Preserve legitimate domain numbers and versions, exact user-required contract "
+        "labels, and locked existing content" in prompt
+    )
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
+    assert "For both topic or lifecycle maps and applied system designs" in prompt
+    assert "primary_flow_member must be reachable outward from is_root" in prompt
+    assert "Do not invent edges or change frozen primary membership" in prompt
+    assert "including paths through non-primary supporting components" in prompt
     assert "Check each forward contract and actual reply" in prompt
     assert "accepted sender and recipient responsibilities" in prompt
     assert "including supporting and deployment exchanges" in prompt
@@ -888,7 +754,28 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
             "streaming_integrity": STAGED_PRODUCTION_REQUIREMENTS["streaming_integrity"]
         }
         assert "applicable design guidance, not blocking acceptance criteria" in prompt
-        assert "check each effect owner separately" in prompt
+        assert "the owning producer of each normal or compensation proposal" in prompt
+        assert "through validation and exact-scope approval" in prompt
+        assert "Compare each declared producer, trigger and target scope" in prompt
+        assert "same operation verb does not establish the same path" in prompt
+        assert (
+            "For each declared retrieval or recall path that consumes retrieved bytes"
+            in prompt
+        )
+        assert "untrusted-data treatment by the consuming runtime before use" in prompt
+        assert "every added or changed read or result-forwarding contract" in prompt
+        assert "through retained downstream contracts to every actual consumer" in prompt
+        assert "Normalized external status retains its external origin" in prompt
+        assert "A compatible incoming contract may declare missing consuming-runtime handling" in prompt
+        assert "when the frozen responsibility covers other byte classes" in prompt
+        assert "exceptions under the supplied criteria; do not invent consumption" in prompt
+        assert "duplicate treatment on pure transport hops" in prompt
+        assert "model-consumed retrieval" not in prompt
+        assert "treatment before model use" not in prompt
+        assert (
+            "verify requester identity, allowed scope and artifact validity before recall"
+            in prompt
+        )
         assert (
             "trace the exact approved action payload and stable operation identity"
             in prompt
@@ -896,7 +783,12 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
         assert "authorization verdict or incidental reachability alone" in prompt
         assert "declared metric pull with reply is a valid normal input" in prompt
         assert "do not add a redundant push or timer" in prompt
-        assert "compensation proposal from its producer" in prompt
+        assert "a different producer's compensation proposal" in prompt
+        assert "including declared lifecycle transitions" in prompt
+        assert "through validation and exact-scope approval" in prompt
+        assert "including repair-introduced contracts" in prompt
+        assert "A witness for one byte class does not cover other returned classes" in prompt
+        assert "use only permitted slots or additions" in prompt
         assert (
             "A broad downstream response does not establish upstream submission"
             in prompt
@@ -1061,11 +953,15 @@ async def test_correction_prompt_preserves_bounded_reason_and_record_indexes(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("timeout_seconds", [None, 129.875])
-@pytest.mark.parametrize("model", ["kimi-k3", "configured-builder-model"])
-async def test_component_generation_uses_configured_model_low_one_attempt_and_safe_telemetry(
+@pytest.mark.parametrize("attempt", [0, 1])
+@pytest.mark.parametrize(
+    "model", ["kimi-k3", "configured-builder-model", "claude-opus-5-5"]
+)
+async def test_component_generation_uses_configured_model_high_one_attempt_and_safe_telemetry(
     monkeypatch,
     timeout_seconds,
     model,
+    attempt,
 ):
     monkeypatch.setattr(generation.settings, "graph_builder_model", model)
     calls = []
@@ -1083,17 +979,29 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
         upstream_fingerprint="a" * 64,
         state={"user_id": "user-1", "session_id": "thread-1", "is_production": True},
         timeout_seconds=timeout_seconds,
+        max_output_tokens=65536,
+        attempt=attempt,
+        prior_prompt_fingerprint="b" * 64 if attempt else None,
+        prior_write_set_fingerprint=(
+            generation._fingerprint(_write_set()) if attempt else None
+        ),
+        structural_findings=(
+            [{"code": "invalid_contract", "path": "candidate", "rule": "contract_validation"}]
+            if attempt else ()
+        ),
     )
 
     assert result["wire"] == _component_wire()
     assert len(result["prompt_fingerprint"]) == 64
+    assert len(calls) == 1
     assert calls[0]["model"] == model
-    assert calls[0]["effort"] == "low"
+    assert calls[0]["effort"] == "high"
+    assert calls[0]["max_output_tokens"] == 65536
     assert calls[0]["provider_attempt_limit"] == 1
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v46"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v72"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1260,41 +1168,77 @@ async def test_connection_generation_rejects_server_invalid_edge_identity(
 
 
 @pytest.mark.asyncio
-async def test_connection_generation_requires_every_primary_member_from_root(
-    monkeypatch,
-):
-    async def fake_stream(**_kwargs):
-        return _response({"exchanges": []})
+async def test_connection_generation_requires_every_primary_member_from_root(monkeypatch):
+    from agent import staged_graph_workflow as workflow
+
+    calls = []
+    accepted = [
+        {**component, "primary_flow_member": True, "is_root": index == 0}
+        for index, component in enumerate(_accepted_components())
+    ]
+    rejected = {"edges": []}
+
+    async def fake_stream(**kwargs):
+        calls.append(kwargs)
+        payload = {"exchanges": []} if len(calls) == 1 else _connection_exchanges()
+        return _response(payload)
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
-    with pytest.raises(
-        generation.StagedGenerationError, match="connection_wire_unreachable"
-    ):
+    with pytest.raises(generation.StagedGenerationError) as caught:
         await generation.generate_connection_candidate(
-            request="Connect accepted components",
+            request="Compare the subject mechanisms",
             resolved_maturity="prototype",
             write_set=_write_set(),
             upstream_fingerprint="b" * 64,
-            accepted_components=[
-                {
-                    "index": 0,
-                    "id": "server-a",
-                    "type": 104,
-                    "responsibility": "Accepts authenticated requests.",
-                    "primary_flow_member": True,
-                    "is_root": True,
-                },
-                {
-                    "index": 1,
-                    "id": "server-b",
-                    "type": 101,
-                    "responsibility": "Processes accepted requests.",
-                    "primary_flow_member": True,
-                    "is_root": False,
-                },
-            ],
+            accepted_components=accepted,
             accepted_context=_accepted_context(),
         )
+    error = caught.value
+    assert str(error) == error.code == "connection_wire_unreachable"
+    assert (error.diagnostic_reason, error.diagnostic_path) == (
+        "primary_flow_unreachable",
+        "edges",
+    )
+    assert error.rejected_wire_fingerprint == generation._fingerprint(rejected)
+    finding = workflow._safe_finding(error, stage="connections")
+    assert finding == {
+        "code": "connection_wire_unreachable",
+        "path": "edges",
+        "rule": "contract_validation",
+        "reason": "primary_flow_unreachable",
+    }
+    result = await generation.generate_connection_candidate(
+        request="Compare the subject mechanisms",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="b" * 64,
+        accepted_components=accepted,
+        accepted_context=_accepted_context(),
+        attempt=1,
+        prior_prompt_fingerprint=error.prompt_fingerprint,
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[finding],
+        rejected_candidate=None,
+        recovery_mode=True,
+    )
+    prompt = calls[1]["messages"][0]["content"]
+    prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert prompt_input["recovery_mode"] is True
+    assert prompt_input["rejected_candidate"] is None
+    assert prompt_input["base"] is None
+    assert prompt_input["findings"]["structural"] == [finding]
+    assert "Every accepted primary member needs a truthful outward directed path" in prompt
+    assert "from the accepted is_root" in prompt
+    assert "Preserve accepted responsibilities, root, and primary membership" in prompt
+    assert "Use non-primary transit when supported" in prompt
+    assert "do not manufacture reverse RPC edges" in prompt
+    expected_wire, expected_exchanges = generation._parse_connection_response(
+        json.dumps(_connection_exchanges()),
+        accepted_components=accepted,
+        edge_limit=_write_set()["edge_limit"],
+    )
+    assert result["wire"] == expected_wire
+    assert result["connection_exchanges"] == expected_exchanges
 
 
 @pytest.mark.asyncio
@@ -1598,6 +1542,13 @@ async def test_component_correction_projects_rejected_wire_back_to_delta(monkeyp
     assert result["wire"]["components"][0]["label"] == "Request ingress"
     assert "Trace sink" not in json.dumps(prompt_input["rejected_candidate"])
     prompt = calls[0]["prompt"]
+    assert (
+        "Compare the original and proposed clauses of each edited responsibility. "
+        "Retain valid executable work and control ownership. Consuming an operation's "
+        "output does not assign ownership of that operation. Apply changes required "
+        "by a finding within permitted fields. Assess meaning without requiring exact verbs or labels."
+        in prompt
+    )
     assert "Within changed contracts, preserve valid existing payload" in prompt
     assert "provenance, scope, conditions, and alternate outcomes" in prompt
     assert (
@@ -1615,11 +1566,13 @@ async def test_component_correction_projects_rejected_wire_back_to_delta(monkeyp
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["edit", "extension"])
 async def test_connection_delta_matches_original_selector_after_incident_edge_removal(
-    monkeypatch,
+    monkeypatch, kind,
 ):
     base = _connection_wire()["edges"]
     permissions = _permissions(
+        kind=kind,
         editable_edges=[
             {"edge_id": "edge_1", "source": "removed", "target": "n1", "label": "old"},
             {"edge_id": "edge_2", "source": "n1", "target": "n2", "label": "requests"},
@@ -1661,6 +1614,10 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
         addition,
     ]
     assert "connection_exchanges" not in result
+    prompt_input = json.loads(calls[0]["prompt"].split("\nINPUT\n", 1)[1])
+    assert prompt_input["acceptance_criteria"]["runtime_completeness"] == (
+        generation.staged_review_requirements("connections", "prototype")["runtime_completeness"]
+    )
     assert "Propose canonical edges in the delta" in calls[0]["prompt"]
     assert "Propose exchanges only" not in calls[0]["prompt"]
     assert (
@@ -1724,7 +1681,7 @@ def test_component_delta_removal_reindexes_root_without_reordering_retained_reco
     assert len(base["components"]) == 2
 
 
-def test_scoped_component_edit_rejects_null_update_and_versions_additions_schema():
+def test_scoped_component_edit_rejects_null_update_and_keeps_original_schema_identity():
     delta = generation._component_edit_delta(
         _edit_base(),
         _permissions(editable_node_fields={"n1": ["label"]}),
@@ -1733,7 +1690,7 @@ def test_scoped_component_edit_rejects_null_update_and_versions_additions_schema
     response = delta.extract(delta.base)
     assert response["updates"]["slot_0"] == {"label": "Request gateway"}
     assert generation._generation_schema_version("components", delta.schema) == (
-        "staged_components_delta_v3"
+        "staged_components_delta_v7"
     )
     response["updates"]["slot_0"] = None
     with pytest.raises(generation.StagedGenerationError):
@@ -1802,6 +1759,9 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         fixture["request"], fixture["base_graph"], resolved_complexity="prototype"
     )
     assert permissions["added_edge_anchor_node_ids"] == ["n6"]
+    from agent.staged_graph_workflow import _connection_prompt_base
+
+    baseline_connections = _connection_prompt_base(base)
     calls = []
     recorded = fixture["rejected_addition"]
     addition = {
@@ -1850,6 +1810,7 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         write_set=write_set,
         upstream_fingerprint="a" * 64,
         base_components=base,
+        baseline_connections=baseline_connections,
         edit_permissions=permissions,
     )
     first = await generation.generate_component_candidate(**kwargs)
@@ -1893,11 +1854,34 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         == expected
     )
     assert prompts[0]["base"]["components"][5]["label"] == "Metrics Monitor"
+    assert (
+        prompts[0]["baseline_connections"]
+        == prompts[1]["baseline_connections"]
+        == baseline_connections
+    )
+    for prompt in prompts:
+        for row, edge in zip(prompt["baseline_connections"], base["connections"], strict=True):
+            for endpoint in ("source", "target"):
+                index = row[f"{endpoint}_index"]
+                assert base["components"][index]["server_id"] == edge[f"{endpoint}_id"]
+                assert prompt["base"]["components"][index]["label"] == base["components"][index]["label"]
+            assert row["label"] == edge["label"]
+            assert generation.FLOW_CODES[row["flow"]] == edge["flow"]
+            assert generation.SYNC_CODES[row["sync"]] == edge["sync"]
     assert prompts[1]["rejected_candidate"]["additions"] == [addition]
     assert (
         "without requiring another data source, dependency, or extra edge"
         in calls[0]["prompt"]
     )
+    for call in calls[:2]:
+        assert "required inputs and outcomes must be achievable" in call["prompt"]
+        assert "permitted endpoints, counts, and directions" in call["prompt"]
+        assert "explicitly delegate an outcome back through its attachment anchor" in call["prompt"]
+        assert "anchor's unchanged existing contracts supplied in baseline_connections" in call["prompt"]
+        assert "Preserve their exact payload and control meaning" in call["prompt"]
+        assert "an evaluation-feedback contract does not by itself establish a rollback invocation" in call["prompt"]
+        assert "do not invent connections outside the permitted endpoints" in call["prompt"]
+        assert "A truthful one-way attachment or sink is sufficient" in call["prompt"]
     assert "n6" not in json.dumps(expected)
     assert "When false, required_contract describes intent" in calls[0]["prompt"]
     assert (
@@ -2208,7 +2192,7 @@ async def test_component_generation_receives_root_selection_before_connections(
     criteria = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
     root_rule = criteria["objective_fidelity"]
     assert (
-        "For new designs, select the initiating primary runtime actor as the root"
+        "For applied system designs, select the initiating primary runtime actor as the root"
         in root_rule
     )
     assert "Every primary member must be naturally reachable outward" in root_rule
@@ -2397,6 +2381,18 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
         "without importing deeper criteria.",
     )
     assert {"objective_fidelity", "brief_coverage", "mece_scope"} <= generated.keys()
+    trust_ownership = (
+        "For each component's declared consumption of retrieved, recalled or relayed "
+        "external, model or user content, assign untrusted-data treatment to that "
+        "consumer before use."
+    )
+    assert (trust_ownership in prompt) == (maturity == "production")
+    returned_text_handling = (
+        "When a caller checks, transforms or uses text returned by a separately "
+        "declared model or provider, declare untrusted handling for that returned "
+        "text separately from input briefs or facts."
+    )
+    assert (returned_text_handling in prompt) == (maturity == "production")
     if maturity == "prototype":
         assert "downstream_controls" not in generated_input
         assert "downstream_controls" not in review_prompt
@@ -2432,6 +2428,19 @@ def test_component_acceptance_is_shared_with_production_only_downstream_guidance
             review_prompt.split("downstream_controls: ", 1)[1].split("\n", 1)[0]
         )
         assert reviewed_controls == controls == STAGED_PRODUCTION_REQUIREMENTS
+        lifecycle = controls["artifact_reuse_lifecycle"]
+        assert (
+            "For cached outcomes of effectful operations, keep response validity separate "
+            "from durable operation identity and completion"
+        ) in lifecycle
+        assert (
+            "must preserve applied-operation deduplication and cannot authorize "
+            "repeating the same effect"
+        ) in lifecycle
+        assert (
+            "Return revalidated or current operation status, or refuse replay "
+            "through the existing controls"
+        ) in lifecycle
         assert (
             "Do not add external effects, retrieval, learning, or streaming solely "
             "to satisfy unrelated guidance"
@@ -2718,9 +2727,11 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     for index in targeted_indexes:
         response["updates"][f"slot_{index}"] = {
             **case["original_candidate"]["components"][index],
-            "parent_index": None,
             "responsibility": f"Corrected ownership for component {index}.",
         }
+    for update in response["updates"].values():
+        if update is not None:
+            update.setdefault("parent_index", None)
     calls = []
     wire_response = {
         "candidate": case["bad_corrected_candidate"],
@@ -2763,7 +2774,7 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
         assert result["wire"][field] == case["original_candidate"][field]
     assert case == original
     metadata = calls[-1]["telemetry"]["metadata"]
-    assert metadata["schema_version"] == "staged_components_correction_response_v2"
+    assert metadata["schema_version"] == "staged_components_correction_response_v4"
     prompt = calls[-1]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n")[1])
     assert prompt_input["base"] is None
@@ -2830,6 +2841,9 @@ async def test_memory_semantic_correction_retains_required_targeted_write(monkey
         "response_label"
         not in calls[-1]["schema"]["properties"]["additions"]["items"]["properties"]
     )
+    prompt_input = json.loads(calls[-1]["prompt"].split("\nINPUT\n", 1)[1])
+    assert prompt_input["rejected_candidate"] == case["original_candidate"]
+    assert "correction_exchanges" not in prompt_input
     assert "store curated facts" in result["wire"]["edges"][7]["label"]
     assert calls[-1]["schema"]["properties"]["additions"]["maxItems"] == 4
     assert (
@@ -2930,6 +2944,9 @@ def _paired_recovery(indexes=(0, 1), *, limit=8, provenance=None, global_finding
 async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
     delta, original, pairs, write_set, findings = _paired_recovery()
     assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_0"}
+    accepted = _accepted_components() + [
+        {**_accepted_components()[1], "index": 7, "id": "unrelated_id", "label": "Isolated owner"}
+    ]
     update = {"label": "Invoke tool", "response_label": "Validated tool result",
               "flow": 400, "sync": 500}
 
@@ -2939,12 +2956,48 @@ async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
         assert "Compare expanded forward and reply contracts against unchanged, updated, and added contracts in the complete assembled candidate" in prompt
         assert "Never copy a retained contract into additions" in prompt
         assert "Use authorized update slots to change an existing contract" in prompt
+        assert "A label-only edit cannot repair an incorrect sender or recipient" in prompt
+        assert "When endpoints conflict with accepted responsibilities" in prompt
+        assert "allowlisted removal and a complete replacement" in prompt
+        assert "correction delta defined by the supplied response schema" in prompt
+        assert "using INPUT.acceptance_criteria for these failed codes" in prompt
+        prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+        assert "correction_slots" not in prompt_input
+        assert prompt_input["correction_component_record_indexes"] == [
+            {"component_index": 0, "incoming_record_indexes": [1, 2], "outgoing_record_indexes": [0]},
+            {"component_index": 1, "incoming_record_indexes": [0], "outgoing_record_indexes": [1, 2]},
+            {"component_index": 7, "incoming_record_indexes": [], "outgoing_record_indexes": []},
+        ]
+        assert "rejected_candidate" not in prompt_input
+        assert "rejected_candidate" not in prompt.split("\nINPUT\n", 1)[0]
+        assert "authoritative complete rejected candidate" in prompt
+        prompt_wire, prompt_pairs = generation._parse_connection_response(
+            json.dumps({"exchanges": prompt_input["correction_exchanges"]}),
+            accepted_components=accepted,
+            edge_limit=8,
+        )
+        assert prompt_wire == original
+        assert prompt_pairs == pairs
+        assert prompt_input["correction_exchanges"][0]["response_label"] == "Tool result"
+        assert prompt_input["correction_exchanges"][1]["label"] == "Publish event"
+        assert prompt_input["correction_exchanges"][1]["response_label"] is None
+        assert prompt_input["findings"]["gate"] == findings
+        assert "edge_semantics" in prompt_input["acceptance_criteria"]
+        assert "inspect incoming contracts" in prompt
+        assert "before changing outgoing payloads" in prompt
+        assert "proves neither completeness nor ordering, and grants no edit authority" in prompt
+        assert "inspect retained exchanges, including locked records, and proposed updates" in prompt
+        assert "through required controls" in prompt
+        assert "each new request and expanded reply against the full assembled candidate" in prompt
+        assert "whitespace-normalized, case-folded label" in prompt
+        assert "Preserve declared handling for each consumed payload class" in prompt
+        assert "do not expand the write set or supplied schema permissions" in prompt
         return _response({"updates": {"slot_0": update}, "additions": [], "removals": []})
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
     result = await generation.generate_connection_candidate(
         request="Repair the tool return", resolved_maturity="prototype", write_set=write_set,
-        upstream_fingerprint="a" * 64, accepted_components=_accepted_components(),
+        upstream_fingerprint="a" * 64, accepted_components=accepted,
         accepted_context=_accepted_context(), attempt=1,
         prior_prompt_fingerprint="b" * 64,
         prior_write_set_fingerprint=generation._fingerprint(write_set),
@@ -2955,7 +3008,22 @@ async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
     assert result["wire"]["edges"][1]["label"] == "Validated tool result"
     assert result["wire"]["edges"][2] == original["edges"][2]
     assert result["connection_exchanges"] == pairs
-    assert generation._generation_schema_version("connections", delta.schema) == "staged_connections_exchange_correction_v1"
+    properties = delta.schema["properties"]["updates"]["properties"]["slot_0"][
+        "anyOf"
+    ][0]["properties"]
+    assert "source_index to target_index" in properties["label"]["description"]
+    assert (
+        "only from target_index to source_index"
+        in properties["response_label"]["description"]
+    )
+    assert "Use null" not in properties["response_label"]["description"]
+    for field in ("label", "response_label"):
+        assert properties[field]["type"] == "string"
+        assert properties[field]["minLength"] == 1
+        assert properties[field]["maxLength"] == contract.CONNECTION_LABEL_MAX_CHARS
+    assert generation._generation_schema_version("connections", delta.schema) == (
+        "staged_connections_exchange_correction_v2"
+    )
 
 
 @pytest.mark.parametrize("change", [{"response_label": None}, {"response_label": " "},
@@ -2981,6 +3049,62 @@ def test_paired_recovery_removal_reindexes_and_allows_explicit_rewire():
                      {"request_record_index": 1, "response_record_index": 2}]
     assert wire["edges"][1]["sync"] == wire["edges"][2]["sync"] == 501
 
+
+
+def test_rag_paired_recovery_rewires_only_cited_exchanges():
+    accepted = [
+        {**_accepted_components()[1], "index": index, "id": f"n{index + 1}",
+         "label": f"RAG owner {index + 1}", "is_root": index == 0}
+        for index in range(9)
+    ]
+    exchanges = [
+        {"source_index": source, "target_index": target, "label": label,
+         "response_label": reply, "flow": flow, "sync": sync}
+        for source, target, label, reply, flow, sync in [
+            (0, 1, "Submit question", None, 400, 500),
+            (1, 2, "Deliver question embedding", None, 400, 500),
+            (2, 3, "Request passages", "Return ranked passages", 400, 500),
+            (2, 5, "Deliver retrieved passages", None, 400, 500),
+            (5, 6, "Send augmented prompt", "Return grounded answer", 400, 500),
+            (6, 7, "Deliver answer with supporting passages", None, 400, 500),
+            (7, 0, "Present answer", None, 400, 501),
+            (4, 3, "Load chunks before runtime", None, 401, 501),
+            (8, 6, "Contrast retrieval and finetuning", None, 402, 501),
+        ]
+    ]
+    original, pairs = generation._parse_connection_response(
+        json.dumps({"exchanges": exchanges}), accepted_components=accepted, edge_limit=20,
+    )
+    snapshot = json.loads(json.dumps(original))
+    write_set = generation.create_write_set(component_limit=9, edge_limit=20)
+    delta = generation._semantic_correction_delta(
+        stage="connections", maturity="prototype", write_set=write_set, attempt=1,
+        rejected_candidate=original,
+        findings=[{"code": "edge_semantics", "path": "connections",
+                   "rule": "semantic_gate", "record_indexes": [7, 10]}],
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=accepted,
+        accepted_context=generation._accepted_context(_accepted_context()),
+        recovery_mode=True, connection_exchanges=pairs,
+    )
+    assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_5", "slot_8"}
+    replacement = {**exchanges[5], "source_index": 5}
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps({"updates": {"slot_5": replacement, "slot_8": None},
+                                   "additions": [], "removals": []}))
+    repaired, _ = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({
+            "updates": {"slot_5": None, "slot_8": None},
+            "additions": [replacement], "removals": [5, 8],
+        }))), accepted_components=accepted, edge_limit=20,
+    )
+    assert repaired["edges"][:-1] == [
+        edge for index, edge in enumerate(original["edges"]) if index not in {7, 10}
+    ]
+    assert repaired["edges"][-1] == {
+        key: value for key, value in replacement.items() if key != "response_label"
+    }
+    assert original == snapshot
 
 def test_paired_recovery_checks_expanded_edge_capacity():
     delta, *_ = _paired_recovery(limit=3)
@@ -3140,7 +3264,7 @@ async def test_component_recovery_uses_one_provider_call_and_keeps_output_limit(
     assert calls[0]["max_output_tokens"] == 777
     assert calls[0]["telemetry"]["metadata"]["correction_attempt"] == 1
     assert calls[0]["telemetry"]["metadata"]["schema_version"] == (
-        "staged_components_recovery_response_v1"
+        "staged_components_recovery_response_v3"
     )
     prompt = calls[0]["messages"][0]["content"]
     assert "Cited record indexes define repair scope, not mandatory rewrites" in prompt
@@ -3307,8 +3431,9 @@ def test_recovery_mixed_global_and_local_findings_allow_only_local_deletion():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("attempt", [1, 2])
 async def test_connection_recovery_removes_only_cited_edge_and_keeps_components(
-    monkeypatch,
+    monkeypatch, attempt,
 ):
     first = _connection_wire()["edges"][0]
     second = {**first, "source_index": 1, "target_index": 0, "label": "response"}
@@ -3337,7 +3462,7 @@ async def test_connection_recovery_removes_only_cited_edge_and_keeps_components(
         upstream_fingerprint="a" * 64,
         accepted_components=accepted,
         accepted_context=_accepted_context(),
-        attempt=1,
+        attempt=attempt,
         prior_prompt_fingerprint="b" * 64,
         prior_write_set_fingerprint=generation._fingerprint(write_set),
         gate_findings=[finding],
@@ -3351,16 +3476,18 @@ async def test_connection_recovery_removes_only_cited_edge_and_keeps_components(
     assert generation._generation_schema_version("connections", calls[0]["schema"]) == (
         "staged_connections_recovery_delta_v1"
     )
-    assert calls[0]["attempt"] == 1
+    assert calls[0]["attempt"] == attempt
     prompt = calls[0]["prompt"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert prompt_input["recovery_mode"] is True
     assert "simplest complete overview of the original request" in prompt
     assert "Connections cannot change the accepted components" in prompt
-    assert "Within changed contracts, preserve valid existing payload" in prompt
-    assert "provenance, scope, conditions, and alternate outcomes" in prompt
+    assert "Across changed contracts and replacement routes, preserve valid existing" in prompt
+    assert "provenance, scope, conditions, alternate outcomes, and authority" in prompt
     assert "unless an explicit finding requires their correction" in prompt
-    assert "Repair the full applicable criterion" in prompt
+    assert "Repair each finding's full criterion throughout the candidate, then recheck" in prompt
+    assert "including criteria that passed before correction" in prompt
+    assert "the receiving consumer's handling. Preserve already declared clauses." in prompt
     assert "do not expand the write set or supplied schema permissions" in prompt
     assert set(calls[0]["schema"]["properties"]["updates"]["properties"]) == {"slot_0"}
     assert "capabilities" not in calls[0]["schema"]["properties"]
@@ -3557,6 +3684,15 @@ def test_component_correction_added_owner_can_change_capabilities():
         ],
         schema=generation.component_generation_schema(write_set),
     )
+    responsibility = generation.component_generation_schema(write_set)["properties"][
+        "components"
+    ]["items"]["properties"]["responsibility"]
+    assert delta.schema["properties"]["additions"]["items"]["properties"][
+        "responsibility"
+    ] == responsibility
+    assert delta.schema["properties"]["updates"]["properties"]["slot_0"]["anyOf"][
+        0
+    ]["properties"]["responsibility"] == responsibility
     response = _delta_response(delta)
     assert response["updates"] == {"slot_0": None}
     response["additions"] = [
@@ -3583,6 +3719,17 @@ def test_create_exchange_schema_keeps_canonical_edges_unchanged():
     assert schema["required"] == ["exchanges"]
     item = schema["properties"]["exchanges"]["items"]
     assert item["additionalProperties"] is False
+    descriptions = {
+        field: item["properties"][field]["description"]
+        for field in ("source_index", "target_index", "label", "response_label")
+    }
+    assert "sending the label contract to target_index" in descriptions["source_index"]
+    assert "receiving the label contract from source_index" in descriptions["target_index"]
+    assert "source_index to target_index" in descriptions["label"]
+    assert "originate at their authoritative owner" in descriptions["label"]
+    assert "only from target_index to source_index" in descriptions["response_label"]
+    assert "originate or relay the authoritative payload or decision" in descriptions["response_label"]
+    assert "null for one-way owner-to-consumer delivery" in descriptions["response_label"]
     assert set(item["required"]) == {
         "source_index",
         "target_index",
@@ -3596,6 +3743,11 @@ def test_create_exchange_schema_keeps_canonical_edges_unchanged():
             "type": "string",
             "minLength": 1,
             "maxLength": contract.CONNECTION_LABEL_MAX_CHARS,
+            "description": (
+                generation._CONNECTION_REPLY_DESCRIPTION
+                + " At most 160 characters; target 60 or fewer. "
+                + "Preserve the branch, action, and outcome in a concise reply label."
+            ),
         },
         {"type": "null"},
     ]
@@ -3769,21 +3921,27 @@ def test_create_exchange_rejects_old_format_and_inexact_keys(payload):
 
 def test_create_exchange_rejects_duplicate_return_contract_after_expansion():
     paired = _connection_exchanges()["exchanges"][0]
-    duplicate = {
-        **paired,
-        "source_index": 1,
-        "target_index": 0,
-        "label": " RESPONSE ",
-        "response_label": None,
-    }
-    with pytest.raises(
-        generation.StagedGenerationError, match="connection_wire_invalid"
-    ):
+    compensation = {**paired, "label": "Invoke compensation write"}
+    with pytest.raises(generation.StagedGenerationError) as caught:
         generation._parse_connection_response(
-            json.dumps({"exchanges": [paired, duplicate]}),
+            json.dumps({"exchanges": [paired, compensation]}),
             accepted_components=_accepted_components(),
-            edge_limit=3,
+            edge_limit=4,
         )
+    error = caught.value
+    assert error.code == "connection_wire_invalid"
+    assert (error.diagnostic_reason, error.diagnostic_path) == (
+        "duplicate_edge",
+        "edges.3",
+    )
+    assert len(error.rejected_candidate["edges"]) == 4
+    assert error.rejected_candidate["edges"][2]["label"] == "Invoke compensation write"
+    original = error.rejected_candidate
+    copied = generation.StagedGenerationError(
+        "connection_wire_invalid", rejected_candidate=original
+    )
+    original["edges"][2]["label"] = "Changed caller data"
+    assert copied.rejected_candidate["edges"][2]["label"] == "Invoke compensation write"
 
 
 def test_create_exchange_empty_graph_uses_canonical_connectivity_policy():
@@ -3799,6 +3957,12 @@ async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_
     monkeypatch,
 ):
     calls = []
+    rejected = {
+        "edges": [
+            _connection_wire()["edges"][0],
+            {**_connection_wire()["edges"][0], "label": "Invoke compensation write"},
+        ]
+    }
 
     async def fake_stream(**kwargs):
         calls.append(kwargs)
@@ -3818,16 +3982,27 @@ async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_
         prior_write_set_fingerprint=_fingerprint(
             json.dumps(write_set, sort_keys=True, separators=(",", ":"))
         ),
-        rejected_candidate=_connection_wire(),
+        rejected_candidate=rejected,
         structural_findings=[
-            {"code": "connection_wire_invalid", "path": "edges", "rule": "shape"}
+            {
+                "code": "connection_wire_invalid",
+                "path": "edges.3",
+                "reason": "duplicate_edge",
+                "rule": "contract_validation",
+            }
         ],
     )
+    prompt_input = json.loads(
+        calls[0]["messages"][0]["content"].split("\nINPUT\n", 1)[1]
+    )
+    assert prompt_input["rejected_candidate"] == rejected
+    assert prompt_input["findings"]["structural"][0]["reason"] == "duplicate_edge"
+    assert prompt_input["findings"]["structural"][0]["path"] == "edges.3"
     assert len(calls) == 1
     assert set(calls[0]["response_schema"]["properties"]) == {"exchanges"}
     assert (
         calls[0]["telemetry"]["metadata"]["schema_version"]
-        == "staged_connections_exchanges_v1"
+        == "staged_connections_exchanges_v2"
     )
     assert result["wire"] == {
         "edges": [
@@ -3921,9 +4096,23 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
         gate_findings=[],
         base=base,
         rejected_candidate=None,
-        architecture_context="Source material describes the requested subject.",
+        architecture_context="Retrieved example: AI tools assist a neighboring subject and a different audience.",
     )
     instructions, payload = prompt.split("\nINPUT\n", 1)
+    criteria = json.loads(payload)["acceptance_criteria"]
+    for contract_text in (instructions, criteria["objective_fidelity"]):
+        assert "concrete lifecycle responsibilities or domain decisions" in contract_text
+        assert "depict the subject's mechanisms or decision process" in contract_text
+        assert "do not create a learner session, comparison or tutoring service" in contract_text
+        assert "evidence-retrieval architecture unless explicitly requested as product or system features" in contract_text
+        assert "service nodes must own real computation" in contract_text
+        assert "topic names may organize groups" in contract_text
+        assert "actual causal, adaptation, or lifecycle relationships" in contract_text
+        assert "network requests or returns" in contract_text
+        assert "Distinguish offline fine-tuning that changes model parameters" in contract_text
+        assert "For every request, preserve the requested subject, application domain, and learner audience" in contract_text
+        assert "even when retrieved examples concern a neighboring topic" in contract_text
+        assert contract_text.index("For every request") < contract_text.index("For an applied system design")
     assert (
         "preserve the subject's breadth in a mechanism, lifecycle, or topic map"
         in instructions
@@ -3938,13 +4127,6 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
     )
     assert "concrete lifecycle responsibilities, application categories, or relevant human decisions" in instructions
     assert "Distinguish conceptual techniques from runtime services" in instructions
-    assert "Type 101 is an independently deployable application service" in instructions
-    assert "Type 109 is an internal Component owned by an application service" in instructions
-    assert "requires parent_index pointing to a type 101 record" in instructions
-    assert "complete components array, using its zero-based index" in instructions
-    assert "Other types have no parent ownership" in instructions
-    assert "omit parent_index when optional, or use null when the update schema requires it" in instructions
-    assert "Do not infer ownership from groups or labels, or remap an invalid parent" in instructions
     complement = "choose a complementary responsibility for each addition that is not already owned"
     assert (complement in instructions) == has_base
     if has_base:
@@ -4003,7 +4185,7 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
         rejected_candidate=original,
         gate_findings=[
             {
-                "code": "retrieval_and_reuse_trust",
+                "code": "artifact_reuse_lifecycle",
                 "path": "connections",
                 "rule": "semantic_gate",
                 "reason": "The contract lacks invalidation and revalidation ownership.",
@@ -4013,9 +4195,17 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
     )
     prompt = calls[0]["prompt"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
-    assert "Within changed contracts, preserve valid existing payload" in prompt
-    assert "provenance, scope, conditions, and alternate outcomes" in prompt
-    assert "Repair the full applicable criterion" in prompt
+    assert "Across changed contracts and replacement routes, preserve valid existing" in prompt
+    assert "provenance, scope, conditions, alternate outcomes, and authority" in prompt
+    assert "Repair each finding's full criterion throughout the candidate, then recheck" in prompt
+    assert "including criteria that passed before correction" in prompt
+    assert "the receiving consumer's handling. Preserve already declared clauses." in prompt
+    assert generation.STAGED_PRODUCTION_REQUIREMENTS["artifact_reuse_lifecycle"] in prompt
+    assert (
+        "must preserve applied-operation deduplication and cannot authorize "
+        "repeating the same effect"
+    ) in prompt
+    assert prompt_input["findings"]["gate"][0]["code"] == "artifact_reuse_lifecycle"
     assert "do not expand the write set or supplied schema permissions" in prompt
     assert (
         prompt_input["rejected_candidate"]["updates"]["slot_0"]["label"]
@@ -4175,16 +4365,11 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
         response["additions"] = [{**retained, "label": normalized_variant}]
         duplicate_index = 17
     elif collision == "edited_retained":
-        response["updates"]["slot_7"] = {
-            **retained,
-            "label": normalized_variant,
-            "parent_index": None,
-        }
+        response["updates"]["slot_7"] = {**retained, "label": normalized_variant}
         duplicate_index = 7
     else:
         response["updates"]["slot_7"] = {
             **retained,
-            "parent_index": None,
             "label": "Straße lifecycle owner"
             if unicode_label
             else "New lifecycle owner",
@@ -4199,8 +4384,11 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
             response["additions"] = [duplicate]
             duplicate_index = 17
         else:
-            response["updates"]["slot_15"] = {**duplicate, "parent_index": None}
+            response["updates"]["slot_15"] = duplicate
             duplicate_index = 15
+    for update in response["updates"].values():
+        if update is not None:
+            update.setdefault("parent_index", None)
     calls = []
 
     async def fake_stream(**arguments):
@@ -4236,7 +4424,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
     )
     assert "Do not re-add retained components" in prompt
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v46"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v72"
     )
 
     # A fresh bounded response must fix the collision; invalid rows are never dropped.
@@ -4254,6 +4442,547 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
         )
     assert result["wire"]["components"][17:] == response["additions"]
     assert case["original_candidate"] == original
+
+
+@pytest.mark.asyncio
+async def test_structural_repair_rejected_candidate_size_bound_fails_before_provider(
+    monkeypatch,
+):
+    async def unexpected(**kwargs):
+        pytest.fail("Oversized rejected input must not reach provider")
+
+    monkeypatch.setattr(generation, "_run_generation", unexpected)
+    with pytest.raises(
+        generation.StagedGenerationError, match="generation_base_too_large"
+    ):
+        await generation.generate_connection_candidate(
+            request="Repair duplicate replies",
+            resolved_maturity="prototype",
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+            accepted_components=_accepted_components(),
+            accepted_context=_accepted_context(),
+            attempt=1,
+            prior_prompt_fingerprint="b" * 64,
+            prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+            structural_findings=[
+                {
+                    "code": "connection_wire_invalid",
+                    "path": "edges.3",
+                    "rule": "contract_validation",
+                }
+            ],
+            rejected_candidate={"edges": [{"label": "x" * 48001}]},
+        )
+
+
+@pytest.mark.parametrize("length", [221, 800])
+def test_component_responsibility_ceiling_preserves_complete_wire(length):
+    text = "Records " + "a" * (length - 9) + "."
+    wire = _component_wire()
+    wire["components"][0]["responsibility"] = text
+    parsed = generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert parsed["components"][0]["responsibility"] == text
+
+
+@pytest.mark.asyncio
+async def test_large_saved_responsibilities_fail_before_edit_provider_without_mutation(
+    monkeypatch,
+):
+    base = {
+        **_edit_base(),
+        "request_id": "large-saved",
+        "maturity": "prototype",
+        "connections": [],
+    }
+    template = base["components"][0]
+    base["components"] = [
+        {
+            **template,
+            "model_index": index,
+            "server_id": f"n{index + 1}",
+            "label": f"Owner {index}",
+            "responsibility": "x" * 800,
+            "primary_flow_member": index == 0,
+        }
+        for index in range(60)
+    ]
+    saved = contract.project_graph_data(contract.assign_server_ids(base))
+    imported = contract.reconstruct_staged_graph_build(saved)
+    original = json.dumps(saved, sort_keys=True)
+    original_base = json.dumps(imported, sort_keys=True)
+
+    async def unexpected(**kwargs):
+        pytest.fail("Oversized saved edit input must not reach provider")
+
+    monkeypatch.setattr(generation, "_run_generation", unexpected)
+    with pytest.raises(
+        generation.StagedGenerationError, match="generation_base_too_large"
+    ):
+        await generation.generate_component_candidate(
+            request="Clarify the first owner's responsibility.",
+            resolved_maturity="prototype",
+            architecture_context=_architecture_context(),
+            write_set={**_write_set(), "component_limit": 60},
+            upstream_fingerprint=_fingerprint("large saved base"),
+            base_components=imported,
+            edit_permissions=_permissions(
+                editable_node_fields={
+                    imported["components"][0]["server_id"]: ["description"]
+                }
+            ),
+        )
+    assert json.dumps(saved, sort_keys=True) == original
+    assert json.dumps(imported, sort_keys=True) == original_base
+
+
+def _expand_added_slot_definitions(provider, original):
+    added = set(provider.get("$defs", {})) - set(original.get("$defs", {}))
+
+    def expand(value):
+        if isinstance(value, dict):
+            reference = value.get("$ref")
+            if set(value) == {"$ref"} and reference.startswith("#/$defs/"):
+                name = reference.removeprefix("#/$defs/")
+                if name in added:
+                    return expand(provider["$defs"][name])
+            return {key: expand(child) for key, child in value.items()}
+        if isinstance(value, list):
+            return [expand(child) for child in value]
+        return value
+
+    result = expand(provider)
+    if added:
+        result["$defs"] = {
+            name: value for name, value in result["$defs"].items() if name not in added
+        }
+        if not result["$defs"] and "$defs" not in original:
+            result.pop("$defs")
+    return result
+
+
+@pytest.mark.parametrize("wrapped", [False, True])
+@pytest.mark.parametrize("nullable", [False, True])
+def test_provider_slot_definitions_preserve_complete_schema_and_original(
+    wrapped, nullable
+):
+    slot = generation._strict_object_schema(
+        {
+            "responsibility": {"type": "string", "minLength": 1, "maxLength": 800},
+            "response_label": {
+                "anyOf": [{"type": "string", "maxLength": 100}, {"type": "null"}]
+            },
+        }
+    )
+    if nullable:
+        slot = {
+            "description": "Retain null for unchanged slots.",
+            "anyOf": [slot, {"type": "null"}],
+        }
+    schema = generation._strict_object_schema(
+        {
+            "updates": generation._strict_object_schema(
+                {"slot_0": slot, "slot_1": slot}
+            ),
+            "removals": {"type": "array", "items": {"type": "integer", "enum": [0]}},
+            "root_index": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 0, "maximum": 1},
+                    {"type": "null"},
+                ]
+            },
+        }
+    )
+    if wrapped:
+        schema = generation._component_create_response_schema(schema)
+    schema["$defs"] = {"staged_update_slot_0": {"type": "boolean"}}
+    schema["properties"]["existing"] = {"$ref": "#/$defs/staged_update_slot_0"}
+    schema["required"].append("existing")
+    snapshot = json.loads(json.dumps(schema))
+    provider = generation._provider_generation_schema(schema)
+    assert schema == snapshot
+    assert provider["$defs"]["staged_update_slot_0"] == {"type": "boolean"}
+    assert len(provider["$defs"]) == 2
+    assert generation._canonical_json(
+        _expand_added_slot_definitions(provider, schema)
+    ) == generation._canonical_json(schema)
+
+
+@pytest.mark.parametrize(
+    "slots",
+    [
+        {},
+        {"slot_0": {"type": "string"}},
+        {"slot_0": {"type": "string"}, "slot_1": {"type": "string", "maxLength": 100}},
+    ],
+)
+def test_provider_slot_definitions_leave_empty_single_and_unequal_slots_unchanged(
+    slots,
+):
+    schema = generation._strict_object_schema(
+        {"updates": generation._strict_object_schema(slots)}
+    )
+    assert generation._provider_generation_schema(schema) is schema
+
+
+def test_provider_slot_definitions_preserve_native_recovery_permissions():
+    case = _retained_correction("applied_domain")
+    delta = _marketing_delta(case)
+    schema = generation._component_create_response_schema(delta.schema)
+    provider = generation._provider_generation_schema(schema)
+    expanded = _expand_added_slot_definitions(provider, schema)
+    assert generation._canonical_json(expanded) == generation._canonical_json(schema)
+    valid = _delta_response(delta)
+    assert delta.assemble(json.dumps(valid)) == delta.base
+    invalid = {**valid, "updates": {**valid["updates"], "slot_999": None}}
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps(invalid))
+
+
+def test_provider_slot_definitions_preserve_empty_existing_definitions():
+    schema = generation._strict_object_schema(
+        {
+            "updates": generation._strict_object_schema(
+                {
+                    "slot_0": {"type": "string"},
+                    "slot_1": {"type": "string"},
+                }
+            ),
+        }
+    )
+    schema["$defs"] = {}
+    provider = generation._provider_generation_schema(schema)
+    assert _expand_added_slot_definitions(provider, schema) == schema
+
+
+@pytest.mark.parametrize("corrected", [False, True])
+def test_connection_label_guidance_survives_provider_schema_and_shared_slots(corrected):
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    schema = (
+        _paired_recovery()[0].schema
+        if corrected
+        else generation._connection_create_response_schema(
+            generation.connection_generation_schema(_write_set())
+        )
+    )
+    if corrected:
+        updates = schema["properties"]["updates"]
+        updates["properties"]["slot_1"] = json.loads(json.dumps(updates["properties"]["slot_0"]))
+        updates["required"].append("slot_1")
+    original = json.loads(json.dumps(schema))
+    provider = generation._provider_generation_schema(schema)
+    transformed = _anthropic_response_schema(provider)
+    assert schema == original
+    if corrected:
+        assert provider["$defs"]  # Updates share one definition instead of duplicating bounds.
+
+    def labels(value):
+        if isinstance(value, dict):
+            properties = value.get("properties", {})
+            for field in ("label", "response_label"):
+                if field in properties:
+                    field_schema = properties[field]
+                    yield next(
+                        (branch for branch in field_schema.get("anyOf", [])
+                         if branch.get("type") == "string"), field_schema
+                    )
+            for child in value.values():
+                yield from labels(child)
+        elif isinstance(value, list):
+            for child in value:
+                yield from labels(child)
+
+    bounded = list(labels(transformed))
+    assert len(bounded) >= 2
+    for field in bounded:
+        assert "pattern" not in field
+        assert "maxLength" not in field
+        assert "At most 160 characters; target 60 or fewer" in field["description"]
+        assert "branch, action, and outcome" in field["description"]
+
+
+@pytest.mark.parametrize("unit", ["x", "é", "😀", "e\u0301"])
+def test_native_connection_label_parser_uses_codepoints(unit):
+    label = (unit * contract.CONNECTION_LABEL_MAX_CHARS)[:contract.CONNECTION_LABEL_MAX_CHARS]
+    row = {"source_index": 0, "target_index": 1, "label": label, "flow": 400, "sync": 500}
+    parsed = generation._parse_connection_wire(
+        json.dumps({"edges": [row]}), accepted_components=_accepted_components(), edge_limit=4,
+    )
+    assert parsed["edges"][0]["label"] == label
+    with pytest.raises(generation.StagedGenerationError) as error:
+        generation._parse_connection_wire(
+            json.dumps({"edges": [{**row, "label": label + "x"}]}),
+            accepted_components=_accepted_components(), edge_limit=4,
+        )
+    assert error.value.diagnostic_reason == "label_length"
+
+
+def test_native_connection_label_parser_keeps_newlines_and_blank_rejection():
+    label = "x" * 49 + "\n" + "x" * 50
+    row = {"source_index": 0, "target_index": 1, "label": label, "flow": 400, "sync": 500}
+    parsed = generation._parse_connection_wire(
+        json.dumps({"edges": [row]}), accepted_components=_accepted_components(), edge_limit=4,
+    )
+    assert parsed["edges"][0]["label"] == label
+    with pytest.raises(generation.StagedGenerationError):
+        generation._parse_connection_wire(
+            json.dumps({"edges": [{**row, "label": " " * 100}]}),
+            accepted_components=_accepted_components(), edge_limit=4,
+        )
+
+
+def test_observed_correction_label_is_admitted_without_truncation():
+    label = (
+        "Verified: valid facts with provenance and report version; "
+        "denied, out of scope or invalidated: refused"
+    )
+    assert len(label) == 102
+    wire = generation._parse_connection_wire(
+        json.dumps({"edges": [{
+            "source_index": 0, "target_index": 1, "label": label,
+            "flow": 400, "sync": 500,
+        }]}),
+        accepted_components=_accepted_components(), edge_limit=4,
+    )
+    assert wire["edges"][0]["label"] == label
+
+
+def _owned_component_wire() -> dict:
+    wire = _component_wire()
+    template = wire["components"][0]
+    wire["components"] = [
+        {**template, "label": "Student client", "type": 100},
+        {**template, "label": "Cache", "type": 102, "primary_flow_member": False},
+        {**template, "label": "Tutoring service", "type": 101},
+        {
+            **template,
+            "label": "Conversation coordinator",
+            "type": 109,
+            "parent_index": 2,
+        },
+    ]
+    return wire
+
+
+@pytest.mark.parametrize("removed_index", [1, 2])
+@pytest.mark.parametrize("recovery", [False, True])
+def test_component_removal_reindexes_owned_internals(removed_index, recovery):
+    original = _owned_component_wire()
+    if recovery:
+        delta = _recovery_delta("components", original, [removed_index])
+        response = {
+            "additions": [],
+            "updates": {f"slot_{removed_index}": None},
+            "capabilities": original["capabilities"],
+            "removals": [removed_index],
+        }
+    else:
+        base = {
+            **original,
+            "components": [
+                {
+                    **component,
+                    "type": generation.NODE_TYPE_CODES[component["type"]],
+                    "group_kind": "runtime",
+                    "model_index": index,
+                    "server_id": f"n{index}",
+                }
+                for index, component in enumerate(original["components"])
+            ],
+        }
+        permissions = _permissions(removable_node_ids=[f"n{removed_index}"])
+        delta = generation._component_edit_delta(
+            base,
+            permissions,
+            generation.component_generation_schema(
+                generation.create_write_set(component_limit=4, edge_limit=4),
+            ),
+        )
+        response = {
+            "additions": [],
+            "updates": {},
+            "capabilities": original["capabilities"],
+        }
+    if removed_index == 2:
+        with pytest.raises(
+            generation.StagedGenerationError, match="component_parent_removed"
+        ):
+            delta.assemble(json.dumps(response))
+        return
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
+    assert parsed["components"][2]["parent_index"] == 1
+    assert parsed["components"][1]["label"] == "Tutoring service"
+
+
+@pytest.mark.parametrize("parent", [None, True, "2", 2.0, -1, 1, 3, 9])
+def test_component_wire_requires_a_valid_application_service_parent(parent):
+    wire = _owned_component_wire()
+    wire["components"][3]["parent_index"] = parent
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_invalid"
+    assert caught.value.diagnostic_path == "components.3.parent_index"
+
+
+def test_component_wire_forbids_parent_on_application_service():
+    wire = _owned_component_wire()
+    wire["components"][2]["parent_index"] = 0
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_forbidden"
+    assert caught.value.diagnostic_path == "components.2.parent_index"
+
+
+@pytest.mark.parametrize("index,parent", [(2, None), (3, 2)])
+def test_component_correction_schema_requires_parent_field_in_nonnull_updates(
+    index, parent
+):
+    original = _owned_component_wire()
+    write_set = generation.create_write_set(component_limit=4, edge_limit=4)
+    delta = generation._semantic_correction_delta(
+        stage="components",
+        maturity="prototype",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=original,
+        findings=[
+            {
+                "code": "mece_scope",
+                "path": "components",
+                "rule": "semantic_gate",
+                "record_indexes": [index],
+            }
+        ],
+        schema=generation.component_generation_schema(write_set),
+    )
+    slot = f"slot_{index}"
+    update_schema = delta.schema["properties"]["updates"]["properties"][slot]["anyOf"][
+        0
+    ]
+    assert "parent_index" in update_schema["required"]
+    update = {**original["components"][index], "parent_index": parent}
+    response = {**delta.extract(original), "updates": {slot: update}}
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
+    assert parsed["components"][index]["parent_index"] == parent
+    del update["parent_index"]
+    with pytest.raises(
+        generation.StagedGenerationError, match="staged_generation_schema_invalid"
+    ):
+        delta.assemble(json.dumps(response))
+
+
+def test_component_wire_requires_explicit_parent_without_inference():
+    wire = _owned_component_wire()
+    del wire["components"][3]["parent_index"]
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_invalid"
+    assert caught.value.diagnostic_path == "components.3.parent_index"
+
+
+@pytest.mark.parametrize("forbidden", [False, True])
+def test_component_parent_failure_reaches_retry_prompt(forbidden):
+    from agent import staged_graph_workflow as workflow
+
+    wire = _owned_component_wire()
+    index = 2 if forbidden else 3
+    wire["components"][index]["parent_index"] = 0
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    reason = "component_parent_forbidden" if forbidden else "component_parent_invalid"
+    path = f"components.{index}.parent_index"
+    diagnostic = workflow._failure_diagnostic(
+        caught.value,
+        stage="components",
+        attempt=1,
+        candidate=None,
+    )
+    assert diagnostic["reason"] == reason
+    assert diagnostic["path"] == path
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    finding = workflow._safe_finding(caught.value, stage="components")
+    assert finding["reason"] == reason
+    assert finding["path"] == path
+    prompt, _ = generation._attempt_prompt(
+        stage="components",
+        request="Expand tutoring internals.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[finding],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context=_architecture_context(),
+    )
+    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert payload["findings"]["structural"][0]["reason"] == reason
+    assert payload["findings"]["structural"][0]["path"] == path
+
+
+def test_component_correction_can_assign_an_added_service_owner():
+    original = _owned_component_wire()
+    delta = _recovery_delta("components", original, [1], component_limit=5)
+    new_service = {**original["components"][2], "label": "Cache service"}
+    updated = {**original["components"][1], "type": 109, "parent_index": 4}
+    response = {
+        "updates": {"slot_1": updated},
+        "additions": [new_service],
+        "capabilities": original["capabilities"],
+        "removals": [],
+    }
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    assert parsed["components"][1]["parent_index"] == 4
+    assert parsed["components"][4]["label"] == "Cache service"
+
+
+def test_component_correction_preserves_explicit_parent_after_removal():
+    original = _owned_component_wire()
+    practice_service = {**original["components"][2], "label": "Practice service"}
+    original["components"].insert(3, practice_service)
+    delta = _recovery_delta("components", original, [1, 4], component_limit=5)
+    response = {
+        "updates": {
+            "slot_1": None,
+            "slot_4": {**original["components"][4], "parent_index": 2},
+        },
+        "additions": [],
+        "capabilities": original["capabilities"],
+        "removals": [1],
+    }
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    assert parsed["components"][3]["parent_index"] == 2
+    assert parsed["components"][2]["label"] == "Practice service"
+
+
+
+
+def test_scoped_component_edit_rejects_null_update_and_versions_additions_schema():
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(editable_node_fields={"n1": ["label"]}),
+        generation.component_generation_schema(_write_set()),
+    )
+    response = delta.extract(delta.base)
+    assert response["updates"]["slot_0"] == {"label": "Request gateway"}
+    assert generation._generation_schema_version("components", delta.schema) == (
+        "staged_components_delta_v7"
+    )
+    response["updates"]["slot_0"] = None
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps(response))
 
 
 @pytest.mark.parametrize(
@@ -4516,7 +5245,7 @@ def test_component_edit_additions_provider_schema_requires_owned_component_paren
     ) | {"parent_index"}
     assert (
         generation._generation_schema_version("components", delta.schema)
-        == "staged_components_delta_v3"
+        == "staged_components_delta_v7"
     )
     assert (
         generation._generation_schema_version(
@@ -4711,7 +5440,7 @@ async def test_component_extension_telemetry_versions_actual_wrapped_edit_schema
     assert "anyOf" in candidate_schema["properties"]["additions"]["items"]
     assert (
         calls[0]["telemetry"]["metadata"]["schema_version"]
-        == "staged_components_edit_response_v1"
+        == "staged_components_edit_response_v2"
     )
 
 
@@ -4755,3 +5484,505 @@ def test_component_edit_parent_eligibility_includes_authorized_type_updates(targ
         with pytest.raises(generation.StagedGenerationError) as caught:
             generation._parse_component_wire(json.dumps(assembled), component_limit=5)
         assert caught.value.diagnostic_reason == "component_parent_invalid"
+
+
+
+@pytest.mark.asyncio
+async def test_high_service_expansion_uses_factored_schema_and_native_delta(monkeypatch):
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(editable_node_fields={"n1": ["label"], "n2": ["label"]}),
+        generation.component_generation_schema(_write_set()),
+    )
+    schema = json.loads(json.dumps(delta.schema))
+    response = delta.extract(delta.base)
+    captured = []
+
+    async def expand(**kwargs):
+        captured.append(kwargs)
+        return _response(response)
+
+    monkeypatch.setattr(generation, "expand_application_services", expand)
+    raw = await generation._run_generation(
+        stage="components", prompt="Inspect the declared high-complexity expansion.",
+        schema=delta.schema, prompt_fingerprint="a" * 64,
+        state={"service_expansion": {"complexity": "high"}}, attempt=1,
+        upstream_fingerprint="b" * 64, write_set=_write_set(),
+        timeout_seconds=130, max_output_tokens=65536,
+    )
+    assert len(captured) == 1
+    expected = generation._provider_generation_schema(schema)
+    assert captured[0]["response_schema"] == expected
+    assert "$defs" in expected
+    assert delta.schema == schema
+    assert delta.assemble(raw) == delta.base
+    response["updates"]["slot_0"]["unknown"] = "Invalid field"
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps(response))
+
+
+def test_component_metadata_bounds_survive_provider_transformation_and_repairs():
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    canonical = generation.component_generation_schema(_write_set())
+    schemas = [canonical]
+    rejected = _component_wire()
+    rejected["components"].append(
+        {**rejected["components"][0], "label": "Request processor"}
+    )
+    for recovery_mode in (False, True):
+        delta = generation._semantic_correction_delta(
+            stage="components",
+            maturity="prototype",
+            write_set=_write_set(),
+            attempt=1,
+            rejected_candidate=rejected,
+            findings=[
+                {
+                    "code": "objective_fidelity",
+                    "path": "components",
+                    "rule": "semantic_gate",
+                    "record_indexes": [],
+                }
+            ],
+            schema=canonical,
+            recovery_mode=recovery_mode,
+        )
+        assert delta is not None
+        schemas.append(delta.schema)
+
+    for schema in schemas:
+        wrapped = generation._component_create_response_schema(schema)
+        original = json.loads(json.dumps(wrapped))
+        provider = generation._provider_generation_schema(wrapped)
+        transformed = _anthropic_response_schema(provider)
+        assert wrapped == original
+        if "updates" in schema["properties"]:
+            assert provider["$defs"]
+            for definition in transformed["$defs"].values():
+                slot = definition["anyOf"][0]
+                assert slot["properties"]["label"]["description"] == (
+                    f"At most {contract.COMPONENT_LABEL_MAX_CHARS} characters."
+                )
+                assert slot["properties"]["group_label"]["description"] == (
+                    f"At most {contract.GROUP_LABEL_MAX_CHARS} characters."
+                )
+        fields = transformed["properties"]["candidate"]["anyOf"][0]["properties"]
+        assert fields["title"]["description"] == (
+            f"At most {contract.TITLE_MAX_CHARS} characters."
+        )
+        assert "maxLength" not in fields["title"]
+        assert fields["assumptions"]["description"] == (
+            f"At most {generation._MAX_ASSUMPTIONS} assumptions."
+        )
+        assert "maxItems" not in fields["assumptions"]
+        assert fields["assumptions"]["items"]["description"] == (
+            f"At most {contract.ASSUMPTION_MAX_CHARS} characters."
+        )
+        record = (
+            fields["components"]["items"]
+            if "components" in fields
+            else fields["additions"]["items"]
+        )
+        for name, limit in (
+            ("label", contract.COMPONENT_LABEL_MAX_CHARS),
+            ("group_label", contract.GROUP_LABEL_MAX_CHARS),
+        ):
+            assert record["properties"][name]["description"] == f"At most {limit} characters."
+            assert "maxLength" not in record["properties"][name]
+        questions = transformed["properties"]["clarification_questions"]["items"]
+        assert questions["description"] == (
+            f"At most {generation._CLARIFICATION_QUESTION_MAX_CHARS} characters."
+        )
+        assert "maxLength" not in questions
+
+    boundary = {**_component_wire(), "title": "x" * contract.TITLE_MAX_CHARS}
+    assert generation._parse_component_wire(
+        json.dumps(boundary), component_limit=4
+    )["title"] == boundary["title"]
+    with pytest.raises(generation.StagedGenerationError) as error:
+        generation._parse_component_wire(
+            json.dumps({**boundary, "title": boundary["title"] + "x"}),
+            component_limit=4,
+        )
+    assert error.value.diagnostic_reason == "title_length"
+    assert error.value.diagnostic_path == "title"
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_exchange_correction_prompt_preserves_rejected_input_bound(oversized):
+    delta, original, _, write_set, findings = _paired_recovery()
+    rejected = original if not oversized else {"padding": "x" * 48001}
+    arguments = dict(
+        stage="connections", request="Repair the tool return",
+        resolved_maturity="prototype", write_set=write_set,
+        upstream_fingerprint="a" * 64, attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        structural_findings=[], gate_findings=findings, base=None,
+        rejected_candidate=rejected, accepted_components=_accepted_components(),
+        accepted_context=generation._accepted_context(_accepted_context()),
+        correction_delta=delta, recovery_mode=True,
+    )
+    if oversized:
+        with pytest.raises(
+            generation.StagedGenerationError, match="generation_base_too_large"
+        ):
+            generation._attempt_prompt(**arguments)
+    else:
+        prompt, _ = generation._attempt_prompt(**arguments)
+        payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+        assert "rejected_candidate" not in payload
+        assert payload["correction_exchanges"] == delta.base["exchanges"]
+
+
+def test_global_connection_correction_keeps_expanded_rejected_candidate():
+    delta, original, _, write_set, findings = _paired_recovery(global_finding=True)
+    assert delta.record_key == "edges"
+    prompt, _ = generation._attempt_prompt(
+        stage="connections", request="Repair all contracts",
+        resolved_maturity="prototype", write_set=write_set,
+        upstream_fingerprint="a" * 64, attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        structural_findings=[], gate_findings=findings, base=None,
+        rejected_candidate=original, accepted_components=_accepted_components(),
+        accepted_context=generation._accepted_context(_accepted_context()),
+        correction_delta=delta, recovery_mode=True,
+    )
+    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert payload["rejected_candidate"] == original
+    assert "correction_exchanges" not in payload
+    assert " The rejected_candidate is preserved by the server. Return only the " in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stage,attempt",
+    [
+        ("components", 2), ("connections", 3),
+        ("connections", 1.5), ("connections", True), ("components", False),
+    ],
+)
+async def test_generation_rejects_attempt_beyond_configured_stage_limit(
+    monkeypatch, stage, attempt,
+):
+    async def generate(**kwargs):
+        raise AssertionError("out-of-range attempts must not call the provider")
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    arguments = dict(
+        request="Repair the request path.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=attempt,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[{"code": "failed", "path": stage, "rule": "shape"}],
+    )
+    if stage == "components":
+        arguments["architecture_context"] = _architecture_context()
+        generate_candidate = generation.generate_component_candidate
+    else:
+        arguments["accepted_components"] = _accepted_components()
+        arguments["accepted_context"] = _accepted_context()
+        generate_candidate = generation.generate_connection_candidate
+    with pytest.raises(
+        generation.StagedGenerationError, match="correction_attempt_limit_exceeded"
+    ):
+        await generate_candidate(**arguments)
+
+
+@pytest.mark.parametrize(
+    "source,target,allowed",
+    [
+        (16, 9, False),
+        (17, 9, False),
+        (1, 2, False),
+        (1, 16, True),
+        (16, 1, True),
+        (16, 17, True),
+    ],
+)
+def test_extension_addition_schema_limits_endpoints_to_plan(source, target, allowed):
+    components = [{"id": f"n{i + 1}", "index": i} for i in range(18)]
+    base = [
+        {
+            "source_index": 1,
+            "target_index": 2,
+            "label": "saved",
+            "flow": 400,
+            "sync": 500,
+        }
+    ]
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        allowed_new_edge_count=2,
+        minimum_new_edge_count=0,
+    )
+    delta = generation._connection_edit_delta(
+        base,
+        permissions,
+        generation.connection_generation_schema(_write_set()),
+        components,
+        connection_addition_plan={
+            "anchor_component_indexes": [1, 2],
+            "accepted_addition_indexes": [16, 17],
+        },
+    )
+    branches = delta.schema["properties"]["additions"]["items"]["anyOf"]
+    assert (
+        any(
+            source in branch["properties"]["source_index"]["enum"]
+            and target in branch["properties"]["target_index"]["enum"]
+            for branch in branches
+        )
+        is allowed
+    )
+    for branch in branches:
+        assert branch["additionalProperties"] is False
+        assert branch["required"] == [
+            "source_index",
+            "target_index",
+            "label",
+            "flow",
+            "sync",
+        ]
+        assert branch["properties"]["source_index"]["type"] == "integer"
+        assert branch["properties"]["target_index"]["type"] == "integer"
+    if allowed:
+        edge = {
+            **base[0],
+            "source_index": source,
+            "target_index": target,
+            "label": "new",
+        }
+        wire = delta.assemble(json.dumps({"updates": {}, "additions": [edge]}))
+        assert wire["edges"] == [base[0], edge]
+        generation._parse_connection_wire(
+            json.dumps(wire), accepted_components=components, edge_limit=10
+        )
+    assert delta.base["edges"] == base
+
+
+@pytest.mark.parametrize("plan", [None, {"anchor_component_indexes": [1]}])
+def test_extension_addition_schema_requires_accepted_plan(plan):
+    with pytest.raises(
+        generation.StagedGenerationError, match="edit_connection_plan_invalid"
+    ):
+        generation._connection_edit_delta(
+            [],
+            _permissions(connection_addition_mode="extension"),
+            generation.connection_generation_schema(_write_set()),
+            _accepted_components(),
+            connection_addition_plan=plan,
+        )
+
+
+def test_extension_without_new_components_has_no_addition_capacity():
+    delta = generation._connection_edit_delta(
+        [],
+        _permissions(
+            connection_addition_mode="extension",
+            allowed_new_edge_count=2,
+            minimum_new_edge_count=0,
+        ),
+        generation.connection_generation_schema(_write_set()),
+        _accepted_components(),
+        connection_addition_plan={
+            "anchor_component_indexes": [0],
+            "accepted_addition_indexes": [],
+        },
+    )
+    assert delta.schema["properties"]["additions"]["maxItems"] == 0
+    assert "anyOf" not in delta.schema["properties"]["additions"]["items"]
+    assert delta.assemble('{"updates":{},"additions":[]}') == {"edges": []}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage", ["components", "connections"])
+async def test_service_expansion_parent_interfaces_survive_author_correction(
+    monkeypatch, stage
+):
+    calls = []
+    addition = {**_component_wire()["components"][0], "type": 109, "parent_index": 0}
+    edge = {
+        "source_index": 0,
+        "target_index": 2,
+        "label": "process request",
+        "flow": 400,
+        "sync": 500,
+    }
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {
+                "candidate": {
+                    "updates": {},
+                    "additions": [addition if stage == "components" else edge],
+                    **(
+                        {"capabilities": _edit_base()["capabilities"]}
+                        if stage == "components"
+                        else {}
+                    ),
+                },
+                "clarification_questions": [],
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        minimum_new_node_count=1,
+        allowed_new_node_count=1,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=2,
+        added_edge_anchor_node_ids=["n2", "n1"],
+        enforce_added_edge_contract_label=False,
+        service_expansion_target_ids=["n1"],
+        service_expansion_anchors={"n1": ["n2", "n1"]},
+    )
+    kwargs = dict(
+        request="Expand the service.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        edit_permissions=permissions,
+        state={"service_expansion": {"target_service_ids": ["n1"]}},
+    )
+    if stage == "components":
+        kwargs.update(
+            base_components=_edit_base(),
+            baseline_connections=[],
+            architecture_context=_architecture_context(),
+        )
+        author = generation.generate_component_candidate
+    else:
+        kwargs.update(
+            accepted_components=[
+                {
+                    "id": "n1",
+                    "index": 0,
+                    "type": 101,
+                    "responsibility": "Processes requests.",
+                },
+                {
+                    "id": "n2",
+                    "index": 1,
+                    "type": 102,
+                    "responsibility": "Stores results.",
+                },
+                {
+                    "id": "new",
+                    "index": 2,
+                    "type": 109,
+                    "parent_index": 0,
+                    "responsibility": "Processes requests.",
+                },
+            ],
+            saved_component_ids=["n1", "n2"],
+            base_connections=[],
+            accepted_context=_accepted_context(),
+        )
+        author = generation.generate_connection_candidate
+    first = await author(**kwargs)
+    await author(
+        **kwargs,
+        attempt=1,
+        prior_prompt_fingerprint=first["prompt_fingerprint"],
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        rejected_candidate=first["wire"],
+        structural_findings=[
+            {
+                "code": "invalid_contract",
+                "path": stage,
+                "rule": "contract_validation",
+                "reason": "An internal connection must remain within its parent interface.",
+            }
+        ],
+    )
+    plans = [
+        json.loads(call["prompt"].split("\nINPUT\n", 1)[1])["connection_addition_plan"]
+        for call in calls
+    ]
+    assert plans[0] == plans[1]
+    assert plans[0]["parent_interfaces"] == [
+        {"parent_index": 0, "anchor_component_indexes": [0, 1]}
+    ]
+    assert calls[0]["schema"] == calls[1]["schema"]
+    for call in calls:
+        assert (
+            "union of anchors does not grant cross-parent authority" in call["prompt"]
+        )
+        assert "every affected writer and consumer" in call["prompt"]
+        assert "compatible with the frozen graph" in call["prompt"]
+
+
+def test_service_expansion_parent_interfaces_use_numeric_order_and_actual_ids():
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        allowed_new_node_count=2,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=6,
+        added_edge_anchor_node_ids=["n10", "n2", "shared"],
+        enforce_added_edge_contract_label=False,
+        service_expansion_target_ids=["n2", "n10"],
+        service_expansion_anchors={"n2": ["shared", "n2"], "n10": ["shared", "n10"]},
+    )
+    plan = generation._connection_addition_plan(
+        permissions, {"shared": 2, "n2": 1, "n10": 0}
+    )
+    assert plan["parent_interfaces"] == [
+        {"parent_index": 0, "anchor_component_indexes": [0, 2]},
+        {"parent_index": 1, "anchor_component_indexes": [1, 2]},
+    ]
+    assert permissions["service_expansion_anchors"]["n2"] == ["shared", "n2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"service_expansion_anchors": None},
+        {"service_expansion_target_ids": None},
+        {"service_expansion_target_ids": ["unknown"]},
+        {"service_expansion_target_ids": ["n1", "n1"]},
+        {"service_expansion_anchors": {"unknown": ["n1", "n2"]}},
+        {"service_expansion_anchors": {"n1": ["n2"]}},
+        {"service_expansion_anchors": {"n1": ["n1", "unknown"]}},
+        {"service_expansion_anchors": {"n1": ["n1", "n1", "n2"]}},
+        {"service_expansion_anchors": {"n1": ["n1"]}},
+    ],
+)
+async def test_malformed_service_expansion_parent_scope_prevents_provider_call(
+    monkeypatch, change
+):
+    async def generate(**kwargs):
+        pytest.fail("Malformed parent interfaces must fail before the provider call")
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        allowed_new_node_count=1,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=2,
+        added_edge_anchor_node_ids=["n1", "n2"],
+        enforce_added_edge_contract_label=False,
+        service_expansion_target_ids=["n1"],
+        service_expansion_anchors={"n1": ["n1", "n2"]},
+    )
+    permissions.update(change)
+    with pytest.raises(
+        generation.StagedGenerationError, match="edit_connection_plan_invalid"
+    ):
+        await generation.generate_component_candidate(
+            request="Expand the service.",
+            resolved_maturity="prototype",
+            architecture_context=_architecture_context(),
+            write_set=_write_set(),
+            upstream_fingerprint="a" * 64,
+            base_components=_edit_base(),
+            edit_permissions=permissions,
+        )

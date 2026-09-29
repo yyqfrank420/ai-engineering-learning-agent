@@ -47,12 +47,16 @@ from eval.runtime_budget import (
 from eval.staging_runner import (
     detect_route,
     extract_workers,
+    parse_sse_events,
 )
 
 
 ROOT = Path(__file__).resolve().parents[2]
 QUALITY_MANIFEST = ROOT / "ci" / "quality.json"
 EVAL_AUTH_STORAGE_KEY = "ai-engineering-eval-auth"
+_SUBMISSION_TIMEOUT_ALERT = (
+    "Checking your request timed out. Your draft is saved. Please try again."
+)
 _BOOK_CITATION = re.compile(
     r"Chapter\s+(?P<chapter>\d+)\s*[,;:]?\s*(?:p(?:age)?\.?\s*)(?P<page>\d+)",
     re.I,
@@ -410,20 +414,39 @@ async def _send_step(
         composer_stop = page.locator(".split-pane__conversation").get_by_role(
             "button", name="Stop generation", exact=True
         )
+        submission_alert = page.locator(".chat-composer").get_by_role("alert")
         await textarea.fill(case.steps[step_index].prompt)
         await page.get_by_label("Send message").click()
         stop_visible = asyncio.create_task(
             composer_stop.wait_for(state="visible", timeout=20_000)
         )
+        alert_visible = asyncio.create_task(
+            submission_alert.wait_for(state="visible", timeout=20_000)
+        )
         try:
-            while not stop_visible.done() and not turn_done():
+            while (
+                not stop_visible.done() and not alert_visible.done() and not turn_done()
+            ):
                 await asyncio.sleep(0.05)
             if not turn_done():
+                if (
+                    alert_visible.done()
+                    and not alert_visible.cancelled()
+                    and alert_visible.exception() is None
+                ):
+                    alert_text = (await submission_alert.inner_text()).strip()
+                    message = f"case {case.id} turn {step_index + 1} submission failed: {alert_text}"
+                    if alert_text == _SUBMISSION_TIMEOUT_ALERT:
+                        raise BrowserInfrastructureError(
+                            "browser_submission_timeout", message
+                        )
+                    raise BrowserQualityError("browser_submission_failed", message)
                 await stop_visible
         finally:
-            if not stop_visible.done():
-                stop_visible.cancel()
-            await asyncio.gather(stop_visible, return_exceptions=True)
+            for task in (stop_visible, alert_visible):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(stop_visible, alert_visible, return_exceptions=True)
     except PlaywrightError as exc:
         raise BrowserQualityError(
             "browser_ui_interaction_failed",
@@ -1395,30 +1418,133 @@ async def _node_followup_interaction_failure_details(
     if case.id != "node-followup" or graph is None or existing_failure_details:
         return []
 
+    failures: list[dict[str, Any]] = []
+    capture_installed = False
     try:
-        # Use the same accessible activation path available to keyboard users
-        # and prove the optional refinement starts.
-        first_node = page.get_by_role("button", name=re.compile(r"^Explore ")).first
-        async with page.expect_request(
-            lambda request: (
-                request.method == "POST"
-                and request.url.rstrip("/").endswith("/api/node-selected")
-            ),
-            timeout=10_000,
-        ):
-            await first_node.press("Enter", timeout=10_000)
-        await page.locator('[data-testid="suggested-question"]').first.wait_for(
-            timeout=10_000
-        )
-    except Exception as exc:
-        return [
-            _failure_detail(
-                "quality",
-                "node_followup_interaction_failed",
-                f"node follow-up interaction failed: {type(exc).__name__}: {exc}",
+        # Chromium may discard SSE response bodies before CDP reads them.
+        turn_timeout_seconds = application_turn_timeout_seconds()
+        async with asyncio.timeout(turn_timeout_seconds):
+            await page.evaluate("""() => {
+                if (window.__evaluationNodeFollowupCapture) {
+                    throw new Error('node refinement capture already installed');
+                }
+                const state = {originalFetch: window.fetch, records: []};
+                window.__evaluationNodeFollowupCapture = state;
+                window.fetch = function(...args) {
+                    const pending = state.originalFetch.apply(this, args);
+                    try {
+                        const [input, options = {}] = args;
+                        const url = new URL(typeof input === 'string' ? input : input.url,
+                                            location.href);
+                        if (options.method === 'POST' &&
+                            url.pathname.replace(/[/]$/, '') === '/api/node-selected') {
+                            const body = JSON.parse(options.body);
+                            const record = {url: url.href,
+                                client_request_id: body.client_request_id,
+                                status: null, body: null, error: null, complete: false};
+                            state.records.push(record);
+                            pending.then(response => {
+                                record.status = response.status;
+                                return response.clone().text();
+                            }).then(text => {
+                                record.body = text;
+                                record.complete = true;
+                            }).catch(error => {
+                                record.error = String(error);
+                                record.complete = true;
+                            });
+                        }
+                    } catch {
+                        state.setupError = 'node refinement observation setup failed';
+                    }
+                    return pending;
+                };
+            }""")
+            capture_installed = True
+            first_node = page.get_by_role("button", name=re.compile(r"^Explore ")).first
+            async with page.expect_request(
+                lambda request: (
+                    request.method == "POST"
+                    and request.url.rstrip("/").endswith("/api/node-selected")
+                ),
+                timeout=10_000,
+            ) as request_info:
+                await first_node.press("Enter", timeout=10_000)
+            request = await request_info.value
+            request_body = request.post_data_json
+            client_request_id = request_body.get("client_request_id")
+            if not isinstance(client_request_id, str) or not client_request_id:
+                raise RuntimeError("node refinement request identity is missing")
+            match = {"url": request.url, "client_request_id": client_request_id}
+            await page.wait_for_function(
+                """match => window.__evaluationNodeFollowupCapture.setupError ||
+                    window.__evaluationNodeFollowupCapture.records.some(record =>
+                        record.url === match.url &&
+                        record.client_request_id === match.client_request_id && record.complete)
+                """, arg=match, timeout=turn_timeout_seconds * 1000,
             )
-        ]
-    return []
+            captures = await page.evaluate(
+                """match => window.__evaluationNodeFollowupCapture.records.filter(record =>
+                    record.url === match.url &&
+                    record.client_request_id === match.client_request_id)
+                """, match,
+            )
+            if len(captures) != 1 or captures[0]["error"]:
+                raise RuntimeError("node refinement response capture failed")
+            capture = captures[0]
+            if not isinstance(capture["status"], int) or not 200 <= capture["status"] < 300:
+                raise RuntimeError("node refinement response was not successful")
+            events = parse_sse_events(capture["body"])
+            if not events or events[-1].get("type") != "done":
+                raise RuntimeError("node refinement stream did not complete")
+            if any(event.get("type") == "error" for event in events):
+                raise RuntimeError("node refinement stream reported an error")
+            if not case.deterministic.provider_fallback_allowed and any(
+                event.get("type") == "provider_switch" for event in events
+            ):
+                raise RuntimeError("node refinement used a forbidden provider fallback")
+            suggestions = [
+                event.get("questions") for event in events
+                if event.get("type") == "suggested_questions"
+            ]
+            if len(suggestions) != 1 or not isinstance(suggestions[0], list):
+                raise RuntimeError("node refinement did not return suggested questions")
+            questions = suggestions[0]
+            if len(questions) != 3 or any(
+                not isinstance(question, str) or not question.strip()
+                for question in questions
+            ):
+                raise RuntimeError("node refinement must return three nonempty questions")
+            await page.wait_for_function(
+                """questions => {
+                    const chips = [...document.querySelectorAll(
+                        '[data-testid="suggested-question"]'
+                    )].map(chip => chip.textContent.trim());
+                    return JSON.stringify(chips) === JSON.stringify(questions);
+                }""",
+                arg=[question.strip() for question in questions],
+                timeout=turn_timeout_seconds * 1000,
+            )
+    except Exception as exc:
+        failures.append(_failure_detail(
+            "quality", "node_followup_interaction_failed",
+            f"node follow-up interaction failed: {type(exc).__name__}: {exc}",
+        ))
+    finally:
+        if capture_installed:
+            try:
+                async with asyncio.timeout(10):
+                    await page.evaluate("""() => {
+                        const state = window.__evaluationNodeFollowupCapture;
+                        window.fetch = state.originalFetch;
+                        delete window.__evaluationNodeFollowupCapture;
+                    }""")
+            except Exception as exc:
+                failures.append(_failure_detail(
+                    "quality", "node_followup_interaction_failed",
+                    f"node follow-up capture cleanup failed: {type(exc).__name__}: {exc}",
+                ))
+    return failures
 
 
 def _deterministic_failure_details(

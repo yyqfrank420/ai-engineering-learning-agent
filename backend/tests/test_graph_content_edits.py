@@ -591,13 +591,13 @@ def test_patch_requires_an_existing_graph(temp_data_dir):
         },
         {
             "expected_version": "graph-v1",
-            "nodes": [{"id": "gateway", "description": "x" * 221}],
+            "nodes": [{"id": "gateway", "description": "x" * 801}],
         },
         {
             "expected_version": "graph-v1",
             "nodes": [{"id": "gateway", "technology": "x" * 101}],
         },
-        {"expected_version": "graph-v1", "edges": [{"index": 0, "label": "x" * 101}]},
+        {"expected_version": "graph-v1", "edges": [{"index": 0, "label": "x" * 161}]},
         {
             "expected_version": "graph-v1",
             "edges": [{"index": 0, "description": "x" * 221}],
@@ -772,3 +772,28 @@ def test_content_edit_cannot_create_component_without_owner():
                 nodes=[{"id": "gateway", "type": "component"}],
             ),
         )
+
+
+@pytest.mark.parametrize("length", [221, 800])
+def test_node_description_ceiling_preserves_saved_edit(temp_data_dir, length):
+    thread_id, before = _seed()
+    text = "Records " + "a" * (length - 9) + "."
+    with _client() as client:
+        response = _patch(
+            client,
+            thread_id,
+            before["version"],
+            nodes=[{"id": "gateway", "description": text}],
+        )
+    assert response.status_code == 200
+    saved = get_graph("user-1", thread_id)
+    node = next(n for n in saved["nodes"] if n["id"] == "gateway")
+    assert node["description"] == text
+
+
+def test_edge_description_ceiling_stays_220():
+    from graph.content_edit import EdgeContentEdit
+
+    assert EdgeContentEdit(index=0, description="x" * 220).description == "x" * 220
+    with pytest.raises(ValueError):
+        EdgeContentEdit(index=0, description="x" * 221)

@@ -18,13 +18,15 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Mapping
 from functools import lru_cache
 import hashlib
 import inspect
 import json
 import logging
+import math
 import random
+import re
 import time
 
 import anyio
@@ -228,7 +230,7 @@ def _reserve_evaluation_provider_attempt() -> None:
         identifier=run_id,
         event_type="llm_provider_attempt",
         limit=limit,
-        window_s=24 * 60 * 60,
+        window_s=None,
     ),))
     if reservation is None:
         raise EvaluationProviderAttemptLimitExceeded(
@@ -330,19 +332,43 @@ def _is_non_retryable_anthropic_error(exc: Exception) -> bool:
     return getattr(exc, "status_code", None) in {400, 401, 403, 404, 422}
 
 
-def _anthropic_error_diagnostics(
+def _provider_error_diagnostics(
     exc: Exception,
-) -> tuple[object, object, object, str | None]:
-    # Provider error messages are untrusted. Return only stable fields and known
-    # structural diagnoses so logs cannot copy request content.
+) -> tuple[int | None, str | None, str | None, str | int | None, float | None, str | None]:
+    # Provider messages and bodies are untrusted. Log only bounded identifiers
+    # and known structural diagnoses, never request content or credentials.
+    def identifier(value: object) -> str | None:
+        if not isinstance(value, str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,128}", value):
+            return None
+        if value.lower().startswith(("sk-", "sk_", "bearer", "authorization", "api_key", "api-key")):
+            return None
+        return value
+
     error_body = getattr(exc, "body", None)
-    error_payload = error_body.get("error") if isinstance(error_body, dict) else None
-    provider_error = (
-        error_payload.get("type") if isinstance(error_payload, dict) else None
-    )
-    provider_message = (
-        error_payload.get("message") if isinstance(error_payload, dict) else None
-    )
+    nested = error_body.get("error") if isinstance(error_body, dict) else None
+    error_payload = nested if isinstance(nested, dict) else error_body
+    if not isinstance(error_payload, dict):
+        error_payload = {}
+    provider_error = identifier(error_payload.get("type"))
+    code = error_payload.get("code")
+    provider_code = code if type(code) is int and 0 <= code <= 999999 else identifier(code)
+    status = getattr(exc, "status_code", None)
+    status = status if type(status) is int and 100 <= status <= 599 else None
+    request_id = identifier(getattr(exc, "request_id", None))
+    response = getattr(exc, "response", None)
+    headers = getattr(response, "headers", None)
+    retry_after = headers.get("retry-after") if isinstance(headers, Mapping) else None
+    retry_after_s = None
+    if type(retry_after) in (str, int, float) and (
+        not isinstance(retry_after, str) or len(retry_after) <= 64
+    ):
+        try:
+            parsed = float(retry_after)
+            if math.isfinite(parsed) and parsed >= 0:
+                retry_after_s = parsed
+        except (ValueError, OverflowError):
+            pass
+    provider_message = error_payload.get("message")
     normalized_message = (
         " ".join(provider_message.lower().split())
         if isinstance(provider_message, str)
@@ -354,12 +380,7 @@ def _anthropic_error_diagnostics(
         or "schema is too complex for compilation" in normalized_message
         else None
     )
-    return (
-        getattr(exc, "status_code", None),
-        getattr(exc, "request_id", None),
-        provider_error,
-        diagnostic,
-    )
+    return status, request_id, provider_error, provider_code, retry_after_s, diagnostic
 
 
 def _is_non_retryable_chat_error(exc: Exception) -> bool:
@@ -758,6 +779,7 @@ async def stream_response(
     cache_creation_input_tokens = 0
     cache_read_input_tokens = 0
     output_tokens = 0
+    web_search_requests = 0
     provider_attempts = 0
     attempts: list[dict[str, object]] = []
     used_fallback = False
@@ -794,6 +816,7 @@ async def stream_response(
             "cache_creation_input_tokens": cache_creation_input_tokens,
             "cache_read_input_tokens": cache_read_input_tokens,
             "output_tokens": output_tokens,
+            "web_search_requests": web_search_requests,
             "provider_attempts": provider_attempts,
             "queue_wait_ms": sum(
                 int(attempt.get("queue_wait_ms") or 0) for attempt in attempts
@@ -857,6 +880,7 @@ async def stream_response(
                 "output_chars": output_chars,
                 "used_fallback": used_fallback,
                 "provider_attempts": provider_attempts,
+                "web_search_requests": web_search_requests,
                 "queue_wait_ms": metadata["queue_wait_ms"],
                 "error_type": error_type,
                 "message_count": len(messages),
@@ -1030,6 +1054,23 @@ async def stream_response(
                 attempt_usage["duration_ms"] = max(
                     1, int((time.perf_counter() - attempt_started) * 1000)
                 )
+                status, request_id, provider_error, provider_code, retry_after_s, diagnostic = (
+                    _provider_error_diagnostics(exc)
+                )
+                logger.warning(
+                    "[llm] %s attempt %s/%s failed: %s status=%s request_id=%s "
+                    "provider_error=%s provider_code=%s retry_after_s=%s diagnostic=%s",
+                    provider,
+                    route_attempt,
+                    attempt_limit,
+                    type(exc).__name__,
+                    status,
+                    request_id,
+                    provider_error,
+                    provider_code,
+                    retry_after_s,
+                    diagnostic,
+                )
                 can_retry = (
                     not accepted
                     and not _is_non_retryable_chat_error(exc)
@@ -1079,6 +1120,7 @@ async def stream_response(
             "cache_creation_input_tokens": 0,
             "cache_read_input_tokens": 0,
             "output_tokens": 0,
+            "web_search_requests": 0,
             "queue_wait_ms": 0,
             "first_reasoning_delta_ms": None,
             "first_text_delta_ms": None,
@@ -1086,7 +1128,6 @@ async def stream_response(
             "usage_complete": False,
         }
         attempts.append(attempt_usage)
-
         def observe_queue_wait(queue_wait_ms: int) -> None:
             attempt_usage["queue_wait_ms"] = queue_wait_ms
 
@@ -1115,10 +1156,15 @@ async def stream_response(
                         cache_read_input_tokens,
                         output_tokens,
                     ) = _aggregate_attempt_token_usage(attempts)
+                    web_search_requests = sum(
+                        int(row.get("web_search_requests") or 0)
+                        for row in attempts
+                    )
                 elif event.type == "message_delta":
                     attempt_usage["accepted"] = True
-                    attempt_usage["usage_complete"] = True
                     usage = getattr(event, "usage", None)
+                    if getattr(usage, "output_tokens", None) is not None:
+                        attempt_usage["usage_complete"] = True
                     for field in (
                         "input_tokens",
                         "cache_creation_input_tokens",
@@ -1136,6 +1182,10 @@ async def stream_response(
                         cache_read_input_tokens,
                         output_tokens,
                     ) = _aggregate_attempt_token_usage(attempts)
+                    web_search_requests = sum(
+                        int(row.get("web_search_requests") or 0)
+                        for row in attempts
+                    )
                     stop_reason = getattr(getattr(event, "delta", None), "stop_reason", None)
                     if isinstance(stop_reason, str):
                         finish_reason = stop_reason
@@ -1185,6 +1235,7 @@ async def stream_response(
             await _record_cancellation(attempt_usage, attempt_started)
             raise
         except Exception as exc:
+            provider_exc = exc
             last_exc = exc
             attempt_usage["status"] = (
                 "error_incomplete_usage"
@@ -1196,18 +1247,21 @@ async def stream_response(
             attempt_usage["duration_ms"] = max(
                 1, int((time.perf_counter() - attempt_started) * 1000)
             )
-            status, request_id, provider_error, diagnostic = (
-                _anthropic_error_diagnostics(exc)
+            status, request_id, provider_error, provider_code, retry_after_s, diagnostic = (
+                _provider_error_diagnostics(provider_exc)
             )
             logger.warning(
                 "[llm] Anthropic attempt %s/%s failed: %s status=%s "
-                "request_id=%s provider_error=%s diagnostic=%s",
+                "request_id=%s provider_error=%s provider_code=%s "
+                "retry_after_s=%s diagnostic=%s",
                 attempt,
                 anthropic_attempt_limit,
                 type(exc).__name__,
                 status,
                 request_id,
                 provider_error,
+                provider_code,
+                retry_after_s,
                 diagnostic,
             )
             if attempt_usage["accepted"]:

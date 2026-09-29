@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from copy import deepcopy
 from types import SimpleNamespace
 
@@ -420,7 +421,7 @@ async def test_render_gate_bounds_preview_transport_by_absolute_deadline():
             "graph_changed": True,
             "send": send,
             "await_diagram_evaluation": _accept_diagram,
-            "graph_preview_deadline_s": asyncio.get_running_loop().time() + 0.02,
+            "graph_preview_deadline_s": time.monotonic() + 0.02,
         }
     )
 
@@ -446,7 +447,7 @@ async def test_render_gate_does_not_reuse_initial_preview_deadline_for_repair():
             "graph_repair_round_count": 1,
             "send": send,
             "await_diagram_evaluation": _accept_diagram,
-            "graph_preview_deadline_s": asyncio.get_running_loop().time() - 1,
+            "graph_preview_deadline_s": time.monotonic() - 1,
         }
     )
 
@@ -481,7 +482,7 @@ async def test_render_gate_does_not_reuse_initial_preview_deadline_for_staged_pr
             "graph_stage_preview_count": preview_count,
             "send": send,
             "await_diagram_evaluation": render,
-            "graph_preview_deadline_s": asyncio.get_running_loop().time() - 1,
+            "graph_preview_deadline_s": time.monotonic() - 1,
         }
     )
 
@@ -603,7 +604,7 @@ async def test_review_diagnostic_event_is_limited_to_internal_test_users(
 
 
 def test_semantic_critic_rejects_cache_replay_or_retry_gate_bypasses():
-    assert _GRAPH_CRITIC_PROMPT_VERSION == "architecture_critic_v60"
+    assert _GRAPH_CRITIC_PROMPT_VERSION == "architecture_critic_v63"
     assert "gate-preserving reuse" in _GRAPH_CRITIC_SYSTEM
     assert "reuse stores accepted" in _GRAPH_CRITIC_SYSTEM
     assert "post-gate artifacts" in _GRAPH_CRITIC_SYSTEM
@@ -642,7 +643,7 @@ def test_semantic_critic_rejects_cache_replay_or_retry_gate_bypasses():
 def test_connection_addition_contract_label_is_bounded_by_graph_schema():
     with pytest.raises(CriticProtocolError) as raised:
         _model_connection_addition_obligations(
-            [[0, 1, "x" * 101]],
+            [[0, 1, "x" * 161]],
             path="layers.connections.addition_obligations",
             nodes=[{"id": "source"}, {"id": "target"}],
             component_addition_count=0,
@@ -1250,7 +1251,10 @@ def test_model_indexes_are_expanded_to_exact_locked_selectors():
     _validate_repair_contract(normalized["repair_contract"], graph=graph)
 
 
-def test_existing_node_operations_are_exact_and_derive_component_selectors():
+@pytest.mark.parametrize(
+    "description", ["Owns validated request intake.", "x" * 221, "x" * 800]
+)
+def test_existing_node_operations_are_exact_and_derive_component_selectors(description):
     graph = {
         "nodes": [
             {
@@ -1273,7 +1277,7 @@ def test_existing_node_operations_are_exact_and_derive_component_selectors():
                 "update",
                 0,
                 ["label", "Request intake"],
-                ["description", "Owns validated request intake."],
+                ["description", description],
             ]
         ],
     )
@@ -1294,11 +1298,14 @@ def test_existing_node_operations_are_exact_and_derive_component_selectors():
             "node_id": "intake",
             "set": {
                 "label": "Request intake",
-                "description": "Owns validated request intake.",
+                "description": description,
             },
         }
     ]
     _validate_repair_contract(review["repair_contract"], graph=graph)
+    components["existing_node_operations"][0]["set"]["description"] = "x" * 801
+    with pytest.raises(ValueError):
+        _validate_repair_contract(review["repair_contract"], graph=graph)
 
 
 @pytest.mark.parametrize(
@@ -1309,7 +1316,7 @@ def test_existing_node_operations_are_exact_and_derive_component_selectors():
         [["update", 0, ["label", " Generic intake"]]],
         [["update", 0, ["type", "Service"]]],
         [["update", 0, ["technology", "Book metadata"]]],
-        [["update", 0, ["description", "x" * 221]]],
+        [["update", 0, ["description", "x" * 801]]],
         [["update", 0, ["label", "Generic intake"]]],
         [["update", 0, ["unknown", "value"]]],
     ],
@@ -1518,7 +1525,7 @@ def test_scorecard_preflight_preserves_exact_nested_contract_defect():
         payload,
         "connections",
         finding_codes=[connection_code],
-        addition_obligations=[[0, 1, "x" * 101]],
+        addition_obligations=[[0, 1, "x" * 161]],
     )
 
     with pytest.raises(CriticProtocolError) as caught:
@@ -7232,7 +7239,7 @@ async def test_staged_preview_target_does_not_remove_private_render_timeout(
             "graph_data": graph,
             "graph_changed": True,
             "graph_stage_preview_count": 0,
-            "graph_preview_deadline_s": asyncio.get_running_loop().time() - 1,
+            "graph_preview_deadline_s": time.monotonic() - 1,
             "send": send,
             "await_diagram_evaluation": lambda candidate: channel.request(
                 candidate, send

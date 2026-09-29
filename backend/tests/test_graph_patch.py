@@ -5189,7 +5189,7 @@ async def test_critic_repair_rejects_bare_edge_selectors_before_model_call(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("replacement_label", ["x" * 101, "not  normalized"])
+@pytest.mark.parametrize("replacement_label", ["x" * 161, "not  normalized"])
 async def test_critic_repair_rejects_noncanonical_exact_edge_labels_before_model_call(
     monkeypatch,
     replacement_label,
@@ -5412,11 +5412,12 @@ def test_patch_contract_canonicalization_repairs_node_technology_and_edge_label(
         (
             (
                 "routes verified parcel state to recovery owner after deterministic policy, "
-                "approval before execution with durable audit attribution"
+                "approval before execution with durable audit attribution and traceable outcome "
+                "evidence for replay and recovery"
             ),
             (
                 "routes verified parcel state to recovery owner after deterministic policy, "
-                "approval before execution"
+                "approval before execution with durable audit attribution and traceable outcome"
             ),
             "truncate_word_boundary",
         ),
@@ -5448,7 +5449,8 @@ def test_string_edge_label_canonicalization_is_bounded_and_content_free(
 def test_patch_string_edge_label_canonicalization_changes_only_authored_values():
     overlong = (
         "routes verified parcel state to recovery owner after deterministic policy, "
-        "approval before execution with durable audit attribution"
+        "approval before execution with durable audit attribution and traceable outcome "
+        "evidence for replay and recovery"
     )
     result = graph_worker._canonicalise_applied_graph_patch(
         {
@@ -5467,7 +5469,7 @@ def test_patch_string_edge_label_canonicalization_changes_only_authored_values()
     assert result["update_edges"][0]["edge_id"] == "edge_1"
     assert result["update_edges"][0]["set"]["label"] == (
         "routes verified parcel state to recovery owner after deterministic policy, "
-        "approval before execution"
+        "approval before execution with durable audit attribution and traceable outcome"
     )
     assert result["remove_edges"] == ["edge_2"]
 
@@ -5585,7 +5587,7 @@ def test_blank_update_label_that_empties_set_is_rejected():
 
 def test_patch_preserves_existing_labels_at_graph_contract_limit():
     graph = _domain_graph(5)
-    graph["edges"][0]["label"] = "x" * 100
+    graph["edges"][0]["label"] = "x" * 160
 
     result = graph_worker._apply_applied_graph_patch(
         graph,
@@ -5601,7 +5603,7 @@ def test_patch_preserves_existing_labels_at_graph_contract_limit():
         resolved_complexity="prototype",
     )
 
-    assert result["edges"][0]["label"] == "x" * 100
+    assert result["edges"][0]["label"] == "x" * 160
 
 
 @pytest.mark.parametrize("label", [" \t\n "])
@@ -5621,20 +5623,20 @@ def test_string_edge_label_canonicalization_rejects_unsafe_values(label):
 def test_unbroken_authored_edge_label_uses_deterministic_hard_boundary():
     result = graph_worker._canonicalise_applied_graph_patch(
         {
-            "add_edges": [{"label": "x" * 101}],
+            "add_edges": [{"label": "x" * 161}],
             "update_edges": [
                 {
                     "edge_id": "edge_1",
-                    "set": {"label": "y" * 101},
+                    "set": {"label": "y" * 161},
                 }
             ],
             "remove_edges": ["edge_2"],
         }
     )
 
-    assert result["add_edges"][0]["label"] == "x" * 100
+    assert result["add_edges"][0]["label"] == "x" * 160
     assert result["update_edges"][0]["edge_id"] == "edge_1"
-    assert result["update_edges"][0]["set"]["label"] == "y" * 100
+    assert result["update_edges"][0]["set"]["label"] == "y" * 160
     assert result["remove_edges"] == ["edge_2"]
 
 
@@ -6550,7 +6552,7 @@ def _extension_fixture():
         "edges": [], "groups": [{"id": "g", "label": "Saved", "nodeIds": ["a"]}],
         "view_state": {"zoom": 0.8},
     }
-    _, permissions = staged_edit_scope("Add a layer", base, resolved_complexity="prototype", add_only=True)
+    _, permissions = staged_edit_scope("Extend this diagram", base, resolved_complexity="prototype", add_only=True)
     candidate = copy.deepcopy(base)
     candidate["version"] = "new"
     candidate["nodes"] += [{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}]
@@ -6652,3 +6654,315 @@ def test_additive_extension_rejects_changes_outside_add_only_authority(defect):
         candidate["edges"].append({"source": "a", "target": "a", "label": "Rewrite old flow"})
     with pytest.raises(ValueError):
         admit_graph_extension(base, candidate, permissions)
+
+
+def test_extension_keeps_exact_single_addition_authority():
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    query = "Add node cache_node connected to Saved service"
+    exact_contract, exact = staged_edit_scope(query, base, resolved_complexity="prototype")
+    contract, permissions = staged_edit_scope(
+        query, base, resolved_complexity="prototype", add_only=True
+    )
+    assert contract == exact_contract
+    assert permissions == exact
+    assert permissions["allowed_new_node_count"] == 1
+    assert permissions.get("kind") != "extension"
+
+
+@pytest.mark.parametrize("query", [
+    "Rename Saved service to Better service",
+    "Remove Saved service",
+])
+def test_extension_rejects_exact_mutation_of_saved_nodes(query):
+    base, _, _ = _extension_fixture()
+    base["nodes"].append({"id": "store", "label": "Saved store"})
+    base["edges"].append({"source": "a", "target": "store", "label": "Persist"})
+    base["groups"][0]["nodeIds"].append("store")
+    _, ordinary_permissions = graph_worker.staged_edit_scope(
+        query, base, resolved_complexity="prototype"
+    )
+    assert ordinary_permissions["editable_node_ids"] == ["a"]
+    with pytest.raises(ValueError, match="extension requires additions"):
+        graph_worker.staged_edit_scope(
+            query, base, resolved_complexity="prototype", add_only=True
+        )
+
+
+def test_invalid_precise_addition_cannot_broaden_to_extension():
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    with pytest.raises(ValueError):
+        staged_edit_scope(
+            "Add exactly one cache node to this diagram linked from Saved service to Missing service",
+            base,
+            resolved_complexity="prototype",
+            add_only=True,
+        )
+
+
+@pytest.mark.parametrize("query", [
+    "Add a single component to this diagram",
+    "Add six components to this diagram",
+    "Add only one cache component to this diagram",
+    "Add exactly ten responsibilities to this diagram",
+])
+def test_failed_explicit_cardinality_does_not_gain_broad_extension_authority(query):
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    base, _, _ = _extension_fixture()
+    with pytest.raises(ValueError):
+        staged_edit_scope(query, base, resolved_complexity="prototype", add_only=True)
+
+
+def test_observed_tutor_progress_extension_compiles_additive_authority():
+    import json
+    from pathlib import Path
+    from agent.nodes.graph_worker import staged_edit_scope
+
+    saved = json.loads(
+        (Path(__file__).parent / "fixtures" / "education_tutor_progress_baseline.json").read_text()
+    )
+    query = (
+        "Extend this diagram to remember learner progress across devices. "
+        "Preserve the existing course retrieval flow and components. "
+        "Add the smallest storage and identity mechanism needed, and explain only what changed."
+    )
+    contract, permissions = staged_edit_scope(
+        query, saved, resolved_complexity="prototype", add_only=True
+    )
+    assert contract is None
+    assert permissions["kind"] == "extension"
+    assert permissions["minimum_new_node_count"] == 1
+    assert permissions["allowed_new_node_count"] > 1
+    assert permissions["editable_node_ids"] == []
+    assert permissions["removable_node_ids"] == []
+
+@pytest.mark.parametrize("use_new_group", [False, True])
+def test_extension_adds_members_to_saved_groups_without_changing_saved_metadata(use_new_group):
+
+    base, candidate, permissions = _extension_fixture()
+    base["groups"][0]["color"] = candidate["groups"][0]["color"] = "blue"
+    candidate["groups"][0]["nodeIds"].append("b")
+    if use_new_group:
+        candidate["groups"][1]["nodeIds"] = ["c"]
+    else:
+        candidate["groups"][0]["nodeIds"].append("c")
+        candidate["groups"].pop()
+
+    result = graph_worker.admit_graph_extension(base, candidate, permissions)
+
+    assert result == candidate
+    assert result["groups"][0]["color"] == "blue"
+    assert base["groups"][0]["nodeIds"] == ["a"]
+    assert result is not candidate
+    result["groups"][0]["nodeIds"].append("outside")
+    assert "outside" not in candidate["groups"][0]["nodeIds"]
+
+
+@pytest.mark.parametrize(
+    "defect",
+    [
+        "remove", "reorder_members", "duplicate_old", "duplicate_new",
+        "move_old", "import_old", "reorder_groups", "label", "kind", "metadata",
+        "duplicate_across_groups",
+    ],
+)
+def test_extension_group_membership_rejects_changes_to_saved_members_and_metadata(defect):
+    import copy
+
+    base, _, _ = _extension_fixture()
+    base["nodes"].extend([{"id": "d", "label": "Saved store"}, {"id": "e", "label": "Saved log"}])
+    base["edges"] = [{"source": "a", "target": "d", "label": "Read"},
+                     {"source": "d", "target": "e", "label": "Log"}]
+    base["groups"][0].update(nodeIds=["a", "d"], kind="runtime", color="blue")
+    base["groups"].append({"id": "old_log", "label": "Saved log", "kind": "operations", "nodeIds": ["e"]})
+    _, permissions = graph_worker.staged_edit_scope(
+        "Extend this diagram", base, resolved_complexity="prototype", add_only=True
+    )
+    candidate = copy.deepcopy(base)
+    candidate["nodes"].extend([{"id": "b", "label": "New owner"}, {"id": "c", "label": "New store"}])
+    candidate["edges"].extend([{"source": "a", "target": "b", "label": "Invoke"},
+                               {"source": "b", "target": "c", "label": "Persist"}])
+    candidate["groups"][0]["nodeIds"].append("b")
+    candidate["groups"].append({"id": "new", "label": "New store", "nodeIds": ["c"]})
+    if defect == "remove":
+        candidate["groups"][0]["nodeIds"].remove("d")
+    elif defect == "reorder_members":
+        candidate["groups"][0]["nodeIds"] = ["d", "a", "b"]
+    elif defect == "duplicate_old":
+        candidate["groups"][0]["nodeIds"].append("a")
+    elif defect == "duplicate_new":
+        candidate["groups"][0]["nodeIds"].append("b")
+    elif defect == "move_old":
+        candidate["groups"][0]["nodeIds"].remove("d")
+        candidate["groups"][1]["nodeIds"].append("d")
+    elif defect == "import_old":
+        candidate["groups"][-1]["nodeIds"].append("a")
+    elif defect == "reorder_groups":
+        candidate["groups"][:2] = reversed(candidate["groups"][:2])
+    elif defect in {"label", "kind", "metadata"}:
+        field = "color" if defect == "metadata" else defect
+        candidate["groups"][0][field] = "changed"
+    else:
+        candidate["groups"][-1]["nodeIds"].append("b")
+
+    with pytest.raises(ValueError):
+        graph_worker.admit_graph_extension(base, candidate, permissions)
+
+
+@pytest.mark.parametrize("length", [221, 800, 801])
+def test_legacy_node_normalizer_uses_authoritative_description_ceiling(length):
+    graph = _domain_graph(5)
+    graph["nodes"][0]["description"] = "x" * length
+    normalized = graph_worker._normalise_applied_graph(
+        graph, safety_max_nodes=5, resolved_complexity="prototype"
+    )
+    description = normalized["nodes"][0]["description"]
+    if length == 801:
+        assert len(description) == 800
+        assert description == "x" * 799 + "…"
+    else:
+        assert description == "x" * length
+
+
+def test_staged_edit_adds_component_with_existing_service_parent():
+    graph = _domain_graph(3)
+    contract, permissions = graph_worker.staged_edit_scope(
+        "Expand Fulfilment Stage 1 while preserving existing components. "
+        "Add exactly one directly connected responsibility.",
+        graph,
+        resolved_complexity="prototype",
+    )
+    candidate = copy.deepcopy(graph)
+    candidate["nodes"].append({
+        "id": "trace_redactor",
+        "label": "Trace redactor",
+        "type": "component",
+        "parent_service_id": "fulfilment_stage_1",
+        "technology": "Component",
+        "description": "Redacts credentials from sampled requests.",
+    })
+    candidate["edges"].append({
+        "source": "fulfilment_stage_1",
+        "target": "trace_redactor",
+        "label": "Redact sampled request",
+        "technology": "Validated request",
+        "sync": "sync",
+        "flow": "runtime",
+        "description": "Redact sampled request",
+    })
+
+    admitted = graph_worker.admit_staged_graph_edit(
+        graph,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=permissions,
+    )
+
+    assert admitted["nodes"][:-1] == graph["nodes"]
+    assert admitted["edges"][:-1] == graph["edges"]
+    assert admitted["nodes"][-1]["parent_service_id"] == "fulfilment_stage_1"
+    assert admitted["nodes"][-1]["type"] == "component"
+
+
+def test_staged_edit_cannot_reparent_existing_component():
+    graph = _domain_graph(3)
+    graph["nodes"][2].update(
+        type="component", parent_service_id="fulfilment_stage_1"
+    )
+    contract, permissions = graph_worker.staged_edit_scope(
+        "Rename Fulfilment Stage 2 to Trace redactor.",
+        graph,
+        resolved_complexity="prototype",
+    )
+    candidate = copy.deepcopy(graph)
+    candidate["nodes"][2]["parent_service_id"] = "fulfilment_stage_0"
+
+    with pytest.raises(ValueError, match="graph patch cannot be empty"):
+        graph_worker.admit_staged_graph_edit(
+            graph,
+            candidate,
+            resolved_complexity="prototype",
+            repair_contract=contract,
+            mutation_permissions=permissions,
+        )
+    with pytest.raises(ValueError, match="invalid node update fields"):
+        graph_worker._apply_applied_graph_patch(
+            graph,
+            {"update_nodes": [{
+                "id": "fulfilment_stage_2",
+                "set": {"parent_service_id": "fulfilment_stage_0"},
+            }]},
+            safety_max_nodes=4,
+            resolved_complexity="prototype",
+        )
+    assert graph["nodes"][2]["parent_service_id"] == "fulfilment_stage_1"
+
+
+@pytest.mark.parametrize(
+    "new_node_ids",
+    [("repair_owner_a", "repair_owner_b"), ("repair_owner_b", "repair_owner_a")],
+)
+def test_staged_local_repair_preserves_positional_added_node_order(new_node_ids):
+    existing = _domain_graph(5)
+    contract = _local_repair_contract(
+        failed_layers={
+            "components": {
+                "context_node_ids": ["fulfilment_stage_1"],
+                "addition_count": 2,
+            },
+            "connections": {
+                "context_node_ids": ["fulfilment_stage_1"],
+                "addition_count": 2,
+                "connection_addition_obligations": [
+                    {
+                        "source": "fulfilment_stage_1",
+                        "target": "$new_node_1",
+                        "required_contract": "writes cached fulfilment state",
+                    },
+                    {
+                        "source": "$new_node_2",
+                        "target": "fulfilment_stage_1",
+                        "required_contract": "writes cached fulfilment state",
+                    },
+                ],
+            },
+        }
+    )
+    candidate = copy.deepcopy(existing)
+    candidate["nodes"].extend(
+        {
+            "id": node_id,
+            "label": node_id.replace("_", " ").title(),
+            "type": "service",
+            "technology": "Bounded service",
+            "description": "Adds a repair-owned responsibility.",
+        }
+        for node_id in new_node_ids
+    )
+    candidate["edges"].extend(
+        [
+            _cache_to_store_edge(target=new_node_ids[0]),
+            _cache_to_store_edge(source=new_node_ids[1], target="fulfilment_stage_1"),
+        ]
+    )
+
+    admitted = graph_worker.admit_staged_graph_edit(
+        existing,
+        candidate,
+        resolved_complexity="prototype",
+        repair_contract=contract,
+        mutation_permissions=graph_worker._repair_permissions(existing, contract),
+    )
+
+    assert [node["id"] for node in admitted["nodes"][-2:]] == list(new_node_ids)
+    assert admitted["nodes"][:-2] == existing["nodes"]
+    assert admitted["edges"][: len(existing["edges"])] == existing["edges"]
+    assert [(edge["source"], edge["target"]) for edge in admitted["edges"][-2:]] == [
+        ("fulfilment_stage_1", new_node_ids[0]),
+        (new_node_ids[1], "fulfilment_stage_1"),
+    ]

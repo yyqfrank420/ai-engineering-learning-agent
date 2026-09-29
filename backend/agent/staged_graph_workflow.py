@@ -116,20 +116,25 @@ def _maturity(state: AgentState) -> tuple[str, bool]:
 
 
 def _safe_finding(exc: Exception, *, stage: str) -> dict[str, str]:
-    path = getattr(exc, "path", None) or stage
-    safe_path = _safe_path(path, fallback=stage)
-    code = exc.code if isinstance(exc, StagedGenerationError) else "invalid_contract"
-    reason = " ".join(str(exc).split())[:280]
     if isinstance(exc, StagedGenerationError):
         diagnostic = _failure_diagnostic(exc, stage=stage, attempt=0, candidate=None)
-        if diagnostic.get("reason") in {
-            "component_parent_invalid",
-            "component_parent_forbidden",
-        } and re.fullmatch(r"components\.[0-9]+\.parent_index", diagnostic["path"]):
-            safe_path = diagnostic["path"]
-            reason = diagnostic["reason"]
+        parent_reason = diagnostic.get("reason") in {
+            "component_parent_invalid", "component_parent_forbidden",
+        }
+        parent_path = re.fullmatch(r"components\.[0-9]+\.parent_index", diagnostic["path"]) is not None
+        if (parent_reason or parent_path) and not (parent_reason and parent_path):
+            diagnostic = {"code": diagnostic["code"], "path": stage}
+        return {
+            "code": diagnostic["code"],
+            "path": diagnostic["path"],
+            "rule": "contract_validation",
+            "reason": diagnostic.get("reason", diagnostic["code"]),
+        }
+    path = getattr(exc, "path", None) or stage
+    safe_path = _safe_path(path, fallback=stage)
+    reason = " ".join(str(exc).split())[:280]
     return {
-        "code": code,
+        "code": "invalid_contract",
         "path": safe_path[:96],
         "rule": "contract_validation",
         **({"reason": reason} if reason else {}),
@@ -164,6 +169,7 @@ def _failure_diagnostic(
             "group_label_length", "component_type_enum", "group_kind_enum",
             "primary_flow_type", "duplicate_component", "root_not_primary",
             "component_parent_invalid", "component_parent_forbidden",
+            "primary_flow_unreachable",
         }:
             diagnostic_reason = exc.diagnostic_reason
         if isinstance(exc.diagnostic_path, str) and re.fullmatch(
@@ -873,7 +879,9 @@ def _preserve_existing_presentation(
             group.get(field) == prior.get(field) for field in ("id", "label", "kind")
         ):
             for field, value in prior.items():
-                if field not in group_fields:
+                if field not in group_fields and (
+                    (edit_permissions or {}).get("kind") != "extension" or field not in group
+                ):
                     group[field] = copy.deepcopy(value)
     semantic_fields = ("source", "target", "label", "sync", "flow")
     indexed_edges = [
@@ -1421,6 +1429,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 ),
                 structural_findings=correction_findings,
                 base_components=base_build,
+                baseline_connections=_connection_prompt_base(base_build)
+                if permissions is not None
+                else None,
                 edit_permissions=permissions,
                 rejected_candidate=rejected_component_candidate,
                 recovery_mode=recovery_mode,
@@ -1932,6 +1943,9 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 }
                 for edge in candidate_build["connections"]
             ]
+            production_guarantees = production_proofs_for_capabilities(
+                candidate_build["capabilities"], maturity=maturity
+            )
             connection_gate = await _review_stage(
                 rendered, "connections", graph=projected,
                 previous_review=previous_connection_review,
@@ -1939,12 +1953,19 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 evidence_bundle=evidence,
                 resolved_maturity=maturity,
                 candidate_records=reviewed_connection_records,
-                required_production_guarantees=production_proofs_for_capabilities(
-                    candidate_build["capabilities"], maturity=maturity
-                ),
+                required_production_guarantees=production_guarantees,
                 telemetry_context={**state, "staged_attempt": attempt + 1},
                 timeout_seconds=staged_timeout_seconds(
-                    rendered, phase="connections", action="review", attempt=attempt
+                    rendered,
+                    phase="connections",
+                    action="review",
+                    attempt=attempt,
+                    review_max_timeout_s=(
+                        settings.staged_connection_audit_max_timeout_s
+                        if maturity == "production"
+                        and "retrieval_and_reuse_trust" in production_guarantees
+                        else None
+                    ),
                 ),
             )
             previous_connection_review = _review_snapshot(
@@ -2063,6 +2084,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 working_state, "staged_connection_deadline_admission_denied"
             )
         except (GraphContractError, StagedGenerationError, ValueError) as exc:
+            if (
+                generation_write_set["mode"] == "create"
+                and base_build is None
+                and permissions is None
+                and isinstance(exc, StagedGenerationError)
+                and exc.rejected_candidate is not None
+            ):
+                rejected_connection_candidate = copy.deepcopy(exc.rejected_candidate)
             if attempt + 1 >= STAGED_CONNECTION_GENERATION_CALLS:
                 return await _failed(
                     working_state,

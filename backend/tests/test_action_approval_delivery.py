@@ -261,12 +261,9 @@ def test_contracts_and_controlled_verdict_survive_generation_and_review(
 
     async def fake_review(**kwargs):
         calls.append(kwargs)
-        codes = kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
-            "properties"
-        ]["rule_code"]["enum"]
-        rows = [
-            {
-                "rule_code": code,
+        codes = kwargs["response_schema"]["properties"]["rule_reviews"]["properties"]
+        rows = {
+            code: {
                 "satisfied": not (rejected and code == "safe_action_boundary"),
                 "reason": reason
                 if rejected and code == "safe_action_boundary"
@@ -276,7 +273,7 @@ def test_contracts_and_controlled_verdict_survive_generation_and_review(
                 else [],
             }
             for code in codes
-        ]
+        }
         return StructuredLLMResponse(
             text=json.dumps({"rule_reviews": rows}),
             finish_reason="end_turn",
@@ -307,12 +304,14 @@ def test_contracts_and_controlled_verdict_survive_generation_and_review(
     assert [row["record_index"] for row in numbered] == list(range(len(records)))
     assert evidence["candidate_components"] == components
     assert (
-        "For required input, approval, and execution-output delivery, identify "
-        "the declared producer, consumer, and actual required payload in the "
-        "bounded reason. Reconstruct the complete directed route between them "
-        "before marking the rule satisfied. Cite the actual "
-        "record indexes for every cross-component hop, checking each direction "
-        "and payload. Pairwise compatible exchanges do not establish that "
+        "For each data-bearing branch of required input, approval, and execution-output "
+        "delivery, name its declared producer, consumer, and required payload in the "
+        "bounded reason. Reconstruct the complete directed route before marking the "
+        "rule satisfied. Cite each record index and quote the payload phrase in each "
+        "cross-component contract, checking direction and payload. "
+        "A consumer's requirement or downstream use does not establish a missing "
+        "upstream payload. A decision or revalidation instruction alone does not "
+        "deliver edited content. Pairwise compatible exchanges do not establish that "
         "complete route. Do not invent a hop from a component responsibility "
         "or reverse an existing edge to complete the route."
     ) in prompt
@@ -367,8 +366,8 @@ def test_changed_approval_policy_invalidates_connection_review_identity(
 
 
 def test_approval_delivery_connection_release_versions():
-    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v40"
-    assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v37"
+    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v74"
+    assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v69"
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])

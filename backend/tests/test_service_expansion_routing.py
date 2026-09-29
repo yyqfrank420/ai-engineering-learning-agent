@@ -352,7 +352,12 @@ async def test_staged_generation_dispatches_high_expansions_through_specialist_t
         if complexity == "high"
         else settings.graph_builder_model
     )
-    assert call["effort"] == ("medium" if complexity == "high" else generation._EFFORT)
+    expected_effort = (
+        "medium"
+        if complexity == "high"
+        else "high" if stage == "components" else "low"
+    )
+    assert call["effort"] == expected_effort
     assert call["timeout_seconds"] == 60
     assert call["max_output_tokens"] == 8000
     assert call["provider_attempt_limit"] == 1

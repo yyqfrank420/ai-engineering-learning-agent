@@ -13,7 +13,8 @@ vi.mock('./hooks/useAgentStream', () => ({ useAgentStream: vi.fn() }));
 vi.mock('./services/analytics', () => ({ trackEvent: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('./services/api', () => ({ checkDiagramIntent: vi.fn(), fetchGraphHistory: vi.fn().mockResolvedValue({current_revision_id: null, revisions: []}), fetchGraphRevision: vi.fn(), restoreGraphRevision: vi.fn() }));
 vi.mock('./services/auth', () => ({ signOut: vi.fn().mockResolvedValue(undefined) }));
-vi.mock('./utils/threadState', () => ({
+vi.mock('./utils/threadState', async importOriginal => ({
+  ...await importOriginal<typeof import('./utils/threadState')>(),
   shouldPersistThreadSnapshot: vi.fn(() => true),
   storageKeyForThread: vi.fn(userId => `thread:${userId}`),
   writeThreadSnapshot: vi.fn(),
@@ -635,6 +636,64 @@ describe('App coordination', () => {
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
     expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
+  });
+
+  it('grounds the same chip question in each selected node and preserves display/options', async () => {
+    const first = { ...agentState.selectedNode.node, id: 'first', label: 'First "component"' };
+    const second = { ...first, id: 'second', label: 'Second component' };
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: { ...graph, nodes: [first, second] }, selectedNode: { node: first, suggestions: [] } });
+    vi.mocked(useSelectionSuggestion).mockReturnValue({ ...selectionState, selectionReferenceActive: true, selectionSuggestion: 'Unrelated highlighted text' });
+    const { rerender } = render(<App />);
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => { fireEvent.click(screen.getByText('Ask context')); });
+    const firstRequest = agentState.sendMessage.mock.calls[0][0];
+    expect(firstRequest).toContain(JSON.stringify({ id: first.id, label: first.label }));
+    expect(firstRequest).not.toContain('Unrelated highlighted text');
+    expect(agentState.sendMessage).toHaveBeenLastCalledWith(expect.any(String), expect.objectContaining({ displayContent: 'Explain selected context', graphAction: 'answer', complexity: 'auto', graphMode: 'on', researchEnabled: true, hasSelectedTextContext: false }));
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: { ...graph, nodes: [first, second] }, selectedNode: { node: second, suggestions: [] } });
+    rerender(<App />);
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => { fireEvent.click(screen.getByText('Ask context')); });
+    expect(agentState.sendMessage.mock.calls[1][0]).toContain(JSON.stringify({ id: second.id, label: second.label }));
+    expect(agentState.sendMessage.mock.calls[1][0]).not.toBe(firstRequest);
+    expect(useAgentStream).toHaveBeenLastCalledWith(session, 'thread-1');
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+  });
+
+  it('rejects a chip whose selected node is absent from the captured graph', async () => {
+    render(<App />);
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
+    await act(async () => { fireEvent.click(screen.getByText('Ask context')); });
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
+    expect(screen.getByText('The selected component is no longer in this diagram. Select a component and try again.')).toBeTruthy();
+  });
+
+  it.each(['graph', 'thread'])('does not send a chip after %s changes during layout flush', async (change) => {
+    let finish!: () => void;
+    flushPendingLayout.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    const node = agentState.selectedNode.node;
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: { ...graph, version: 'v1', nodes: [node] } });
+    const { rerender } = render(<App />);
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByText('Ask context'));
+    if (change === 'graph') vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: { ...graph, version: 'v2', nodes: [node] } });
+    else vi.mocked(useThreadSession).mockReturnValue({ ...threadState, activeThreadId: 'thread-2' });
+    rerender(<App />);
+    await act(async () => { finish(); });
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends one chip request when clicked twice during layout flush', async () => {
+    let finish!: () => void;
+    flushPendingLayout.mockImplementationOnce(() => new Promise<void>(resolve => { finish = resolve; }));
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, graphData: { ...graph, nodes: [agentState.selectedNode.node] } });
+    render(<App />);
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByText('Ask context'));
+    fireEvent.click(screen.getByText('Ask context'));
+    await act(async () => { finish(); });
+    expect(flushPendingLayout).toHaveBeenCalledOnce();
+    expect(agentState.sendMessage).toHaveBeenCalledOnce();
   });
 
   it('sends answer mode in the current thread and retains its diagram and conversation', async () => {

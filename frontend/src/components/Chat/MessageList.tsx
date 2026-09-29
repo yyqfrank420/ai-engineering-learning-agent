@@ -16,6 +16,7 @@ import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
 import type { LiveActivity, Message } from '../../types';
+import { displayUserMessageContent } from '../../utils/threadState';
 import '../GraphHistoryControls.css';
 import './MessageList.css';
 import { ThinkingIndicator } from './ThinkingIndicator';
@@ -228,7 +229,8 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
             {msg.kind === 'explanation' && msg.title && (
               <h2 className="message-heading">{msg.title}</h2>
             )}
-            <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
+            {/* Stored requests retain model node context; only user presentation returns to the question. */}
+            <MessageContent content={msg.role === 'user' ? displayUserMessageContent(msg.content) : msg.content} isAssistant={msg.role === 'assistant'} />
             {msg.role === 'assistant' && msg.graphRevisionId && revisionIds.includes(msg.graphRevisionId) && onViewDiagram && (
               <button className="message-diagram-link" aria-pressed={msg.graphRevisionId === viewedRevisionId} disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
             )}

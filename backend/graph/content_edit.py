@@ -34,6 +34,8 @@ class GraphEditInvalid(ValueError):
     """The requested selector or resulting graph is invalid."""
 
 
+EDGE_DESCRIPTION_MAX_CHARS = 220
+
 _NODE_FIELDS = frozenset({"label", "type", "technology", "description"})
 _EDGE_FIELDS = frozenset({"label", "technology", "description", "flow", "sync"})
 _NODE_SOURCE_FIELDS = (
@@ -77,7 +79,7 @@ class EdgeContentEdit(BaseModel):
     label: str | None = Field(default=None, max_length=CONNECTION_LABEL_MAX_CHARS)
     technology: str | None = Field(default=None, max_length=100)
     description: str | None = Field(
-        default=None, max_length=COMPONENT_RESPONSIBILITY_MAX_CHARS
+        default=None, max_length=EDGE_DESCRIPTION_MAX_CHARS
     )
     flow: Flow | None = None
     sync: Literal["sync", "async"] | None = None

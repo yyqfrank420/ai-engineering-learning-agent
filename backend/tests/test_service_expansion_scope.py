@@ -640,3 +640,34 @@ def test_cloud_service_recovery_cannot_add_retained_relay_or_rewrite_saved_contr
             repair_contract=None,
             mutation_permissions=permissions,
         )
+
+
+@pytest.mark.parametrize("server_owned", [False, True])
+def test_service_expansion_authority_is_separate_from_exact_additive_selectors(
+    monkeypatch, server_owned
+):
+    calls = []
+
+    def reject_exact_selector(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise ValueError("exact selector failed")
+
+    monkeypatch.setattr(graph_worker, "_user_edit_scope", reject_exact_selector)
+    query = "Expand only service payments"
+    kwargs = {"resolved_complexity": "prototype", "add_only": True}
+    if server_owned:
+        contract, permissions = graph_worker.staged_edit_scope(
+            query, _graph(), service_expansion={"target_service_ids": ["payments"]},
+            **kwargs,
+        )
+        assert not calls
+        assert contract is None
+        assert permissions["service_expansion_target_ids"] == ["payments"]
+        assert permissions["minimum_new_node_count"] == 1
+        assert permissions["allowed_new_node_count"] == 3
+        assert not permissions["editable_node_ids"]
+        assert not permissions["removable_node_ids"]
+    else:
+        with pytest.raises(ValueError, match="exact selector failed"):
+            graph_worker.staged_edit_scope(query, _graph(), **kwargs)
+        assert len(calls) == 1

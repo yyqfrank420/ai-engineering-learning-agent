@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       application_attempt_limit:
-        description: Maximum application provider attempts (1 to 78)
+        description: Maximum application provider attempts (1 to 129)
         type: string
-        default: '78'
+        default: '129'
       judge_attempt_limit:
         description: Maximum semantic judge attempts (1 to 16)
         type: string
@@ -153,14 +153,15 @@ jobs:
     if: needs.classify.outputs.ai-impact == 'true' && needs.classify.outputs.trusted == 'true' && needs.resolve-approved-tree.result == 'success' && needs.resolve-approved-tree.outputs.approved == 'false'
     # Browser time scales with reviewed corpus turns and is independently capped.
     # This outer timeout also covers setup, deployment, judging, and cleanup.
-    timeout-minutes: 100
+    timeout-minutes: 135
     environment: staging-eval
     concurrency:
       group: staging-live-eval-global
       cancel-in-progress: false
+      queue: max
     env:
       EVALUATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
-      EVALUATION_PROVIDER_ATTEMPT_LIMIT: 78
+      EVALUATION_PROVIDER_ATTEMPT_LIMIT: 129
       RESUME_JUDGE_CALL_LIMIT: 16
       OTEL_ENVIRONMENT: staging
     permissions:
@@ -202,8 +203,8 @@ jobs:
           APPLICATION_ATTEMPT_LIMIT: ${{ inputs.application_attempt_limit }}
           JUDGE_ATTEMPT_LIMIT: ${{ inputs.judge_attempt_limit }}
         run: |
-          if [[ ! "$APPLICATION_ATTEMPT_LIMIT" =~ ^[1-9][0-9]?$ ]] || (( APPLICATION_ATTEMPT_LIMIT > 78 )); then
-            echo "Application attempt limit must be a positive integer no greater than 78." >&2
+          if [[ ! "$APPLICATION_ATTEMPT_LIMIT" =~ ^[1-9][0-9]{0,2}$ ]] || (( APPLICATION_ATTEMPT_LIMIT > 129 )); then
+            echo "Application attempt limit must be a positive integer no greater than 129." >&2
             exit 1
           fi
           if [[ ! "$JUDGE_ATTEMPT_LIMIT" =~ ^[1-9][0-9]?$ ]] || (( JUDGE_ATTEMPT_LIMIT > 16 )); then
@@ -308,7 +309,7 @@ jobs:
             --image "$IMAGE@$IMAGE_DIGEST" \
             --no-traffic \
             --tag "$REVISION_TAG" \
-            --timeout 1000s \
+            --timeout 1560s \
             --concurrency "$STAGING_REQUEST_CONCURRENCY" \
             --update-env-vars ANTHROPIC_MAX_CONCURRENT_STREAMS=4,ANTHROPIC_PROMPT_CACHE_ENABLED=true,OTEL_ENVIRONMENT=staging,EVALUATION_RUN_ID=$EVALUATION_RUN_ID,EVALUATION_PROVIDER_ATTEMPT_LIMIT=$EVALUATION_PROVIDER_ATTEMPT_LIMIT,GRAPH_PIPELINE_MODE=$GRAPH_PIPELINE_MODE \
             --quiet --format='value(spec.template.spec.containerConcurrency)')"
@@ -389,7 +390,7 @@ jobs:
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           EVAL_JUDGE_PROVIDER: anthropic
-          EVAL_JUDGE_MODEL: claude-sonnet-5
+          EVAL_JUDGE_MODEL: claude-sonnet-5-5
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: backend
         run: |

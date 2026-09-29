@@ -8,9 +8,9 @@
     "reviewed_at": null,
     "approved_manifest_sha256": null,
     "calibration": {
-      "judge_release": "semantic-rubric-judge-v19",
+      "judge_release": "semantic-rubric-judge-v20",
       "judge_provider": "anthropic",
-      "judge_model": "claude-sonnet-5",
+      "judge_model": "claude-sonnet-5-5",
       "evidence_run_id": null,
       "evidence_commit_sha": null,
       "evidence_sha256": null,

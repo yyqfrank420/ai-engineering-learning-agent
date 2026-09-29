@@ -29,6 +29,28 @@ def _clear_client_caches(llm):
             clear()
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 class _Delta:
     def __init__(self, type_: str, *, text: str = "", thinking: str = ""):
         self.type = type_
@@ -392,7 +414,7 @@ async def test_stream_response_success_records_thinking_text_and_done(monkeypatc
     telemetry_records, metric_records = _patch_llm_telemetry(monkeypatch)
 
     async def fake_anthropic_stream_once(kwargs):
-        assert kwargs["output_config"] == {"effort": "high"}
+        assert kwargs["output_config"] == {"effort": "medium"}
         assert "temperature" not in kwargs
         yield _Event("content_block_delta", _Delta("thinking_delta", thinking="plan"))
         yield _Event("content_block_delta", _Delta("text_delta", text="answer"))
@@ -500,13 +522,13 @@ def test_application_model_roles_default_to_calibrated_models():
 
     configured = Settings(_env_file=None)
 
-    assert configured.orchestrator_model == "claude-opus-5"
+    assert configured.orchestrator_model == "claude-opus-5-5"
     assert configured.explanation_model == "claude-sonnet-5-5"
-    assert configured.worker_model == "claude-opus-5"
-    assert configured.architecture_model == "claude-opus-5"
-    assert configured.graph_builder_model == "kimi-k3"
-    assert configured.graph_qa_model == "claude-sonnet-5"
-    assert configured.graph_builder_model not in llm._FALLBACK_MODELS
+    assert configured.worker_model == "claude-opus-5-5"
+    assert configured.architecture_model == "claude-opus-5-5"
+    assert configured.graph_builder_model == "claude-opus-5-5"
+    assert configured.graph_qa_model == "claude-sonnet-5-5"
+    assert configured.staged_gate_model == "claude-opus-5-5"
     assert configured.graph_qa_model not in llm._FALLBACK_MODELS
     assert configured.anthropic_max_concurrent_streams == 4
 
@@ -1363,6 +1385,7 @@ def test_evaluation_provider_attempt_reservation_uses_shared_atomic_store(monkey
     assert captured[0][0].identifier == "run-123-attempt-1"
     assert captured[0][0].event_type == "llm_provider_attempt"
     assert captured[0][0].limit == 64
+    assert captured[0][0].window_s is None
 
 
 @pytest.mark.asyncio
@@ -1586,6 +1609,8 @@ async def test_stream_structured_llm_collects_text_and_usage_metadata(monkeypatc
     import agent.stream_utils as stream_utils
 
     async def fake_stream_response(**_kwargs):
+        assert _kwargs["allow_fallback"] is False
+        assert _kwargs["provider_attempt_limit"] == 1
         yield "text", '{"answer":'
         yield "response_metadata", "[]"
         yield "response_metadata", json.dumps({
@@ -1600,7 +1625,8 @@ async def test_stream_structured_llm_collects_text_and_usage_metadata(monkeypatc
     monkeypatch.setattr(stream_utils, "stream_response", fake_stream_response)
 
     response = await stream_utils.stream_structured_llm(
-        model="configured-model",
+        model="claude-opus-5-5",
+        provider_attempt_limit=1,
         system="structured boundary",
         messages=[{"role": "user", "content": "question"}],
         response_schema={"type": "object"},
@@ -1794,3 +1820,101 @@ async def test_anthropic_final_usage_supersedes_supplied_input_counters(
     assert tuple(metadata["attempts"][0][field] for field in fields) == expected
     assert metadata["output_tokens"] == metadata["attempts"][0]["output_tokens"] == 510
     assert metadata["attempts"][0]["usage_complete"] is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["kimi-k3", "gpt-5.4-mini"])
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("accepted", [False, True])
+@pytest.mark.parametrize("secret_metadata", [False, True])
+async def test_chat_provider_error_warning_retains_safe_metadata_without_replay(
+    monkeypatch, caplog, model, nested, accepted, secret_metadata,
+):
+    import httpx
+    import openai
+    import adapters.llm_adapter as llm
+
+    monkeypatch.setattr(settings, "llm_max_retries", 2)
+    _patch_llm_telemetry(monkeypatch)
+    error = {"type": "rate_limit_error", "code": "capacity_limit", "message": "PRIVATE_PROMPT sk-secret-credential"}
+    if secret_metadata:
+        error.update(type={"secret": "credential"}, code="Bearer sk-secret-credential")
+    response = httpx.Response(429, headers={
+        "x-request-id": "Bearer sk-secret-credential" if secret_metadata else "req_safe-123",
+        "retry-after": "Bearer sk-secret-credential" if secret_metadata else "2.5",
+    }, request=httpx.Request("POST", "https://provider.test"))
+    failure = openai.RateLimitError("PRIVATE_PROMPT sk-secret-credential", response=response, body={"error": error} if nested else error)
+    calls = 0
+
+    async def failing_stream(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if accepted:
+            yield "text", "accepted output"
+        raise failure
+
+    monkeypatch.setattr(llm, "_kimi_stream", failing_stream)
+    monkeypatch.setattr(llm, "_openai_stream", failing_stream)
+    with pytest.raises(openai.RateLimitError):
+        await _collect(llm.stream_response(model, "system", [], provider_attempt_limit=2 if accepted else 1))
+    assert calls == 1
+    if secret_metadata:
+        assert "status=429 request_id=None" in caplog.text
+        assert "provider_error=None provider_code=None retry_after_s=None" in caplog.text
+    else:
+        assert "status=429 request_id=req_safe-123" in caplog.text
+        assert "provider_error=rate_limit_error provider_code=capacity_limit retry_after_s=2.5" in caplog.text
+    assert "PRIVATE_PROMPT" not in caplog.text
+    assert "sk-secret" not in caplog.text
+
+
+@pytest.mark.parametrize("retry_after, expected", [
+    ("0", 0.0), ("2.5", 2.5), ("1e2", 100.0), ("-1", None),
+    ("NaN", None), ("inf", None), ("Wed, 21 Oct 2015 07:28:00 GMT", None),
+    ("sk-secret", None), (True, None), ({"secret": "credential"}, None),
+    ("0" * 1000 + "1", None),
+])
+def test_provider_diagnostics_accept_only_finite_nonnegative_numeric_retry_after(retry_after, expected):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    failure.response = SimpleNamespace(headers={"retry-after": retry_after})
+    assert llm._provider_error_diagnostics(failure)[4] == expected
+
+
+@pytest.mark.parametrize("value", [
+    {"secret": "credential"}, ["credential"], "Bearer sk-secret", "sk-secret",
+    "authorization", "line\nsecret", "x" * 129, True,
+])
+def test_provider_diagnostics_drop_malformed_and_secret_bearing_identifiers(value):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    failure.status_code = value
+    failure.request_id = value
+    failure.body = {"error": {"type": value, "code": value, "message": "PRIVATE_MESSAGE"}}
+    assert llm._provider_error_diagnostics(failure) == (None, None, None, None, None, None)
+
+
+@pytest.mark.parametrize("headers", [None, [], "PRIVATE_HEADER", 429])
+def test_provider_diagnostics_ignore_malformed_headers_and_absent_response(headers):
+    import adapters.llm_adapter as llm
+
+    failure = RuntimeError("PRIVATE_MESSAGE")
+    if headers is not None:
+        failure.response = SimpleNamespace(headers=headers)
+    assert llm._provider_error_diagnostics(failure) == (None, None, None, None, None, None)
+
+
+@pytest.mark.parametrize("override", ["GRAPH_QA_MODEL", "STAGED_GATE_MODEL"])
+def test_staged_and_legacy_qa_model_overrides_are_independent(monkeypatch, override):
+    monkeypatch.delenv("GRAPH_QA_MODEL", raising=False)
+    monkeypatch.delenv("STAGED_GATE_MODEL", raising=False)
+    monkeypatch.setenv(override, "configured-review-model")
+    configured = Settings(_env_file=None)
+    assert configured.graph_qa_model == (
+        "configured-review-model" if override == "GRAPH_QA_MODEL" else "claude-sonnet-5-5"
+    )
+    assert configured.staged_gate_model == (
+        "configured-review-model" if override == "STAGED_GATE_MODEL" else "claude-opus-5-5"
+    )

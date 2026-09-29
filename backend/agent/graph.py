@@ -18,6 +18,7 @@ from langgraph.graph import END, START, StateGraph
 
 from agent.architecture_playbook import build_evidence_bundle
 from agent.complexity import (
+    is_graph_extension_request,
     resolve_complexity,
     resolve_graph_operation,
     resolve_design_query,
@@ -968,6 +969,13 @@ async def run_agent(
 ) -> AgentState:
     """Execute the request-scoped LangGraph workflow and return its final state."""
     action = state.get("graph_action")
+    if (
+        action is None
+        and state.get("graph_mode") != "off"
+        and is_graph_extension_request(state.get("user_message", ""), state.get("graph_data"))
+    ):
+        action = "extend"
+        state = {**state, "graph_action": action}
     if action == "answer":
         state = {**state, "graph_mode": "off"}
         graph_intent = None
@@ -994,6 +1002,27 @@ async def run_agent(
                 "response_text": question, "clarification_questions": [question],
                 "graph_operation": {"kind": graph_intent, "status": "needs_clarification",
                                     "failure_code": None}}
+    if (
+        graph_intent is None
+        and state.get("diagram_requested")
+        and state.get("graph_mode") != "off"
+        and state.get("graph_data")
+    ):
+        question = "Which component or flow should change in the existing diagram?"
+        await state["send"]({"type": "response_delta", "content": question})
+        return {
+            **state,
+            "graph_changed": False,
+            "graph_intent": None,
+            "graph_publication": "unchanged",
+            "response_text": question,
+            "clarification_questions": [question],
+            "graph_operation": {
+                "kind": "edit",
+                "status": "needs_clarification",
+                "failure_code": None,
+            },
+        }
     graph_operation = state.get("graph_operation")
     if graph_intent == "edit" and state.get("graph_mode") == "off":
         graph_operation = {

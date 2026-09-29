@@ -18,14 +18,6 @@ from agent.stream_utils import StructuredLLMResponse
 
 
 def _response(payload, *, finish_reason="end_turn"):
-    if isinstance(payload.get("rule_reviews"), dict):
-        payload = {
-            **payload,
-            "rule_reviews": [
-                {"rule_code": code, **row} if isinstance(row, dict) else row
-                for code, row in payload["rule_reviews"].items()
-            ],
-        }
     return StructuredLLMResponse(
         text=json.dumps(payload),
         finish_reason=finish_reason,
@@ -62,9 +54,7 @@ def _stub_response(monkeypatch, payload):
         if "rule_reviews" in payload:
             completed = payload
         else:
-            rules = kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
-                "properties"
-            ]["rule_code"]["enum"]
+            rules = kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
             completed = _rule_reviews(rules, payload["findings"])
             completed.update(
                 {
@@ -72,6 +62,32 @@ def _stub_response(monkeypatch, payload):
                     for key, value in payload.items()
                     if key not in {"approved", "findings", "checked_rules"}
                 }
+            )
+        if "input_trust_reviews" in kwargs["response_schema"]["required"]:
+            completed = dict(completed)
+            audit_schema = kwargs["response_schema"]["properties"][
+                "input_trust_reviews"
+            ]
+            completed.setdefault(
+                "input_trust_reviews",
+                (
+                    [
+                        {
+                            "record_index": index,
+                            "outcome": "not_applicable",
+                            "reason": "Fixture has no applicable consumed content.",
+                        }
+                        for index in range(audit_schema["maxItems"])
+                    ]
+                    if audit_schema["type"] == "array"
+                    else {
+                        index: {
+                            "outcome": "not_applicable",
+                            "reason": "Fixture has no applicable consumed content.",
+                        }
+                        for index in audit_schema["required"]
+                    }
+                ),
             )
         return _response(completed)
 
@@ -114,6 +130,10 @@ def test_component_gate_uses_one_call_and_preserves_finding_indexes(monkeypatch)
                 "record_indexes": [0],
             }
         ],
+        "input_trust_reviews": {
+            str(index): {"satisfied": True, "outcome": "not_applicable", "reason": "Fixture has no applicable consumed content."}
+            for index in range(2)
+        },
         "diagnostics": [],
         "review_identity": gate.review_identity("components", "prototype"),
         "checked_rules": list(gate.COMPONENT_RULE_CODES),
@@ -161,7 +181,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v27"
+        "staged_component_gate_v60"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -194,7 +214,13 @@ def test_review_uses_explicit_timeout_independently_of_telemetry(
         if timeout_seconds is None
         else timeout_seconds
     )
+    assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == (
+        calls[0]["timeout_seconds"]
+    )
     assert calls[0]["provider_attempt_limit"] == 1
+    assert calls[0]["model"] == gate.settings.staged_gate_model
+    assert calls[0]["effort"] == "medium"
+    assert calls[0]["max_output_tokens"] == gate.settings.graph_qa_max_completion_tokens
 
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
@@ -244,6 +270,11 @@ def test_component_gate_acceptance_uses_named_subject_scope(maturity):
         in objective
     )
     assert "A single assumed product cannot replace that subject" in objective
+    assert "Abstract topics such as Prompt engineering, Fine-tuning" in objective
+    assert "not runtime services that own network requests or returns" in objective
+    assert "Distinguish offline fine-tuning that changes model parameters" in objective
+    assert "preserve retained group names" in objective
+    assert "For applied system designs, select the initiating primary runtime actor" in objective
     prompt = gate._prompt(
         gate="components",
         user_request=(
@@ -417,12 +448,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
     assert "selected_depth" not in generated_criteria
     assert "streaming_integrity" not in generated_criteria
     schema = gate._response_schema(rule_codes=tuple(rules), record_count=0)
-    assert (
-        "streaming_integrity"
-        not in schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-            "enum"
-        ]
-    )
+    assert "streaming_integrity" not in schema["properties"]["rule_reviews"]["required"]
     if maturity == "production":
         guidance_key = (
             "downstream_controls" if stage == "components" else "authoring_guidance"
@@ -491,6 +517,11 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
                 "unless the component responsibilities contradict that handoff"
                 in requirement
             )
+        elif stage == "connections" and code == "runtime_completeness":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "each material requested or declared executable operation" in requirement
+            assert "New outcome or update data" in requirement
+            assert "Do not require a separate edge or component per operation" in requirement
         elif stage == "connections" and code == "branch_completion":
             assert "Block a missing required path" in requirement
             assert "without a separate component or edge" in requirement
@@ -500,6 +531,10 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
             assert "including when a capability flag needs correction" in requirement
             assert "before component responsibilities freeze" in requirement
             assert "do not require edges or transition proof" in requirement
+        elif stage == "components" and code == "objective_fidelity":
+            assert requirement.startswith(RUBRIC_CRITERIA[code][1])
+            assert "factual claims drawn from supplied sources" in requirement
+            assert "Distinguish proposed design choices" in requirement
         elif code in RUBRIC_CRITERIA:
             assert requirement == RUBRIC_CRITERIA[code][1]
         elif code in TOPOLOGY_PROOF_REQUIREMENTS:
@@ -595,9 +630,7 @@ def test_prototype_connection_schema_excludes_production_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-        "enum"
-    ]
+    codes = schema["properties"]["rule_reviews"]["required"]
     assert result["approved"] is True
     assert "production_proofs" not in schema["properties"]
     assert "topology_enforced_guarantees" not in codes
@@ -620,9 +653,7 @@ def test_connection_schema_keeps_runtime_completeness(monkeypatch, maturity):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-        "enum"
-    ]
+    codes = schema["properties"]["rule_reviews"]["required"]
 
     assert result["approved"] is True
     assert "runtime_completeness" in codes
@@ -660,7 +691,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v37"
+        == "staged_connection_gate_v69"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -676,6 +707,14 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert "Combined contracts can cover both" in prompt
     assert "when compensation is required or declared" in prompt
     assert "a satisfied reason must identify both initiation witnesses" in prompt
+    assert "both initiation witnesses and the shared control path" in prompt
+    assert (
+        "each compensation producer's deterministic-validation invocation and verdict"
+        in prompt
+    )
+    assert "separately from policy checks and exact-action approval" in prompt
+    assert "Declared compatible internal validation may supply that witness" in prompt
+    assert "Shared contracts may cover these controls without duplicate paths" in prompt
     assert "An unsatisfied reason must identify each missing" in prompt
     assert "declared metric pull with reply is a valid normal input" in prompt
     assert "do not demand a redundant push or timer" in prompt
@@ -707,12 +746,14 @@ def test_executor_identity_proof_applies_only_to_selected_production_guarantee(
     )
     criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
 
-    assert (
-        "For each required action, check its actual trigger or change input" in prompt
-    )
     assert "declared metric pull with reply is a valid normal input" in prompt
     if requires_identity:
         assert "authorization_and_compensation" in criteria
+        assert "including declared lifecycle transitions" in prompt
+        assert "through validation and exact-scope approval" in prompt
+        assert "Compare each declared producer, trigger and target scope" in prompt
+        assert "The same operation verb does not establish the same path" in prompt
+        assert "A downstream 'approved' label does not establish that scope" in prompt
         assert "exact approved action payload and stable operation identity" in prompt
         assert "An authorization verdict or incidental reachability alone" in prompt
         assert (
@@ -753,6 +794,7 @@ def test_connection_gate_receives_request_scoped_exchange_evidence(monkeypatch):
     assert len(calls) == 1
     assert evidence["connection_exchanges"] == pairs
     assert "A paired reply or incidental reachability cannot invoke" in prompt
+    assert "For each required action, check its actual trigger or change input" in prompt
     assert "proposal producer's exact-action presentation" in prompt
     assert "When human review or human approval is requested or declared" in prompt
     assert "human review surface or declared human decision boundary" in prompt
@@ -767,7 +809,17 @@ def test_connection_gate_receives_request_scoped_exchange_evidence(monkeypatch):
     assert "including supporting and deployment exchanges" in prompt
     assert "a write verdict is not read data" in prompt
     assert "One-way events need no reply" in prompt
+    assert "parent_service_id establishes containment, not implicit runtime forwarding" in prompt
+    assert "Require explicit contracts for every cross-component hop" in prompt
+    assert "Abstract topics do not own network requests or returns" in prompt
+    assert "One-way relationships need no reverse RPC edge" in prompt
+    assert "actual request/response interactions still require their authoritative reply" in prompt
+    assert "one-way causal or lifecycle relationship" in prompt
     assert "redundant processed-artifact return is advisory" in prompt
+    assert "owner may deliver directly to multiple compatible consumers" in prompt
+    assert "missing peer names alone do not prove an incompatible contract" in prompt
+    assert "actual ownership or required-control restriction it violates" in prompt
+    assert "preserve declared trust boundaries and required controls" in prompt
 
 
 @pytest.mark.parametrize(
@@ -898,11 +950,10 @@ def test_connection_review_prompt_assembles_problematic_exchange_evidence(
     assert "a write verdict is not read data" in prompt
     assert "redundant processed-artifact return is advisory" in prompt
     assert "One-way events need no reply" in prompt
-    assert (
-        "parent_service_id establishes containment, not implicit runtime forwarding"
-        in prompt
-    )
-    assert "Require explicit contracts for every cross-component hop" in prompt
+    assert "Abstract topics do not own network requests or returns" in prompt
+    assert "One-way relationships need no reverse RPC edge" in prompt
+    assert "actual request/response interactions still require their authoritative reply" in prompt
+    assert "one-way causal or lifecycle relationship" in prompt
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -948,6 +999,9 @@ def test_overview_prompt_preserves_maturity_objective_and_required_controls(stag
         prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
     )
 
+    assert "only after assessing every applicable obligation against the candidate evidence" in prompt
+    assert "if any obligation remains unmet, set satisfied=false" in prompt
+    assert "The final reason must agree with that boolean" in prompt
     assert "The candidate requests an overview." in prompt
     assert "Presentation simplification may omit optional detail only." in prompt
     assert "does not change the resolved maturity, objective" in prompt
@@ -1057,9 +1111,7 @@ def test_production_connection_schema_preserves_hard_rules(monkeypatch):
     )
 
     schema = calls[0]["response_schema"]
-    codes = schema["properties"]["rule_reviews"]["items"]["properties"]["rule_code"][
-        "enum"
-    ]
+    codes = schema["properties"]["rule_reviews"]["required"]
 
     assert result["approved"] is True
     assert "logical_flow" in codes
@@ -1107,15 +1159,9 @@ def test_successful_review_retains_identity_and_complete_rule_audit(monkeypatch,
     )
 
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
-    assert calls[0]["effort"] == ("medium" if stage == "components" else "low")
-    assert calls[0]["model"] == gate.settings.graph_qa_model
-    assert calls[0]["max_output_tokens"] == gate.settings.graph_qa_max_completion_tokens
-    assert calls[0]["provider_attempt_limit"] == 1
     assert (
         result["checked_rules"]
-        == calls[0]["response_schema"]["properties"]["rule_reviews"]["items"][
-            "properties"
-        ]["rule_code"]["enum"]
+        == calls[0]["response_schema"]["properties"]["rule_reviews"]["required"]
     )
     assert len(result["review_identity"]) == 64
 
@@ -1128,13 +1174,13 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
     baseline = gate.review_identity(stage, "production")
     assert gate.review_identity(stage, "production") == baseline
     if change == "model":
-        monkeypatch.setattr(gate.settings, "graph_qa_model", "different-review-model")
+        monkeypatch.setattr(gate.settings, "staged_gate_model", "different-review-model")
     elif change == "temperature":
         monkeypatch.setattr(
             gate.settings, "graph_temperature", gate.settings.graph_temperature + 0.1
         )
     elif change == "effort":
-        monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, stage, "high")
+        monkeypatch.setattr(gate, "_GATE_EFFORT", "high")
     elif change == "prompt_version":
         field = (
             "_COMPONENT_GATE_PROMPT_VERSION"
@@ -1372,7 +1418,7 @@ def test_scoped_review_preserves_blockers_outside_changed_records(
         {"satisfied": True, "reason": "Valid", "record_indexes": [], "score": 1},
         *[
             {"satisfied": False, "reason": "Bad index", "record_indexes": indexes}
-            for indexes in (None, "0", [1], [True], [-1], [0.0], [0] * 33)
+            for indexes in (None, "0", [1], [True], [-1], [0.0])
         ],
     ],
 )
@@ -1619,10 +1665,12 @@ def test_terminal_review_capture_retains_diagnostic_without_raw_response(
         if failure == "provider":
             raise RuntimeError("private provider error")
         payload = _rule_reviews(
-            kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
-                "properties"
-            ]["rule_code"]["enum"]
+            kwargs["response_schema"]["properties"]["rule_reviews"]["required"]
         )
+        payload["input_trust_reviews"] = {
+            index: {"outcome": "not_applicable", "reason": "Fixture has no applicable consumed content."}
+            for index in kwargs["response_schema"]["properties"]["input_trust_reviews"]["required"]
+        }
         if failure == "shape":
             payload["unexpected"] = "private provider text"
         elif failure == "fields":
@@ -1853,7 +1901,11 @@ def test_production_obligations_reject_through_indexed_findings(
     assert guarantee in result["checked_rules"]
     assert "proofs" not in result
     schema = calls[0]["response_schema"]
-    assert set(schema["properties"]) == {"rule_reviews"}
+    expected_fields = {"rule_reviews"}
+    if guarantee == "retrieval_and_reuse_trust":
+        expected_fields.add("input_trust_reviews")
+        assert set(result["input_trust_reviews"]) == {"0", "1"}
+    assert set(schema["properties"]) == expected_fields
     prompt = calls[0]["messages"][0]["content"]
     requirements = json.loads(
         prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
@@ -1880,18 +1932,21 @@ def test_complete_production_audit_can_approve_without_proof_rows(monkeypatch):
     assert set(result["checked_rules"]) == set(
         gate._rules_for_connections("production", guarantees)
     )
-    assert set(calls[0]["response_schema"]["required"]) == {"rule_reviews"}
+    assert set(calls[0]["response_schema"]["required"]) == {"input_trust_reviews", "rule_reviews"}
+    assert result["input_trust_reviews"] == {}
     assert len(calls) == 1
 
 
 @pytest.mark.parametrize(
     ("stage", "version_field", "previous_version"),
     [
-        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v11"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v36"),
+        ("components", "_COMPONENT_GATE_PROMPT_VERSION", "staged_component_gate_v59"),
+        ("connections", "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v68"),
         (
             "connections",
             "_CONNECTION_GATE_PROMPT_VERSION",
-            "staged_connection_gate_v15",
+            "staged_connection_gate_v43",
         ),
     ],
 )
@@ -1968,48 +2023,44 @@ def test_numbered_prompt_uses_server_indexes_without_mutating_records(monkeypatc
         {"record_index": 1, "record": {"id": "n2"}},
     ]
     assert "Copy the explicit record_index values" in prompt
+    assert "Every rule review, including satisfied rules, must contain at most 32 record_indexes." in prompt
+    assert "Do not truncate affected indexes to fit the limit." in prompt
     assert "cannot be localized within 32 records" in prompt
     assert records == [{"id": "n99", "record_index": 450}, {"id": "n2"}]
+    assert "Current component-to-record index:" not in prompt
 
 
-def test_provider_schema_uses_one_strict_uniform_item_for_any_rule_count():
+def test_provider_schema_requires_rule_keys_referencing_one_shared_review():
     from adapters.llm_adapter import _anthropic_response_schema
 
-    items = []
+    definitions = []
     for count in (1, 7, 13):
         codes = tuple(f"rule_{index}" for index in range(count))
         schema = gate._response_schema(rule_codes=codes, record_count=1)
         assert schema["required"] == ["rule_reviews"]
+        assert schema["properties"]["rule_reviews"]["required"] == list(codes)
         assert schema["additionalProperties"] is False
-        reviews = schema["properties"]["rule_reviews"]
-        assert reviews["type"] == "array"
-        assert reviews["minItems"] == reviews["maxItems"] == count
-        row = reviews["items"]
-        assert set(row["required"]) == {
-            "rule_code",
-            "satisfied",
-            "reason",
-            "record_indexes",
+        assert schema["properties"]["rule_reviews"]["properties"] == {
+            code: {"$ref": "#/$defs/review"} for code in codes
         }
+        assert set(schema["$defs"]) == {"review"}
+        row = schema["$defs"]["review"]
+        assert set(row["required"]) == {"satisfied", "reason", "record_indexes"}
         assert row["additionalProperties"] is False
-        assert row["properties"]["rule_code"]["enum"] == list(codes)
         assert row["properties"]["reason"]["maxLength"] == gate._MAX_REASON_CHARS
         assert (
             row["properties"]["record_indexes"]["maxItems"] == gate._MAX_RECORD_INDEXES
         )
         sanitized = _anthropic_response_schema(schema)
-        sanitized_reviews = sanitized["properties"]["rule_reviews"]
-        assert (
-            "minItems" not in sanitized_reviews and "maxItems" not in sanitized_reviews
-        )
-        sanitized_item = sanitized_reviews["items"]
-        assert sanitized_item["properties"]["rule_code"]["enum"] == list(codes)
-        assert "maxLength" not in sanitized_item["properties"]["reason"]
-        assert sanitized_item["additionalProperties"] is False
-        item_without_codes = json.loads(json.dumps(sanitized_item))
-        item_without_codes["properties"]["rule_code"].pop("enum")
-        items.append(item_without_codes)
-    assert items[0] == items[1] == items[2]
+        assert sanitized["required"] == ["rule_reviews"]
+        assert sanitized["properties"]["rule_reviews"]["required"] == list(codes)
+        assert sanitized["properties"] == schema["properties"]
+        sanitized_row = sanitized["$defs"]["review"]
+        assert "maxLength" not in sanitized_row["properties"]["reason"]
+        assert "maxItems" not in sanitized_row["properties"]["record_indexes"]
+        assert sanitized_row["additionalProperties"] is False
+        definitions.append(sanitized_row)
+    assert definitions[0] == definitions[1] == definitions[2]
 
 
 @pytest.mark.parametrize("record_count", [0, 1, 38])
@@ -2033,13 +2084,9 @@ def test_provider_index_schema_tracks_candidate_positions(
     assert result["approved"] is True
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
     schema = calls[0]["response_schema"]
-    indexes = schema["properties"]["rule_reviews"]["items"]["properties"][
-        "record_indexes"
-    ]
+    indexes = schema["$defs"]["review"]["properties"]["record_indexes"]
     sanitized = _anthropic_response_schema(schema)
-    provider_indexes = sanitized["properties"]["rule_reviews"]["items"]["properties"][
-        "record_indexes"
-    ]
+    provider_indexes = sanitized["$defs"]["review"]["properties"]["record_indexes"]
     assert "maxItems" not in provider_indexes
     if record_count:
         assert indexes["maxItems"] == 32
@@ -2095,7 +2142,7 @@ def test_correction_with_more_records_keeps_review_policy_identity(monkeypatch, 
         (38, [37], False),
         (38, [38], True),
         (38, list(range(32)), False),
-        (38, list(range(33)), True),
+        (38, list(range(33)), False),
         (38, [True], True),
         (38, [1.0], True),
         (38, [-1], True),
@@ -2113,14 +2160,13 @@ def test_candidate_index_bounds_remain_enforced_after_provider_sanitizing(
     result = gate._review_result(
         _response(
             {
-                "rule_reviews": [
-                    {
-                        "rule_code": rules[0],
+                "rule_reviews": {
+                    rules[0]: {
                         "satisfied": True,
                         "reason": "Supplied evidence",
                         "record_indexes": indexes,
                     }
-                ]
+                }
             }
         ),
         schema=schema,
@@ -2169,45 +2215,21 @@ def test_protected_capture_retains_complete_rule_evidence_and_raw_records(monkey
     assert result["rule_reviews"]["objective_fidelity"]["record_indexes"] == [0]
 
 
-@pytest.mark.parametrize(
-    "malformation",
-    [
-        "missing",
-        "extra",
-        "duplicate",
-        "unknown",
-        "non_string",
-        "missing_code",
-        "null_row",
-    ],
-)
-def test_rule_review_array_requires_every_rule_exactly_once(malformation):
+@pytest.mark.parametrize("malformation", ["missing", "extra", "unknown", "null_row"])
+def test_rule_review_map_requires_every_known_rule(malformation):
     rules = ("brief_coverage", "objective_fidelity")
-    rows = [
-        {
-            "rule_code": code,
-            "satisfied": True,
-            "reason": "The owner matches the request.",
-            "record_indexes": [],
-        }
-        for code in rules
-    ]
+    payload = _rule_reviews(rules)
+    rows = payload["rule_reviews"]
     if malformation == "missing":
-        rows.pop()
+        rows.pop(rules[1])
     elif malformation == "extra":
-        rows.append(dict(rows[0]))
-    elif malformation == "duplicate":
-        rows[1]["rule_code"] = rules[0]
+        rows["invented"] = dict(rows[rules[0]])
     elif malformation == "unknown":
-        rows[1]["rule_code"] = "invented"
-    elif malformation == "non_string":
-        rows[1]["rule_code"] = [rules[1]]
-    elif malformation == "missing_code":
-        rows[1].pop("rule_code")
+        rows["invented"] = rows.pop(rules[1])
     else:
-        rows[1] = None
+        rows[rules[1]] = None
     result = gate._review_result(
-        _response({"rule_reviews": rows}),
+        _response(payload),
         schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
@@ -2218,18 +2240,20 @@ def test_rule_review_array_requires_every_rule_exactly_once(malformation):
     assert "rule_reviews" not in result
 
 
-def test_previous_keyed_provider_schema_is_rejected():
+@pytest.mark.parametrize("legacy_shape", ["flat_map", "wrapped_array", "array"])
+def test_legacy_provider_shapes_are_rejected(legacy_shape):
     rules = ("brief_coverage",)
-    response = StructuredLLMResponse(
-        text=json.dumps(_rule_reviews(rules)),
-        finish_reason="end_turn",
-        input_tokens=1,
-        output_tokens=1,
-        provider="test",
-        model="test",
+    rows = _rule_reviews(rules)["rule_reviews"]
+    array = [{"rule_code": code, **row} for code, row in rows.items()]
+    payload = (
+        rows
+        if legacy_shape == "flat_map"
+        else {"rule_reviews": array}
+        if legacy_shape == "wrapped_array"
+        else array
     )
     result = gate._review_result(
-        response,
+        _response(payload),
         schema=gate._response_schema(rule_codes=rules, record_count=0),
         rule_codes=rules,
         records=[],
@@ -2239,15 +2263,38 @@ def test_previous_keyed_provider_schema_is_rejected():
 
 
 @pytest.mark.parametrize(
-    "failure_kind", ["outage", "invalid_request", "invalid_json", "rejected"]
+    "failure_kind",
+    [
+        "timeout",
+        "anthropic_timeout",
+        "openai_timeout",
+        "outage",
+        "invalid_request",
+        "invalid_json",
+        "rejected",
+    ],
 )
 def test_gate_labels_only_recognized_provider_availability_failures(
     monkeypatch, failure_kind
 ):
+    import anthropic
     import httpx
     import openai
 
+    calls = []
+
     async def fake_stream(**kwargs):
+        calls.append(kwargs)
+        if failure_kind == "timeout":
+            raise TimeoutError("private provider message")
+        if failure_kind == "anthropic_timeout":
+            raise anthropic.APITimeoutError(
+                request=httpx.Request("POST", "https://example.invalid")
+            )
+        if failure_kind == "openai_timeout":
+            raise openai.APITimeoutError(
+                request=httpx.Request("POST", "https://example.invalid")
+            )
         if failure_kind == "outage":
             raise openai.APIConnectionError(
                 request=httpx.Request("POST", "https://example.invalid")
@@ -2285,9 +2332,16 @@ def test_gate_labels_only_recognized_provider_availability_failures(
         )
     )
     assert result["approved"] is False
+    assert len(calls) == 1
     assert result.get("failure_code") == (
-        "provider_unavailable" if failure_kind == "outage" else None
+        "review_timeout"
+        if failure_kind == "timeout"
+        else "provider_unavailable"
+        if failure_kind in {"anthropic_timeout", "openai_timeout", "outage"}
+        else None
     )
+    if failure_kind in {"timeout", "anthropic_timeout", "openai_timeout", "outage"}:
+        assert result["terminal"] is True
 
 
 def _previous_components(records, evidence=None):
@@ -2422,6 +2476,112 @@ async def test_previous_blocker_can_be_fixed_but_current_rule_coverage_is_requir
     assert result["terminal"] is incomplete
 
 
+@pytest.mark.parametrize(
+    "before,after",
+    [
+        ([], [{"id": "added"}]),
+        ([{"id": "deleted"}], []),
+        ([{"id": "a"}, {"id": "b"}], [{"id": "b"}, {"id": "a"}]),
+        ([{"id": "old"}], [{"id": "new"}, {"id": "added"}]),
+    ],
+)
+@pytest.mark.parametrize(
+    "prior_context,current_context",
+    [
+        ({}, {"nullable": None}),
+        ({"nullable": None}, {}),
+        ({"nullable": None}, {"nullable": {"value": "changed"}}),
+    ],
+)
+def test_previous_review_compact_changes_reconstruct_prior_and_current(
+    before, after, prior_context, current_context
+):
+    previous = _previous_components(before, prior_context)
+    compact = gate._previous_review_evidence(
+        previous,
+        gate="components",
+        identity=previous["review_identity"],
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        records=after,
+        evidence_bundle=current_context,
+    )
+    prior_records = dict(enumerate(after))
+    for change in compact["changed_records"]:
+        index = change["record_index"]
+        assert "after" not in change
+        assert change["after_present"] is (index < len(after))
+        if change["before"] is None:
+            prior_records.pop(index, None)
+        else:
+            prior_records[index] = change["before"]
+    assert [prior_records[index] for index in sorted(prior_records)] == before
+    assert compact["rule_reviews"] == previous["rule_reviews"]
+    prior_evidence = dict(current_context)
+    for change in compact["changed_context"]:
+        key = change["key"]
+        assert "after" not in change
+        assert change["after_present"] is (key in current_context)
+        if change["before_present"]:
+            prior_evidence[key] = change["before"]
+        else:
+            prior_evidence.pop(key, None)
+    assert prior_evidence == prior_context
+    # Reverse the compact changes using the authoritative current lookup.
+    restored_records = dict(enumerate(before))
+    for change in compact["changed_records"]:
+        index = change["record_index"]
+        if change["after_present"]:
+            restored_records[index] = after[index]
+        else:
+            restored_records.pop(index, None)
+    assert [restored_records[index] for index in sorted(restored_records)] == after
+    restored_context = dict(prior_context)
+    for change in compact["changed_context"]:
+        key = change["key"]
+        if change["after_present"]:
+            restored_context[key] = current_context[key]
+        else:
+            restored_context.pop(key, None)
+    assert restored_context == current_context
+
+
+def test_changed_prior_review_payload_is_copied_and_current_prompt_is_not_duplicated():
+    before = [{"id": "a", "responsibility": "OLD_RECORD"}]
+    after = [{"id": "a", "responsibility": "UNIQUE_CURRENT_RECORD"}]
+    prior_context = {"architecture_context": {"text": "OLD_CONTEXT"}}
+    context = {"architecture_context": {"text": "UNIQUE_CURRENT_CONTEXT"}}
+    previous = _previous_components(before, prior_context)
+    compact = gate._previous_review_evidence(
+        previous,
+        gate="components",
+        identity=previous["review_identity"],
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        records=after,
+        evidence_bundle=context,
+    )
+    prompt = gate._prompt(
+        gate="components", user_request="Review the current candidate",
+        evidence_bundle={**context, "previous_review": compact},
+        resolved_maturity="production", candidate_records=after,
+        required_production_guarantees=(),
+    )
+    assert prompt.count("UNIQUE_CURRENT_RECORD") == 1
+    assert prompt.count("UNIQUE_CURRENT_CONTEXT") == 1
+    assert "OLD_RECORD" in prompt and "OLD_CONTEXT" in prompt
+    assert "explicit record_index" in prompt and "before_present and after_present" in prompt
+    assert "Immutable candidate records" in prompt
+    compact["changed_records"][0]["before"]["responsibility"] = "mutated"
+    compact["changed_context"][0]["before"]["text"] = "mutated"
+    compact["rule_reviews"]["mece_scope"]["reason"] = "mutated"
+    assert previous["candidate_records"] == before
+    assert before[0]["responsibility"] == "OLD_RECORD"
+    assert previous["evidence_bundle"] == prior_context
+    assert prior_context["architecture_context"]["text"] == "OLD_CONTEXT"
+    assert previous["rule_reviews"]["mece_scope"]["reason"] != "mutated"
+    assert after[0]["responsibility"] == "UNIQUE_CURRENT_RECORD"
+    assert context["architecture_context"]["text"] == "UNIQUE_CURRENT_CONTEXT"
+
+
 def test_previous_review_prompt_metadata_does_not_duplicate_unchanged_large_evidence():
     records = [{"id": "a", "description": "record" * 1000}]
     evidence = {"architecture_context": "source" * 1000}
@@ -2457,6 +2617,749 @@ def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reas
     assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
     assert result["findings"][0]["record_indexes"] == [0]
     assert len(calls) == 1
+
+
+def test_factual_review_preserves_separate_action_validation_obligation():
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Design a factual answer service with retrieved evidence.",
+        evidence_bundle={},
+        resolved_maturity="production",
+        candidate_records=[],
+        required_production_guarantees=(
+            "audit_and_provenance",
+            "retrieval_and_reuse_trust",
+        ),
+    )
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+
+    assert "retrieval_and_reuse_trust" in criteria
+    assert "deterministically validates those proposals' structure" in criteria["audit_and_provenance"]
+    assert "When the request or applicable rubric requires factual claim validation" in prompt
+    assert "Grounded generation or citations alone do not establish that check" in prompt
+    assert "identify its declared owner and failure outcome" in prompt
+    assert "model-assisted or human review may own the factual check" in prompt
+    assert "Do not transfer the deterministic structure and allowed-constraint guarantee" in prompt
+    assert "Preserve that guarantee where action proposals make it applicable" in prompt
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_scoped_component_gate_assesses_attachment_feasibility_with_server_permissions(
+    monkeypatch, stage,
+):
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    permissions = {
+        "added_edge_anchor_node_ids": ["n6"],
+        "allowed_new_node_count": 1,
+        "allowed_new_edge_count": 2,
+        "minimum_new_edge_count": 1,
+        "connection_addition_mode": "attachment",
+        "editable_edges": [],
+    }
+    scope = {
+        "trusted_baseline": True,
+        "baseline_components": [{"server_id": "n6", "label": "Serving Monitor"}],
+        "baseline_connections": [{"source_id": "n6", "target_id": "n4"}],
+        "edit_permissions": permissions,
+    }
+    review = gate.review_components if stage == "components" else gate.review_connections
+    asyncio.run(review(
+        user_request="Expand Serving Monitor with one directly connected responsibility.",
+        resolved_maturity="production",
+        candidate_records=[{"label": "Alert Triage"}],
+        evidence_bundle={"review_scope": scope},
+    ))
+    prompt = calls[0]["messages"][0]["content"]
+    evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+    assert evidence["review_scope"] == scope
+    assert ("Use review_scope.edit_permissions" in prompt) == (stage == "components")
+    if stage == "components":
+        assert "required inputs and outcomes are achievable" in prompt
+        assert "permitted endpoints, counts, and directions" in prompt
+        assert "attachment anchor may use that anchor's unchanged existing contracts" in prompt
+        assert "Do not transfer ownership or invent connections outside review_scope.edit_permissions" in prompt
+        assert "Preserve their exact payload and control meaning" in prompt
+        assert "an evaluation-feedback contract does not by itself establish a rollback invocation" in prompt
+        assert "Reject a specific incompatible responsibility under objective_fidelity" in prompt
+        assert "do not require authored connection-stage edges" in prompt
+        assert "A truthful one-way attachment or sink needs no return" in prompt
+
+
+@pytest.mark.parametrize("coverage", ["complete", "missing", "unknown"])
+def test_reuse_gate_requires_independent_complete_lifecycle_review(coverage):
+    rules = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    reason = "Cross-session recall has no executable access-scope check or invalidation owner."
+    payload = _rule_reviews(rules, [{
+        "rule_code": "artifact_reuse_lifecycle", "reason": reason, "record_indexes": [0],
+    }])
+    rows = payload["rule_reviews"]
+    if coverage == "missing":
+        rows.pop("artifact_reuse_lifecycle")
+    elif coverage == "unknown":
+        rows["invented_lifecycle"] = rows.pop("artifact_reuse_lifecycle")
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(rule_codes=rules, record_count=1),
+        rule_codes=rules,
+        records=[{"source": "store", "target": "consumer"}],
+    )
+    assert result["approved"] is False
+    if coverage == "complete":
+        assert result["terminal"] is False
+        assert result["rule_reviews"]["retrieval_and_reuse_trust"]["satisfied"] is True
+        assert result["findings"] == [{
+            "rule_code": "artifact_reuse_lifecycle", "reason": reason, "record_indexes": [0],
+        }]
+    else:
+        assert result["terminal"] is True
+        assert result["diagnostics"] == ["provider response has an incomplete or unknown rule review"]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+def test_legacy_qa_model_does_not_change_staged_review_identity(monkeypatch, stage):
+    before = gate.review_identity(stage, "production")
+    monkeypatch.setattr(gate.settings, "graph_qa_model", "independent-legacy-review")
+    assert gate.review_identity(stage, "production") == before
+
+
+@pytest.mark.parametrize("stage,maturity,guarantees,expected", [
+    ("connections", "production", ("audit_and_provenance",), True),
+    ("connections", "production", (), False),
+    ("connections", "prototype", ("audit_and_provenance",), False),
+    ("components", "production", ("audit_and_provenance",), False),
+])
+def test_audit_origin_witness_instructions_follow_stage_and_selected_guarantee(
+    stage, maturity, guarantees, expected,
+):
+    records = [
+        {"source": "recall", "target": "store", "label": "Invalidate stale memory"},
+        {"source": "writer", "target": "logs", "label": "Record memory writes and invalidation outcomes"},
+    ]
+    components = [
+        {"id": "recall", "responsibility": "Owns memory invalidation."},
+        {"id": "writer", "responsibility": "Owns memory persistence and audit production."},
+    ]
+    prompt = gate._prompt(
+        gate=stage, user_request="Review memory audit coverage.",
+        evidence_bundle={"candidate_components": components}, resolved_maturity=maturity,
+        candidate_records=records, required_production_guarantees=guarantees,
+    )
+    instruction = (
+        "When audit_and_provenance is applicable, its satisfied reason must enumerate "
+        "every audit-producing component and cite the declared source of each recorded "
+        "operation, material input, and terminal outcome: an operation it owns or a "
+        "payload received through a compatible declared path. Cite the owning "
+        "responsibility or relevant contract record indexes. Naming events in an outgoing "
+        "log contract or incidental reachability does not prove data origin. An "
+        "unsatisfied reason must identify each missing producer or delivery path. "
+        "Keep the reason concise while covering every audit producer. "
+    )
+    assert (instruction in prompt) is expected
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])["candidate_components"] == components
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity, guarantees)
+
+
+@pytest.mark.parametrize("stage,maturity,guarantees,expected", [
+    ("connections", "production", ("retrieval_and_reuse_trust",), True),
+    ("connections", "production", (), False),
+    ("connections", "production", ("learning_and_release",), False),
+    ("connections", "prototype", ("learning_and_release",), False),
+    ("components", "production", ("learning_and_release",), False),
+    ("connections", "prototype", ("retrieval_and_reuse_trust",), False),
+    ("components", "production", ("retrieval_and_reuse_trust",), False),
+])
+def test_runtime_trust_witnesses_cover_each_declared_consumer_path_only_when_applicable(
+    stage, maturity, guarantees, expected,
+):
+    records = [
+        {"source": "executor", "target": "context", "label": "Return tool observations"},
+        {"source": "working_memory", "target": "context", "label": "Recall working memory"},
+        {"source": "long_term_memory", "target": "planner", "label": "Return scoped memories as untrusted data"},
+    ]
+    evidence = {
+        "candidate_context": {"assumptions": ["All tool observations and memory recall are untrusted data."]},
+        "candidate_components": [
+            {"id": "context", "responsibility": "Integrates tool observations and working-memory recall."},
+            {"id": "planner", "responsibility": "Treats recalled long-term memories as untrusted data."},
+        ],
+    }
+    prompt = gate._prompt(
+        gate=stage, user_request="Review runtime input trust.", evidence_bundle=evidence,
+        resolved_maturity=maturity, candidate_records=records,
+        required_production_guarantees=guarantees,
+    )
+    instruction = (
+        "When retrieval_and_reuse_trust applies, enumerate the retrieved or recalled "
+        "content consumed by each runtime component, including tool observations and "
+        "working-memory recall when declared. For each applicable consumer path, a "
+        "satisfied reason must cite the owning responsibility or incoming contract that "
+        "declares untrusted-data treatment. Enumerate all applicable retrieved, recalled "
+        "or relayed external, model or user byte classes on each consumer path; a "
+        "declaration limited to one class cannot witness the others. Classify origin "
+        "and use before requiring a trust witness for an owner's own acknowledgment. "
+        "An assumption, a declaration on another "
+        "independent input path, or this review's treatment of supplied evidence cannot "
+        "establish that witness. Compatible relays may preserve a declared treatment; "
+        "do not require a duplicate declaration on each transport-only hop. "
+        "For each applicable factual output, a satisfied reason must cite the required "
+        "source evidence, claim-check owner and consuming runtime's clarification, "
+        "abstention or bounded validated retry when required retrieval is missing or "
+        "refused. An artifact owner's stale result or refusal does not establish the "
+        "consumer's outcome. Preserve the declared optional creative outcome rules. "
+        "For artifact_reuse_lifecycle, enumerate each applicable artifact, authoritative "
+        "source and consumer, and cite corresponding executable identity, scope, validity, "
+        "invalidation and revalidation checks. Consumer-local checks do not cover "
+        "independent consumers; shared compatible owners may cover declared paths. "
+        "Requester identity metadata or scope/stale refusal alone is insufficient. "
+    )
+    assert (instruction in prompt) is expected
+    read_witness = (
+        "For each declared read, a satisfied runtime_completeness reason must cite "
+        "its consumer, authoritative source and delivery contract or declared "
+        "same-owner internal read."
+    )
+    assert (read_witness in prompt) == (stage == "connections")
+    release_witness = (
+        "For learning_and_release, enumerate each owned released artifact class and cite "
+        "its compatible serving target and delivery contract or declared same-owner "
+        "dependency. A release path serving another artifact class does not cover it."
+    )
+    assert (release_witness in prompt) == (
+        stage == "connections" and maturity == "production"
+        and "learning_and_release" in guarantees
+    )
+    assert json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0]) == evidence
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity, guarantees)
+    if stage == "components":
+        assert "not edges, sequence, or payload proofs" in criteria["brief_coverage"]
+
+
+@pytest.mark.parametrize("stage,maturity,expected", [
+    ("connections", "production", True),
+    ("connections", "prototype", False),
+    ("components", "production", False),
+])
+def test_recovery_witness_instructions_follow_stage_and_maturity_without_selected_guarantees(
+    stage, maturity, expected,
+):
+    prompt = gate._prompt(
+        gate=stage, user_request="Review recovery mechanisms.", evidence_bundle={},
+        resolved_maturity=maturity, candidate_records=[], required_production_guarantees=(),
+    )
+    for instruction in (
+        "For state_effect_reconciliation, first identify the recovery mechanism declared for each applicable write",
+        "cite the contract that requests status from its authoritative owner and the contract that returns that status",
+        "A write invocation, a response listing status outcomes, or a responsibility promising read-back cannot supply the missing status-query invocation",
+        "Direct, delegated, or combined request contracts are valid",
+        "When one component owns both the lookup and the authoritative status, its declared internal lookup needs no synthetic edge",
+        "target-side idempotency, need no separate read-back unless the design declares it",
+        "An accepted target-facing request/reply contract explicitly guaranteeing idempotent effects or same-operation deduplication",
+        "without repeating it in the target responsibility",
+        "Bare stable identity or sender retry policy does not establish effect idempotency",
+        "Do not infer retries or uncertain-commit recovery from an ordinary write acknowledgment",
+    ):
+        assert (instruction in prompt) is expected
+    criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert criteria == staged_review_requirements(stage, maturity)
+    assert ("state_effect_reconciliation" in criteria) is expected
+
+
+@pytest.mark.parametrize("code,required,permitted", [
+    (
+        "authorization_and_compensation",
+        "a consumed one-action approval does not cover another operation outside its scope",
+        "Exact conditional lifecycle preauthorization or shared contracts may cover multiple operations",
+    ),
+    (
+        "retrieval_and_reuse_trust",
+        "authoritative operation-status or reconciliation replies",
+        "Cite a compatible owning responsibility or input contract",
+    ),
+    (
+        "retrieval_and_reuse_trust",
+        "An internal store does not exempt recalled records, constraints, configuration, retrieved status",
+        "own internal control or commit acknowledgment needs no separate untrusted-data declaration unless",
+    ),
+    (
+        "retrieval_and_reuse_trust",
+        "A bounded status enum does not exempt retrieved bytes from the input trust boundary",
+        "Establish applicability separately for each obligation below",
+    ),
+    (
+        "authorization_and_compensation",
+        "Before rejecting missing delivery, examine all declared contracts for a compatible shared delivery path",
+        "may serve each operation whose submission and decision are established",
+    ),
+    (
+        "artifact_reuse_lifecycle",
+        "For every applicable artifact and consuming path",
+        "explicitly same-request-only artifacts are outside this rule",
+    ),
+    (
+        "artifact_reuse_lifecycle",
+        "For cached outcomes of effectful operations, keep response validity separate from durable operation identity and completion",
+        "must preserve applied-operation deduplication and cannot authorize repeating the same effect",
+    ),
+])
+def test_shared_production_criteria_cover_each_path_without_duplicate_controls(
+    code, required, permitted,
+):
+    guarantees = ("authorization_and_compensation", "retrieval_and_reuse_trust")
+    author_criteria = generation.staged_review_requirements(
+        "connections", "production", guarantees,
+    )
+    records = [{"source": "consumer", "target": "store", "label": "Read configuration"}]
+    prompt = gate._prompt(
+        gate="connections", user_request="Review a production action workflow.",
+        evidence_bundle={}, resolved_maturity="production", candidate_records=records,
+        required_production_guarantees=guarantees,
+    )
+    gate_criteria = json.loads(prompt.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert gate_criteria[code] == author_criteria[code] == STAGED_PRODUCTION_REQUIREMENTS[code]
+    assert required in gate_criteria[code]
+    assert permitted in gate_criteria[code]
+    captured = json.loads(prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0])
+    assert [row["record"] for row in captured] == records
+    assert code not in staged_review_requirements("connections", "prototype", ())
+
+
+def test_connection_index_view_uses_current_positions_and_preserves_evidence():
+    from copy import deepcopy
+
+    components = [
+        {"id": "n1", "label": "Owner", "responsibility": "Owns validation internally."},
+        {"id": "n2", "label": "Consumer", "responsibility": "Requests input and consumes replies."},
+        {"id": "n3", "label": "Isolated", "responsibility": "Owns declared internal work."},
+    ]
+    records = [
+        {"source": "n1", "target": "n2", "label": "Deliver first input", "record_index": 99},
+        {"source": "n2", "target": "n1", "label": "Request second input"},
+        {"source": "n1", "target": "n1", "label": "Internal loop"},
+        {"source": "n1", "target": "n2", "label": "Deliver second input"},
+        {"source": "1", "target": "n2", "label": "Different exact endpoint ID"},
+    ]
+    evidence = {
+        "candidate_components": components,
+        "connection_exchanges": [{"request_record_index": 1, "response_record_index": 3}],
+        "review_scope": {"trusted_baseline": True},
+        "previous_review": {"record_changes": [{"record_index": 0, "before": {"source": "n3", "target": "n1"}}]},
+    }
+    before = deepcopy((records, evidence))
+    prompt = gate._prompt(
+        gate="connections", user_request="Review current required dependencies",
+        evidence_bundle=evidence, resolved_maturity="production",
+        candidate_records=records, required_production_guarantees=(),
+    )
+    view = json.loads(prompt.split("Current component-to-record index: ")[1].split("\n", 1)[0])
+    assert view == [
+        {"component_id": "n1", "incoming_record_indexes": [1, 2], "outgoing_record_indexes": [0, 2, 3]},
+        {"component_id": "n2", "incoming_record_indexes": [0, 3, 4], "outgoing_record_indexes": [1]},
+        {"component_id": "n3", "incoming_record_indexes": [], "outgoing_record_indexes": []},
+    ]
+    assert json.loads(prompt.split("Evidence bundle: ")[1].split("\n", 1)[0]) == evidence
+    assert json.loads(prompt.split("Immutable candidate records: ")[1].split("\n", 1)[0]) == [
+        {"record_index": index, "record": record} for index, record in enumerate(records)
+    ]
+    assert (records, evidence) == before
+    assert "proves neither input completeness nor ordering" in prompt
+    assert "Do not reopen unrelated unchanged baseline design decisions" in prompt
+    assert "Editable fields limit mutation authority" in prompt
+
+
+@pytest.mark.parametrize("evidence", [{}, {"candidate_components": []}])
+def test_connection_index_view_keeps_optional_component_evidence_compatible(evidence):
+    prompt = gate._prompt(
+        gate="connections", user_request="Review", evidence_bundle=evidence,
+        resolved_maturity="prototype", candidate_records=[], required_production_guarantees=(),
+    )
+    assert "Current component-to-record index: []" in prompt
+    assert json.loads(prompt.split("Evidence bundle: ")[1].split("\n", 1)[0]) == evidence
+
+
+def _component_input_trust_result(count, failed=(), brief=None):
+    payload = _rule_reviews(gate.COMPONENT_RULE_CODES)
+    if brief is not None:
+        payload["rule_reviews"]["brief_coverage"] = brief
+    payload["input_trust_reviews"] = {
+        str(index): {
+            "outcome": "unsatisfied" if index in failed else "not_applicable",
+            "reason": "Consumer executes model changes without declared input treatment."
+            if index in failed
+            else "No applicable content consumption is declared.",
+        }
+        for index in range(count)
+    }
+    return payload
+
+
+def _parse_component_input_trust(payload, count):
+    return gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(
+            rule_codes=gate.COMPONENT_RULE_CODES,
+            record_count=count,
+            input_trust_audit="keyed",
+        ),
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        records=[{"id": str(index)} for index in range(count)],
+    )
+
+
+@pytest.mark.parametrize("count", [0, 1, 33, 60])
+def test_component_input_trust_schema_requires_exact_record_positions(count):
+    schema = gate._response_schema(
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        record_count=count,
+        input_trust_audit="keyed",
+    )
+    audits = schema["properties"]["input_trust_reviews"]
+    assert audits["required"] == [str(index) for index in range(count)]
+    assert audits["additionalProperties"] is False
+    assert all(
+        value == {"$ref": "#/$defs/input_trust_review"}
+        for value in audits["properties"].values()
+    )
+    result = _parse_component_input_trust(_component_input_trust_result(count), count)
+    assert result["approved"] and not result["terminal"]
+    assert len(result["input_trust_reviews"]) == count
+
+
+@pytest.mark.parametrize(
+    "mutation", ["missing", "unknown", "fields", "boolean", "reason"]
+)
+def test_component_input_trust_malformed_audits_fail_closed(mutation):
+    payload = _component_input_trust_result(2)
+    if mutation == "missing":
+        payload["input_trust_reviews"].pop("1")
+    elif mutation == "unknown":
+        payload["input_trust_reviews"]["2"] = payload["input_trust_reviews"]["0"]
+    elif mutation == "fields":
+        payload["input_trust_reviews"]["0"]["extra"] = True
+    elif mutation == "boolean":
+        payload["input_trust_reviews"]["0"]["outcome"] = 1
+    else:
+        payload["input_trust_reviews"]["0"]["reason"] = " "
+    result = _parse_component_input_trust(payload, 2)
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+
+
+def test_component_input_trust_failure_overrides_passing_aggregate_and_snapshot():
+    payload = _component_input_trust_result(23, failed=(22,))
+    payload["input_trust_reviews"]["22"]["reason"] = (
+        "Executor consumes approved model action content with durable IDs, but declares "
+        "untrusted handling only for platform replies. Action content remains uncovered."
+    )
+    result = _parse_component_input_trust(payload, 23)
+    assert not result["approved"] and not result["terminal"]
+    assert result["findings"][0]["rule_code"] == "brief_coverage"
+    assert result["findings"][0]["record_indexes"] == [22]
+    assert result["findings"][0]["reason"] == payload["input_trust_reviews"]["22"]["reason"]
+    assert "supplied evidence satisfies" not in result["findings"][0]["reason"]
+    assert result["rule_reviews"]["brief_coverage"]["satisfied"] is False
+    from agent import staged_graph_workflow as workflow
+
+    snapshot = workflow._review_snapshot(
+        stage="components",
+        records=[{"id": str(i)} for i in range(23)],
+        evidence={},
+        review={
+            **result,
+            "review_identity": gate.review_identity("components", "production"),
+        },
+    )
+    assert (
+        snapshot["rule_reviews"]["brief_coverage"]
+        == result["rule_reviews"]["brief_coverage"]
+    )
+
+
+@pytest.mark.parametrize("old_indexes,expected", [([0, 2], [0, 1, 2]), ([], [])])
+def test_component_input_trust_merges_existing_failure_without_narrowing_global_scope(
+    old_indexes, expected
+):
+    brief = {
+        "satisfied": False,
+        "reason": "Existing release ownership missing.",
+        "record_indexes": old_indexes,
+    }
+    result = _parse_component_input_trust(
+        _component_input_trust_result(3, (1, 2), brief), 3
+    )
+    row = result["rule_reviews"]["brief_coverage"]
+    assert row["satisfied"] is False and row["record_indexes"] == expected
+    assert "Existing release ownership missing." in row["reason"]
+    assert row["reason"].startswith(
+        "Input-trust audits failed at record positions: 1, 2."
+    )
+
+
+@pytest.mark.parametrize("count", [33, 60])
+def test_component_input_trust_overflow_retains_full_audit_without_repair_authority(
+    count,
+):
+    result = _parse_component_input_trust(
+        _component_input_trust_result(count, range(count)), count
+    )
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+    assert len(result["input_trust_reviews"]) == count
+    assert all(not row["satisfied"] for row in result["input_trust_reviews"].values())
+    assert "bounded finding contract" in result["diagnostics"][0]
+
+
+def test_component_input_trust_long_reasons_retain_boolean_and_localized_indexes():
+    payload = _component_input_trust_result(2, (0, 1))
+    payload["input_trust_reviews"]["0"]["reason"] = (
+        "Model proposal lacks consumer treatment. " + "x" * 2100
+    )
+    result = _parse_component_input_trust(payload, 2)
+    row = result["rule_reviews"]["brief_coverage"]
+    assert not row["satisfied"] and row["record_indexes"] == [0, 1]
+    assert len(row["reason"]) <= gate._MAX_REASON_CHARS
+    assert len(result["input_trust_reviews"]["0"]["reason"]) == gate._MAX_REASON_CHARS
+    assert result["diagnostics"]
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_component_input_trust_prompt_is_positioned_scoped_and_connection_contract_unchanged(
+    maturity,
+):
+    components = gate._prompt(
+        gate="components",
+        user_request="Review declared ownership.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[{"responsibility": "Own internal commit acknowledgement."}],
+        required_production_guarantees=(),
+    )
+    connections = gate._prompt(
+        gate="connections",
+        user_request="Review contracts.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+        required_production_guarantees=(),
+    )
+    assert (
+        "input_trust_reviews first, keyed by every zero-based candidate record position"
+        in components
+    )
+    assert "handling platform replies as untrusted does not cover that action content" in components
+    assert "Approval and identity metadata alone are not action content" in components
+    assert "transport alone does not establish consumption" in components
+    assert "criteria and their own-result exceptions" in components
+    assert "Text returned by a separately declared model or provider is not exempt as the caller's own model output" in components
+    assert "Assess its declared consumption separately from input briefs or facts" in components
+    assert "preserve fresh internal control or aggregate and pure-transport exceptions" in components
+    assert "quote the matching consumer handling" in components
+    assert "own-result exceptions" in components
+    assert "Do not invent transport" in components
+    assert "input_trust_reviews" not in connections
+    schema = gate._response_schema(
+        rule_codes=gate.CONNECTION_RULE_CODES, record_count=3
+    )
+    assert schema["required"] == ["rule_reviews"]
+
+
+def test_component_input_trust_missing_top_level_and_duplicate_key_fail_closed():
+    payload = _component_input_trust_result(1)
+    payload.pop("input_trust_reviews")
+    assert _parse_component_input_trust(payload, 1)["terminal"]
+    payload = _component_input_trust_result(1)
+    text = json.dumps(payload).replace(
+        '"input_trust_reviews": {',
+        '"input_trust_reviews": {"0":{"satisfied":true,"reason":"Duplicate."},',
+    )
+    response = StructuredLLMResponse(
+        text=text,
+        finish_reason="end_turn",
+        input_tokens=1,
+        output_tokens=1,
+        provider="test",
+        model="test",
+    )
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(
+            rule_codes=gate.COMPONENT_RULE_CODES,
+            record_count=1,
+            input_trust_audit="keyed",
+        ),
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        records=[{"id": "a"}],
+    )
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+
+
+def test_component_input_trust_passing_audits_retain_existing_brief_failure():
+    brief = {
+        "satisfied": False,
+        "reason": "Existing owner missing.",
+        "record_indexes": [0],
+    }
+    result = _parse_component_input_trust(
+        _component_input_trust_result(1, brief=brief), 1
+    )
+    assert result["rule_reviews"]["brief_coverage"] == brief
+    assert result["findings"][0]["record_indexes"] == [0]
+
+
+@pytest.mark.parametrize("old_indexes", [[], [2]])
+def test_component_input_trust_preserves_each_long_witness_through_correction_mapping(
+    old_indexes,
+):
+    from agent import staged_graph_workflow as workflow
+    from agent.nodes import staged_graph_generation as generation
+
+    original_reason = "Original blocker. " + "o" * (
+        gate._MAX_REASON_CHARS - len("Original blocker. ")
+    )
+    brief = {
+        "satisfied": False,
+        "reason": original_reason,
+        "record_indexes": old_indexes,
+    }
+    payload = _component_input_trust_result(3, (0, 1), brief)
+    for index in (0, 1):
+        prefix = f"Consumer {index} model input lacks untrusted handling. "
+        payload["input_trust_reviews"][str(index)]["reason"] = prefix + "x" * (
+            gate._MAX_REASON_CHARS - len(prefix)
+        )
+    result = _parse_component_input_trust(payload, 3)
+    assert not result["approved"] and not result["terminal"]
+    assert len(result["findings"]) == 3
+    assert result["findings"][0] == {
+        "rule_code": "brief_coverage",
+        "reason": original_reason,
+        **({"record_indexes": old_indexes} if old_indexes else {}),
+    }
+    for position, index in enumerate((0, 1), 1):
+        assert result["findings"][position] == {
+            "rule_code": "brief_coverage",
+            "record_indexes": [index],
+            "reason": payload["input_trust_reviews"][str(index)]["reason"],
+        }
+    mapped = workflow._gate_findings(result["findings"], stage="components")
+    safe = generation._sanitize_findings(mapped)
+    assert len(safe) == len(mapped) == 3
+    assert {row["reason"] for row in safe} == {row["reason"] for row in mapped}
+    assert sorted(row.get("record_indexes", []) for row in safe) == sorted(
+        [old_indexes, [0], [1]]
+    )
+    aggregate = result["rule_reviews"]["brief_coverage"]
+    assert aggregate["reason"].startswith(
+        "Input-trust audits failed at record positions: 0, 1."
+    )
+    assert aggregate["record_indexes"] == ([0, 1, 2] if old_indexes else [])
+
+
+@pytest.mark.parametrize("count", [33, 60])
+def test_component_input_trust_overflow_is_terminal_even_with_existing_global_failure(
+    count,
+):
+    brief = {
+        "satisfied": False,
+        "reason": "Existing global blocker.",
+        "record_indexes": [],
+    }
+    result = _parse_component_input_trust(
+        _component_input_trust_result(count, range(count), brief), count
+    )
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+    assert len(result["input_trust_reviews"]) == count
+
+
+@pytest.mark.parametrize(
+    "audits", [{"00": {"outcome": "not_applicable", "reason": "Invalid key."}}, []]
+)
+def test_component_input_trust_empty_candidate_rejects_nonempty_or_nonobject_audits(
+    audits,
+):
+    payload = _component_input_trust_result(0)
+    payload["input_trust_reviews"] = audits
+    result = _parse_component_input_trust(payload, 0)
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+
+
+
+
+@pytest.mark.parametrize(
+    "malformation",
+    [
+        "missing",
+        "extra",
+        "duplicate",
+        "unknown",
+        "non_string",
+        "missing_code",
+        "null_row",
+    ],
+)
+def test_rule_review_array_requires_every_rule_exactly_once(malformation):
+    rules = ("brief_coverage", "objective_fidelity")
+    rows = [
+        {
+            "rule_code": code,
+            "satisfied": True,
+            "reason": "The owner matches the request.",
+            "record_indexes": [],
+        }
+        for code in rules
+    ]
+    if malformation == "missing":
+        rows.pop()
+    elif malformation == "extra":
+        rows.append(dict(rows[0]))
+    elif malformation == "duplicate":
+        rows[1]["rule_code"] = rules[0]
+    elif malformation == "unknown":
+        rows[1]["rule_code"] = "invented"
+    elif malformation == "non_string":
+        rows[1]["rule_code"] = [rules[1]]
+    elif malformation == "missing_code":
+        rows[1].pop("rule_code")
+    else:
+        rows[1] = None
+    result = gate._review_result(
+        _response({"rule_reviews": rows}),
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
+        rule_codes=rules,
+        records=[],
+    )
+    assert result["terminal"] is True
+    assert result["approved"] is False
+    assert result["findings"] == []
+    assert "rule_reviews" not in result
+
+
+def test_previous_array_provider_schema_is_rejected():
+    rules = ("brief_coverage",)
+    response = StructuredLLMResponse(
+        text=json.dumps({"rule_reviews": [{"rule_code": code, **row} for code, row in _rule_reviews(rules)["rule_reviews"].items()]}),
+        finish_reason="end_turn",
+        input_tokens=1,
+        output_tokens=1,
+        provider="test",
+        model="test",
+    )
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(rule_codes=rules, record_count=0),
+        rule_codes=rules,
+        records=[],
+    )
+    assert result["terminal"] is True
+    assert result["approved"] is False
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -2598,9 +3501,7 @@ def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
 
 @pytest.mark.parametrize("stage", ["components", "connections"])
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_output_payload_clarification_is_connection_stage_only(
-    stage, maturity
-):
+def test_output_payload_clarification_is_connection_stage_only(stage, maturity):
     authored, _ = generation._attempt_prompt(
         stage=stage,
         request="Draw an agent loop using tool observations to answer.",
@@ -2633,43 +3534,41 @@ def test_output_payload_clarification_is_connection_stage_only(
     assert (forwarding in authored) is (stage == "connections")
     assert (forwarding in reviewed) is (stage == "connections")
     if stage == "connections":
-        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v40"
-        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v37"
+        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v74"
+        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v69"
     else:
-        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v46"
-        assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v27"
+        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v72"
+        assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v60"
 
 
 @pytest.mark.parametrize("changed_stage", ["components", "connections"])
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_stage_effort_changes_only_owning_review_identity(
+def test_shared_effort_changes_each_review_identity(
     monkeypatch, changed_stage, maturity
 ):
     identities = {
         stage: gate.review_identity(stage, maturity)
         for stage in ("components", "connections")
     }
-    monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, changed_stage, "high")
+    monkeypatch.setattr(gate, "_GATE_EFFORT", "high")
 
     for stage, identity in identities.items():
-        assert (gate.review_identity(stage, maturity) != identity) is (
-            stage == changed_stage
-        )
+        assert gate.review_identity(stage, maturity) != identity
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
-def test_low_effort_connection_review_rejects_old_medium_policy_approval(
+def test_medium_effort_connection_review_rejects_old_low_policy_approval(
     monkeypatch, maturity
 ):
     current = gate.review_identity("connections", maturity)
     component_identity = gate.review_identity("components", maturity)
     with monkeypatch.context() as previous:
-        previous.setitem(gate._GATE_EFFORT_BY_STAGE, "connections", "medium")
+        previous.setattr(gate, "_GATE_EFFORT", "low")
         previous.setattr(
             gate, "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v35"
         )
         old = gate.review_identity("connections", maturity)
-        assert gate.review_identity("components", maturity) == component_identity
+        assert gate.review_identity("components", maturity) != component_identity
 
     assert old != current
     with pytest.raises(ValueError, match="policy differs"):
@@ -2821,8 +3720,8 @@ async def test_round9_criteria_reach_initial_and_correction_dispatch(
                 "Containment or generic parent lifecycle ownership alone cannot supply child output"
                 in prompt
             )
-            assert "declared producer, consumer, and actual required payload" in prompt
-            assert "record indexes for every cross-component hop" in prompt
+            assert "declared producer, consumer, and required payload" in prompt
+            assert "quote the payload phrase in each cross-component contract" in prompt
             if maturity == "production":
                 assert (
                     "Answer-only inference with no model-proposed actions needs no per-action proposal validator"
@@ -2854,8 +3753,8 @@ def test_round9_gate_release_rejects_immediately_prior_approval(
     with monkeypatch.context() as old_policy:
         old_policy.setattr(gate, field, version)
         prior = gate.review_identity(stage, maturity)
-        assert gate._GATE_EFFORT_BY_STAGE[stage] == (
-            "medium" if stage == "components" else "low"
+        assert gate._GATE_EFFORT == (
+            "medium"
         )
     with pytest.raises(ValueError, match="policy differs"):
         gate._previous_review_evidence(
@@ -2916,3 +3815,608 @@ def test_round8_rag_missing_payload_findings_reach_gate_without_graph_changes(
         in prompt
     )
     assert json.dumps(retained, sort_keys=True) == snapshot
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["missing", "extra", "duplicate", "bool", "reason", "keyed", "extra_field",
+     "missing_field", "index_bool", "fraction", "string", "negative", "out_of_range"],
+)
+def test_connection_input_trust_exact_positions_fail_closed(change):
+    codes = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = [
+        {"record_index": index, "outcome": "not_applicable", "reason": "Declared transport only."}
+        for index in range(2)
+    ]
+    if change == "missing":
+        payload["input_trust_reviews"].pop()
+    elif change == "extra":
+        payload["input_trust_reviews"].append(
+            dict(payload["input_trust_reviews"][0], record_index=2)
+        )
+    elif change == "bool":
+        payload["input_trust_reviews"][0]["outcome"] = 1
+    elif change == "reason":
+        payload["input_trust_reviews"][0]["reason"] = " "
+    elif change == "keyed":
+        payload["input_trust_reviews"] = {
+            str(row["record_index"]): {
+                key: value for key, value in row.items() if key != "record_index"
+            }
+            for row in payload["input_trust_reviews"]
+        }
+    elif change == "extra_field":
+        payload["input_trust_reviews"][0]["extra"] = True
+    elif change == "missing_field":
+        del payload["input_trust_reviews"][0]["record_index"]
+    elif change in {"index_bool", "fraction", "string", "negative", "out_of_range"}:
+        payload["input_trust_reviews"][0]["record_index"] = {
+            "index_bool": False,
+            "fraction": 0.5,
+            "string": "0",
+            "negative": -1,
+            "out_of_range": 2,
+        }[change]
+    if change == "duplicate":
+        payload["input_trust_reviews"][1]["record_index"] = 0
+    response = _response(payload)
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(
+            rule_codes=codes, record_count=2, input_trust_audit="indexed"
+        ),
+        rule_codes=codes,
+        records=[{}, {}],
+    )
+    assert result["terminal"] and not result["approved"]
+
+
+def test_connection_input_trust_failure_keeps_original_reply_index_and_exchange_authority():
+    from agent import staged_graph_workflow as workflow
+
+    accepted = [
+        {
+            "index": 0,
+            "id": "caller",
+            "label": "Caller",
+            "type": 104,
+            "responsibility": "Consumes returned status.",
+        },
+        {
+            "index": 1,
+            "id": "owner",
+            "label": "Owner",
+            "type": 101,
+            "responsibility": "Returns external status.",
+        },
+    ]
+    exchanges = {
+        "exchanges": [
+            {
+                "source_index": 0,
+                "target_index": 1,
+                "label": "Request status",
+                "response_label": "External status",
+                "flow": 400,
+                "sync": 500,
+            },
+            {
+                "source_index": 1,
+                "target_index": 0,
+                "label": "Publish unrelated event",
+                "response_label": None,
+                "flow": 402,
+                "sync": 501,
+            },
+        ]
+    }
+    original, pairs = generation._parse_connection_response(
+        json.dumps(exchanges),
+        accepted_components=accepted,
+        edge_limit=8,
+    )
+    write_set = generation.create_write_set(component_limit=4, edge_limit=8)
+    codes = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = [
+        {
+            "record_index": index,
+            "outcome": "unsatisfied" if index == 1 else "not_applicable",
+            "reason": (
+                "Reply forwards external status to the consumer without declared untrusted handling."
+                if index == 1
+                else "Declared transport only."
+            ),
+        }
+        for index in reversed(range(len(original["edges"])))
+    ]
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(
+            rule_codes=codes,
+            record_count=len(original["edges"]),
+            input_trust_audit="indexed",
+        ),
+        rule_codes=codes,
+        records=original["edges"],
+    )
+    assert not result["approved"] and not result["terminal"]
+    assert result["rule_reviews"]["retrieval_and_reuse_trust"]["satisfied"] is False
+    assert result["rule_reviews"]["retrieval_and_reuse_trust"]["record_indexes"] == [1]
+    assert result["findings"] == [
+        {
+            "rule_code": "retrieval_and_reuse_trust",
+            "record_indexes": [1],
+            "reason": next(
+                row["reason"]
+                for row in payload["input_trust_reviews"]
+                if row["record_index"] == 1
+            ),
+        }
+    ]
+    findings = workflow._gate_findings(result["findings"], stage="connections")
+    scoped = generation._semantic_correction_delta(
+        stage="connections",
+        maturity="production",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=original,
+        findings=findings,
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=accepted,
+        accepted_context=generation.AcceptedContext(
+            assumptions=(),
+            external_effects=False,
+            retrieval_or_reuse=True,
+            learning_or_release=False,
+        ),
+        recovery_mode=True,
+        connection_exchanges=pairs,
+    )
+    assert set(scoped.schema["properties"]["updates"]["properties"]) == {"slot_0"}
+    assert scoped.base["exchanges"][1] == exchanges["exchanges"][1]
+
+
+@pytest.mark.parametrize(
+    "maturity,guarantees,expected",
+    [
+        ("production", ("retrieval_and_reuse_trust",), True),
+        ("production", (), False),
+        ("prototype", (), False),
+    ],
+)
+def test_connection_input_trust_prompt_is_applicable_and_edge_positioned(
+    maturity, guarantees, expected
+):
+    prompt = gate._prompt(
+        gate="connections",
+        user_request="Review current inputs.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+        required_production_guarantees=guarantees,
+    )
+    assert ("connection record_index exactly once" in prompt) is expected
+    assert ("including user edits and evidence inputs" in prompt) is expected
+    assert (
+        "Do not infer consumption from the mere presence of metadata or transport labels"
+        in prompt
+    ) is expected
+    assert (
+        "declared consumed status or metadata remains subject to the supplied criteria"
+        in prompt
+    ) is expected
+
+
+@pytest.mark.parametrize(
+    "codes", [("edge_semantics",), ("brief_coverage", "retrieval_and_reuse_trust")]
+)
+def test_input_trust_audit_rejects_missing_or_ambiguous_owning_rule(codes):
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = {
+        "0": {"outcome": "unsatisfied", "reason": "Missing handling."}
+    }
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(
+            rule_codes=codes, record_count=1, input_trust_audit="keyed"
+        ),
+        rule_codes=codes,
+        records=[{}],
+    )
+    assert result["terminal"] and not result["approved"]
+
+
+@pytest.mark.parametrize("count", [0, 24, 78, 200])
+def test_indexed_connection_audit_has_constant_item_shape_and_exact_coverage(count):
+    codes = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    schema = gate._response_schema(
+        rule_codes=codes, record_count=count, input_trust_audit="indexed"
+    )
+    component = gate._response_schema(
+        rule_codes=gate.COMPONENT_RULE_CODES,
+        record_count=count,
+        input_trust_audit="keyed",
+    )
+    no_audit = gate._response_schema(rule_codes=codes, record_count=count)
+    assert (
+        schema["properties"]["rule_reviews"] == no_audit["properties"]["rule_reviews"]
+    )
+    assert schema["$defs"]["review"] == no_audit["$defs"]["review"]
+    assert component["properties"]["input_trust_reviews"]["required"] == [
+        str(index) for index in range(count)
+    ]
+    assert set(component["$defs"]["input_trust_review"]["properties"]) == {
+        "outcome",
+        "reason",
+    }
+    audit = schema["properties"]["input_trust_reviews"]
+    assert audit == {
+        "type": "array",
+        "items": {"$ref": "#/$defs/input_trust_review"},
+        "minItems": count,
+        "maxItems": count,
+    }
+    assert schema["$defs"]["input_trust_review"]["properties"]["record_index"] == {
+        "type": "integer"
+    }
+    assert set(schema["$defs"]["input_trust_review"]["required"]) == {
+        "record_index",
+        "outcome",
+        "reason",
+    }
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = [
+        {"record_index": index, "outcome": "not_applicable", "reason": "Declared transport only."}
+        for index in reversed(range(count))
+    ]
+    result = gate._review_result(
+        _response(payload),
+        schema=schema,
+        rule_codes=codes,
+        records=[{} for _ in range(count)],
+    )
+    assert result["approved"] and not result["terminal"]
+    assert list(result["input_trust_reviews"]) == [str(index) for index in range(count)]
+
+
+def test_indexed_connection_audit_rejects_duplicate_json_row_fields():
+    from dataclasses import replace
+
+    codes = gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = [
+        {"record_index": 0, "outcome": "not_applicable", "reason": "Declared transport only."}
+    ]
+    response = _response(payload)
+    response = replace(
+        response,
+        text=response.text.replace(
+            '"record_index": 0', '"record_index": 0, "record_index": 0'
+        ),
+    )
+    result = gate._review_result(
+        response,
+        schema=gate._response_schema(
+            rule_codes=codes, record_count=1, input_trust_audit="indexed"
+        ),
+        rule_codes=codes,
+        records=[{}],
+    )
+    assert result["terminal"] and not result["approved"]
+
+
+@pytest.mark.parametrize(
+    "stage,maturity,guarantees,expected",
+    [
+        ("components", "production", (), 16384),
+        ("components", "prototype", (), 16384),
+        ("connections", "prototype", (), 16384),
+        ("connections", "production", (), 16384),
+        ("connections", "production", ("retrieval_and_reuse_trust",), 32768),
+    ],
+)
+def test_indexed_connection_audit_budget_is_scoped_without_extra_calls(
+    monkeypatch, stage, maturity, guarantees, expected
+):
+    monkeypatch.setattr(gate.settings, "graph_qa_max_completion_tokens", 16384)
+    monkeypatch.setattr(
+        gate.settings, "staged_connection_audit_max_completion_tokens", 32768
+    )
+    monkeypatch.setattr(gate.settings, "llm_max_tokens", 131072)
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    review = (
+        gate.review_components if stage == "components" else gate.review_connections
+    )
+    kwargs = dict(
+        user_request="Review declared inputs.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+    )
+    if stage == "connections":
+        kwargs["required_production_guarantees"] = guarantees
+    result = asyncio.run(review(**kwargs))
+    assert result["approved"] and len(calls) == 1
+    assert calls[0]["max_output_tokens"] == expected
+    assert calls[0]["provider_attempt_limit"] == 1
+    assert calls[0]["effort"] == "medium"
+    assert calls[0]["timeout_seconds"] == gate.settings.staged_gate_timeout_s
+
+
+def test_indexed_connection_budget_identity_tracks_effective_cap_only(monkeypatch):
+    guarantees = ("retrieval_and_reuse_trust",)
+    monkeypatch.setattr(
+        gate.settings, "staged_connection_audit_max_completion_tokens", 32768
+    )
+    monkeypatch.setattr(gate.settings, "llm_max_tokens", 32768)
+    baseline = gate.review_identity("connections", "production", guarantees)
+    other = {
+        (stage, maturity): gate.review_identity(stage, maturity)
+        for stage, maturity in [
+            ("components", "production"),
+            ("components", "prototype"),
+            ("connections", "prototype"),
+            ("connections", "production"),
+        ]
+    }
+    monkeypatch.setattr(
+        gate.settings, "staged_connection_audit_max_completion_tokens", 65536
+    )
+    assert (
+        gate._review_max_output_tokens("connections", "production", guarantees) == 32768
+    )
+    assert gate.review_identity("connections", "production", guarantees) == baseline
+    monkeypatch.setattr(gate.settings, "llm_max_tokens", 65536)
+    assert gate.review_identity("connections", "production", guarantees) != baseline
+    monkeypatch.setattr(
+        gate.settings, "staged_connection_audit_max_completion_tokens", 24576
+    )
+    assert (
+        gate._review_max_output_tokens("connections", "production", guarantees) == 24576
+    )
+    for (stage, maturity), expected in other.items():
+        assert gate.review_identity(stage, maturity) == expected
+
+
+@pytest.mark.parametrize("selected,hard_cap,expected", [(24576, 32768, 24576), (65536, 32768, 32768)])
+def test_indexed_connection_audit_call_uses_effective_override(
+    monkeypatch, selected, hard_cap, expected
+):
+    monkeypatch.setattr(
+        gate.settings, "staged_connection_audit_max_completion_tokens", selected
+    )
+    monkeypatch.setattr(gate.settings, "llm_max_tokens", hard_cap)
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Review declared inputs.",
+            evidence_bundle={},
+            resolved_maturity="production",
+            candidate_records=[],
+            required_production_guarantees=("retrieval_and_reuse_trust",),
+        )
+    )
+    assert result["approved"] and len(calls) == 1
+    assert calls[0]["max_output_tokens"] == expected
+    assert calls[0]["provider_attempt_limit"] == 1
+
+
+@pytest.mark.parametrize("mode", ["keyed", "indexed"])
+@pytest.mark.parametrize("outcome", ["satisfied", "not_applicable", "unsatisfied"])
+def test_input_trust_outcome_normalizes_explicit_classification_without_reading_reason(
+    mode, outcome
+):
+    codes = (
+        gate.COMPONENT_RULE_CODES
+        if mode == "keyed"
+        else gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    )
+    trust_rule = "brief_coverage" if mode == "keyed" else "retrieval_and_reuse_trust"
+    rows = [
+        {
+            "outcome": "not_applicable",
+            "reason": "Only declared fresh internal data is consumed.",
+        },
+        {
+            "outcome": outcome,
+            "reason": "Not applicable; only fresh internal data is consumed.",
+        },
+    ]
+    payload = _rule_reviews(codes)
+    payload["input_trust_reviews"] = (
+        {str(i): row for i, row in enumerate(rows)}
+        if mode == "keyed"
+        else [dict(row, record_index=i) for i, row in enumerate(rows)]
+    )
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(
+            rule_codes=codes, record_count=2, input_trust_audit=mode
+        ),
+        rule_codes=codes,
+        records=[{"id": "first"}, {"id": "second"}],
+    )
+    assert result["terminal"] is False
+    assert result["input_trust_reviews"]["1"] == {
+        "satisfied": outcome != "unsatisfied",
+        "outcome": outcome,
+        "reason": rows[1]["reason"],
+    }
+    assert result["approved"] is (outcome != "unsatisfied")
+    if outcome == "unsatisfied":
+        assert result["findings"][0]["record_indexes"] == [1]
+        assert result["rule_reviews"][trust_rule]["satisfied"] is False
+
+
+@pytest.mark.parametrize("mode", ["keyed", "indexed"])
+@pytest.mark.parametrize("bad", [True, 1, None, [], "unknown", "", "Not Applicable"])
+def test_input_trust_outcome_rejects_unknown_values_and_types(mode, bad):
+    codes = (
+        gate.COMPONENT_RULE_CODES
+        if mode == "keyed"
+        else gate._rules_for_connections("production", ("retrieval_and_reuse_trust",))
+    )
+    payload = _rule_reviews(codes)
+    row = {"outcome": bad, "reason": "Fresh internal data."}
+    payload["input_trust_reviews"] = (
+        {"0": row} if mode == "keyed" else [dict(row, record_index=0)]
+    )
+    result = gate._review_result(
+        _response(payload),
+        schema=gate._response_schema(
+            rule_codes=codes, record_count=1, input_trust_audit=mode
+        ),
+        rule_codes=codes,
+        records=[{}],
+    )
+    assert result["terminal"] is True and result["approved"] is False
+
+
+@pytest.mark.parametrize("audit_mode", [None, "keyed", "indexed"])
+def test_reason_description_survives_provider_transform_without_grammar_constraints(
+    audit_mode,
+):
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    schema = gate._response_schema(
+        rule_codes=("input_trust",), record_count=2, input_trust_audit=audit_mode
+    )
+    adapted = _anthropic_response_schema(schema)
+    names = ["review"] + (["input_trust_review"] if audit_mode else [])
+    for name in names:
+        original = schema["$defs"][name]["properties"]["reason"]
+        wire = adapted["$defs"][name]["properties"]["reason"]
+        assert original["minLength"] == 1
+        assert original["maxLength"] == gate._MAX_REASON_CHARS
+        assert wire == {"type": "string", "description": original["description"]}
+        assert "nonblank evidence-based" in wire["description"]
+        assert "including satisfied and not applicable" in wire["description"]
+        assert str(gate._MAX_REASON_CHARS) in wire["description"]
+
+
+
+@pytest.mark.parametrize("audit_mode", [None, "keyed", "indexed"])
+@pytest.mark.parametrize(
+    "reason", ["", " ", "\t", "\n", "\r", "\u00a0", " \t\r\n\u00a0 "]
+)
+def test_native_reason_validation_rejects_all_blank_classes(audit_mode, reason):
+    codes = ("brief_coverage",)
+    schema = gate._response_schema(
+        rule_codes=codes, record_count=1, input_trust_audit=audit_mode
+    )
+    payload = _rule_reviews(codes)
+    if audit_mode:
+        row = {"outcome": "not_applicable", "reason": reason}
+        payload["input_trust_reviews"] = (
+            {"0": row} if audit_mode == "keyed" else [dict(row, record_index=0)]
+        )
+    else:
+        payload["rule_reviews"]["brief_coverage"]["reason"] = reason
+    result = gate._review_result(
+        _response(payload), schema=schema, rule_codes=codes, records=[{}]
+    )
+    assert result["terminal"] is True and result["approved"] is False
+    assert result["diagnostics"] == [
+        "invalid input trust review reason"
+        if audit_mode
+        else "invalid review reason for brief_coverage"
+    ]
+
+
+@pytest.mark.parametrize("satisfied", [True, False])
+def test_valid_oversized_rule_citations_normalize_to_global_without_changing_verdict(
+    satisfied,
+):
+    rules = ("brief_coverage",)
+    result = gate._review_result(
+        _response(
+            {
+                "rule_reviews": {
+                    "brief_coverage": {
+                        "satisfied": satisfied,
+                        "reason": "Declared consumer handling is missing."
+                        if not satisfied
+                        else "All inputs covered.",
+                        "record_indexes": list(range(34)),
+                    }
+                }
+            }
+        ),
+        schema=gate._response_schema(rule_codes=rules, record_count=40),
+        rule_codes=rules,
+        records=[{} for _ in range(40)],
+    )
+    assert not result["terminal"]
+    assert result["approved"] is satisfied
+    assert result["rule_reviews"]["brief_coverage"]["satisfied"] is satisfied
+    assert result["rule_reviews"]["brief_coverage"]["record_indexes"] == []
+    assert "normalized 34 unique indexes to global scope" in result["diagnostics"][0]
+    assert result["findings"] == (
+        []
+        if satisfied
+        else [
+            {
+                "rule_code": "brief_coverage",
+                "reason": "Declared consumer handling is missing.",
+            }
+        ]
+    )
+
+
+def test_repeated_rule_citations_deduplicate_to_original_localized_order():
+    rules = ("brief_coverage",)
+    result = gate._review_result(
+        _response(
+            {
+                "rule_reviews": {
+                    "brief_coverage": {
+                        "satisfied": False,
+                        "reason": "Two consumers need handling.",
+                        "record_indexes": [3, 1] * 20,
+                    }
+                }
+            }
+        ),
+        schema=gate._response_schema(rule_codes=rules, record_count=4),
+        rule_codes=rules,
+        records=[{} for _ in range(4)],
+    )
+    assert not result["terminal"] and not result["approved"]
+    assert result["rule_reviews"]["brief_coverage"]["record_indexes"] == [3, 1]
+    assert result["findings"][0]["record_indexes"] == [3, 1]
+    assert "deduplicated 40 entries to 2 unique indexes" in result["diagnostics"][0]
+
+
+@pytest.mark.parametrize(
+    "indexes,diagnostic",
+    [
+        ("0", "must be an array"),
+        (list(range(34)) + [True], "invalid record index at position 34"),
+        (list(range(34)) + [40], "invalid record index at position 34"),
+        (list(range(34)) + [-1], "invalid record index at position 34"),
+        (list(range(34)) + [1.5], "invalid record index at position 34"),
+    ],
+)
+def test_rule_citation_normalization_validates_every_index_first(indexes, diagnostic):
+    rules = ("brief_coverage",)
+    result = gate._review_result(
+        _response(
+            {
+                "rule_reviews": {
+                    "brief_coverage": {
+                        "satisfied": True,
+                        "reason": "Supplied evidence",
+                        "record_indexes": indexes,
+                    }
+                }
+            }
+        ),
+        schema=gate._response_schema(rule_codes=rules, record_count=40),
+        rule_codes=rules,
+        records=[{} for _ in range(40)],
+    )
+    assert result["terminal"] and not result["approved"]
+    assert result["findings"] == []
+    assert diagnostic in result["diagnostics"][0]

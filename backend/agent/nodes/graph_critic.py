@@ -11,6 +11,9 @@ from typing import Any
 from analytics.events import enqueue_analytics_event
 from adapters.llm_adapter import build_telemetry
 from agent.applied_graph_spec import GRAPH_EDGE_LABEL_CHARS
+from agent.staged_graph_contract import (
+    COMPONENT_RESPONSIBILITY_MAX_CHARS as _NODE_DESCRIPTION_CHARS,
+)
 from agent.architecture_rubric import (
     ADVISORY_RUBRIC_CODES,
     PROTOTYPE_ADVISORY_RUBRIC_CODES,
@@ -74,10 +77,9 @@ class CriticProtocolError(ValueError):
         self.rule = rule if rule in _PROTOCOL_ERROR_RULES else None
 
 
-_GRAPH_CRITIC_PROMPT_VERSION = "architecture_critic_v60"
+_GRAPH_CRITIC_PROMPT_VERSION = "architecture_critic_v63"
 _NODE_LABEL_CHARS = 60
 _NODE_TECHNOLOGY_CHARS = 60
-_NODE_DESCRIPTION_CHARS = 220
 _NODE_TYPES = frozenset(
     {
         "client",
@@ -2697,7 +2699,7 @@ For connections, replace an aggregate addition count with `addition_obligations`
 addition endpoint is `$new_node_N`, where N is its one-based addition slot. Use one obligation for
 each required new edge. Source and target must differ. The server derives the connection addition
 count from this list and grants only these exact source, target, and label triples.
-`required_contract` is the normalized label for that added edge and must be at most 100 characters.
+`required_contract` is the normalized label for that added edge and must be at most """ + str(GRAPH_EDGE_LABEL_CHARS) + """ characters.
 Phrase it as one concise, visible directed contract. The mandatory post-patch full-graph review
 verifies the completed repair.
 Every existing component repair uses one exact `node_operations` row. Use

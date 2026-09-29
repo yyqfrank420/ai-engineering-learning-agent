@@ -174,6 +174,8 @@ class AgentState(TypedDict):
     graph_stage_preview_count: NotRequired[int]
     graph_render_stage: NotRequired[Literal["components", "connections"]]
     graph_review_diagnostics: NotRequired[list[dict[str, Any]]]
+    # Workflow timestamps and deadlines use time.monotonic(),
+    # independent of the event-loop clock.
     workflow_started_at_s: NotRequired[float]
     terminal_deadline_s: NotRequired[float]
     graph_preview_deadline_s: NotRequired[float]

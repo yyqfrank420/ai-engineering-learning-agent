@@ -2,8 +2,25 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { MessageList } from './MessageList';
+import { formatNodeQuestionRequest, mapThreadMessages } from '../../utils/threadState';
 
 describe('MessageList', () => {
+  it('projects saved user node requests after reload while preserving assistant and retry data', () => {
+    const request = formatNodeQuestionRequest('Explain this node', { id: 'n1', label: 'Node label' });
+    const user = mapThreadMessages([{ id: 'user', role: 'user', content: request, created_at: '' }])[0];
+    const assistant = { id: 'assistant', role: 'assistant' as const, content: request, retryRequest: { content: request, complexity: 'auto' as const, graphMode: 'on' as const, diagramRequested: false, researchEnabled: true, graphAction: 'answer' as const, expectedGraphVersion: null } };
+    const onRetryMessage = vi.fn();
+    const view = render(<MessageList messages={[user, assistant]} onRetryMessage={onRetryMessage} />);
+    expect(screen.getByTestId('message-user').textContent).toBe('Explain this node');
+    expect(screen.getByTestId('message-assistant').textContent).toContain('Selected component:');
+    fireEvent.click(screen.getByRole('button', { name: 'Retry generation' }));
+    expect(onRetryMessage).toHaveBeenCalledExactlyOnceWith(assistant);
+    expect(user.content).toBe(request);
+    expect(assistant.retryRequest.content).toBe(request);
+    view.rerender(<MessageList messages={[{ ...user }, assistant]} onRetryMessage={onRetryMessage} />);
+    expect(screen.getByTestId('message-user').textContent).toBe('Explain this node');
+  });
+
   it('keeps activity in conversation order and preserves disclosure identity as an answer arrives', () => {
     const activity = { duration_ms: 1200, steps: [{ sequence: 0, kind: 'update' as const,
       phase: 'context' as const, status: 'active' as const, text: 'I am checking your request.', elapsed_ms: 0 }] };

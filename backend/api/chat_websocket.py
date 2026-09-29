@@ -536,7 +536,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 "terminal_deadline_s": terminal_deadline,
                 "graph_preview_deadline_s": (
                     min(
-                        asyncio.get_running_loop().time()
+                        time.monotonic()
                         + settings.graph_preview_timeout_s,
                         terminal_deadline,
                     )
@@ -562,12 +562,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
         receiver_task = asyncio.create_task(receive_commands())
         change_active_chat_streams(1)
         active_metric_counted = True
-        workflow_started_at = asyncio.get_running_loop().time()
+        workflow_started_at = time.monotonic()
         outer_deadline = workflow_started_at + settings.agent_timeout_s
         terminal_deadline = outer_deadline - settings.agent_terminal_headroom_s
 
         while True:
-            if asyncio.get_running_loop().time() >= terminal_deadline:
+            if time.monotonic() >= terminal_deadline:
                 await restore_graph_preview()
                 await send(
                     {
@@ -588,7 +588,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 command_task = asyncio.create_task(command_queue.get())
                 timeout_task = asyncio.create_task(
                     asyncio.sleep(
-                        max(0.0, terminal_deadline - asyncio.get_running_loop().time())
+                        max(0.0, terminal_deadline - time.monotonic())
                     )
                 )
                 done, pending = await asyncio.wait(

@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-30
+Last updated: 2026-10-04
 
 This is the current runtime contract for the production-quality demo.
 
@@ -100,7 +100,8 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    `legacy` remains an explicit rollback. Concept diagrams retain their existing path.
    Each request uses one graph pipeline. Steering or cancellation ends the request-scoped state
    machine before a replacement request begins.
-6. Kimi K3 at low effort produces a component wire, then a connection wire. The component wire
+6. Opus 5.5 (`claude-opus-5-5`) produces components and connection corrections at high effort;
+   initial connections use low effort. The component wire
    contains the root index, title, assumptions, capabilities, and each component's label, type,
    responsibility, group label, group kind, and primary-flow membership. It does not contain a
    composition layer. Scoped edits instead emit additions and permitted field updates in
@@ -139,7 +140,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    nudge a focused node, zone, or border by one diagram unit, or ten with Shift. Fit includes expanded
    frames. These controls do not alter graph contracts.
    Its render gate emits a reversible
-   preview before one Sonnet medium component gate call. The full candidate follows the same render,
+   preview before one Opus 5.5 medium component gate call. The full candidate follows the same render,
    reversible-preview, then connection-gate order. These previews remain nonauthoritative until
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
    two candidates. A connection retry cannot reopen an accepted component layer.
@@ -153,11 +154,10 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    component wire's capabilities. There is no Opus root architecture pass and no final full-model
    gate. Sonnet 5.5 low writes the explanation after both gates pass. Deterministic explanation fallback
    keeps an accepted graph publishable when the explanation call fails.
-   Each gate returns an array with one result per applicable rule, a short reason, and explicit
-   candidate record indexes. One shared item schema avoids expanding the provider's compiled grammar
-   for every rule. The server requires every rule exactly once and derives approval and blocking
-   findings. Missing
-   rules or malformed results fail validation. Protected evaluation captures retain the reasons,
+   Each gate returns a rule_reviews object keyed by every applicable rule, with a short reason and explicit
+   candidate record indexes. Required rule keys reference one shared review definition. The server
+   validates complete coverage and derives approval and blocking findings. Missing rules or malformed
+   results fail validation. Protected evaluation captures retain the reasons,
    including passing checks. Candidate records carry server-assigned indexes in review prompts;
    reviewers do not count positions in an unnumbered array. No extra review calls are added.
    A repair review receives the previous validated rule evidence and the exact changed records
@@ -185,7 +185,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    The shared `learning_or_release` criterion includes owned offline training, batch updates,
    and releases requiring human approval. Live deployment and automatic feedback are not required.
    Dataset curation, passive downstream consumption, and frozen inference alone do not qualify.
-   Component generation v46 and component review v27 share this ownership rule.
+   Component generation and component review share this ownership rule.
    The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
    execution. Streaming transport mechanics guide authoring rather than independently blocking a
@@ -396,14 +396,12 @@ capture use shared transactional storage. Rate-limit identifiers are HMAC-derive
 persistence, so Cloud Run scale-out neither resets the limits nor stores raw emails/IPs in the
 limiter table.
 
-The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
-and connection wires. Sonnet 5 reviews components at medium effort and connections at low effort,
-with the same complete rule coverage and 16,384-token completion ceiling. Connection review uses
-low effort after a medium-effort repair review exhausted that ceiling before returning a verdict.
-Connection generation v40 and review v37 require complete payload-route witnesses and distinguish
-applicable proposal validation from answer-only inference.
-Incomplete reviews still reject publication. The server owns graph mutation,
-validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
+The staged path gives each active role one explicit owner. Opus 5.5 authors bounded component wires
+at high effort. Initial connection wires use low effort; connection corrections use high effort.
+Opus 5.5 medium gates each candidate once.
+The independent `STAGED_GATE_MODEL` override
+selects staged acceptance; `GRAPH_QA_MODEL` defaults to Sonnet 5.5 for legacy graph QA.
+The server owns graph mutation, validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
 do not add model calls.
@@ -420,12 +418,34 @@ proposals become requirements only when the user adopts them. Graph publication 
 only to graph answers. Internal evaluation captures the exact book and research strings passed to
 synthesis, including empty context, under the prompt release identity.
 
+A broad additive extension preserves saved nodes and connections. It may append new
+node IDs to an existing group while retaining that group's metadata and prior membership
+order. Removing or moving existing members remains outside extension authority.
+
+Application routing, general workers and architecture roles default to `claude-opus-5-5`.
+Staged graph authors and gates default to `claude-opus-5-5`. Component authors and corrections use
+high effort; initial connections use low effort and staged gates use medium. Legacy graph QA
+(`GRAPH_QA_MODEL`) defaults to `claude-sonnet-5-5`.
+Environment overrides remain explicit. The configured model ID is captured in call telemetry.
+
 Graph explanations use `EXPLANATION_MODEL` (default `claude-sonnet-5-5`) independently of
-`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v32` includes the user's September 28
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v41` includes the user's September 28
 writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
 authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
-original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
-The model can be rolled back through `EXPLANATION_MODEL`; reverting the prompt change restores v30.
+original form. Word budget guidance counts headings, block content and visible citation labels
+across the entire rendered answer. Tight budgets favor one block with a short title unless the
+requested format needs multiple sections. Upper bounds target about 20% headroom; exact counts
+remain authoritative. This guidance does not add truncation, retries or a publication gate.
+Web search being enabled does not require a report of web findings. An explicit research request
+requires findings supported by the supplied web evidence and exact inline URL citations, even
+when a diagram is present. Shallow snippets cannot establish stronger comparisons or independent
+verification. Ordinary diagram explanations omit unrequested product comparisons. Explicit
+paragraph counts override default blocks and bullets. Book references use their supplied labels
+as plain text; they never become Markdown link destinations.
+Graph descriptions express intended behavior. Performance claims need supplied evidence.
+Fixed branching alone does not establish predictable cost or latency.
+When the user sets a word limit, examples are included only if requested.
+The model can be rolled back through `EXPLANATION_MODEL`; reverting this prompt change restores the current main release, v33.
 
 The September 12 simplification keeps two authoring stages because a complete graph can be a large
 output. Component review catches responsibility defects while that stage can repair them; connection
@@ -448,8 +468,9 @@ Only explicitly cited rejected records may be removed; an indexless global findi
 updates but grants no removal authority. Removals are validated, and component root indexes
 are remapped by the server. A removed required behavior still fails the complete semantic review. Connection
 recovery cannot change accepted components. Structural corrections retain the same contract
-and capacity checks. No additional provider attempts, review calls or deadline allowance are
-introduced. An exhausted or unavailable review still cannot publish an invalid candidate.
+and capacity checks. Rejected connection wires remain untrusted repair input for new graphs;
+scoped edits retain their original authority. No additional provider attempts, review calls
+or deadline allowance are introduced. An exhausted or unavailable review still cannot publish an invalid candidate.
 
 Accepted recovery graphs carry server-owned `detail_level: overview`. This marker is bound
 to the reviewed graph fingerprint and persists with the graph. The canvas and explanation

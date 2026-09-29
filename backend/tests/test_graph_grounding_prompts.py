@@ -12,8 +12,8 @@ def test_applied_graph_prompts_define_record_scoped_repair_boundaries():
         _APPLIED_GRAPH_TOPOLOGY_SYSTEM,
     )
 
-    assert _APPLIED_GRAPH_PATCH_PROMPT_VERSION == "applied_architecture_patch_v38"
-    assert _APPLIED_GRAPH_TOPOLOGY_PROMPT_VERSION == "applied_topology_v23"
+    assert _APPLIED_GRAPH_PATCH_PROMPT_VERSION == "applied_architecture_patch_v41"
+    assert _APPLIED_GRAPH_TOPOLOGY_PROMPT_VERSION == "applied_topology_v25"
     assert "request, selected depth, and server contract" in (
         _APPLIED_GRAPH_TOPOLOGY_SYSTEM
     )
