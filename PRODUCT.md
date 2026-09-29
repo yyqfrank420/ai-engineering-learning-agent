@@ -63,8 +63,9 @@ authorize a read-only replacement for the core diagram workflow.
 - Extending a diagram retains saved components, connections, and positions. Uncertain
   follow-ups ask whether to extend or start in a new chat. Separate designs open a
   new conversation.
-- Undo/Redo and a version picker provide explicit history. Earlier answers link to
-  their diagram. Browsing history is read-only until Restore; scrolling the chat
+- Diagram history follows the conversation: each answer links to its diagram.
+  Undo/Redo and a compact numbered version picker keep every saved revision accessible.
+  Browsing history is read-only until Restore; scrolling the chat
   never switches versions. Each version retains its saved layout.
 - Direct editing should let learners revise component names, types, subtitles, and
   descriptions, plus each directed connection's label and metadata. Selection reveals
@@ -103,6 +104,8 @@ provided for use as product claims.
 3. Use evidence to strengthen generation without bounding it to retrieval coverage.
 4. Make the full learning and editing workflow comfortable on a laptop.
 5. Preserve learner context and show understandable, truthful progress.
+6. Let controls explain themselves. Remove repeated subtitles and success narration;
+   retain concise errors, pending feedback and the preview state.
 
 ## Open decisions
 

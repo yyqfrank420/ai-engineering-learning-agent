@@ -15,12 +15,14 @@ describe('MessageList', () => {
       { id: 'unknown', role: 'assistant' as const, content: 'Unknown version', graphRevisionId: 'missing' },
       { id: 'user', role: 'user' as const, content: 'User text', graphRevisionId: 'r1' },
     ];
-    const view = render(<MessageList messages={messages} revisionIds={['r1']} onViewDiagram={onViewDiagram} />);
+    const view = render(<MessageList messages={messages} revisionIds={['r1']} viewedRevisionId="r1" onViewDiagram={onViewDiagram} />);
     expect(screen.getAllByRole('button', { name: 'View diagram' })).toHaveLength(1);
+    expect(screen.getByRole('button', { name: 'View diagram' }).getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: 'View diagram' }));
     expect(onViewDiagram).toHaveBeenCalledWith('r1');
     view.rerender(<MessageList messages={messages} revisionIds={['r1']} onViewDiagram={onViewDiagram} historyDisabled />);
     expect((screen.getByRole('button', { name: 'View diagram' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'View diagram' }).getAttribute('aria-pressed')).toBe('false');
   });
 
   it('keeps inline code inline and renders fenced code in one valid pre block', () => {

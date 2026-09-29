@@ -496,7 +496,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     </div>
                   )}
                   <Suspense fallback={<div style={panelFallbackStyle}>Loading conversation…</div>}>
-                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} onViewDiagram={history.previewRevision} historyDisabled={isStreaming} />
+                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} viewedRevisionId={history.preview?.revision_id ?? history.history?.current_revision_id ?? null} onViewDiagram={id => id === history.history?.current_revision_id ? history.returnToCurrent() : history.previewRevision(id)} historyDisabled={isStreaming} />
                   </Suspense>
                   <ThinkingIndicator
                     workflowProgress={workflowProgress}

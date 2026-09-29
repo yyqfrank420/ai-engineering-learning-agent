@@ -35,8 +35,10 @@ returned through a public history response.
 Undo restores the active revision's parent. During the session, Redo follows the path just
 undone. Explicit restore, a content change, or a thread switch clears that path; without a
 session path, Redo selects the newest child. Older branches
-remain in the version picker. Picker entries and View diagram links open a read-only
-preview. Restore makes that version current; Return to current leaves the working graph
+remain in the compact numbered version picker. View diagram links beside answers
+are the main entry to earlier diagrams. The viewed answer link has a selected state.
+Picker entries and earlier-answer links open a read-only preview. Selecting the
+current answer returns to the working graph. Restore makes that version current; Return to current leaves the working graph
 unchanged. Scrolling messages never changes the canvas.
 
 Each revision retains its saved node positions, zone padding and viewport. Layout changes

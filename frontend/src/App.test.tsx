@@ -182,8 +182,11 @@ vi.mock('./components/GraphCanvas', () => ({
 }));
 
 vi.mock('./components/Chat/MessageList', () => ({
-  MessageList: ({ messages }: { messages: unknown[] }) => (
-    <div data-testid="message-list">{messages.length} messages</div>
+  MessageList: ({ messages, onViewDiagram }: { messages: unknown[]; onViewDiagram?: (id: string) => void }) => (
+    <div><span data-testid="message-list">{messages.length} messages</span>
+      <button onClick={() => onViewDiagram?.('old')}>View earlier answer diagram</button>
+      <button onClick={() => onViewDiagram?.('current')}>View current answer diagram</button>
+    </div>
   ),
 }));
 
@@ -199,6 +202,7 @@ import { useSelectionSuggestion } from './hooks/useSelectionSuggestion';
 import { useThreadSession } from './hooks/useThreadSession';
 import { trackEvent } from './services/analytics';
 import { signOut } from './services/auth';
+import { fetchGraphHistory, fetchGraphRevision } from './services/api';
 import type { AuthSession, GraphCandidate, GraphData, ThreadDetail } from './types';
 import { shouldPersistThreadSnapshot, writeThreadSnapshot } from './utils/threadState';
 
@@ -433,6 +437,24 @@ describe('App coordination', () => {
     expect(agentState.startThreadAndSend).toHaveBeenCalledExactlyOnceWith(created, 'Separate topic', expect.objectContaining({ graphAction: 'new' }));
     expect(agentState.sendMessage).not.toHaveBeenCalled();
     expect(screen.queryByText('The conversation changed. Please try again.')).toBeNull();
+  });
+
+  it('returns to the current diagram when its answer link is selected during an older preview', async () => {
+    vi.mocked(fetchGraphHistory).mockResolvedValueOnce({
+      current_revision_id: 'current',
+      revisions: ['old', 'current'].map((id, index) => ({ id, parent_revision_id: index ? 'old' : null, revision_number: index + 1, label: id, created_at: '', node_count: 0, edge_count: 0 })),
+    });
+    vi.mocked(fetchGraphRevision).mockResolvedValueOnce({ revision_id: 'old', graph_data: { ...graph, title: 'Earlier diagram', version: 'old' } });
+    render(<App />);
+    await screen.findByRole('option', { name: 'Version 2 (current)' });
+    await act(async () => { fireEvent.click(screen.getByText('View earlier answer diagram')); });
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe('Earlier diagram');
+    expect(screen.getByText('Preview')).toBeTruthy();
+    await act(async () => { fireEvent.click(screen.getByText('View current answer diagram')); });
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
+    expect(screen.queryByText('Preview')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restore' })).toBeNull();
+    expect(fetchGraphRevision).toHaveBeenCalledExactlyOnceWith(session, 'thread-1', 'old');
   });
 
   it('blocks chat and thread changes while a graph edit draft is open', async () => {

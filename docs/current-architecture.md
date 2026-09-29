@@ -307,9 +307,10 @@ updates the active revision and materialized graph together, without creating a 
 
 Undo activates the parent; Redo returns along the path just undone. An explicit restore, a content
 change or a thread switch clears that session path; without one, Redo selects the newest child.
-All retained branches remain in the
-version picker. Picker entries and View diagram links open a read-only preview with Restore and
-Return to current controls. Chat scrolling never switches the graph. Before a transition, the
+All retained branches remain in a compact numbered version picker. View diagram links beside
+answers provide the main history entry and indicate the viewed revision. Earlier versions open
+a read-only preview with Restore and Return to current controls. Selecting the current answer
+returns to the working graph. Chat scrolling never switches the graph. Before a transition, the
 canvas flushes pending layout saves. Failed saves keep the user in place. Existing positions remain
 fixed during extension; new components are placed around them.
 

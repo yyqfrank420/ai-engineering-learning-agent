@@ -29,14 +29,14 @@ export function GraphHistoryControls({ history, previewId, undoId, redoId, disab
       </button>
       <select aria-label="Preview diagram version" disabled={locked || !history?.revisions.length} value={previewId ?? history?.current_revision_id ?? ''} onChange={event => event.target.value === history?.current_revision_id ? onReturn() : onPreview(event.target.value)}>
         {!history?.revisions.length && <option value="">{busy ? 'Loading history…' : 'Diagram history'}</option>}
-        {history?.revisions.map(revision => <option key={revision.id} value={revision.id}>{revision.revision_number} · {revision.label}{revision.id === history.current_revision_id ? ' (current)' : ''}</option>)}
+        {history?.revisions.map(revision => <option key={revision.id} value={revision.id}>Version {revision.revision_number}{revision.id === history.current_revision_id ? ' (current)' : ''}</option>)}
       </select>
       {busy && <span role="status">Updating history…</span>}
     </div>
     {previewId && <div className="graph-history-preview" role="status">
-      <span>Preview only · Saved positions</span>
+      <span>Preview</span>
       <button disabled={locked} onClick={onReturn}>Return to current</button>
-      <button disabled={locked} onClick={() => onRestore(previewId)}>Restore this version</button>
+      <button disabled={locked} onClick={() => onRestore(previewId)}>Restore</button>
     </div>}
     {error && <div className="graph-history-error" role="alert"><span>{error}</span><button disabled={locked} onClick={onReload}>Reload history</button></div>}
   </div>;

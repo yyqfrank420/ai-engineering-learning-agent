@@ -57,6 +57,8 @@ describe('ChatInput', () => {
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'What about measuring results?' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
     await screen.findByRole('button', { name: 'Extend this diagram' });
+    expect(screen.queryByText(/Keep building on this diagram/)).toBeNull();
+    expect(screen.queryByText(/A new chat keeps this conversation/)).toBeNull();
     expect(onSend).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('What about measuring results?');

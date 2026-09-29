@@ -6,7 +6,9 @@ source hash and the uncommitted diff, since validation preceded the release comm
 
 ## Scope
 
-The compact design has Undo/Redo, a version picker, and answer links. Picker selection
+The user selected design C: history through answer links, with Undo/Redo and a compact
+numbered version picker. Repeated subtitles and visible success narration are removed.
+The viewed answer has a selected state. Picker selection
 previews a saved graph; Restore changes the active graph. Chat scrolling does not select
 versions. Undo/Redo retrace the session path, including sibling branches. Other branches
 remain in the picker. Request labels distinguish versions.
@@ -93,3 +95,24 @@ source identity, committed snapshots, provider-attempt ledger, and gate/render s
 The first service launch was stopped before submission for the final transition layout lock;
 its archived database contained zero threads, messages, telemetry rows or attempt events.
 No cached result or reference graph was used as generation evidence.
+
+
+## Design C presentation update
+
+September 29: the user selected the conversation-led design and asked to remove repeated
+on-screen explanations. Earlier-answer links preview their saved diagrams; selecting the
+current answer returns to the working graph. The version picker uses numbered labels.
+The preview state retains Preview, Return to current and Restore. The composer retains
+plain extension/new-chat choices and dismiss, with no repeated description.
+
+This update changes presentation only. Full frontend validation passed 528 tests before the
+final current-answer callback correction; its 21 App tests, TypeScript and targeted lint then
+passed. The updated production preview build passed. Browser checks covered earlier/current
+answer links, selected states, Undo/Redo, saved positions and controls at 390px. Browser
+warning/error logs were empty. The provider telemetry count remained ten; zero new model calls.
+The local preview's development-mode bundle retains its existing large-chunk warning.
+Impeccable reported only the unchanged semantic Markdown blockquote border.
+
+PR 61 remains unmerged after the earlier protected staging run failed an initial research
+creation/repair case. The expansion case passed. This presentation update does not resolve
+that separate generation failure, and no paid evaluation was restarted for it.

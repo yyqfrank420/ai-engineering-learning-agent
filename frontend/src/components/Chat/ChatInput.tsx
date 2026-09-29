@@ -179,13 +179,11 @@ export function ChatInput({
       {submissionError && <div role="alert" style={prepareNoticeStyle}>{submissionError}</div>}
       {needsGraphChoice && (
         <div className="chat-graph-choice" role="group" aria-label="Where to continue">
-          <p>Keep building on this diagram, or start a separate conversation?</p>
           <div>
             <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('extend')}>Extend this diagram</button>
             <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('new_chat')}>Start a new chat</button>
             <button disabled={checkingIntent} onClick={() => setNeedsGraphChoice(false)}>Dismiss</button>
           </div>
-          <small>A new chat keeps this conversation and its diagram here.</small>
         </div>
       )}
       {selectionSuggestion && (

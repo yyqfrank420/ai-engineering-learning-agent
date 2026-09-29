@@ -20,6 +20,7 @@ import '../GraphHistoryControls.css';
 interface MessageListProps {
   messages: Message[];
   revisionIds?: string[];
+  viewedRevisionId?: string | null;
   onViewDiagram?: (id: string) => void;
   historyDisabled?: boolean;
 }
@@ -201,7 +202,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   );
 }
 
-export function MessageList({ messages, revisionIds = [], onViewDiagram, historyDisabled = false }: MessageListProps) {
+export function MessageList({ messages, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false }: MessageListProps) {
   const bottomRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -266,7 +267,7 @@ export function MessageList({ messages, revisionIds = [], onViewDiagram, history
             )}
             <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
             {msg.role === 'assistant' && msg.graphRevisionId && revisionIds.includes(msg.graphRevisionId) && onViewDiagram && (
-              <button className="message-diagram-link" disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
+              <button className="message-diagram-link" aria-pressed={msg.graphRevisionId === viewedRevisionId} disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
             )}
             {msg.kind === 'explanation' && msg.relatedNodeIds && msg.relatedNodeIds.length > 0 && (
               <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginTop: '0.45rem' }}>

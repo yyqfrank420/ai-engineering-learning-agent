@@ -6,6 +6,9 @@ const props = () => ({ history, previewId: null, undoId: 'r1', redoId: null, dis
 describe('GraphHistoryControls', () => {
   it('restores immediately on Undo while picker only previews', () => {
     const handlers = props();render(<GraphHistoryControls {...handlers} />);
+    expect(screen.getByRole('option', { name: 'Version 1' })).toBeTruthy();
+    expect(screen.getByRole('option', { name: 'Version 2 (current)' })).toBeTruthy();
+    expect(screen.queryByText(/Saved positions/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Undo diagram change' }));
     expect(handlers.onUndo).toHaveBeenCalledOnce();
     fireEvent.change(screen.getByRole('combobox'), {target:{value:'r1'}});
@@ -14,11 +17,12 @@ describe('GraphHistoryControls', () => {
   });
   it('makes preview restore explicit and freezes actions while busy', () => {
     const handlers = props();const view=render(<GraphHistoryControls {...handlers} previewId="r1" />);
-    fireEvent.click(screen.getByRole('button', {name:'Restore this version'}));
+    expect(screen.getByText('Preview')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', {name:'Restore'}));
     expect(handlers.onRestore).toHaveBeenCalledWith('r1');
     fireEvent.click(screen.getByRole('button', {name:'Return to current'}));expect(handlers.onReturn).toHaveBeenCalledOnce();
     view.rerender(<GraphHistoryControls {...handlers} previewId="r1" busy />);
-    expect((screen.getByRole('button', {name:'Restore this version'}) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole('button', {name:'Restore'}) as HTMLButtonElement).disabled).toBe(true);
     expect((screen.getByRole('combobox') as HTMLSelectElement).disabled).toBe(true);
   });
 });
