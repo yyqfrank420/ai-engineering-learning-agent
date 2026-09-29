@@ -322,7 +322,10 @@ def test_browser_workflows_use_the_websocket_allowlisted_dev_origin():
 
     assert "http://127.0.0.1:4173" not in workflow_text
     assert dev_origin in Settings(_env_file=None).cors_allowed_origins
-    assert workflow_text.count(f"--target {dev_origin}") == len(workflow_paths)
+    for path in workflow_paths:
+        browser_targets = re.findall(r"scripts/ci browser[^\n]*--target (\S+)", path.read_text())
+        assert browser_targets
+        assert set(browser_targets) == {dev_origin}
     assert workflow_text.count("--host localhost --port 5173 --strictPort") == len(
         workflow_paths
     )

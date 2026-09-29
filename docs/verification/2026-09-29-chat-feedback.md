@@ -189,3 +189,26 @@ One fresh local research request produced nine nodes and 25 edges. Both reviews 
 
 The user requested failed-case-only reruns. Retained evidence must preserve its original source identity and must never be labeled fresh evidence of the changed head. Missing judgments need replay on their original saved outputs; successful generations should not be regenerated solely to recover those judgments. No merge or protected-gate result is implied by this local verification.
 Isolated backend8035/frontend5220 were stopped after final checks; all artifacts remain.
+
+## Failed-only protected recovery
+
+The user approved the selective CI change after the full run failed. Dispatching
+`live-eval.yml` with `source_run_id`, `reviewed_diff_sha256` and a review reason
+validates the original artifact digest, PR ancestry, unchanged base, evaluator
+identity and exact reviewed diff before deploying a candidate. The diff hash is
+SHA256 of `git diff --binary SOURCE_HEAD HEAD` bytes.
+
+Recovery regenerates browser failures, judges saved outputs that lack judgments,
+and retains complete passing judgments. Each case records its original generation
+and judgment identity. All eight canonical cases must pass; partial coverage,
+manual-review decisions, changed PR state and provider errors fail the gate.
+The ordinary dispatch and PR paths still run the full suite. Historical evidence
+is an explicit reviewed exception, not fresh proof of every case on the new head.
+
+For this source run, the partition is one fresh research case, five missing
+judgments and two retained passes. The current candidate receives a deployment
+proof before browser execution; fresh timestamps and request/thread IDs must match
+that run. New judging uses the existing shared call and time limits. No retries
+are added to the application. Independent helper review covered adversarial
+provenance mutations and budget boundaries; cloud integration remains a separate
+required check.
