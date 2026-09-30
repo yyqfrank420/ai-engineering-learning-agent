@@ -953,8 +953,13 @@ async def test_dynamic_generator_uses_schema_once(monkeypatch):
     monkeypatch.setattr(
         graph_worker, "stream_structured_llm", fake_stream_structured_llm
     )
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn-{index}: " + ("x" * 1500)}
+        for index in range(12)
+    ]
     result = await graph_worker._generate_applied_architecture(
         {
+            "history": history,
             "graph_data": None,
             "approved_graph_data": None,
             "architect_plan": {"required_capabilities": ["complete runtime"]},
@@ -970,6 +975,7 @@ async def test_dynamic_generator_uses_schema_once(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["effort"] == "high"
     assert calls[0]["provider_attempt_limit"] == 1
+    assert json.dumps(history, ensure_ascii=False) in calls[0]["messages"][0]["content"]
     response_schema = calls[0]["response_schema"]
     spec = applied_graph_spec("production")
     assert (

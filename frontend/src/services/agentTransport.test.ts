@@ -127,6 +127,39 @@ describe('AgentTransport WebSocket protocol', () => {
     ]);
   });
 
+  it('sends the failed turn reference only for a confirmed retry', async () => {
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'original prompt', {
+      graphAction: 'extend', expectedGraphVersion: 'current', retrySourceRequestId: 'failed-request',
+    }, 'new-request');
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'ready' });
+    expect(JSON.parse(socket.sent[1])).toMatchObject({
+      type: 'start', client_request_id: 'new-request',
+      retry_source_request_id: 'failed-request', expected_graph_version: 'current',
+    });
+    socket.receive({ type: 'done' });
+    await expect(completed).resolves.toBe(true);
+  });
+
+  it('sends acknowledged corrections in the start frame for an uncertain replay', async () => {
+    const transport = new AgentTransport();
+    const completed = transport.sendMessage(session, 'thread-1', 'Original request', {
+      steeringUpdates: ['Canonical first', 'Canonical second'],
+    }, 'original-request');
+    const socket = MockWebSocket.instances[0];
+    socket.open();
+    socket.receive({ type: 'ready' });
+    expect(JSON.parse(socket.sent[1])).toMatchObject({
+      type: 'start', content: 'Original request', client_request_id: 'original-request',
+      steering_updates: ['Canonical first', 'Canonical second'],
+    });
+    expect(socket.sent).toHaveLength(2);
+    socket.receive({ type: 'done' });
+    await expect(completed).resolves.toBe(true);
+  });
+
   it('queues steering while the socket is still connecting', () => {
     const transport = new AgentTransport();
     void transport.sendMessage(session, 'thread-1', 'design', undefined, 'client-2');

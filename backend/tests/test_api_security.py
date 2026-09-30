@@ -638,8 +638,9 @@ def test_chat_rejects_missing_thread(temp_data_dir):
     assert "Thread not found" in response.text
 
 
+@pytest.mark.parametrize("failed", [False, True])
 def test_chat_replays_completed_idempotent_turn_before_admission_checks(
-    temp_data_dir, monkeypatch
+    temp_data_dir, monkeypatch, failed
 ):
     init_db()
     upsert_profile("user-1", "friend@example.com")
@@ -652,6 +653,9 @@ def test_chat_replays_completed_idempotent_turn_before_admission_checks(
         assistant_content="Canonical stored answer",
         graph_data=None,
         client_request_id="client-replay-1",
+        retry_request=(dict(content="Explain RAG", complexity="auto", graph_mode="on",
+                            diagram_requested=True, research_enabled=False,
+                            graph_action=None, expected_graph_version=None) if failed else None),
     )
     monkeypatch.setattr(settings, "rate_limit_per_minute", 0)
     app = _authed_app(with_resources=False)
@@ -669,6 +673,7 @@ def test_chat_replays_completed_idempotent_turn_before_admission_checks(
     assert _parse_sse_events(response.text) == [
         {"type": "response_delta", "content": "Canonical stored answer"},
         {"type": "graph_data", "data": None},
+        *([{"type": "generation_failed"}] if failed else []),
         {"type": "done"},
     ]
 

@@ -132,6 +132,189 @@ function Harness({
 }
 
 describe('useAgentStream', () => {
+  it('marks only the last failed response block and retries the original request with current graph version', async () => {
+    const firstTurn = deferred<boolean>();
+    mocks.sendMessage.mockReturnValueOnce(firstTurn.promise).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'retry-thread'));
+    act(() => result.current.hydrateThread({ messages: [], graphData: graph('old') }));
+    act(() => result.current.sendMessage('Expanded original request', {
+      complexity: 'production', graphMode: 'on', diagramRequested: true, researchEnabled: true,
+      graphAction: 'extend', expectedGraphVersion: 'old', displayContent: 'Expand this',
+    }));
+    const firstId = mocks.sendMessage.mock.calls[0][4] as string;
+    mocks.steerGeneration.mockReturnValueOnce(true);
+    act(() => result.current.sendMessage('Keep the existing diagram and add approvals'));
+    expect(mocks.steerGeneration).toHaveBeenCalledWith('Keep the existing diagram and add approvals');
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId: firstId }));
+    emit({ type: 'response_delta', content: 'Earlier explanation' });
+    emit({ type: 'explanation_block', block_id: 'final', title: 'Diagram unchanged', content: 'Failed to update', related_node_ids: [], evidence_refs: [] });
+    emit({ type: 'generation_failed' });
+    emit({ type: 'done' });
+    await act(async () => { firstTurn.resolve(true); });
+    expect(result.current.messages.filter(message => message.retryRequest)).toHaveLength(1);
+    const failed = result.current.messages.find(message => message.retryRequest)!;
+    expect(failed.content).toBe('Failed to update');
+    expect(result.current.messages.find(message => message.content === 'Earlier explanation')?.retryRequest).toBeUndefined();
+    mocks.fetchThread.mockResolvedValueOnce({ thread: { graph_data: graph('old') }, messages: [{
+      id: 'saved-failure', role: 'assistant', content: 'Failed to update', created_at: '',
+      client_request_id: firstId, retry_request: {
+        content: 'Expanded original request', complexity: 'production', graph_mode: 'on',
+        diagram_requested: true, research_enabled: true, graph_action: 'extend', expected_graph_version: 'old',
+      },
+    }] });
+    await act(async () => { await result.current.retryMessage(failed, 'current'); });
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(2);
+    expect(mocks.sendMessage).toHaveBeenNthCalledWith(2, session, 'retry-thread', 'Expanded original request', expect.objectContaining({
+      complexity: 'production', graphMode: 'on', diagramRequested: true, researchEnabled: true,
+      graphAction: 'extend', expectedGraphVersion: 'current', retrySourceRequestId: firstId,
+    }), expect.any(String));
+    expect(mocks.sendMessage.mock.calls[1][4]).not.toBe(firstId);
+  });
+
+  it('keeps successful and stopped turns without retry metadata', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'retry-exclusions'));
+    act(() => result.current.sendMessage('First'));
+    const firstId = mocks.sendMessage.mock.calls[0][4] as string;
+    act(() => mocks.eventHandler?.({ type: 'response_delta', content: 'Done' }, { kind: 'chat', clientRequestId: firstId }));
+    act(() => mocks.eventHandler?.({ type: 'done' }, { kind: 'chat', clientRequestId: firstId }));
+    expect(result.current.messages.some(message => message.retryRequest)).toBe(false);
+    act(() => result.current.sendMessage('Second'));
+    const secondId = mocks.sendMessage.mock.calls[1][4] as string;
+    act(() => mocks.eventHandler?.({ type: 'stopped' }, { kind: 'chat', clientRequestId: secondId }));
+    expect(result.current.messages.some(message => message.retryRequest)).toBe(false);
+  });
+
+  it('reconciles uncertain transport failure before replaying the same request id', async () => {
+    mocks.sendMessage.mockRejectedValueOnce(new Error('Lost connection')).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'retry-uncertain'));
+    act(() => result.current.sendMessage('Original request', { graphMode: 'on', researchEnabled: true,
+      graphAction: 'extend', expectedGraphVersion: 'original-version' }));
+    await waitFor(() => expect(result.current.messages.some(message => message.retryClientRequestId)).toBe(true));
+    const failed = result.current.messages.find(message => message.retryClientRequestId)!;
+    mocks.fetchThread.mockResolvedValueOnce({ thread: { id: 'retry-uncertain', title: 'Retry', graph_data: null,
+      created_at: '', updated_at: '', last_seen_at: '' }, messages: [] });
+    await act(async () => { await result.current.retryMessage(failed, 'newer-version'); });
+    expect(mocks.fetchThread).toHaveBeenCalledWith(session, 'retry-uncertain');
+    expect(mocks.sendMessage.mock.calls[1][4]).toBe(failed.retryClientRequestId);
+    expect(mocks.sendMessage.mock.calls[1][2]).toBe('Original request');
+    expect(mocks.sendMessage.mock.calls[1][3].expectedGraphVersion).toBe('original-version');
+    expect(mocks.sendMessage.mock.calls[1][3].retrySourceRequestId).toBeUndefined();
+    expect(result.current.messages.filter(message => message.role === 'user')).toHaveLength(1);
+  });
+
+  it('replays acknowledged steering in order across repeated disconnects', async () => {
+    const first = deferred<boolean>();
+    const second = deferred<boolean>();
+    mocks.sendMessage.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise)
+      .mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'steering-replay'));
+    act(() => result.current.sendMessage('Original request'));
+    const requestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId: requestId }));
+    emit({ type: 'steer_applied', steer_count: 2, content: 'out of order' });
+    emit({ type: 'steer_applied', steer_count: 1, content: 'Canonical first' });
+    emit({ type: 'steer_applied', steer_count: 1, content: 'duplicate' });
+    emit({ type: 'command_rejected', reason: 'Rejected correction' });
+    emit({ type: 'steer_applied', steer_count: 2, content: 'Canonical second' });
+    await act(async () => first.reject(new Error('Socket dropped')));
+    const failure = result.current.messages.find(message => message.retryRequest)!;
+    expect(failure.retryRequest?.steeringUpdates).toEqual(['Canonical first', 'Canonical second']);
+    await act(async () => { await result.current.retryMessage(failure, null); });
+    expect(mocks.sendMessage.mock.calls[1][4]).toBe(requestId);
+    expect(mocks.sendMessage.mock.calls[1][2]).toBe('Original request');
+    expect(mocks.sendMessage.mock.calls[1][3].steeringUpdates).toEqual(['Canonical first', 'Canonical second']);
+    expect(result.current.messages.find(message => message.role === 'user')?.content)
+      .toBe('Original request\n\nUser steering update 1:\nCanonical first\n\nUser steering update 2:\nCanonical second');
+    expect(result.current.messages.some(message => message.retryRequest)).toBe(false);
+    await act(async () => second.reject(new Error('Dropped again')));
+    const secondFailure = result.current.messages.find(message => message.retryRequest)!;
+    await act(async () => { await result.current.retryMessage(secondFailure, null); });
+    expect(mocks.sendMessage.mock.calls[2][3].steeringUpdates).toEqual(['Canonical first', 'Canonical second']);
+    expect(mocks.sendMessage.mock.calls[2][4]).toBe(requestId);
+  });
+
+  it('loads a successful saved response after disconnect without another generation call', async () => {
+    mocks.sendMessage.mockRejectedValueOnce(new Error('Socket dropped'));
+    const { result } = renderHook(() => useAgentStream(session, 'saved-response'));
+    act(() => result.current.sendMessage('Original request'));
+    await waitFor(() => expect(result.current.messages.some(message => message.retryRequest)).toBe(true));
+    const failure = result.current.messages.find(message => message.retryRequest)!;
+    mocks.fetchThread.mockResolvedValueOnce({ thread: { graph_data: graph('saved') }, messages: [{
+      id: 'saved-answer', role: 'assistant', content: 'Saved answer', created_at: '',
+      client_request_id: failure.retryClientRequestId,
+    }] });
+    await act(async () => { await result.current.retryMessage(failure, null); });
+    expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
+    expect(result.current.messages.map(message => message.content)).toEqual(['Saved answer']);
+    expect(result.current.graphData?.version).toBe('saved');
+  });
+
+  it('reconciles a generation failure whose persistence fails with one retry owner', async () => {
+    const first = deferred<boolean>();
+    mocks.sendMessage.mockReturnValueOnce(first.promise).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'persistence-failed'));
+    act(() => result.current.sendMessage('Original request'));
+    const requestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId: requestId }));
+    emit({ type: 'response_delta', content: 'Failure explanation' });
+    emit({ type: 'generation_failed' });
+    const originalFailure = result.current.messages.find(message => message.retryRequest)!;
+    expect(originalFailure.retryClientRequestId).toBe(requestId);
+    emit({ type: 'error', content: 'Could not save response' });
+    expect(result.current.messages.filter(message => message.retryRequest)).toHaveLength(1);
+    await act(async () => first.resolve(true));
+    await act(async () => { await result.current.retryMessage(originalFailure, null); });
+    expect(mocks.fetchThread).toHaveBeenCalledWith(session, 'persistence-failed');
+    expect(mocks.sendMessage.mock.calls[1][4]).toBe(requestId);
+    expect(mocks.sendMessage.mock.calls[1][3].retrySourceRequestId).toBeUndefined();
+    expect(result.current.messages.some(message => message.retryRequest)).toBe(false);
+  });
+
+  it('preserves a source-derived retry reference when replaying an uncertain turn', async () => {
+    mocks.sendMessage.mockRejectedValueOnce(new Error('Lost connection')).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'source-replay'));
+    act(() => result.current.sendMessage('Original request', {
+      graphMode: 'on', graphAction: 'extend', expectedGraphVersion: 'old',
+      retrySourceRequestId: 'saved-failure',
+    }));
+    await waitFor(() => expect(result.current.messages.some(message => message.retryClientRequestId)).toBe(true));
+    const failed = result.current.messages.find(message => message.retryClientRequestId)!;
+    mocks.fetchThread.mockResolvedValueOnce({ thread: { id: 'source-replay', title: 'Retry', graph_data: null,
+      created_at: '', updated_at: '', last_seen_at: '' }, messages: [] });
+    await act(async () => { await result.current.retryMessage(failed, 'new'); });
+    expect(mocks.sendMessage.mock.calls[1][4]).toBe(failed.retryClientRequestId);
+    expect(mocks.sendMessage.mock.calls[1][3]).toMatchObject({
+      retrySourceRequestId: 'saved-failure', expectedGraphVersion: 'old',
+    });
+  });
+
+  it('turns an uncertain committed failure into a new source-referenced retry', async () => {
+    mocks.sendMessage.mockRejectedValueOnce(new Error('Lost connection')).mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'committed-failure'));
+    act(() => result.current.sendMessage('Original request', { graphMode: 'on', graphAction: 'extend',
+      expectedGraphVersion: 'old' }));
+    await waitFor(() => expect(result.current.messages.some(message => message.retryClientRequestId)).toBe(true));
+    const failed = result.current.messages.find(message => message.retryClientRequestId)!;
+    const committedRetry = {
+      content: 'Original request\n\nUser steering update 1:\nSaved correction', complexity: 'auto' as const, graph_mode: 'on' as const,
+      diagram_requested: false, research_enabled: false, graph_action: 'extend' as const,
+      expected_graph_version: 'old',
+    };
+    mocks.fetchThread.mockResolvedValueOnce({ thread: { id: 'committed-failure', title: 'Retry', graph_data: null,
+      created_at: '', updated_at: '', last_seen_at: '' }, messages: [
+        { id: 'user', role: 'user', content: 'Original request', created_at: '' },
+        { id: 'assistant', role: 'assistant', content: 'Generation failed', created_at: '',
+          client_request_id: failed.retryClientRequestId, retry_request: committedRetry },
+      ] });
+    await act(async () => { await result.current.retryMessage(failed, 'current'); });
+    expect(mocks.sendMessage.mock.calls[1][2]).toBe(committedRetry.content);
+    expect(mocks.sendMessage.mock.calls[1][3].steeringUpdates).toBeUndefined();
+    expect(mocks.sendMessage.mock.calls[1][4]).not.toBe(failed.retryClientRequestId);
+    expect(mocks.sendMessage.mock.calls[1][3]).toMatchObject({
+      retrySourceRequestId: failed.retryClientRequestId, expectedGraphVersion: 'current',
+    });
+  });
   it('publishes an accepted overview when only graph detail level changes', () => {
     mocks.sendMessage.mockReturnValue(new Promise(() => {}));
     const { result } = renderHook(() => useAgentStream(session, 'overview-promotion'));
@@ -621,12 +804,12 @@ describe('useAgentStream', () => {
     fireEvent.click(screen.getByText('send'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('messages').textContent).toContain('Connection lost. Please try again.');
+      expect(screen.getByTestId('messages').textContent).toContain('Connection lost. Retry will first check whether your response was saved.');
       expect(screen.getByTestId('messages').textContent).not.toContain('offline');
     });
   });
 
-  it('directs users to reopen a timed-out started turn without exposing error details', async () => {
+  it('offers safe retry for a timed-out started turn without exposing error details', async () => {
     const timeout = new ChatTurnTimeoutError();
     timeout.message = 'private transport diagnostic';
     mocks.sendMessage.mockRejectedValueOnce(timeout);
@@ -635,10 +818,10 @@ describe('useAgentStream', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('messages').textContent).toContain(
-        'The connection timed out. Reopen this chat before retrying; your diagram may already be saved.',
+        'The connection timed out. Retry will first check whether your response was saved.',
       );
       expect(screen.getByTestId('messages').textContent).not.toContain('private transport diagnostic');
-      expect(screen.getByTestId('messages').textContent).not.toContain('Connection lost. Please try again.');
+      expect(screen.getByTestId('messages').textContent).not.toContain('Connection lost. Retry will first check whether your response was saved.');
       expect(screen.getByTestId('status').textContent).toBe('connected');
     });
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1);

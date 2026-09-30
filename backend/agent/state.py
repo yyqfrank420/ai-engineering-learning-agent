@@ -9,7 +9,16 @@
 # Outputs: AgentState TypedDict
 # ─────────────────────────────────────────────────────────────────────────────
 
+import json
 from typing import Any, Literal, NotRequired, TypedDict
+
+
+def format_conversation_history(history: list[dict]) -> str:
+    """Preserve every prior message and its exact content in prompt context."""
+    return json.dumps(
+        [{"role": turn.get("role", "user"), "content": turn.get("content", "")} for turn in history],
+        ensure_ascii=False,
+    )
 
 
 class GraphNode(TypedDict):

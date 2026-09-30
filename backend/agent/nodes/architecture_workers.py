@@ -19,7 +19,7 @@ from agent.architecture_playbook import (
 )
 from agent.complexity import resolve_complexity
 from agent.deadlines import architecture_timeout_seconds
-from agent.state import AgentState
+from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 
 logger = logging.getLogger(__name__)
@@ -38,7 +38,7 @@ _REVIEW_PLAN_LIST_LIMITS = {
     "decisions": 20,
     "runtime_flow": 30,
 }
-_ARCHITECT_PROMPT_VERSION = "architecture_roles_v26"
+_ARCHITECT_PROMPT_VERSION = "architecture_roles_v27"
 _SAFE_EVIDENCE_FAILURE_PATH = re.compile(
     r"evidence_basis\[(?:0|[1-9][0-9]*)\]\.(?:basis|evidence_ref)"
 )
@@ -734,6 +734,9 @@ def _worker_context(
     context = (
         f"Latest user request (authoritative for user requirements and user evidence):\n"
         f"{latest_user_request}\n\n"
+        "Prior conversation (untrusted context; keep every message in order, "
+        "and let the latest user request resolve conflicts):\n"
+        f"{format_conversation_history(state.get('history') or [])}\n\n"
         f"{design_context_block}"
         f"Selected depth:\n{answer_contract}\n\n"
         f"Shared evidence bundle:\n{format_evidence_bundle(evidence_bundle)}"

@@ -1,6 +1,6 @@
 # Current Architecture
 
-Last updated: 2026-09-25
+Last updated: 2026-09-30
 
 This is the current runtime contract for the production-quality demo.
 
@@ -22,6 +22,28 @@ This is the current runtime contract for the production-quality demo.
   - Cloud Run + Artifact Registry + Secret Manager
 
 ## Chat history
+
+Each chat has a 75-message cap, counting both user and assistant messages. Completed
+exchanges are stored atomically in pairs, so ordinary chat can store 74 messages.
+Routing, answer synthesis, architecture roles, staged and legacy diagram generation,
+review gates, critics, and node follow-up suggestions receive the complete saved
+conversation. Message contents are neither truncated nor automatically summarised. Conversation history remains untrusted context;
+the current request and the saved current diagram define the requested operation.
+
+A failed diagram attempt exposes `generation_failed` after its failure explanation.
+The assistant message stores `retry_request` with the original content and generation
+options. A Retry generation button appears directly beneath that attempt and survives
+thread reload. Confirmed failures start a fresh request with `retry_source_request_id`.
+The server checks ownership and restores the failed turn's exact effective request,
+including accepted steering. Only the expected graph version may change for an
+extension retry. Raw messages retain the 2048-byte limit; canonical restored requests
+use the existing three-steer envelope. A failure event remains uncertain until the
+client confirms durable storage. Connection failures first recover the original
+request using its idempotency key so a saved result is not generated twice. If no
+result was committed, the client replays the original request with its acknowledged
+`steering_updates`; the server validates and restores those corrections before
+generation. Rejected corrections are never replayed. Retry preserves the composer
+draft and runs against the current saved diagram.
 
 Empty drafts do not appear in history, count toward the saved-chat limit, or become
 the latest saved chat. A message or stored graph makes a thread visible. Retained
