@@ -6,6 +6,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
+import json
 
 import pytest
 
@@ -70,8 +71,8 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v32"
-    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v4"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v33"
+    assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v5"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
         "explicit scope, count, format, and brevity",
@@ -293,12 +294,66 @@ async def test_orchestrator_route_includes_current_graph_context(monkeypatch):
         "provider_attempt_limit": 1,
         "allow_fallback": False,
     }
-    assert captured["telemetry"]["metadata"]["prompt_version"] == "intent_router_v3"
+    assert captured["telemetry"]["metadata"]["prompt_version"] == "intent_router_v4"
     assert "Current graph:" in captured["messages"][0]["content"]
     assert (
         "RAG pipeline — nodes: [Retriever, Generator]"
         in captured["messages"][0]["content"]
     )
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_route_receives_every_prior_message_without_truncation(
+    monkeypatch,
+):
+    import agent.nodes.orchestrator_node as orchestrator
+
+    captured = {}
+
+    async def fake_stream_llm(**kwargs):
+        captured.update(kwargs)
+        return "SEARCH"
+
+    monkeypatch.setattr(orchestrator, "stream_llm", fake_stream_llm)
+
+    async def send(_event):
+        return None
+
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn-{index}: " + ("x" * 1500)}
+        for index in range(12)
+    ]
+    result = await orchestrator.orchestrator_route(
+        {
+            "send": send,
+            "history": history,
+            "user_message": "How does this relate?",
+            "graph_data": None,
+        }
+    )
+
+    prompt = captured["messages"][0]["content"]
+    assert result["route"] == "search"
+    assert json.dumps(history, ensure_ascii=False) in prompt
+    assert "turn-0: " + ("x" * 1500) in prompt
+    assert "turn-11: " + ("x" * 1500) in prompt
+
+
+def test_conversation_formatter_preserves_all_messages_and_exact_contents():
+    from agent.state import format_conversation_history
+
+    history = [
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"message-{index}: " + ("x" * 1500) + "\nquoted: \"yes\"",
+        }
+        for index in range(74)
+    ]
+
+    formatted = format_conversation_history(history)
+
+    assert len(formatted) > 12_000
+    assert json.loads(formatted) == history
 
 
 @pytest.mark.asyncio
@@ -1238,9 +1293,6 @@ async def test_staged_approved_graph_uses_one_low_effort_explanation_call(
 
     provider_calls = []
 
-    async def fail_condense_history(*_args, **_kwargs):
-        raise AssertionError("approved staged graphs must skip history condensation")
-
     async def fake_stream_response(**kwargs):
         provider_calls.append(kwargs)
         yield (
@@ -1250,7 +1302,6 @@ async def test_staged_approved_graph_uses_one_low_effort_explanation_call(
         )
         yield ("done", "")
 
-    monkeypatch.setattr(orchestrator, "maybe_condense_history", fail_condense_history)
     monkeypatch.setattr(explanation_blocks, "stream_response", fake_stream_response)
 
     async def send(_event):
@@ -1310,17 +1361,10 @@ async def test_non_staged_graph_keeps_explanation_fallback_defaults(
     import agent.nodes.orchestrator_node as orchestrator
 
     captured = {}
-    condense_calls = []
-
-    async def fake_condense_history(history, **_kwargs):
-        condense_calls.append(history)
-        return history
-
     async def fake_stream_blocks(**kwargs):
         captured.update(kwargs)
         return "Walkthrough"
 
-    monkeypatch.setattr(orchestrator, "maybe_condense_history", fake_condense_history)
     monkeypatch.setattr(orchestrator, "stream_explanation_blocks", fake_stream_blocks)
 
     async def send(_event):
@@ -1343,7 +1387,6 @@ async def test_non_staged_graph_keeps_explanation_fallback_defaults(
         }
     )
 
-    assert condense_calls == [[{"role": "user", "content": "Earlier request"}]]
     assert captured["allow_fallback"] is True
     assert captured["provider_attempt_limit"] is None
     assert captured["accepted_graph_detail"] == expected_detail
@@ -1512,7 +1555,6 @@ async def test_failed_graph_operation_reports_exact_result_without_model_calls(
         orchestrator, "stream_explanation_blocks", unexpected_model_call
     )
     monkeypatch.setattr(orchestrator, "stream_llm", unexpected_model_call)
-    monkeypatch.setattr(orchestrator, "maybe_condense_history", unexpected_model_call)
     events = []
 
     async def send(event):
@@ -1555,7 +1597,8 @@ async def test_failed_graph_operation_reports_exact_result_without_model_calls(
     )
     if revision_instruction:
         expected += "\n\n" + revision_instruction
-    assert len(events) == 1
+    assert len(events) == 2
+    assert events[1] == {"type": "generation_failed"}
     assert events[0]["content"] == expected
     graph_block = bool(graph and operation_kind == "edit")
     assert events[0]["type"] == (
@@ -1622,7 +1665,6 @@ async def test_failed_create_finishes_without_more_model_work(
         )
 
     for name in (
-        "maybe_condense_history",
         "stream_explanation_blocks",
         "stream_llm",
         "synthesis_timeout_seconds",
@@ -1660,7 +1702,8 @@ async def test_failed_create_finishes_without_more_model_work(
     }
     result = await orchestrator.orchestrator_synthesise(state)
 
-    assert len(events) == 1
+    assert len(events) == 2
+    assert events[1] == {"type": "generation_failed"}
     assert events[0]["type"] == "response_delta"
     assert "I couldn't create the diagram" in events[0]["content"]
     assert result["response_text"] == early_response + events[0]["content"]
@@ -1709,7 +1752,6 @@ async def test_clarification_emits_questions_before_admission_without_graph_chan
     for name in (
         "stream_llm",
         "stream_explanation_blocks",
-        "maybe_condense_history",
         "synthesis_timeout_seconds",
         "_withhold_unreviewed_graph",
     ):
@@ -2070,36 +2112,6 @@ def test_withheld_candidate_cannot_reach_synthesis_as_public_graph_data():
     assert result["graph_changed"] is False
 
 
-@pytest.mark.asyncio
-async def test_context_condense_prompt_preserves_open_questions_and_avoids_invented_details(
-    monkeypatch,
-):
-    import agent.context_manager as context_manager
-
-    captured = {}
-
-    async def fake_stream_response(
-        *, model, system, messages, temperature=None, top_p=None, top_k=None
-    ):
-        captured["model"] = model
-        captured["system"] = system
-        captured["messages"] = messages
-        captured["temperature"] = temperature
-        captured["top_p"] = top_p
-        captured["top_k"] = top_k
-        yield ("text", "summary")
-
-    monkeypatch.setattr(context_manager, "stream_response", fake_stream_response)
-
-    result = await context_manager._call_summary("user: tell me more about the graph")
-
-    assert result == "summary"
-    assert "open questions" in captured["system"]
-    assert "graph or architecture topic" in captured["system"]
-    assert "Do not invent citations or details" in captured["system"]
-    assert captured["temperature"] == context_manager.settings.condense_temperature
-
-
 @pytest.mark.parametrize("graph_mode", ["off", "auto"])
 @pytest.mark.asyncio
 async def test_introductory_architecture_summary_routes_to_memory_without_model(
@@ -2441,7 +2453,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v32",
+            "prompt_version": "architecture_blocks_v33",
             "book_context": context,
             "research_context": "",
         }

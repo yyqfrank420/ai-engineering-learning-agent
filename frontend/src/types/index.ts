@@ -113,9 +113,23 @@ export interface SendOptions {
   researchEnabled?: boolean;
   graphAction?: GraphAction;
   expectedGraphVersion?: string | null;
+  retrySourceRequestId?: string;
+  steeringUpdates?: readonly string[];
   displayContent?: string;
   backendReadinessState?: string;
   hasSelectedTextContext?: boolean;
+}
+
+export interface RetryRequest {
+  content: string;
+  complexity: ComplexityLevel;
+  graphMode: GraphMode;
+  diagramRequested: boolean;
+  researchEnabled: boolean;
+  graphAction: GraphAction | null;
+  expectedGraphVersion: string | null;
+  retrySourceRequestId?: string;
+  steeringUpdates?: readonly string[];
 }
 
 export interface GraphRevisionSummary {
@@ -171,6 +185,8 @@ export interface Message {
   graphRevisionId?: string | null;
   graphVersion?: string | null;
   clientRequestId?: string | null;
+  retryRequest?: RetryRequest;
+  retryClientRequestId?: string;
 }
 
 export interface ThreadSummary {
@@ -198,6 +214,15 @@ export interface ThreadDetail {
     created_at: string;
     graph_revision_id?: string | null;
     client_request_id?: string | null;
+    retry_request?: {
+      content: string;
+      complexity: ComplexityLevel;
+      graph_mode: GraphMode;
+      diagram_requested: boolean;
+      research_enabled: boolean;
+      graph_action: GraphAction | null;
+      expected_graph_version: string | null;
+    } | null;
   }>;
 }
 
@@ -354,6 +379,10 @@ export interface ErrorEvent {
   content: string;
 }
 
+export interface GenerationFailedEvent {
+  type: 'generation_failed';
+}
+
 export interface ProviderSwitchEvent {
   type: 'provider_switch';
   provider: string;   // e.g. "openai" — signals Claude is unavailable, GPT is responding
@@ -397,6 +426,7 @@ export type ServerEvent =
   | GraphNoticeEvent
   | DoneEvent
   | ErrorEvent
+  | GenerationFailedEvent
   | ProviderSwitchEvent
   | ResponseResetEvent
   | SteerAppliedEvent

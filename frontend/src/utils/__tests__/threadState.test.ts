@@ -129,4 +129,15 @@ describe('thread snapshot helpers', () => {
     expect(readThreadSnapshot('user-1', 'thread-1')?.messages).toEqual(messages);
   });
 
+  it('maps persisted retry details into the visible failure after reload', () => {
+    const messages = mapThreadMessages([{ id: 'failed', role: 'assistant', content: 'Diagram unchanged', created_at: '',
+      retry_request: { content: 'Expand retrieval', complexity: 'production', graph_mode: 'on',
+        diagram_requested: true, research_enabled: true, graph_action: 'extend', expected_graph_version: 'old' } }]);
+    expect(messages[0].retryRequest).toEqual({ content: 'Expand retrieval', complexity: 'production',
+      graphMode: 'on', diagramRequested: true, researchEnabled: true, graphAction: 'extend',
+      expectedGraphVersion: 'old' });
+    writeThreadSnapshot('user-1', 'thread-1', { title: 'Saved', messages, graphData: null });
+    expect(readThreadSnapshot('user-1', 'thread-1')?.messages[0].retryRequest).toEqual(messages[0].retryRequest);
+  });
+
 });

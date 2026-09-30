@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
-import type { DiagramIntentAction, GraphNode, SendOptions } from './types';
+import type { DiagramIntentAction, GraphNode, Message, SendOptions } from './types';
 import { trackEvent } from './services/analytics';
 import { useAgentStream } from './hooks/useAgentStream';
 import { graphStructureKey } from './utils/graphStructureKey';
@@ -111,6 +111,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     providerNotice,
     hydrateThread,
     sendMessage,
+    retryMessage,
     startThreadAndSend,
     adoptRestoredGraph,
     saveGraphEdit,
@@ -123,6 +124,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const graphCanvasRef = useRef<GraphCanvasHandle>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  const [retryingMessageId, setRetryingMessageId] = useState<string | null>(null);
   const actionInFlight = useRef(false);
   const mountedRef = useRef(true);
   useEffect(() => {
@@ -184,6 +186,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       throw new Error('Finish the current diagram action before sending. Your message is saved here.');
     }
     actionInFlight.current = true;
+    setRetryingMessageId(null);
     setActionBusy(true);
     setActionError(null);
     try {
@@ -224,6 +227,29 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       setActionBusy(false);
     }
   }, [backendReadiness, isFinishingDiagram, graphEditBlocked, history.busy, history.preview, flushLayout, context, authSession, selectionReferenceActive, selectionSuggestion, graphData, handleNewChat, startThreadAndSend, sendMessage, clearGraphSelection]);
+
+  const handleRetryMessage = useCallback(async (message: Message) => {
+    if (!message.retryRequest || streamStatus === 'generating' || loadingThread || !activeThreadId
+      || backendReadiness !== 'ready' || isFinishingDiagram || graphEditBlocked
+      || history.busy || history.preview || actionInFlight.current) return;
+    actionInFlight.current = true;
+    setActionBusy(true);
+    setActionError(null);
+    setRetryingMessageId(message.id);
+    try {
+      await flushLayout();
+      if (!mountedRef.current || currentContext.current !== context) throw new Error('The conversation changed. Please try again.');
+      const accepted = await retryMessage(message, graphData?.version ?? null);
+      if (!accepted) throw new Error('Could not retry this response. Please try again.');
+      clearGraphSelection();
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not retry this response. Please try again.');
+      setRetryingMessageId(null);
+    } finally {
+      actionInFlight.current = false;
+      setActionBusy(false);
+    }
+  }, [streamStatus, loadingThread, activeThreadId, backendReadiness, isFinishingDiagram, graphEditBlocked, history.busy, history.preview, flushLayout, context, retryMessage, graphData, clearGraphSelection]);
 
   const checkSubmission = useCallback(async (content: string) => {
     if (!authSession || !activeThreadId) throw new Error('Chat is not ready');
@@ -498,7 +524,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     </div>
                   )}
                   <Suspense fallback={<div style={panelFallbackStyle}>Loading conversation…</div>}>
-                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} viewedRevisionId={history.preview?.revision_id ?? history.history?.current_revision_id ?? null} onViewDiagram={id => id === history.history?.current_revision_id ? history.returnToCurrent() : history.previewRevision(id)} historyDisabled={isStreaming} />
+                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} viewedRevisionId={history.preview?.revision_id ?? history.history?.current_revision_id ?? null} onViewDiagram={id => id === history.history?.current_revision_id ? history.returnToCurrent() : history.previewRevision(id)} historyDisabled={isStreaming} onRetryMessage={handleRetryMessage} retryDisabled={sendLocked || isGenerating} retryingMessageId={actionBusy || isGenerating ? retryingMessageId : null} />
                   </Suspense>
                   <ThinkingIndicator
                     workflowProgress={workflowProgress}

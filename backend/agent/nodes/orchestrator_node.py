@@ -29,17 +29,16 @@ from agent.complexity import (
     resolve_complexity,
     resolve_graph_operation,
 )
-from agent.context_manager import maybe_condense_history
 from agent.deadlines import synthesis_timeout_seconds
 from agent.explanation_blocks import stream_explanation_blocks
 from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.source_references import format_book_reference, source_urls
-from agent.state import AgentState
+from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v32"
-_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v4"
-_ROUTER_PROMPT_VERSION = "intent_router_v3"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v33"
+_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
+_ROUTER_PROMPT_VERSION = "intent_router_v4"
 # Match the ingested parent-section size, while bounding unexpected tool results.
 _SYNTHESIS_MAX_RAG_CHUNKS = 5
 _SYNTHESIS_MAX_CHUNK_CHARS = 2048
@@ -708,6 +707,7 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             if early_response
             else response_text,
         }
+        await send({"type": "generation_failed"})
         return state
     return await _synthesise_answer(state)
 
@@ -721,20 +721,6 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         and graph_contract.get("source") == "staged"
         and state.get("graph_publication") in {"approved", "user_accepted"}
     )
-    if not staged_explanation:
-        history = await maybe_condense_history(
-            history,
-            telemetry=build_telemetry(
-                "context_condense",
-                user_id=state.get("user_id"),
-                thread_id=state.get("session_id"),
-                is_production=state.get("is_production"),
-                metadata={
-                    "request_id": state.get("request_id"),
-                    "client_request_id": state.get("client_request_id"),
-                },
-            ),
-        )
 
     current_graph = state.get("graph_data") or {}
     profile = _resolve_synthesis_complexity(state, current_graph)
@@ -1133,11 +1119,7 @@ def _explanation_completion_status(
 def _format_history(history: list[dict]) -> str:
     if not history:
         return "(no prior conversation)"
-    lines = []
-    for msg in history[-6:]:  # last 3 turns (6 messages)
-        role = msg.get("role", "user").upper()
-        lines.append(f"{role}: {msg.get('content', '')[:300]}")
-    return "\n".join(lines)
+    return format_conversation_history(history)
 
 
 def _format_route_graph_context(graph_data: dict | None) -> str:

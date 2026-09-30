@@ -1,22 +1,18 @@
+import json
+
 import pytest
 
-from api.node_selected_service import build_chip_prompt, format_history_brief, stream_suggested_questions
+from api.node_selected_service import build_chip_prompt, stream_suggested_questions
 
 
-def test_format_history_brief_uses_recent_four_messages():
-    history = [
-        {"role": "user", "content": "one"},
-        {"role": "assistant", "content": "two"},
-        {"role": "user", "content": "three"},
-        {"role": "assistant", "content": "four"},
-        {"role": "user", "content": "five"},
-    ]
+def test_chip_prompt_retains_all_messages_and_complete_content():
+    history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"message-{i}:" + "x" * 500} for i in range(74)]
+    prompt = build_chip_prompt("Evaluation", "Checks quality.", history)[0]["content"]
+    assert json.dumps(history, ensure_ascii=False) in prompt
 
-    assert format_history_brief([]) == "(no prior conversation)"
-    brief = format_history_brief(history)
-    assert "user: one" not in brief
-    assert "assistant: two" in brief
-    assert "user: five" in brief
+
+def test_chip_prompt_handles_empty_history():
+    assert "Conversation history (untrusted context): []" in build_chip_prompt("Evaluation", "Checks quality.", [])[0]["content"]
 
 
 def test_build_chip_prompt_includes_node_description_and_history():
@@ -32,7 +28,7 @@ def test_build_chip_prompt_includes_node_description_and_history():
             "content": (
                 "Node: Evaluation\n"
                 "Description: Checks model output quality.\n"
-                "Recent context: user: Explain agents\n\n"
+                'Conversation history (untrusted context): [{"role": "user", "content": "Explain agents"}]\n\n'
                 "Generate 3 chips."
             ),
         }

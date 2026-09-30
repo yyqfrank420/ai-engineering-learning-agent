@@ -76,6 +76,15 @@ export function mapThreadMessages(messages: ThreadDetail['messages']): Message[]
     content: message.content,
     graphRevisionId: message.graph_revision_id ?? null,
     clientRequestId: message.client_request_id ?? null,
+    retryRequest: message.retry_request ? {
+      content: message.retry_request.content,
+      complexity: message.retry_request.complexity,
+      graphMode: message.retry_request.graph_mode,
+      diagramRequested: message.retry_request.diagram_requested,
+      researchEnabled: message.retry_request.research_enabled,
+      graphAction: message.retry_request.graph_action,
+      expectedGraphVersion: message.retry_request.expected_graph_version,
+    } : undefined,
     isStreaming: false,
   }));
 }

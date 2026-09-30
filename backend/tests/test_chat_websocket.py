@@ -510,8 +510,9 @@ def test_websocket_rejects_untrusted_browser_origin(temp_data_dir, monkeypatch):
     assert exc_info.value.code == 1008
 
 
+@pytest.mark.parametrize("failed", [False, True])
 def test_websocket_replays_completed_idempotent_turn_without_running_agent(
-    temp_data_dir, monkeypatch
+    temp_data_dir, monkeypatch, failed
 ):
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
     persist_turn(
@@ -522,6 +523,9 @@ def test_websocket_replays_completed_idempotent_turn_without_running_agent(
         assistant_content="Canonical stored answer",
         graph_data=None,
         client_request_id="client-replay-1",
+        retry_request=(dict(content="Explain RAG", complexity="auto", graph_mode="on",
+                            diagram_requested=True, research_enabled=False,
+                            graph_action=None, expected_graph_version=None) if failed else None),
     )
 
     async def fail_if_called(*_args, **_kwargs):
@@ -551,6 +555,7 @@ def test_websocket_replays_completed_idempotent_turn_without_running_agent(
     assert events == [
         {"type": "response_delta", "content": "Canonical stored answer"},
         {"type": "graph_data", "data": None},
+        *([{"type": "generation_failed"}] if failed else []),
         {"type": "done"},
     ]
 
@@ -1281,7 +1286,7 @@ def test_websocket_frame_and_origin_boundaries(monkeypatch):
     with pytest.raises(ValueError, match="must be an object"):
         asyncio.run(_receive_object(FakeSocket("[]")))
     with pytest.raises(ValueError, match="frame too large"):
-        asyncio.run(_receive_object(FakeSocket("x" * 16_385)))
+        asyncio.run(_receive_object(FakeSocket("x" * (chat_websocket._MAX_WS_FRAME_BYTES + 1))))
 
     assert _origin_allowed(None) is True
     assert _origin_allowed("http://localhost:5173") is True
@@ -1805,3 +1810,70 @@ def test_accepted_preview_still_cancels_on_cleanup(temp_data_dir, monkeypatch, t
                 _receive_until(socket, "stopped")
     assert cancelled
     assert get_history(user["id"], thread["id"]) == []
+
+
+def test_replayed_steering_seeds_live_number_and_attempt_limit(temp_data_dir, monkeypatch):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    calls = []
+
+    async def pending_agent(state, *_tools):
+        calls.append(state["user_message"])
+        await state["send"]({"type": "response_delta", "content": "pending"})
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr("api.chat_websocket.run_agent", pending_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json({
+                "type": "start", "thread_id": thread["id"], "content": "Original",
+                "client_request_id": "retry", "steering_updates": ["first", "second"],
+            })
+            _receive_until(socket, "response_delta")
+            socket.send_json({"type": "steer", "client_request_id": "retry", "content": "third"})
+            applied = _receive_until(socket, "steer_applied")[-1]
+            assert applied == {"type": "steer_applied", "content": "third", "steer_count": 3}
+            _receive_until(socket, "response_delta")
+            socket.send_json({"type": "steer", "client_request_id": "retry", "content": "fourth"})
+            assert _receive_until(socket, "command_rejected")[-1]["type"] == "command_rejected"
+            socket.send_json({"type": "stop", "client_request_id": "retry"})
+            _receive_until(socket, "stopped")
+    effective = "Original\n\nUser steering update 1:\nfirst\n\nUser steering update 2:\nsecond"
+    assert calls == [effective, effective + "\n\nUser steering update 3:\nthird"]
+    assert get_history(user["id"], thread["id"]) == []
+
+
+@pytest.mark.parametrize("unit", ['"\\', "\x00"])
+def test_websocket_replayed_steering_accepts_maximum_json_escaped_content(
+    temp_data_dir, monkeypatch, unit
+):
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    component = unit * (settings.max_message_bytes // len(unit.encode("utf-8")))
+    calls = []
+
+    async def completed_agent(state, *_tools):
+        calls.append(state["user_message"])
+        return {**state, "response_text": "completed"}
+
+    monkeypatch.setattr("api.chat_websocket.run_agent", completed_agent)
+    with TestClient(app) as client:
+        with client.websocket_connect(
+            "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+        ) as socket:
+            socket.send_json({"type": "auth", "access_token": "test-token"})
+            assert socket.receive_json()["type"] == "ready"
+            socket.send_json({
+                "type": "start", "thread_id": thread["id"], "content": component,
+                "client_request_id": "escaped", "steering_updates": [component] * 3,
+            })
+            events = _receive_until(socket, "done")
+    assert not any(event["type"] == "error" for event in events)
+    expected = component + "".join(
+        f"\n\nUser steering update {number}:\n{component}"
+        for number in range(1, 4)
+    )
+    assert calls == [expected]
+    assert get_history(user["id"], thread["id"])[0]["content"] == expected

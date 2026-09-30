@@ -34,7 +34,9 @@ from api.chat_guards import (
     truncate_utf8,
 )
 from api.diagram_evaluation_channel import DiagramEvaluationChannel, DiagramWaiter
-from api.sse_handler import ChatRequest, _make_agent_tools
+from api.sse_handler import (
+    ChatRequest, MAX_CHAT_STEERS, _make_agent_tools, max_effective_message_bytes,
+)
 from config import settings
 from observability import (
     change_active_chat_streams,
@@ -52,8 +54,9 @@ logger = logging.getLogger(__name__)
 
 _AUTH_TIMEOUT_S = 8.0
 _START_TIMEOUT_S = 20.0
-_MAX_STEERS_PER_RUN = 3
-_MAX_WS_FRAME_BYTES = 16_384
+_MAX_STEERS_PER_RUN = MAX_CHAT_STEERS
+# JSON escapes can expand one content byte to six bytes; reserve room for request fields.
+_MAX_WS_FRAME_BYTES = max(16_384, 6 * max_effective_message_bytes() + 4_096)
 
 
 class _SingleWaitDiagramEvaluationChannel(DiagramEvaluationChannel):
@@ -157,6 +160,13 @@ async def chat_websocket(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "done"})
             return
 
+        try:
+            body, original_request = body.resolve_retry_source(user_id)
+        except ValueError:
+            await _send_error(websocket, "Retry request is unavailable")
+            await websocket.send_json({"type": "done"})
+            return
+
         request_id = str(uuid.uuid4())
 
         async def replay_completed_turn() -> bool:
@@ -195,6 +205,8 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         "data": thread_store.get_graph(user_id, body.thread_id),
                     }
                 )
+                if completed_turn.get("retry_request") is not None:
+                    await websocket.send_json({"type": "generation_failed"})
                 await websocket.send_json({"type": "done"})
                 return True
             return False
@@ -275,7 +287,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
             timeout_s=settings.diagram_evaluation_timeout_s,
             max_screenshot_bytes=settings.max_diagram_screenshot_bytes,
         )
-        steer_count = 0
+        steer_count = len(body.steering_updates)
         graph_review_budget = GraphReviewBudget()
         graph_review_control = GraphReviewControl()
         started_at = session_started_at
@@ -533,9 +545,13 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         })
                         continue
                     steering = " ".join(str(command.get("content") or "").split())
+                    steered_content = (
+                        f"{content}\n\nUser steering update {steer_count + 1}:\n{steering}"
+                    )
                     if (
                         not steering
                         or byte_len(steering) > settings.max_message_bytes
+                        or byte_len(steered_content) > max_effective_message_bytes()
                         or not check_prompt_injection(steering)
                         or steer_count >= _MAX_STEERS_PER_RUN
                     ):
@@ -553,9 +569,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         await agent_task
                     graph_review_control = GraphReviewControl()
                     steer_count += 1
-                    content = (
-                        f"{content}\n\nUser steering update {steer_count}:\n{steering}"
-                    )
+                    content = steered_content
                     await restore_graph_preview()
                     await send({"type": "response_reset"})
                     await send(
@@ -636,6 +650,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     graph_data=final_state.get("graph_data"),
                     graph_contract=final_state.get("graph_contract"),
                     client_request_id=body.client_request_id,
+                    retry_request=body.failed_generation_retry_request(final_state, original_request),
                 )
                 if not graph_saved:
                     await restore_graph_preview()

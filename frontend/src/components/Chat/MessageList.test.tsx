@@ -4,6 +4,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessageList } from './MessageList';
 
 describe('MessageList', () => {
+  it('shows retry only on an explicitly failed assistant message and blocks repeat clicks while busy', () => {
+    const onRetryMessage = vi.fn();
+    const failed = { id: 'failed', role: 'assistant' as const, content: 'Diagram unchanged', retryRequest: {
+      content: 'Expand retrieval', complexity: 'auto' as const, graphMode: 'on' as const,
+      diagramRequested: true, researchEnabled: true, graphAction: 'extend' as const,
+      expectedGraphVersion: 'old',
+    } };
+    const messages = [
+      { id: 'success', role: 'assistant' as const, content: 'Done' },
+      { id: 'user', role: 'user' as const, content: 'Expand retrieval' },
+      failed,
+    ];
+    const view = render(<MessageList messages={messages} onRetryMessage={onRetryMessage} />);
+    const retry = screen.getByRole('button', { name: 'Retry generation' });
+    expect(retry.closest('[data-testid="message-assistant"]')?.textContent).toContain('Diagram unchanged');
+    fireEvent.click(retry);
+    expect(onRetryMessage).toHaveBeenCalledExactlyOnceWith(failed);
+    view.rerender(<MessageList messages={messages} onRetryMessage={onRetryMessage} retryDisabled retryingMessageId="failed" />);
+    const busy = screen.getByRole('button', { name: 'Retrying…' }) as HTMLButtonElement;
+    expect(busy.disabled).toBe(true);
+    fireEvent.click(busy);
+    expect(onRetryMessage).toHaveBeenCalledTimes(1);
+  });
   it('follows near-bottom content, preserves a reader above it, and lets them jump back', () => {
     const view = render(<MessageList messages={[]} />);
     const list = screen.getByRole('region', { name: 'Conversation' });

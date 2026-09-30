@@ -235,6 +235,8 @@ export class AgentTransport {
                   research_enabled: opts?.researchEnabled ?? false,
                   ...(opts?.graphAction ? { graph_action: opts.graphAction } : {}),
                   ...(opts?.expectedGraphVersion !== undefined ? { expected_graph_version: opts.expectedGraphVersion } : {}),
+                  ...(opts?.retrySourceRequestId ? { retry_source_request_id: opts.retrySourceRequestId } : {}),
+                  ...(opts?.steeringUpdates?.length ? { steering_updates: opts.steeringUpdates } : {}),
                   client_request_id: clientRequestId,
                 }));
                 this._chatCommandsReady = true;

@@ -22,6 +22,7 @@ from graph.content_edit import (
 
 from storage import graph_history_store
 from storage.errors import ThreadMessageLimitExceeded
+from storage.message_store import RetryRequest, decode_retry_request
 
 logger = logging.getLogger(__name__)
 
@@ -513,6 +514,7 @@ def persist_turn(
     graph_data: dict | None,
     graph_contract: dict | None = None,
     client_request_id: str | None = None,
+    retry_request: dict | None = None,
 ) -> bool:
     """Atomically and idempotently persist a completed turn and optional graph.
 
@@ -521,6 +523,11 @@ def persist_turn(
     ``client_request_id`` returns without duplicating an already completed turn.
     Any database error rolls the complete turn back, avoiding partial history.
     """
+    serialized_retry = (
+        RetryRequest.model_validate(retry_request).model_dump_json()
+        if retry_request is not None
+        else None
+    )
     serialized_graph: str | None = None
     serialized_contract: str | None = None
     graph_saved = True
@@ -622,9 +629,9 @@ def persist_turn(
                 _adapt_query(
                     """
                     INSERT INTO chat_messages (
-                        id, thread_id, user_id, role, content, client_request_id, graph_revision_id
+                        id, thread_id, user_id, role, content, client_request_id, graph_revision_id, retry_request
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -635,6 +642,7 @@ def persist_turn(
                     content,
                     client_request_id,
                     revision_id if role == "assistant" else None,
+                    serialized_retry if role == "assistant" else None,
                 ),
             )
 
@@ -693,7 +701,7 @@ def get_completed_turn(
     user_id: str,
     thread_id: str,
     client_request_id: str | None,
-) -> dict[str, str] | None:
+) -> dict | None:
     """Return the canonical stored response for a completed idempotent turn.
 
     A partial turn is never replayed because its outcome is ambiguous. The
@@ -705,7 +713,7 @@ def get_completed_turn(
 
     rows = fetchall(
         """
-        SELECT role, content
+        SELECT role, content, retry_request
         FROM chat_messages
         WHERE user_id = ? AND thread_id = ? AND client_request_id = ?
         """,
@@ -717,7 +725,10 @@ def get_completed_turn(
     content_by_role = {row["role"]: row["content"] for row in rows}
     if set(content_by_role) != {"user", "assistant"}:
         raise RuntimeError("Stored turn is incomplete; refusing an ambiguous retry")
+    assistant_row = next(row for row in rows if row["role"] == "assistant")
+    retry_request = decode_retry_request(assistant_row["retry_request"])
     return {
+        **({"retry_request": retry_request} if retry_request is not None else {}),
         "user_content": content_by_role["user"],
         "assistant_content": content_by_role["assistant"],
     }

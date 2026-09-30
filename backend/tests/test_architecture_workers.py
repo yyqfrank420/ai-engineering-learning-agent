@@ -125,8 +125,30 @@ def test_architect_context_audits_the_exact_provisional_candidate():
     assert "private-version" not in context
 
 
+def test_architect_and_challenger_context_include_all_prior_messages():
+    history = [
+        {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn-{index}: " + ("x" * 1500)}
+        for index in range(12)
+    ]
+    state = {
+        "user_message": "Expand the curriculum retrieval service",
+        "design_query": "Curriculum retrieval service expansion",
+        "history": history,
+        "evidence_bundle": {},
+    }
+
+    for context in (
+        _worker_context(state, "Prototype depth"),
+        _worker_context(state, "Prototype depth", primary_plan={"interpretation": "Existing design"}),
+    ):
+        assert json.dumps(history, ensure_ascii=False) in context
+        assert "turn-0: " + ("x" * 1500) in context
+        assert "turn-11: " + ("x" * 1500) in context
+        assert "Latest user request (authoritative" in context
+
+
 def test_architecture_roles_reason_about_enforced_control_paths():
-    assert _ARCHITECT_PROMPT_VERSION == "architecture_roles_v26"
+    assert _ARCHITECT_PROMPT_VERSION == "architecture_roles_v27"
     for production_requirement in (
         "At selected production depth only, keep risky customer writes",
         "At selected production depth only, treat production guarantees",

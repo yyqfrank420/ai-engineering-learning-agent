@@ -34,6 +34,9 @@ create table if not exists public.chat_messages (
   role text not null check (role in ('user', 'assistant')),
   content text not null,
   client_request_id text,
+  retry_request jsonb check (retry_request is null or (
+    role = 'assistant' and jsonb_typeof(retry_request) = 'object'
+  )),
   created_at timestamptz not null default now()
 );
 

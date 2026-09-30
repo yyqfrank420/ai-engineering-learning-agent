@@ -10,3 +10,8 @@
 .message-jump:hover { background: #2a3550; }
 .message-jump:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
 .message-jump svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.7; }
+.message-retry { display: inline-flex; align-items: center; justify-content: center; gap: 0.45rem; min-height: 44px; margin-top: 0.6rem; padding: 0 0.85rem; border: 1px solid #8b74bf; border-radius: 9px; background: #211b35; color: #e6d9ff; font: inherit; font-size: 0.82rem; font-weight: 600; cursor: pointer; transition: background 150ms ease, border-color 150ms ease; }
+.message-retry svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-linecap: round; stroke-linejoin: round; stroke-width: 1.8; }
+.message-retry:hover:not(:disabled) { background: #32254e; border-color: #bc9eff; }
+.message-retry:focus-visible { outline: 2px solid #d6bcfa; outline-offset: 3px; }
+.message-retry:disabled { opacity: 0.5; cursor: not-allowed; }

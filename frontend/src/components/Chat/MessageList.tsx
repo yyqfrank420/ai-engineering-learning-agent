@@ -24,6 +24,9 @@ interface MessageListProps {
   viewedRevisionId?: string | null;
   onViewDiagram?: (id: string) => void;
   historyDisabled?: boolean;
+  onRetryMessage?: (message: Message) => void;
+  retryDisabled?: boolean;
+  retryingMessageId?: string | null;
 }
 
 // ── LaTeX pre-processor ───────────────────────────────────────────────────────
@@ -203,7 +206,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   );
 }
 
-export function MessageList({ messages, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false }: MessageListProps) {
+export function MessageList({ messages, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false, onRetryMessage, retryDisabled = false, retryingMessageId = null }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const pointerDown = useRef(false);
@@ -308,6 +311,13 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
             <MessageContent content={msg.content} isAssistant={msg.role === 'assistant'} />
             {msg.role === 'assistant' && msg.graphRevisionId && revisionIds.includes(msg.graphRevisionId) && onViewDiagram && (
               <button className="message-diagram-link" aria-pressed={msg.graphRevisionId === viewedRevisionId} disabled={historyDisabled} onClick={() => onViewDiagram(msg.graphRevisionId!)}>View diagram</button>
+            )}
+            {msg.role === 'assistant' && msg.retryRequest && onRetryMessage && (
+              <button className="message-retry" type="button" disabled={retryDisabled || retryingMessageId === msg.id}
+                onClick={() => onRetryMessage(msg)}>
+                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 1 1-2.3-5.7M20 4v6h-6" /></svg>
+                <span>{retryingMessageId === msg.id ? 'Retrying…' : 'Retry generation'}</span>
+              </button>
             )}
             {msg.isStreaming && (
               <span style={{

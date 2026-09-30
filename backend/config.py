@@ -141,9 +141,6 @@ class Settings(BaseSettings):
     node_detail_temperature: float = 0.2
     node_detail_top_p: float | None = None
     node_detail_top_k: int | None = None
-    condense_temperature: float = 0.0
-    condense_top_p: float | None = None
-    condense_top_k: int | None = None
     suggestion_chip_temperature: float = 0.35
     suggestion_chip_top_p: float | None = None
     suggestion_chip_top_k: int | None = None
@@ -253,13 +250,9 @@ class Settings(BaseSettings):
     # Max threads stored per user (oldest evicted on overflow)
     max_threads_per_user: int = 5
     # Max messages stored per thread (returns 429 when hit)
-    max_messages_per_thread: int = 50
+    max_messages_per_thread: int = 75
     # Max graph_data size in bytes (500 KB — skips save + notifies user if exceeded)
     max_graph_data_bytes: int = 524288
-    # Auto-condense: summarise old history with Haiku when total chars exceeds this
-    context_condense_threshold_chars: int = 12000
-    # Auto-condense: how many recent turns to keep verbatim (not summarised)
-    context_condense_keep_recent: int = 4
 
     # ── Embedding ─────────────────────────────────────────────────────────────
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"

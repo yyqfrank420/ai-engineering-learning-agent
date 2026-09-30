@@ -184,10 +184,16 @@ vi.mock('./components/GraphCanvas', () => ({
 }));
 
 vi.mock('./components/Chat/MessageList', () => ({
-  MessageList: ({ messages, onViewDiagram }: { messages: unknown[]; onViewDiagram?: (id: string) => void }) => (
+  MessageList: ({ messages, onViewDiagram, onRetryMessage, retryDisabled }: {
+    messages: Array<{ retryRequest?: unknown }>; onViewDiagram?: (id: string) => void;
+    onRetryMessage?: (message: unknown) => void; retryDisabled?: boolean;
+  }) => (
     <div><span data-testid="message-list">{messages.length} messages</span>
       <button onClick={() => onViewDiagram?.('old')}>View earlier answer diagram</button>
       <button onClick={() => onViewDiagram?.('current')}>View current answer diagram</button>
+      {messages.filter(message => message.retryRequest).map((message, index) => (
+        <button key={index} disabled={retryDisabled} onClick={() => onRetryMessage?.(message)}>Retry generation</button>
+      ))}
     </div>
   ),
 }));
@@ -304,6 +310,7 @@ const agentState = {
   providerNotice: null,
   hydrateThread: vi.fn(),
   sendMessage: vi.fn().mockReturnValue(true),
+  retryMessage: vi.fn().mockResolvedValue(true),
   adoptRestoredGraph: vi.fn().mockReturnValue(true),
   startThreadAndSend: vi.fn().mockReturnValue(true),
   saveGraphEdit: vi.fn().mockResolvedValue(undefined),
@@ -326,6 +333,27 @@ describe('App coordination', () => {
     vi.mocked(useThreadSession).mockReturnValue(threadState);
     vi.mocked(useAgentStream).mockReturnValue(agentState);
     vi.mocked(shouldPersistThreadSnapshot).mockReturnValue(true);
+  });
+
+  it('flushes layout before retrying and prevents duplicate clicks while the action is pending', async () => {
+    const failure = { id: 'failed', role: 'assistant' as const, content: 'Generation failed', retryRequest: {
+      content: 'Original prompt', complexity: 'auto' as const, graphMode: 'on' as const,
+      diagramRequested: true, researchEnabled: true, graphAction: 'extend' as const,
+      expectedGraphVersion: 'old',
+    } };
+    vi.mocked(useAgentStream).mockReturnValue({ ...agentState, messages: [failure], visibleMessages: [failure] });
+    let releaseFlush!: () => void;
+    flushPendingLayout.mockReturnValueOnce(new Promise<void>(resolve => { releaseFlush = resolve; }));
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    const retry = screen.getByRole('button', { name: 'Retry generation' }) as HTMLButtonElement;
+    fireEvent.click(retry);
+    expect(retry.disabled).toBe(true);
+    fireEvent.click(retry);
+    expect(agentState.retryMessage).not.toHaveBeenCalled();
+    await act(async () => { releaseFlush(); });
+    expect(agentState.retryMessage).toHaveBeenCalledExactlyOnceWith(failure, null);
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
   });
 
   it('renders a bounded loading state before authentication initializes', () => {

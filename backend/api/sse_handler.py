@@ -70,11 +70,21 @@ def _make_agent_tools(request: HTTPConnection):
 
 _VALID_COMPLEXITY = {"auto", "low", "prototype", "production"}
 _VALID_GRAPH_MODE = {"on", "off"}
+MAX_CHAT_STEERS = 3
+
+
+def max_effective_message_bytes() -> int:
+    return settings.max_message_bytes * (MAX_CHAT_STEERS + 1) + sum(
+        len(f"\n\nUser steering update {number}:\n".encode("utf-8"))
+        for number in range(1, MAX_CHAT_STEERS + 1)
+    )
 
 
 class ChatRequest(BaseModel):
+    retry_source_request_id: str | None = Field(default=None, min_length=1, max_length=128)
     thread_id: str = Field(min_length=1, max_length=64)
     content: str
+    steering_updates: list[str] = Field(default_factory=list, max_length=MAX_CHAT_STEERS)
     complexity: str = "auto"
     graph_mode: str = "on"
     graph_action: Literal["extend", "new", "answer"] | None = None
@@ -86,6 +96,19 @@ class ChatRequest(BaseModel):
     client_request_id: str | None = Field(default=None, min_length=1, max_length=128)
 
     model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    @field_validator("steering_updates")
+    @classmethod
+    def validate_steering_updates(cls, updates: list[str]) -> list[str]:
+        normalized = [" ".join(update.split()) for update in updates]
+        if any(
+            not update
+            or byte_len(update) > settings.max_message_bytes
+            or not check_prompt_injection(update)
+            for update in normalized
+        ):
+            raise ValueError("Steering update was empty, unsafe, or too large")
+        return normalized
 
     @field_validator("complexity")
     @classmethod
@@ -100,6 +123,54 @@ class ChatRequest(BaseModel):
         if value not in _VALID_GRAPH_MODE:
             return "on"
         return value
+
+    def resolve_retry_source(self, user_id: str) -> tuple["ChatRequest", dict]:
+        original = self.model_dump(include=set(message_store.RetryRequest.model_fields))
+        effective_content = self.content
+        if self.retry_source_request_id is not None:
+            if (
+                not self.client_request_id
+                or self.client_request_id == self.retry_source_request_id
+            ):
+                raise ValueError("Retry request is unavailable")
+            try:
+                source = thread_store.get_completed_turn(
+                    user_id, self.thread_id, self.retry_source_request_id
+                )
+            except RuntimeError as exc:
+                raise ValueError("Retry request is unavailable") from exc
+            if source is None or source.get("retry_request") is None:
+                raise ValueError("Retry request is unavailable")
+            effective_content = source["user_content"]
+            original = dict(source["retry_request"])
+            if original["graph_action"] == "extend" and self.expected_graph_version is not None:
+                original["expected_graph_version"] = self.expected_graph_version
+        for number, update in enumerate(self.steering_updates, start=1):
+            effective_content += f"\n\nUser steering update {number}:\n{update}"
+        if (
+            not effective_content
+            or byte_len(effective_content) > max_effective_message_bytes()
+        ):
+            raise ValueError("Retry request is unavailable")
+        # Owned canonical content and validated steering may exceed the ordinary input cap.
+        return self.model_copy(update={**original, "content": effective_content}), original
+
+    def failed_generation_retry_request(
+        self, final_state: AgentState, original_request: dict | None = None
+    ) -> dict | None:
+        operation = final_state.get("graph_operation") or {}
+        if operation.get("status") == "needs_clarification":
+            return None
+        if (
+            operation.get("status") != "failed"
+            and final_state.get("graph_publication") not in {"preserved", "withheld"}
+        ):
+            return None
+        return (
+            original_request
+            if original_request is not None
+            else self.model_dump(include=set(message_store.RetryRequest.model_fields))
+        )
 
 
 class NodeSelectedRequest(BaseModel):
@@ -172,6 +243,13 @@ async def chat_endpoint(
         return sse_error("Empty message")
 
     try:
+        body, original_request = body.resolve_retry_source(user_id)
+    except ValueError:
+        record_chat_rejected("retry_unavailable")
+        return sse_error("Retry request is unavailable")
+    content = body.content
+
+    try:
         completed_turn = thread_store.get_completed_turn(
             user_id,
             thread_id,
@@ -206,6 +284,8 @@ async def chat_endpoint(
                 "data": thread_store.get_graph(user_id, thread_id),
             }
         )
+        if completed_turn.get("retry_request") is not None:
+            yield sse({"type": "generation_failed"})
         yield sse({"type": "done"})
 
     if completed_turn is not None:
@@ -588,6 +668,7 @@ async def chat_endpoint(
                         graph_data=final_state.get("graph_data"),
                         graph_contract=final_state.get("graph_contract"),
                         client_request_id=body.client_request_id,
+                        retry_request=body.failed_generation_retry_request(final_state, original_request),
                     )
                     if not graph_saved:
                         yield sse(
@@ -754,7 +835,9 @@ async def node_selected_endpoint(
             "Too many node detail requests are already running", include_done=True
         )
 
-    history = message_store.get_history(user_id, thread_id, limit=6)
+    history = message_store.get_history(
+        user_id, thread_id, limit=settings.max_messages_per_thread
+    )
 
     async def stream():
         try:

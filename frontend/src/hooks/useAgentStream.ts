@@ -32,6 +32,7 @@ import type {
   GraphMode,
   GraphNode,
   Message,
+  RetryRequest,
   RetrievalNotice,
   SelectedNode,
   ServerEvent,
@@ -51,6 +52,12 @@ function makeId() {
 }
 
 const GRAPH_PAINT_GRACE_MS = 3000;
+function clearRetryForAttempt(messages: Message[], clientRequestId: string): Message[] {
+  return messages.map(message => message.retryClientRequestId === clientRequestId
+    ? { ...message, retryRequest: undefined, retryClientRequestId: undefined }
+    : message);
+}
+
 const EMPTY_RESPONSE_MESSAGE = 'The response could not be completed. Please try again.';
 
 const IDLE_WORKER_STATUS: WorkerStatus = {
@@ -111,6 +118,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   const durableGraphDataRef = useRef<GraphData | null>(null);
   const selectedNodeRef = useRef<SelectedNode | null>(null);
   const activeChatTerminalRef = useRef<string | null>(null);
+  const activeRequestRef = useRef<{ request: RetryRequest; clientRequestId: string } | null>(null);
   const turnOutputRef = useRef({ text: false, graph: false, initialGraphKey: 'null' });
   const activeExplanationMessageIdsRef = useRef<string[]>([]);
   const activeChatAnalyticsRef = useRef<{
@@ -157,6 +165,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     streamingIdRef.current = null;
     activeChatAnalyticsRef.current = null;
     activeChatTerminalRef.current = null;
+    activeRequestRef.current = null;
     setWorkerStatus(IDLE_WORKER_STATUS);
     setRetrievalNotice(null);
     setGraphNotice(null);
@@ -488,6 +497,23 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         break;
       }
 
+      case 'generation_failed': {
+        if (meta.kind !== 'chat') break;
+        const request = activeRequestRef.current;
+        if (!request || request.clientRequestId !== meta.clientRequestId) break;
+        setMessages(previous => {
+          const lastAssistant = previous.findLastIndex(message => message.role === 'assistant'
+            && message.clientRequestId === meta.clientRequestId);
+          if (lastAssistant < 0) return [...previous, {
+            id: makeId(), role: 'assistant', content: 'Generation failed. Please retry.',
+            clientRequestId: meta.clientRequestId, retryRequest: request.request, retryClientRequestId: meta.clientRequestId,
+          }];
+          return previous.map((message, index) => index === lastAssistant
+            ? { ...message, retryRequest: request.request, retryClientRequestId: meta.clientRequestId } : message);
+        });
+        break;
+      }
+
       case 'command_rejected':
         if (meta.kind !== 'chat') break;
         if (event.command_type === 'accept_preview') {
@@ -504,7 +530,18 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         }]);
         break;
 
-      case 'steer_applied':
+      case 'steer_applied': {
+        if (meta.kind !== 'chat' || activeChatTerminalRef.current === meta.clientRequestId) break;
+        const active = activeRequestRef.current;
+        if (!active || active.clientRequestId !== meta.clientRequestId) break;
+        const updates = active.request.steeringUpdates ?? [];
+        if (event.steer_count !== updates.length + 1 || event.steer_count > 3 || !event.content) break;
+        activeRequestRef.current = {
+          ...active,
+          request: { ...active.request, steeringUpdates: [...updates, event.content] },
+        };
+        break;
+      }
       case 'retrieval_evidence':
       case 'research_evidence':
         break;
@@ -521,8 +558,11 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           const terminalAlreadyRecorded = activeChatTerminalRef.current === meta.clientRequestId;
           const emptyResponse = !turnOutputRef.current.text && !turnOutputRef.current.graph;
           if (emptyResponse && !terminalAlreadyRecorded) {
-            setMessages(prev => [...prev, {
+            setMessages(prev => [...clearRetryForAttempt(prev, meta.clientRequestId), {
               id: makeId(), role: 'assistant', content: EMPTY_RESPONSE_MESSAGE, isStreaming: false,
+              retryRequest: activeRequestRef.current?.clientRequestId === meta.clientRequestId
+                ? activeRequestRef.current.request : undefined,
+              retryClientRequestId: meta.clientRequestId,
             }]);
           }
           if (streamingIdRef.current) {
@@ -663,9 +703,12 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
             ));
             streamingIdRef.current = null;
           }
-          setMessages(prev => [...prev, {
+          setMessages(prev => [...clearRetryForAttempt(prev, meta.clientRequestId), {
             id: makeId(), role: 'assistant',
             content: `Error: ${event.content}`, isStreaming: false,
+            retryRequest: activeRequestRef.current?.clientRequestId === meta.clientRequestId
+              ? activeRequestRef.current.request : undefined,
+            retryClientRequestId: meta.clientRequestId,
           }]);
           setWorkerStatus(IDLE_WORKER_STATUS);
           setRetrievalNotice(null);
@@ -707,6 +750,8 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
   const sendMessage = useCallback((
     content: string,
     opts?: SendOptions,
+    retryClientRequestId?: string,
+    replayUserId?: string,
   ): boolean => {
     const targetThreadId = activeThreadIdRef.current;
     const session = authSessionRef.current;
@@ -735,16 +780,19 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         return true;
       }
     }
-    const userId = makeId();
+    const userId = replayUserId ?? makeId();
+    const clientRequestId = retryClientRequestId ?? makeId();
+    if (replayUserId) setMessages(prev => clearRetryForAttempt(prev, clientRequestId));
     turnOutputRef.current = {
       text: false, graph: false, initialGraphKey: graphStructureKey(durableGraphDataRef.current),
     };
     setPaintGraceExpiredTurnId(null);
     setAnswerTurn({ userId, diagram: opts?.graphMode !== 'off' });
-    setMessages(prev => [...prev, {
+    if (!replayUserId) setMessages(prev => [...prev, {
       id: userId,
       role: 'user',
       content: opts?.displayContent ?? content,
+      clientRequestId,
       isStreaming: false,
     }]);
     setRetrievalNotice(null);
@@ -757,9 +805,22 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     setIsFinishingDiagram(false);
     setStreamStatus('generating');
     setWorkerStatus(OPTIMISTIC_CHAT_STATUS);
-    const clientRequestId = makeId();
     activeChatStreamIdRef.current = clientRequestId;
     activeChatTerminalRef.current = null;
+    activeRequestRef.current = {
+      clientRequestId,
+      request: {
+        content,
+        complexity: opts?.complexity ?? 'auto',
+        graphMode: opts?.graphMode ?? 'on',
+        diagramRequested: opts?.diagramRequested ?? false,
+        researchEnabled: opts?.researchEnabled ?? false,
+        graphAction: opts?.graphAction ?? null,
+        expectedGraphVersion: opts?.expectedGraphVersion ?? null,
+        retrySourceRequestId: opts?.retrySourceRequestId,
+        steeringUpdates: opts?.steeringUpdates ? [...opts.steeringUpdates] : undefined,
+      },
+    };
     const analytics = {
       threadId: targetThreadId,
       clientRequestId,
@@ -806,11 +867,14 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           ));
           streamingIdRef.current = null;
         }
-        setMessages(prev => [...prev, {
+        setMessages(prev => [...clearRetryForAttempt(prev, clientRequestId), {
           id: makeId(),
           role: 'assistant',
           content: 'Connection closed before the response finished. Please try again.',
           isStreaming: false,
+          retryRequest: activeRequestRef.current?.clientRequestId === clientRequestId
+            ? activeRequestRef.current.request : undefined,
+          retryClientRequestId: clientRequestId,
         }]);
         setWorkerStatus(IDLE_WORKER_STATUS);
         setRetrievalNotice(null);
@@ -852,12 +916,15 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
         ));
         streamingIdRef.current = null;
       }
-      setMessages(prev => [...prev, {
+      setMessages(prev => [...clearRetryForAttempt(prev, clientRequestId), {
         id: makeId(), role: 'assistant',
         content: err instanceof ChatTurnTimeoutError
-          ? 'The connection timed out. Reopen this chat before retrying; your diagram may already be saved.'
-          : 'Connection lost. Please try again.',
+          ? 'The connection timed out. Retry will first check whether your response was saved.'
+          : 'Connection lost. Retry will first check whether your response was saved.',
         isStreaming: false,
+        retryRequest: activeRequestRef.current?.clientRequestId === clientRequestId
+          ? activeRequestRef.current.request : undefined,
+        retryClientRequestId: clientRequestId,
       }]);
       setWorkerStatus(IDLE_WORKER_STATUS);
       setRetrievalNotice(null);
@@ -896,6 +963,55 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     });
     return true;
   }, [publishGraph]);
+
+  const retryMessage = useCallback(async (message: Message, expectedGraphVersion: string | null): Promise<boolean> => {
+    if (!message.retryRequest || activeChatStreamIdRef.current || graphEditInFlightRef.current) return false;
+    const session = authSessionRef.current;
+    const threadId = activeThreadIdRef.current;
+    if (!session || !threadId) return false;
+    let request = message.retryRequest;
+    let replayRequestId = message.retryClientRequestId;
+    let retrySourceRequestId = replayRequestId ? message.retryRequest.retrySourceRequestId
+      : message.clientRequestId ?? message.retryRequest.retrySourceRequestId;
+    if (replayRequestId) {
+      const detail = await fetchThread(session, threadId);
+      if (!mountedRef.current || authSessionRef.current?.user.id !== session.user.id
+        || activeThreadIdRef.current !== threadId) return false;
+      const committed = detail.messages.find(item => item.role === 'assistant'
+        && item.client_request_id === replayRequestId);
+      if (committed) {
+        hydrateThread({ threadId, messages: mapThreadMessages(detail.messages), graphData: detail.thread.graph_data });
+        if (!committed.retry_request) return true;
+        request = mapThreadMessages([committed])[0].retryRequest!;
+        replayRequestId = undefined;
+        retrySourceRequestId = committed.client_request_id ?? undefined;
+      }
+    }
+    const messageIndex = messages.findIndex(item => item.id === message.id);
+    const replayUserId = replayRequestId && messageIndex >= 0
+      ? (messages.find(item => item.role === 'user' && item.clientRequestId === replayRequestId)
+        ?? messages.slice(0, messageIndex).findLast(item => item.role === 'user'))?.id
+      : undefined;
+    const steeringUpdates = replayRequestId ? request.steeringUpdates : undefined;
+    const displayContent = request.content + (steeringUpdates ?? [])
+      .map((update, index) => `\n\nUser steering update ${index + 1}:\n${update}`).join('');
+    if (replayUserId && steeringUpdates?.length) {
+      setMessages(previous => previous.map(item => item.id === replayUserId
+        ? { ...item, content: displayContent } : item));
+    }
+    return sendMessage(request.content, {
+      complexity: request.complexity,
+      graphMode: request.graphMode,
+      diagramRequested: request.diagramRequested,
+      researchEnabled: request.researchEnabled,
+      graphAction: request.graphAction ?? undefined,
+      expectedGraphVersion: replayRequestId ? request.expectedGraphVersion
+        : request.graphAction === 'extend' ? expectedGraphVersion : request.expectedGraphVersion,
+      retrySourceRequestId,
+      steeringUpdates,
+      displayContent,
+    }, replayRequestId, replayUserId);
+  }, [hydrateThread, messages, sendMessage]);
 
   const startThreadAndSend = useCallback((thread: ThreadDetail, content: string, opts?: SendOptions): boolean => {
     if (!mountedRef.current || !authSession || authSessionRef.current?.user.id !== authSession.user.id
@@ -1099,6 +1215,7 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
     adoptRestoredGraph,
     startThreadAndSend,
     sendMessage,
+    retryMessage,
     saveGraphEdit,
     requestSearchTool,
     stopGeneration,

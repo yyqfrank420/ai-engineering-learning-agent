@@ -1,11 +1,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # File: backend/tests/test_resource_limits.py
 # Purpose: Tests for all resource-limit behaviours added in the sidebar + limits
-#          feature: thread eviction, message cap, graph size cap, and
-#          auto-condense history.
+#          feature: thread eviction, message cap, and graph size cap.
 # Language: Python / pytest
 # Connects to: storage/thread_store.py, storage/message_store.py,
-#              agent/context_manager.py, adapters/database_adapter.py
+#              adapters/database_adapter.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 import json
@@ -13,13 +12,18 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from threading import Barrier
-from unittest.mock import AsyncMock, patch
 
 import pytest
 from adapters.database_adapter import fetchone, init_db
 from storage import message_store, runtime_state_store, thread_store
 from storage.errors import ThreadMessageLimitExceeded
 from storage.profile_store import upsert_profile
+
+
+def test_default_chat_message_limit_is_75():
+    from config import Settings
+
+    assert Settings().max_messages_per_thread == 75
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -418,82 +422,3 @@ def test_save_graph_updates_layout_for_matching_version(temp_data_dir):
         **current_graph,
         "view_state": view_state,
     }
-
-
-# ── Auto-condense ─────────────────────────────────────────────────────────────
-
-@pytest.mark.asyncio
-async def test_condense_returns_unchanged_when_below_threshold():
-    """History below the char threshold should pass through untouched."""
-    from agent.context_manager import maybe_condense_history
-
-    history = [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    result = await maybe_condense_history(history, threshold_chars=10000, keep_recent=4)
-    assert result == history
-
-
-@pytest.mark.asyncio
-async def test_condense_summarises_old_turns_when_over_threshold():
-    """
-    When history exceeds threshold, old turns should be replaced with a
-    single summary message, and the most recent turns kept verbatim.
-    """
-    from agent.context_manager import maybe_condense_history
-
-    history = [
-        {"role": "user", "content": "A" * 5000},
-        {"role": "assistant", "content": "B" * 5000},
-        {"role": "user", "content": "C" * 5000},   # recent — kept
-        {"role": "assistant", "content": "D"},       # recent — kept
-    ]
-
-    mock_summary = "Summary of old turns."
-    summary_call = AsyncMock(return_value=mock_summary)
-    with patch(
-        "agent.context_manager._call_summary",
-        new=summary_call,
-    ):
-        result = await maybe_condense_history(
-            history,
-            threshold_chars=100,   # threshold easily exceeded
-            keep_recent=2,
-            telemetry={"operation": "context_condense", "thread_id": "thread-1"},
-        )
-
-    # Should be: [summary_msg, recent_turn_3, recent_turn_4]
-    assert len(result) == 3
-    assert "Summary of old turns." in result[0]["content"]
-    assert result[1] == history[2]
-    assert result[2] == history[3]
-    assert summary_call.await_args.kwargs["telemetry"]["thread_id"] == "thread-1"
-
-
-@pytest.mark.asyncio
-async def test_condense_falls_back_on_model_failure():
-    """
-    If the summary call raises an exception, the original history should be
-    returned unchanged — never blocking the main response.
-    """
-    from agent.context_manager import maybe_condense_history
-
-    history = [
-        {"role": "user", "content": "A" * 5000},
-        {"role": "assistant", "content": "B" * 5000},
-        {"role": "user", "content": "recent question"},
-    ]
-
-    with patch(
-        "agent.context_manager._call_summary",
-        new=AsyncMock(side_effect=Exception("Model unavailable")),
-    ):
-        result = await maybe_condense_history(
-            history,
-            threshold_chars=100,
-            keep_recent=1,
-        )
-
-    # Should fall back to original
-    assert result == history
