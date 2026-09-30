@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import inspect
 import hashlib
 import json
@@ -259,6 +260,8 @@ def test_shared_backend_dependency_tests_execute_once_across_domains():
     ("path", "required_groups"),
     [
         ("backend/graph/schema.py", {"agent-rag-llm", "eval-quality"}),
+        ("backend/agent/graph_review_budget.py", {"api-integration", "agent-rag-llm"}),
+        ("backend/agent/graph_review_control.py", {"api-integration", "agent-rag-llm"}),
         ("backend/storage/thread_store.py", {"api-integration", "agent-rag-llm", "storage-security"}),
         ("backend/rag/faiss_artifact.py", {"agent-rag-llm", "storage-security"}),
     ],
@@ -268,6 +271,35 @@ def test_cross_domain_dependencies_select_their_consumers(path, required_groups)
 
     assert required_groups <= {group["name"] for group in selected}
     assert "backend-coverage" not in {group["name"] for group in selected}
+
+
+def test_direct_api_dependencies_select_integration_tests():
+    dependencies = set()
+    for source in (ROOT / "backend/api").glob("*.py"):
+        for node in ast.walk(ast.parse(source.read_text(encoding="utf-8"))):
+            if not isinstance(node, ast.ImportFrom) or not node.module or node.level:
+                continue
+            parts = node.module.split(".")
+            if parts[0] not in {"agent", "rag", "graph", "storage", "adapters"}:
+                continue
+            module = ROOT.joinpath("backend", *parts).with_suffix(".py")
+            if module.is_file():
+                dependencies.add(module.relative_to(ROOT).as_posix())
+            else:
+                for alias in node.names:
+                    child = ROOT.joinpath("backend", *parts, alias.name).with_suffix(".py")
+                    if child.is_file():
+                        dependencies.add(child.relative_to(ROOT).as_posix())
+
+    assert dependencies
+    manifest = load_manifest()
+    uncovered = [
+        path for path in sorted(dependencies)
+        if not {"api-integration", "backend-coverage"}.intersection(
+            group["name"] for group in select_offline_groups([path], manifest)
+        )
+    ]
+    assert uncovered == []
 
 
 def test_ci_workflow_selects_groups_from_the_checked_out_event_range():
