@@ -37,6 +37,8 @@ jobs:
       matrix: ${{ fromJson(needs.manifest.outputs.matrix) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         if: matrix.runtime == 'python' || matrix.runtime == 'infra'
@@ -71,7 +73,7 @@ jobs:
           terraform_version: 1.11.4
 
       - name: Run canonical offline group
-        run: ./scripts/ci offline --group '${{ matrix.group }}'
+        run: ./scripts/ci offline --group '${{ matrix.group }}' --event-file "$GITHUB_EVENT_PATH"
 
   ci-required:
     name: CI required

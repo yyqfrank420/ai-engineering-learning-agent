@@ -96,20 +96,24 @@ Open [localhost:5173](http://localhost:5173) and sign in. The app checks backend
 
 ## Development
 
-Read the [engineering principles](docs/engineering-principles.md) before contributing. Run the shared offline verification entry point from the repository root:
+Read the [engineering principles](docs/engineering-principles.md) before contributing. Run tests for affected behavior and dependencies. The default command selects changed files against the local `origin/main` merge base, including staged, unstaged, and untracked files:
 
 ```bash
 ./scripts/ci offline
 ```
 
-For a focused check, select a group from [`ci/quality.json`](ci/quality.json):
+Fetch `origin/main` before verification when the local baseline is stale. Use `--base REF` to select another baseline, or `--base REF --head REF` to check a committed range without working-tree changes. A missing baseline fails rather than silently running everything.
+
+Backend test-only edits run the changed test files. Backend source edits run the affected domains and known dependent domains. Frontend edits use Vitest's dependency graph; styling changes run lint and build checks. Shared frontend configuration and deleted source files require full frontend coverage because the dependency graph cannot select deleted modules.
+
+Use `--group` to deliberately run a whole group, or `--full` when broader impact justifies all groups:
 
 ```bash
-./scripts/ci offline --group frontend
 ./scripts/ci offline --group pipeline-policy
+./scripts/ci offline --full
 ```
 
-The full suite also covers ingestion, security, migrations, infrastructure, and the backend container, and requires the corresponding tools such as Terraform and Docker. GitHub CI uses the same manifest. `scripts/prepush_check.sh` delegates to the offline command.
+`scripts/prepush_check.sh` uses the same affected-file default and forwards these options. Full verification includes ingestion, security, migrations, infrastructure, and the backend container and requires tools such as Terraform and Docker. Unknown owners and shared backend settings still require broader checks. Record the reason for broader verification, and stop once relevant checks pass.
 
 Ingestion checks use a fake embedder and the tracked index artifacts by default. Set `AI_ENGINEERING_PDF_PATH` to check source-PDF parsing; opt into real local-model tests with `RUN_INGESTION_MODEL_TESTS=1`.
 

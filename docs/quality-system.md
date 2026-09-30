@@ -3,25 +3,52 @@
 ## One local and GitHub entry point
 
 `ci/quality.json` owns offline groups, commands, tracked-test assignment,
-change-impact rules, live suites, and PR budgets. `scripts/ci` is the only runner:
+change-impact rules, live suites, and PR budgets. Follow the
+[test-scope policy](engineering-principles.md#test-scope):
 
 ```bash
 ./scripts/ci offline
+./scripts/ci offline --base origin/main --head HEAD
 ./scripts/ci offline --group api-integration
+./scripts/ci offline --full
 ./scripts/ci browser --suite pr --target http://localhost:5173
 ./scripts/ci live --suite pr --target https://candidate.example \
   --input artifacts/live-eval/browser-results.json
 ```
 
-`scripts/prepush_check.sh` only delegates to `./scripts/ci offline`. The manifest
-validation test discovers every `backend/tests/test_*.py` file and fails when a
-test is omitted or a stale path remains. Frontend and ingestion commands use
-glob-covering test runners, so newly tracked tests are automatically included.
-Backend changes also run the full configured source set under Coverage.py with a
-90% line floor. Frontend coverage includes every production TypeScript and TSX
-module, including modules that no test imports, and enforces 90% statements,
-lines, and functions plus 75% branches. These suites use dummy credentials and
-fake provider clients; live model evaluation remains a separate protected gate.
+The default offline command compares the branch to local `origin/main` and
+includes staged, unstaged, and untracked files. Fetch the baseline when stale.
+`--base` selects another baseline; adding `--head` restricts verification to a
+committed range. Missing Git refs fail explicitly. `scripts/prepush_check.sh`
+delegates to this default and forwards options. An empty local change set runs no
+checks. CI keeps manifest validation even for an empty event range. Policy tests run only\nwhen their contracts change.
+
+CI selects and executes checks using the same event scope. Backend source changes
+run their owning domains and mapped consumers. Backend test-only edits, optionally
+with documentation, run only changed test files. Mixed source changes retain the
+affected domain suites. Unchanged dependency audit inputs skip their audits.
+Shared backend settings and unknown owners require full verification; policy and
+runner edits use the relevant selection and workflow contract tests.
+
+Frontend source changes use Vitest's transitive dependency graph. Changed test
+files join the same invocation. CSS, public assets, and HTML use lint and build
+checks. Shared frontend configuration, package changes, or deleted source/test
+modules require full frontend coverage. Deleted modules require this fallback
+because Vitest excludes them from dependency discovery. Package changes and
+explicit full frontend checks also run the dependency audit.
+
+Explicit `--group` runs a whole group; `--full` runs all groups. Full backend
+coverage replaces duplicate domain test executions. Repeated backend test files
+across domain groups execute once, while non-test checks such as migration and
+Terraform validation remain selected. Record the justification for broader
+verification. Reuse passing evidence while its relevant inputs remain unchanged.
+
+The manifest validator discovers every `backend/tests/test_*.py` file and fails
+when a test is omitted or a stale path remains. Full backend coverage enforces a
+90% line floor. Full frontend coverage includes every production TypeScript and
+TSX module, including modules no test imports, and enforces 90% statements, lines,
+and functions plus 75% branches. Offline suites use dummy credentials and fake
+provider clients; live model evaluation remains a separate protected gate.
 
 The stable branch checks are `CI required` and `Live eval required`. Both workflows
 listen to `pull_request`, trusted pushes, and `merge_group`. AI-impacting changes run
@@ -49,9 +76,9 @@ presentation owners whose copy or icons do not affect generation. These changes
 receive a successful no-live-calls result and require meaningful offline or UI
 checks for the affected behavior. Mixed changes still require paid evaluation when
 any changed path affects generation. Unknown paths remain fail-safe AI-impacting.
-CI policy changes retain their existing offline checks, including the full matrix
-for changes to the manifest, runner, or CI workflow. Relevant live harness checks
-can be run deliberately; a policy-only edit does not require a paid generation run.
+CI policy changes run affected selection, runner, and workflow contract checks.
+A broader matrix requires a concrete dependency or failure justification.
+A policy-only edit does not require a paid generation run.
 
 Classification uses paths and cannot determine the meaning of individual edits
 within a shared runtime file. An audited presentation-only modification or deletion

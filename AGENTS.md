@@ -19,8 +19,10 @@ In particular:
 - Version and evaluate model/prompt changes, record their release identity, and retain
   a rollback path.
 - Use expand-then-contract migrations with reviewed operational and recovery plans.
-- Run focused tests and applicable static checks before handoff; report pre-existing
-  failures separately.
+- Run tests only for affected behavior and dependencies, with applicable static
+  checks. Explain any broader run through concrete impact or an unresolved failure.
+  Stop after relevant checks pass; rerun only after further changes or new evidence.
+  Report pre-existing failures separately.
 
 Repository verification entry points are documented in the root README. Do not run live
 model evaluations or deployment commands unless the task explicitly calls for them.
