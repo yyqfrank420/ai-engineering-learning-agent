@@ -874,7 +874,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v38"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -3711,6 +3711,8 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
         "For a requested applied-system design, show the internal services"
         in instructions
     )
+    assert "concrete lifecycle responsibilities, application categories, or relevant human decisions" in instructions
+    assert "Distinguish conceptual techniques from runtime services" in instructions
     complement = "choose a complementary responsibility for each addition that is not already owned"
     assert (complement in instructions) == has_base
     if has_base:
@@ -3917,3 +3919,100 @@ async def test_connection_recovery_preserves_cited_tool_paths_and_root_reachabil
         "preserve reachability from the root to every primary-flow component" in prompt
     )
     assert "provide replacement directed paths" in prompt
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "collision",
+    ["retained_addition", "edited_retained", "edited_addition", "edited_edited"],
+)
+@pytest.mark.parametrize("unicode_label", [False, True])
+async def test_component_semantic_correction_rejects_assembled_identity_collisions(
+    monkeypatch, collision, unicode_label
+):
+    case = _retained_correction("applied_domain")
+    if unicode_label:
+        case["original_candidate"]["components"][0]["label"] = "Straße Planner"
+    original = json.loads(json.dumps(case["original_candidate"]))
+    delta = _marketing_delta(case)
+    response = _delta_response(delta)
+    retained = original["components"][0]
+    normalized_variant = " \t" + " \n ".join(retained["label"].upper().split()) + "  "
+    if collision == "retained_addition":
+        response["additions"] = [{**retained, "label": normalized_variant}]
+        duplicate_index = 17
+    elif collision == "edited_retained":
+        response["updates"]["slot_7"] = {**retained, "label": normalized_variant}
+        duplicate_index = 7
+    else:
+        response["updates"]["slot_7"] = {
+            **retained,
+            "label": "Straße lifecycle owner"
+            if unicode_label
+            else "New lifecycle owner",
+        }
+        duplicate = {
+            **retained,
+            "label": " STRASSE \t LIFECYCLE OWNER "
+            if unicode_label
+            else " NEW \t lifecycle  OWNER ",
+        }
+        if collision == "edited_addition":
+            response["additions"] = [duplicate]
+            duplicate_index = 17
+        else:
+            response["updates"]["slot_15"] = duplicate
+            duplicate_index = 15
+    calls = []
+
+    async def fake_stream(**arguments):
+        calls.append(arguments)
+        return _response({"candidate": response, "clarification_questions": []})
+
+    monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
+    write_set = generation.create_write_set(component_limit=20, edge_limit=60)
+    arguments = dict(
+        request=case["request"],
+        resolved_maturity="production",
+        architecture_context=_architecture_context(),
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(write_set),
+        structural_findings=_semantic_findings(case),
+        rejected_candidate=original,
+    )
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        await generation.generate_component_candidate(**arguments)
+    assert caught.value.code == "component_wire_invalid"
+    assert caught.value.diagnostic_reason == "duplicate_component"
+    assert caught.value.diagnostic_path == f"components.{duplicate_index}"
+    assert len(calls) == 1
+    assert case["original_candidate"] == original
+    prompt = calls[0]["messages"][0]["content"]
+    assert "unique across retained rows, authorized updates, and additions" in prompt
+    assert (
+        "splitting whitespace, joining with a single space, and applying Unicode case-folding"
+        in prompt
+    )
+    assert "Do not re-add retained components" in prompt
+    assert (
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
+    )
+
+    # A fresh bounded response must fix the collision; invalid rows are never dropped.
+    if response["additions"]:
+        response["additions"][0]["label"] = "Distinct added owner"
+    else:
+        slot = "slot_15" if collision == "edited_edited" else "slot_7"
+        response["updates"][slot]["label"] = "Distinct edited owner"
+    result = await generation.generate_component_candidate(**arguments)
+    assert len(calls) == 2
+    assert len(result["wire"]["components"]) == 17 + len(response["additions"])
+    for index, component in enumerate(original["components"]):
+        assert result["wire"]["components"][index] == (
+            response["updates"].get(f"slot_{index}") or component
+        )
+    assert result["wire"]["components"][17:] == response["additions"]
+    assert case["original_candidate"] == original

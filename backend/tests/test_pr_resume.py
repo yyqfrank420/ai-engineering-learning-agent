@@ -122,7 +122,7 @@ def test_artifact_authentication(mutation):
 
 def provenance():
     repo, old, base, current = "owner/repo", "a" * 40, "b" * 40, "c" * 40
-    run = {"id": 1, "event": "pull_request", "status": "completed", "conclusion": "failure",
+    run = {"id": 1, "run_attempt": 1, "event": "pull_request", "status": "completed", "conclusion": "failure",
            "path": resume.WORKFLOW, "repository": {"full_name": repo}, "head_repository": {"full_name": repo}, "head_sha": old,
            "pull_requests": [{"number": 61, "head": {"sha": old}, "base": {"sha": base}}]}
     pr = {"number": 61, "state": "open", "head": {"sha": current, "repo": {"full_name": repo}}, "base": {"sha": base, "repo": {"full_name": repo}}}
@@ -213,9 +213,10 @@ def test_restrictive_judge_budget_defaults_and_remainder():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("exhausted", [False, True])
-async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls(tmp_path, monkeypatch, exhausted):
-    browser, semantic, corpus, ids = evidence()
+@pytest.mark.parametrize("source_kind", ["infrastructure", "manual_review"])
+@pytest.mark.parametrize("outcome", ["pass", "exhausted", "manual_review", "attempt_tamper"])
+async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls(tmp_path, monkeypatch, source_kind, outcome):
+    browser, semantic, corpus, ids = manual_evidence() if source_kind == "manual_review" else evidence()
     run, pr, deployment, kwargs = provenance()
     identity = resume.validate_run_identity(run, pr, deployment, **kwargs)
     groups = resume.partition(browser, semantic, corpus, ids)
@@ -227,6 +228,8 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     plan = {"source": identity, "repository": "owner/repo", "artifact": artifact,
             "reviewed_diff_sha256": "0" * 64, "current": current, "partition": groups, "case_ids": ids,
             "old_backend_target": "https://old", "source_file_sha256": {k: resume.sha256(v) for k, v in raw.items()}}
+    if outcome == "attempt_tamper":
+        plan["source"] = {**identity, "run_attempt": 2}
     resume.write_json(tmp_path / "plan.json", plan)
     (tmp_path / "source.zip").write_bytes(archive)
     fresh = copy.deepcopy(browser)
@@ -243,7 +246,13 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     proof_path = tmp_path / "deployment.json"
     resume.write_json(proof_path, {**current, "run_attempt": "1", "candidate_url": "https://new",
                                   "image_digest": "sha256:" + "f" * 64, "recorded_at_epoch": 1767225600})
-    monkeypatch.setattr(resume, "authenticated_inputs", lambda *a: (run, pr, artifact))
+    def authenticate(run_id, repo, attempt):
+        assert run_id == "1" and repo == "owner/repo"
+        if attempt != run["run_attempt"]:
+            raise ValueError("source run attempt mismatch")
+        return run, pr, artifact
+
+    monkeypatch.setattr(resume, "authenticated_inputs", authenticate)
     monkeypatch.setattr(resume, "verify_checkout", lambda *a: identity)
     monkeypatch.setattr(resume, "git", lambda *a: kwargs["current_tree"] if a[-1] == "HEAD^{tree}" else kwargs["head"])
     monkeypatch.setattr(resume, "api", lambda *a: pr)
@@ -259,11 +268,12 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
         evaluations = []
         for case_id in args.case:
             judgment = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
-            judgment["dimensions"] = [{"dimension": name, "grade": "pass", "critical": corpus.rubrics[name].critical,
+            judgment["dimensions"] = [{"dimension": name, "grade": "borderline" if args.capture_replay and outcome == "manual_review" else "pass", "critical": corpus.rubrics[name].critical,
                                       "evidence": ["[turn-1-answer-1] source"], "rationale": "supported"}
                                      for name in corpus.by_id[case_id].rubric_dimensions]
-            evaluations.append({"id": case_id, "decision": "pass", "judgments": [judgment], "deterministic_failures": []})
-        return {"status": "pass", "budget": {"judge_calls": 16 if exhausted else len(args.case)}, "evaluations": evaluations,
+            decision = "manual_review" if args.capture_replay and outcome == "manual_review" else "pass"
+            evaluations.append({"id": case_id, "decision": decision, "judgments": [judgment], "deterministic_failures": []})
+        return {"status": "fail" if args.capture_replay and outcome == "manual_review" else "pass", "budget": {"judge_calls": 16 if outcome == "exhausted" else len(args.case)}, "evaluations": evaluations,
                 "estimated_cost": {"application_usd": 0 if args.capture_replay else 0.1},
                 "cost_accounting": {}}, 0
 
@@ -271,18 +281,28 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     monkeypatch.setattr(resume.live_runner, "evaluate", evaluate)
     monkeypatch.setattr(resume.live_runner, "_write_outputs", resume.write_json)
     args = argparse.Namespace(input=str(fresh_path), deployment=str(proof_path), target="https://new", output_dir=str(tmp_path))
-    if exhausted:
+    if outcome == "attempt_tamper":
+        with pytest.raises(ValueError, match="attempt mismatch"):
+            await resume.judge(args)
+        assert calls == []
+        assert not (tmp_path / "judge-reservation.json").exists()
+        return
+    if outcome == "exhausted":
         with pytest.raises(ValueError, match="budget exhausted"):
             await resume.judge(args)
         assert len(calls) == 1
         assert (tmp_path / "fresh-live-results.json").exists()
         assert not (tmp_path / "combined-evidence.json").exists()
         return
-    assert await resume.judge(args) == 0
+    assert await resume.judge(args) == (1 if outcome == "manual_review" else 0)
     assert [c.judge_call_limit for c in calls] == [16, 15]
     assert [c.capture_replay for c in calls] == [False, True]
     combined = json.loads((tmp_path / "combined-evidence.json").read_text())
-    assert combined["new_judge_calls"] == 6
+    assert combined["new_judge_calls"] == (3 if source_kind == "manual_review" else 6)
+    assert combined["status"] == ("fail" if outcome == "manual_review" else "pass")
+    assert calls[0].case == groups["fresh"] and calls[1].case == groups["replay"]
+    assert all(call.manual_review_policy == "blocking" for call in calls)
+    assert combined["new_cost_accounting"]["replay"]["application_usd"] == 0
     assert len(combined["cases"]) == 8
     assert next(c for c in combined["cases"] if c["id"] == ids[0])["application_source"] == identity
     with pytest.raises(ValueError, match="already attempted"):
@@ -353,3 +373,175 @@ async def test_total_timeout_preserves_partial_reports(tmp_path, monkeypatch):
     assert await resume.bounded_judge(argparse.Namespace(output_dir=str(tmp_path))) == 1
     assert json.loads((tmp_path / "fresh-live-results.json").read_text())["status"] == "pass"
     assert json.loads((tmp_path / "resume-failure.json").read_text())["timeout_seconds"] == 1200
+
+
+def manual_evidence():
+    browser, semantic, corpus, ids = evidence()
+    template = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
+    for index, row in enumerate(semantic["evaluations"]):
+        if index == 3:
+            continue
+        judgment = copy.deepcopy(template)
+        judgment["dimensions"] = [
+            {"dimension": name, "grade": "borderline" if index in (2, 4) else "pass",
+             "critical": corpus.rubrics[name].critical,
+             "evidence": ["[turn-1-answer-1] source"], "rationale": "supported"}
+            for name in corpus.by_id[row["id"]].rubric_dimensions
+        ]
+        row.update(decision="manual_review" if index in (2, 4) else "pass", judgments=[judgment])
+    return browser, semantic, corpus, ids
+
+
+def test_validated_manual_review_is_replayed_and_never_carried():
+    browser, semantic, corpus, ids = manual_evidence()
+    assert resume.partition(browser, semantic, corpus, ids) == {
+        "fresh": [ids[3]], "replay": [ids[2], ids[4]],
+        "carried": [ids[0], ids[1], *ids[5:]],
+    }
+
+
+@pytest.mark.parametrize("mutation", ["citation", "decision", "missing", "partial"])
+def test_manual_review_requires_valid_original_judgments(mutation):
+    browser, semantic, corpus, ids = manual_evidence()
+    row = semantic["evaluations"][2]
+    if mutation == "citation":
+        row["judgments"][0]["dimensions"][0]["evidence"] = ["invented"]
+    elif mutation == "decision":
+        for dimension in row["judgments"][0]["dimensions"]:
+            dimension["grade"] = "pass"
+    elif mutation == "missing":
+        row["judgments"] = []
+    else:
+        browser["results"][2]["execution_state"] = "running"
+    with pytest.raises(ValueError):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+def attempt_metadata():
+    run, pr, _, _ = provenance()
+    artifact = {"id": 9, "name": resume.ARTIFACT, "expired": False,
+                "workflow_run": {"id": run["id"], "head_sha": run["head_sha"]},
+                "created_at": "2026-09-30T15:28:57Z"}
+    job = {"id": 10, "name": "Protected staging browser and LLM evaluation",
+           "run_id": run["id"], "run_attempt": 1, "head_sha": run["head_sha"],
+           "status": "completed", "conclusion": "failure",
+           "started_at": "2026-09-30T15:05:41Z", "completed_at": "2026-09-30T15:29:10Z",
+           "steps": [{"name": "Upload evaluation evidence", "status": "completed", "conclusion": "success",
+                      "started_at": "2026-09-30T15:28:56Z", "completed_at": "2026-09-30T15:28:57Z"}]}
+    return run, pr, artifact, {"total_count": 1, "jobs": [job]}
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_authentication_pins_exact_attempt(monkeypatch, explicit):
+    run, pr, artifact, jobs = attempt_metadata()
+    paths = []
+
+    def api(path):
+        paths.append(path)
+        if path.endswith("/attempts/1/jobs?per_page=100"):
+            return jobs
+        if path.endswith("/artifacts?per_page=100"):
+            return {"total_count": 1, "artifacts": [artifact]}
+        if path.endswith("/pulls/61"):
+            return pr
+        if path.endswith("/attempts/1"):
+            return run
+        assert path.endswith("/runs/1")
+        return {**run, "run_attempt": 1}
+
+    monkeypatch.setattr(resume, "api", api)
+    assert resume.authenticated_inputs("1", "owner/repo", 1 if explicit else None) == (run, pr, artifact)
+    assert ("repos/owner/repo/actions/runs/1" in paths) is (not explicit)
+    assert "repos/owner/repo/actions/runs/1/attempts/1" in paths
+
+
+def test_explicit_failed_attempt_survives_cancelled_latest_snapshot(monkeypatch):
+    run, pr, artifact, jobs = attempt_metadata()
+
+    def api(path):
+        if path.endswith("/attempts/1/jobs?per_page=100"):
+            return jobs
+        if path.endswith("/artifacts?per_page=100"):
+            return {"total_count": 1, "artifacts": [artifact]}
+        if path.endswith("/pulls/61"):
+            return pr
+        if path.endswith("/attempts/1"):
+            return run
+        return {**run, "run_attempt": 2, "conclusion": "cancelled"}
+
+    monkeypatch.setattr(resume, "api", api)
+    assert resume.authenticated_inputs("1", "owner/repo", 1)[0] == run
+    with pytest.raises(ValueError, match="selected source attempt is not failed"):
+        resume.authenticated_inputs("1", "owner/repo")
+
+
+@pytest.mark.parametrize("mutation", ["id", "attempt", "cancelled", "zero", "negative", "bool"])
+def test_selected_attempt_rejects_mismatch_or_invalid_number(monkeypatch, mutation):
+    run, _, _, _ = attempt_metadata()
+    attempt = 1
+    if mutation == "id":
+        run["id"] = 2
+    elif mutation == "attempt":
+        run["run_attempt"] = 2
+    elif mutation == "cancelled":
+        run["conclusion"] = "cancelled"
+    else:
+        attempt = {"zero": 0, "negative": -1, "bool": True}[mutation]
+    monkeypatch.setattr(resume, "api", lambda path: run)
+    with pytest.raises(ValueError):
+        resume.authenticated_inputs("1", "owner/repo", attempt)
+
+
+@pytest.mark.parametrize("mutation", [None, "early", "late", "missing_time", "bad_time", "run", "head",
+                                     "job_attempt", "job_attempt_bool", "job_head", "duplicate_job", "truncated_jobs",
+                                     "missing_job", "duplicate_step", "failed_upload", "missing_steps"])
+def test_artifact_must_belong_to_exact_successful_upload(mutation):
+    run, _, artifact, jobs = attempt_metadata()
+    job = jobs["jobs"][0]
+    if mutation in ("early", "late"):
+        artifact["created_at"] = "2026-09-30T15:28:" + ("55Z" if mutation == "early" else "58Z")
+    elif mutation == "missing_time":
+        artifact.pop("created_at")
+    elif mutation == "bad_time":
+        artifact["created_at"] = "2026-09-30T15:28:99Z"
+    elif mutation == "run":
+        artifact["workflow_run"]["id"] = 2
+    elif mutation == "head":
+        artifact["workflow_run"]["head_sha"] = "9" * 40
+    elif mutation == "job_attempt":
+        job["run_attempt"] = 2
+    elif mutation == "job_attempt_bool":
+        job["run_attempt"] = True
+    elif mutation == "job_head":
+        job["head_sha"] = "9" * 40
+    elif mutation == "duplicate_job":
+        jobs["jobs"].append(copy.deepcopy(job))
+        jobs["total_count"] = 2
+    elif mutation == "truncated_jobs":
+        jobs["total_count"] = 101
+    elif mutation == "missing_job":
+        jobs.update(total_count=0, jobs=[])
+    elif mutation == "duplicate_step":
+        job["steps"].append(copy.deepcopy(job["steps"][0]))
+    elif mutation == "failed_upload":
+        job["steps"][0]["conclusion"] = "failure"
+    elif mutation == "missing_steps":
+        job.pop("steps")
+    if mutation:
+        with pytest.raises(ValueError):
+            resume.validate_artifact_attempt(artifact, jobs, run)
+    else:
+        resume.validate_artifact_attempt(artifact, jobs, run)
+        artifact["created_at"] = job["steps"][0]["started_at"]
+        resume.validate_artifact_attempt(artifact, jobs, run)
+
+
+@pytest.mark.parametrize("attempt", [None, 0, -1, True, "1"])
+def test_run_identity_rejects_invalid_attempt_metadata(attempt):
+    run, pr, deployment, kwargs = provenance()
+    if attempt is None:
+        run.pop("run_attempt")
+    else:
+        run["run_attempt"] = attempt
+    with pytest.raises(ValueError, match="invalid source run attempt"):
+        resume.validate_run_identity(run, pr, deployment, **kwargs)

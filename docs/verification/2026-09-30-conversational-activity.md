@@ -229,6 +229,108 @@ verified offline without another provider request.
 
 No cloud deployment or production migration was performed.
 
+## Education follow-up: local v40 result and later gate changes
+
+The requested follow-up scope is a small local fix and a fresh run of only
+`tell me about ai engineering in education`, with merge conditional on the gate
+passing. The prior cloud attempt `36731322270/1` at revision `935` failed education
+objective fidelity, then hit `duplicate_component` during the component correction
+at components15. Seven browser checks passed. Semantic review recorded five passes,
+two nonblocking manual cases and one failure. That attempt used 46/78 application
+and 7/16 judge calls. The second full-suite attempt was cancelled before any steps
+or calls at the user's request; its evidence remains preserved.
+
+The local fix uses source version v40. The checked generation-source SHA256 is
+`f0eca5a3537882a7c6bbb8793c6766a45dc93f6f153c99af9f8a6f8909fb8ee3`.
+All 256 generation tests passed, including strict Unicode/whitespace assembly
+collision coverage.
+
+One fresh local run of the exact education prompt produced
+`AI Engineering in Education: Topic Map`, a subject/lifecycle map with 11 nodes
+and 23 edges. Components and connections gates both approved it. All five provider
+calls succeeded: two kimi-k3 calls, two Sonnet5 gate calls and one Sonnet5-5 synthesis
+call. The retained quota moved from 26/34 to 31/34; caps and quota claims were not
+reset. The source before and after this request was identical.
+
+The actual rendered graph and answer were manually reviewed for breadth. Reload
+preserved the exact canonical graph, messages and activity. Node dragging, saved
+layout reload and restoration of the original layout passed. Browser and API
+errors were absent. `generated.desktop.png` and `edited.desktop.png` are retained
+in parent workspace `work/education-verification`.
+
+The original `report.json` retains `passed: false`. Its sole failure was the
+expected missing local PostHog key error: the launcher deliberately provided an
+empty key, and unchanged `llm_adapter.get_posthog_client` logs that condition and
+returns `None`. `parent-disposition.json` separately accepts the functional checks
+and records the observability limitation. The raw failure flag and log were not
+rewritten; this record does not claim successful local PostHog capture.
+
+Three gate files changed after the local request: `.github/workflows/live-eval.yml`,
+`backend/eval/pr_resume.py` and `backend/tests/test_pr_resume.py`. Generation and UI
+hashes remained unchanged. The local captures verify the v40 generation/UI stage,
+not equivalence to the whole tree after those CI edits.
+
+The new narrow `pr_resume` route allows validated manual cases only through replay,
+with a positive pinned attempt and authenticated upload-window artifact binding.
+Every new judgment must still pass under blocking review. The judge budget remains
+16, all combined criteria remain in force, and the fresh application selector is
+limited to education. Separate verification passed 462 offline tests and 14 replay
+tests, with 5 existing Bash skips, Ruff and diff checks.
+
+Owned local backend/frontend processes were stopped with SIGTERM and exited 143.
+Ports 8195 and 5195 closed; port 5198 was left untouched. During graceful backend
+shutdown after application completion, Python `resource_tracker` warned of one
+leaked semaphore. The terminal output is retained as an observed local shutdown
+limitation; its pre-existing status is unproven. No extra signals were sent.
+`cleanup.json` preserves the final 31/34 quota. The original report SHA256 remains
+`d8c6bff0f1203516190470be53728cb3b0f105b9ce0de3d50209d140cad01ba7`.
+
+The targeted protected gate is prospective: it has not run or passed at this
+record's boundary. No production deployment is claimed. Its result must be checked
+before treating the requested conditional merge as approved by verification.
+
+## Backend dependency audit follow-up
+
+The education follow-up canonical evidence retains its original failure in parent
+workspace `work/education-verification/canonical-result.json`, `canonical.log` and
+`canonical-remaining-result.json`. All 26 commands were checked: 25 passed and the
+backend dependency audit failed on PyJWT2.14.0, CVE-2026-101918. Backend coverage
+passed 3,586 tests at 92%; frontend passed 592 tests. Those results describe the
+2.14.0 environment and do not establish a full-suite pass with the updated pin.
+
+The [maintainer advisory](https://github.com/jpadilla/pyjwt/security/advisories/GHSA-42vr-xj54-vc7v)
+and [2.15.0 changelog](https://github.com/jpadilla/pyjwt/blob/2.15.0/CHANGELOG.rst)
+confirm that 2.15.0 fixes the pre-verification nested-payload parser exception.
+Only the PyJWT pin in `backend/requirements.txt` changed, from 2.14.0 to 2.15.0.
+The existing auth adapter uses fixed HS256 or RS256/ES256 algorithm lists,
+issuer/audience validation and consistent verification-error handling. No auth
+source change was needed.
+
+An independent APFS clone of the canonical virtual environment was created at
+parent workspace `work/education-verification/dependency-venv`. Its Python prefix
+and imported JWT package were verified inside that clone before upgrading only
+PyJWT with `python -m pip install --no-deps PyJWT==2.15.0`. The shared environment
+remains 2.14.0. The cloned environment passed `python -m pip check` and 120 tests
+across Supabase auth, API security, internal auth/telemetry and runtime dependency
+suites, with one existing Starlette deprecation warning. The maintainer's parser
+regression also passed: an ordinary unsigned payload decoded, while a deeply
+nested payload raised `DecodeError`.
+
+The exact canonical audit command, `python -m pip_audit -r backend/requirements.txt
+--progress-spinner off`, passed with no known vulnerabilities. The audit still
+skips torch2.14.1 because that dependency could not be found on PyPI; this limits
+audit coverage. The exact canonical build command, `docker build --tag
+agent-backend:offline-check --file backend/Dockerfile .`, passed. A read-only
+container version probe confirmed PyJWT2.15.0 in the resulting image. Separate
+commands, versions and log hashes are retained in `pyjwt-followup-result.json`
+and the `pyjwt-*.log` files beside the original evidence.
+
+This pin upgrade occurred after the single local education-prompt proof. It does
+not relabel that capture as whole-current-tree or updated-dependency evidence.
+No provider request or full frontend repeat was run for this dependency patch.
+The prospective protected gate and new-head CI still require their own results;
+no production deployment is claimed.
+
 ## Official research basis
 
 - [OpenAI Codex model guidance](https://developers.openai.com/api/docs/guides/latest-model?model=gpt-5.3-codex) documents short conversational progress/intent preambles and separate commentary/final-answer phases.
