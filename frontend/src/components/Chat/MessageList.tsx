@@ -14,12 +14,14 @@ import type { Root, RootContent } from 'mdast';
 import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
-import type { Message } from '../../types';
+import type { LiveActivity, Message } from '../../types';
 import '../GraphHistoryControls.css';
 import './MessageList.css';
+import { ThinkingIndicator } from './ThinkingIndicator';
 
 interface MessageListProps {
   messages: Message[];
+  liveActivity?: LiveActivity | null;
   revisionIds?: string[];
   viewedRevisionId?: string | null;
   onViewDiagram?: (id: string) => void;
@@ -206,11 +208,13 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   );
 }
 
-export function MessageList({ messages, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false, onRetryMessage, retryDisabled = false, retryingMessageId = null }: MessageListProps) {
+export function MessageList({ messages, liveActivity = null, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false, onRetryMessage, retryDisabled = false, retryingMessageId = null }: MessageListProps) {
   const listRef = useRef<HTMLDivElement>(null);
   const followLatest = useRef(true);
   const pointerDown = useRef(false);
-  const previous = useRef({ firstId: '', userId: '', messages: [] as Message[] });
+  const previous = useRef({ firstId: '', userId: '', messages: [] as Message[], activitySequence: -1 });
+  const liveOwnerId = liveActivity ? messages.find(message => message.role === 'assistant'
+    && message.clientRequestId === liveActivity.clientRequestId)?.id : undefined;
   const [hasNewContent, setHasNewContent] = useState(false);
 
   const hasSelection = () => {
@@ -246,11 +250,12 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
     const userId = [...messages].reverse().find(message => message.role === 'user')?.id ?? '';
     const newConversation = firstId !== previous.current.firstId;
     const newRequest = userId !== previous.current.userId;
-    const contentChanged = messages.length !== previous.current.messages.length || messages.some((message, index) => {
+    const activitySequence = liveActivity?.activity.steps.at(-1)?.sequence ?? -1;
+    const contentChanged = activitySequence !== previous.current.activitySequence || messages.length !== previous.current.messages.length || messages.some((message, index) => {
       const old = previous.current.messages[index];
-      return message.id !== old?.id || message.content !== old.content || message.title !== old.title;
+      return message.id !== old?.id || message.content !== old.content || message.title !== old.title || message.activity !== old.activity;
     });
-    previous.current = { firstId, userId, messages };
+    previous.current = { firstId, userId, messages, activitySequence };
     if (!contentChanged) return;
     if (newConversation || newRequest || (followLatest.current && !pointerDown.current && !hasSelection())) {
       list.scrollTop = list.scrollHeight;
@@ -262,7 +267,7 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
       followLatest.current = false;
       setHasNewContent(!nearBottom(list));
     }
-  }, [messages]);
+  }, [messages, liveActivity]);
 
   const jumpToLatest = () => {
     const list = listRef.current;
@@ -283,7 +288,7 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
         followLatest.current = nearBottom(list) && !hasSelection() && !pointerDown.current;
         if (nearBottom(list)) setHasNewContent(false);
       }}>
-      {messages.length === 0 && (
+      {messages.length === 0 && !liveActivity && (
         <div style={{
           color: '#6e7681',
           fontSize: '0.875rem',
@@ -294,7 +299,11 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
         </div>
       )}
 
-      {messages.map(msg => (
+      {messages.flatMap(msg => [
+        msg.role === 'assistant' && (msg.id === liveOwnerId || msg.activity)
+          ? <ThinkingIndicator key={`activity-${msg.clientRequestId ?? msg.id}`}
+              activity={msg.id === liveOwnerId ? liveActivity!.activity : msg.activity!}
+              liveActivity={msg.id === liveOwnerId ? liveActivity ?? undefined : undefined} /> : null,
         <div
           key={msg.id}
           className="message-row"
@@ -333,7 +342,9 @@ export function MessageList({ messages, revisionIds = [], viewedRevisionId = nul
             )}
           </div>
         </div>
-      ))}
+      ]).concat(liveActivity && !liveOwnerId
+        ? [<ThinkingIndicator key={`activity-${liveActivity.clientRequestId}`}
+            activity={liveActivity.activity} liveActivity={liveActivity} />] : [])}
     </div>
     {hasNewContent && <button className="message-jump" aria-label="Jump to latest" title="Jump to latest" onClick={jumpToLatest}>
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6" /></svg>

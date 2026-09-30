@@ -7,7 +7,6 @@ import { graphStructureKey } from './utils/graphStructureKey';
 import { TitleBar } from './components/Layout/TitleBar';
 import { SplitPane } from './components/Layout/SplitPane';
 import { ThreadSidebar } from './components/Layout/ThreadSidebar';
-import { ThinkingIndicator } from './components/Chat/ThinkingIndicator';
 import { RetrievalNoticeBar } from './components/Chat/RetrievalNoticeBar';
 import { ContextBar } from './components/Chat/ContextBar';
 import { ChatInput } from './components/Chat/ChatInput';
@@ -92,7 +91,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const {
     messages,
     visibleMessages,
-    answerPending,
     diagramRequested,
     acknowledgeGraphRendered,
     graphData,
@@ -100,8 +98,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
     publishedGraphKey,
     graphPreview,
     graphCandidate,
-    workflowProgress,
-    thinkingProgress,
+    liveActivity,
     retrievalNotice,
     graphNotice,
     selectedNode,
@@ -524,14 +521,8 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     </div>
                   )}
                   <Suspense fallback={<div style={panelFallbackStyle}>Loading conversation…</div>}>
-                    <MessageList messages={visibleMessages} revisionIds={history.history?.revisions.map(revision => revision.id)} viewedRevisionId={history.preview?.revision_id ?? history.history?.current_revision_id ?? null} onViewDiagram={id => id === history.history?.current_revision_id ? history.returnToCurrent() : history.previewRevision(id)} historyDisabled={isStreaming} onRetryMessage={handleRetryMessage} retryDisabled={sendLocked || isGenerating} retryingMessageId={actionBusy || isGenerating ? retryingMessageId : null} />
+                    <MessageList messages={visibleMessages} liveActivity={liveActivity} revisionIds={history.history?.revisions.map(revision => revision.id)} viewedRevisionId={history.preview?.revision_id ?? history.history?.current_revision_id ?? null} onViewDiagram={id => id === history.history?.current_revision_id ? history.returnToCurrent() : history.previewRevision(id)} historyDisabled={isStreaming} onRetryMessage={handleRetryMessage} retryDisabled={sendLocked || isGenerating} retryingMessageId={actionBusy || isGenerating ? retryingMessageId : null} />
                   </Suspense>
-                  <ThinkingIndicator
-                    workflowProgress={workflowProgress}
-                    thinkingProgress={thinkingProgress}
-                    isFinishingDiagram={isFinishingDiagram}
-                    isGenerating={isGenerating || answerPending}
-                  />
                   <RetrievalNoticeBar
                     notice={retrievalNotice}
                     onUseSearchTool={requestSearchTool}

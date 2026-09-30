@@ -19,6 +19,7 @@ from adapters.llm_adapter import is_provider_unavailable_error
 from adapters.supabase_auth_adapter import get_current_user
 from agent.deadlines import WorkflowDeadlineExceeded
 from agent.graph import run_agent
+from agent.activity import ActivityRecorder
 from agent.graph_review_budget import GraphReviewBudget
 from agent.graph_review_control import GraphReviewControl
 from agent.state import AgentState
@@ -207,7 +208,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 )
                 if completed_turn.get("retry_request") is not None:
                     await websocket.send_json({"type": "generation_failed"})
-                await websocket.send_json({"type": "done"})
+                await websocket.send_json({"type": "done", **({"activity": completed_turn["activity"]} if completed_turn.get("activity") is not None else {})})
                 return True
             return False
 
@@ -291,18 +292,26 @@ async def chat_websocket(websocket: WebSocket) -> None:
         graph_review_budget = GraphReviewBudget()
         graph_review_control = GraphReviewControl()
         started_at = session_started_at
+        activity = ActivityRecorder()
+        saved_activity = None
 
         async def send(event: dict) -> None:
             nonlocal graph_preview_sent
             # ``done`` belongs to the transport: it is sent only after durable
             # persistence. This also prevents a cancelled draft from ending the UI.
-            if event.get("type") == "done":
+            if event.get("type") in {"done", "thinking_delta", "activity_step"}:
                 return
             if event.get("type") in {"graph_preview", "graph_data"}:
                 graph_preview_sent = True
                 event = {"type": "graph_preview", "data": event.get("data")}
             async with send_lock:
                 await websocket.send_json(event)
+                try:
+                    step = activity.record(event, int((time.perf_counter() - started_at) * 1000))
+                    if step is not None:
+                        await websocket.send_json(step)
+                except Exception as exc:
+                    logger.info("Optional activity delivery failed (%s)", type(exc).__name__)
 
         async def send_authoritative_graph(graph: dict | None) -> None:
             nonlocal latest_graph
@@ -318,8 +327,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
             graph_preview_sent = False
 
         async def send_done() -> None:
+            canonical_turn = thread_store.get_completed_turn(user_id, body.thread_id, body.client_request_id)
+            canonical_activity = canonical_turn.get("activity") if canonical_turn is not None else None
+            if canonical_turn is None and body.client_request_id is None:
+                canonical_activity = saved_activity
             async with send_lock:
-                await websocket.send_json({"type": "done"})
+                await websocket.send_json({"type": "done", **({"activity": canonical_activity} if canonical_activity is not None else {})})
 
         async def await_search_tool_request(
             search_request_id: str, timeout_s: float
@@ -641,6 +654,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     title = truncate_utf8(
                         body.content, min(60, settings.max_thread_title_bytes)
                     )
+                turn_activity = activity.snapshot(int((time.perf_counter() - started_at) * 1000))
                 graph_saved = thread_store.persist_turn(
                     user_id,
                     body.thread_id,
@@ -651,7 +665,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     graph_contract=final_state.get("graph_contract"),
                     client_request_id=body.client_request_id,
                     retry_request=body.failed_generation_retry_request(final_state, original_request),
+                    activity=turn_activity,
                 )
+                saved_activity = turn_activity
                 if not graph_saved:
                     await restore_graph_preview()
                     await send(

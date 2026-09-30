@@ -1565,17 +1565,12 @@ async def test_stream_llm_translates_provider_events_without_network_calls(monke
         temperature=0,
         send=send,
         stream_deltas=True,
-        stream_thinking=True,
         max_output_tokens=500,
     )
 
     assert result == "Grounded answer"
-    thinking = sent[1]
-    assert thinking["content"] == "checking evidence"
-    assert thinking["phase"] == "explain" and thinking["operation_id"] and thinking["reset"]
     assert sent == [
         {"type": "provider_switch", "provider": "openai"},
-        thinking,
         {"type": "response_delta", "content": "Grounded "},
         {"type": "response_delta", "content": "answer"},
     ]

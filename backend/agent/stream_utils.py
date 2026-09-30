@@ -2,7 +2,7 @@
 # File: backend/agent/stream_utils.py
 # Purpose: Shared helper for streaming LLM responses with consistent event
 #          dispatch. Wraps stream_response_compat with provider_switch handling,
-#          optional response_delta / thinking_delta forwarding, and text accumulation.
+#          optional response_delta forwarding, and text accumulation.
 # Language: Python
 # Connects to: adapters/llm_adapter.py (stream_response, stream_response_compat)
 # Inputs:  model, system prompt, messages, sampling params, send callback
@@ -17,7 +17,6 @@ from typing import Callable, Awaitable
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
-from agent.provider_thinking import ThinkingFeed, ThinkingPhase
 
 
 @dataclass(frozen=True)
@@ -42,15 +41,13 @@ async def stream_structured_llm(
     timeout_seconds: float | None = None,
     max_output_tokens: int | None = None,
     provider_attempt_limit: int | None = None,
-    send: Callable[[dict], Awaitable[None]] | None = None,
-    thinking_phase: ThinkingPhase | None = None,
 ) -> StructuredLLMResponse:
     """Run one schema-constrained provider call with ordinary telemetry."""
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
     accumulated = ""
     metadata: dict = {}
-    async with ThinkingFeed(send, thinking_phase) as thinking, asyncio.timeout(timeout_seconds):
+    async with asyncio.timeout(timeout_seconds):
         response = stream_response_compat(
             stream_response,
             model=model,
@@ -67,12 +64,7 @@ async def stream_structured_llm(
         )
         async with aclosing(response):
             async for event_type, content in response:
-                if event_type == "thinking":
-                    await thinking.add(content)
-                elif event_type == "provider_switch":
-                    await thinking.restart()
-                elif event_type == "text":
-                    await thinking.flush()
+                if event_type == "text":
                     accumulated += content
                 elif event_type == "response_metadata":
                     parsed = json.loads(content)
@@ -105,7 +97,6 @@ async def stream_llm(
     provider_attempt_limit: int | None = None,
     send: Callable[[dict], Awaitable[None]] | None = None,
     stream_deltas: bool = False,
-    stream_thinking: bool = False,
 ) -> str:
     """Stream an LLM response, handle provider switches, return accumulated text.
 
@@ -114,13 +105,12 @@ async def stream_llm(
         timeout_seconds:  Optional deadline for the complete provider retry/fallback chain.
         max_output_tokens: Optional positive provider output cap, bounded globally.
         stream_deltas:    When True, forward each text chunk as a response_delta SSE event.
-        stream_thinking:  When True, forward thinking chunks as thinking_delta SSE events.
     """
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
 
     accumulated = ""
-    async with ThinkingFeed(send, "explain" if stream_thinking else None) as thinking, asyncio.timeout(timeout_seconds):
+    async with asyncio.timeout(timeout_seconds):
         response = stream_response_compat(
             stream_response,
             model=model,
@@ -139,12 +129,8 @@ async def stream_llm(
         async with aclosing(response):
             async for event_type, content in response:
                 if event_type == "provider_switch" and send:
-                    await thinking.restart()
                     await send({"type": "provider_switch", "provider": content})
-                elif event_type == "thinking" and stream_thinking and send:
-                    await thinking.add(content)
                 elif event_type == "text":
-                    await thinking.flush()
                     accumulated += content
                     if stream_deltas and send:
                         await send({"type": "response_delta", "content": content})

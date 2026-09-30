@@ -187,6 +187,7 @@ export interface Message {
   clientRequestId?: string | null;
   retryRequest?: RetryRequest;
   retryClientRequestId?: string;
+  activity?: MessageActivity;
 }
 
 export interface ThreadSummary {
@@ -214,6 +215,7 @@ export interface ThreadDetail {
     created_at: string;
     graph_revision_id?: string | null;
     client_request_id?: string | null;
+    activity?: MessageActivity | null;
     retry_request?: {
       content: string;
       complexity: ComplexityLevel;
@@ -372,6 +374,7 @@ export interface GraphNoticeEvent {
 
 export interface DoneEvent {
   type: 'done';
+  activity?: MessageActivity | null;
 }
 
 export interface ErrorEvent {
@@ -411,6 +414,7 @@ export interface StoppedEvent {
 export type ServerEvent =
   | WorkerStatusEvent
   | ThinkingDeltaEvent
+  | ActivityStepEvent
   | ResponseDeltaEvent
   | GraphDataEvent
   | GraphPreviewEvent
@@ -489,10 +493,28 @@ export interface GraphCandidate {
   data: GraphData;
 }
 
-export interface ThinkingProgress {
-  operationId: string;
+export interface ActivityStep {
+  sequence: number;
+  kind: 'update' | 'tool';
   phase: WorkflowPhase;
-  content: string;
+  status: WorkflowProgress['status'];
+  text: string;
+  elapsed_ms: number;
+}
+
+export interface MessageActivity {
+  duration_ms: number;
+  steps: readonly ActivityStep[];
+}
+
+export interface LiveActivity {
+  clientRequestId: string;
+  startedAt: number;
+  activity: MessageActivity;
+}
+
+export interface ActivityStepEvent extends ActivityStep {
+  type: 'activity_step';
 }
 
 export interface WorkflowProgress {

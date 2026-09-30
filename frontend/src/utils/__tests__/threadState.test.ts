@@ -12,6 +12,18 @@ describe('thread snapshot helpers', () => {
     localStorage.clear();
   });
 
+  it('preserves canonical assistant activity on thread load and snapshot reload', () => {
+    const activity = { duration_ms: 65000, steps: [{ sequence: 0, kind: 'tool' as const, phase: 'book' as const,
+      status: 'complete' as const, text: 'Searched the book', elapsed_ms: 1000 }] };
+    const messages = mapThreadMessages([{ id: 'assistant', role: 'assistant', content: 'Answer', created_at: '', activity },
+      { id: 'user', role: 'user', content: 'Question', created_at: '', activity }]);
+    expect(messages[0].activity).toEqual(activity);
+    expect(messages[1].activity).toBeUndefined();
+    writeThreadSnapshot('user-1', 'thread-1', { title: 'Saved', messages, graphData: null });
+    expect(readThreadSnapshot('user-1', 'thread-1')?.messages[0].activity).toEqual(activity);
+    expect(mapThreadMessages([{ id: 'legacy', role: 'assistant', content: 'Older answer', created_at: '' }])[0].activity).toBeUndefined();
+  });
+
   it('round-trips a thread snapshot through localStorage', () => {
     writeThreadSnapshot('user-1', 'thread-1', {
       title: 'Thread title',

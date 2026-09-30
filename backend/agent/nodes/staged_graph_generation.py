@@ -747,8 +747,6 @@ async def _run_generation(
                 else settings.graph_builder_max_completion_tokens
             ),
             provider_attempt_limit=1,
-            send=state.get("send"),
-            thinking_phase=stage,
         )
     except TimeoutError as exc:
         raise StagedGenerationError("staged_generation_timeout") from exc

@@ -839,7 +839,9 @@ def test_websocket_persists_approved_overview_when_explanation_is_unavailable(
     assert len(provider_calls) == 1
     assert provider_calls[0]["allow_fallback"] is False
     assert provider_calls[0]["provider_attempt_limit"] == 1
-    assert events[-2:] == [{"type": "graph_data", "data": graph}, {"type": "done"}]
+    assert events[-2] == {"type": "graph_data", "data": graph}
+    assert events[-1]["type"] == "done"
+    assert events[-1]["activity"]["steps"][-1]["status"] == "degraded"
     assert [event["data"] for event in events if event["type"] == "graph_preview"] == [
         graph
     ]
@@ -941,7 +943,9 @@ def test_websocket_persists_approved_overview_after_explanation_provider_error(
     assert len(provider_calls) == 1
     assert provider_calls[0]["allow_fallback"] is False
     assert provider_calls[0]["provider_attempt_limit"] == 1
-    assert events[-2:] == [{"type": "graph_data", "data": graph}, {"type": "done"}]
+    assert events[-2] == {"type": "graph_data", "data": graph}
+    assert events[-1]["type"] == "done"
+    assert events[-1]["activity"]["steps"][-1]["status"] == "degraded"
     assert [event["data"] for event in events if event["type"] == "graph_preview"] == [
         graph
     ]

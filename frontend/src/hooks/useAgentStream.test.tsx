@@ -114,7 +114,6 @@ function Harness({
       <div data-testid="candidate-title">{agent.graphCandidate?.data.title ?? ''}</div>
       <div data-testid="candidate-node-type">{agent.graphCandidate?.data.nodes[0]?.type ?? ''}</div>
       <div data-testid="candidate-criteria">{JSON.stringify(agent.graphCandidate?.criteria ?? null)}</div>
-      <div data-testid="progress">{JSON.stringify(agent.workflowProgress)}</div>
       <div data-testid="node-detail">{agent.graphData?.nodes[0]?.detail ?? ''}</div>
       <div data-testid="selected">{agent.selectedNode ? `${agent.selectedNode.node.id}:${agent.selectedNode.suggestions.join(',')}` : ''}</div>
       <button onClick={() => agent.sendMessage('hello', { complexity: 'production', graphMode: 'on', researchEnabled: true })}>send</button>
@@ -242,11 +241,13 @@ describe('useAgentStream', () => {
     const failure = result.current.messages.find(message => message.retryRequest)!;
     mocks.fetchThread.mockResolvedValueOnce({ thread: { graph_data: graph('saved') }, messages: [{
       id: 'saved-answer', role: 'assistant', content: 'Saved answer', created_at: '',
+      activity: { duration_ms: 45000, steps: [] },
       client_request_id: failure.retryClientRequestId,
     }] });
     await act(async () => { await result.current.retryMessage(failure, null); });
     expect(mocks.sendMessage).toHaveBeenCalledTimes(1);
     expect(result.current.messages.map(message => message.content)).toEqual(['Saved answer']);
+    expect(result.current.messages[0].activity?.duration_ms).toBe(45000);
     expect(result.current.graphData?.version).toBe('saved');
   });
 
@@ -939,55 +940,92 @@ describe('useAgentStream', () => {
     consoleError.mockRestore();
   });
 
-  it('keeps thinking chunks separate by operation, resets attempts, and bounds recent text', () => {
+  it('ignores private reasoning and accumulates ordered bounded public activity across steering resets', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
     const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
-    act(() => { result.current.sendMessage('design'); });
+    act(() => result.current.sendMessage('design'));
     const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
     const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
-    for (const content of ['hel', 'lo ', '<script>plain</script>']) {
-      emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content });
-    }
-    emit({ type: 'thinking_delta', operation_id: 'two', phase: 'review', content: 'parallel' });
-    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: ' latest' });
-    expect(result.current.thinkingProgress.map(item => item.operationId)).toEqual(['two', 'one']);
-    expect(result.current.thinkingProgress[1].content).toBe('hello <script>plain</script> latest');
-    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'review', content: 'wrong phase' });
-    expect(result.current.thinkingProgress[1].phase).toBe('components');
-    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: 'fresh', reset: true });
-    expect(result.current.thinkingProgress[1].content).toBe('fresh');
-    emit({ type: 'thinking_delta', operation_id: 'one', phase: 'components', content: 'x'.repeat(8001) });
-    expect(result.current.thinkingProgress[1].content).toBe('x'.repeat(8000));
-    for (let index = 0; index < 9; index++) {
-      emit({ type: 'thinking_delta', operation_id: `bounded-${index}`, phase: 'review', content: `${index}` });
-    }
-    expect(result.current.thinkingProgress).toHaveLength(8);
-    expect(result.current.thinkingProgress[0].operationId).toBe('bounded-1');
+    const step = { type: 'activity_step' as const, sequence: 0, kind: 'update' as const,
+      phase: 'components' as const, status: 'active' as const, text: 'I am drafting your components.', elapsed_ms: 1000 };
+    emit({ type: 'thinking_delta', operation_id: 'private', phase: 'components', content: 'Secret reasoning' });
+    expect(result.current.liveActivity?.activity.steps).toEqual([]);
+    expect(JSON.stringify(result.current)).not.toContain('Secret reasoning');
+    emit(step);
+    emit({ ...step, text: 'Duplicate sequence' });
+    emit({ ...step, sequence: 1, elapsed_ms: 999, text: 'Earlier elapsed' });
+    emit({ ...step, sequence: 1, text: 'x'.repeat(401) });
+    emit({ ...step, sequence: 1 });
+    expect(result.current.liveActivity?.activity.steps).toEqual([{ sequence: 0, kind: 'update',
+      phase: 'components', status: 'active', text: step.text, elapsed_ms: 1000 }]);
+    emit({ type: 'response_reset' });
+    expect(result.current.liveActivity?.activity.steps).toHaveLength(1);
+    for (let sequence = 1; sequence <= 50; sequence++) emit({ ...step, sequence,
+      text: `Update ${sequence}`, elapsed_ms: sequence * 1000 });
+    expect(result.current.liveActivity?.activity.steps).toHaveLength(48);
+    expect(result.current.liveActivity?.activity.steps[0].sequence).toBe(3);
     expect(result.current.messages).toHaveLength(1);
   });
 
-  it.each(['done', 'error', 'stop', 'response_reset', 'thread'] as const)('clears transient thinking on %s', terminal => {
-    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), { initialProps: { threadId: 'thread-1' } });
-    act(() => { result.current.sendMessage('design'); });
+  it('omits malformed optional activity without disrupting the answer', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.sendMessage('design', { graphMode: 'off' }));
     const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
-    const event: ServerEvent = { type: 'thinking_delta', operation_id: 'operation', phase: 'review', content: 'Transient only' };
+    const emit = (event: unknown) => act(() => mocks.eventHandler?.(event as ServerEvent, { kind: 'chat', clientRequestId }));
+    const valid = { type: 'activity_step', sequence: 0, kind: 'update', phase: 'context', status: 'active', text: 'Public update', elapsed_ms: 0 };
+    for (const invalid of [{ text: null }, { text: 3 }, { kind: 'reasoning' }, { phase: 'private' }, { status: 'unknown' }]) {
+      emit({ ...valid, ...invalid });
+    }
+    expect(result.current.liveActivity?.activity.steps).toEqual([]);
+    emit({ type: 'response_delta', content: 'Useful answer' });
+    emit({ type: 'done', activity: { duration_ms: 1000, steps: [{ ...valid, text: null }] } });
+    expect(result.current.liveActivity).toBeNull();
+    expect(result.current.visibleMessages.find(message => message.role === 'assistant')?.content).toBe('Useful answer');
+    expect(result.current.messages.some(message => message.activity)).toBe(false);
+  });
+
+  it('attaches authoritative completed activity once before the first assistant block and retains it on reload', async () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.sendMessage('design', { graphMode: 'off' }));
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const activity = { duration_ms: 5000, steps: [{ sequence: 0, kind: 'update' as const,
+      phase: 'explain' as const, status: 'complete' as const, text: 'I have prepared your answer.', elapsed_ms: 5000 }] };
+    act(() => {
+      mocks.eventHandler?.({ type: 'response_delta', content: 'Answer one' }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'explanation_block', block_id: 'block', title: 'More', content: 'Answer two', related_node_ids: [], evidence_refs: [] }, { kind: 'chat', clientRequestId });
+      mocks.eventHandler?.({ type: 'done', activity }, { kind: 'chat', clientRequestId });
+    });
+    expect(result.current.liveActivity).toBeNull();
+    expect(result.current.messages.filter(message => message.activity)).toHaveLength(1);
+    expect(result.current.messages.find(message => message.role === 'assistant')?.activity).toEqual(activity);
+    const saved = result.current.messages;
+    act(() => result.current.hydrateThread({ messages: saved, graphData: null }));
+    expect(result.current.messages.find(message => message.activity)?.activity?.duration_ms).toBe(5000);
+  });
+
+  it.each(['done', 'error', 'stop', 'thread'] as const)('clears public activity and rejects stale or node events on %s', terminal => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result, rerender } = renderHook(({ threadId }) => useAgentStream(session, threadId), { initialProps: { threadId: 'thread-1' } });
+    act(() => result.current.sendMessage('design'));
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const event: ServerEvent = { type: 'activity_step', sequence: 0, kind: 'tool', phase: 'web', status: 'active', text: 'Searching the web', elapsed_ms: 0 };
     const emit = (value: ServerEvent, kind: 'chat' | 'node-selected' = 'chat', requestId = clientRequestId) => act(() => mocks.eventHandler?.(value, { kind, clientRequestId: requestId }));
-    emit({ type: 'thinking_delta', content: 'unscoped' });
     act(() => result.current.selectNode(graph().nodes[0]));
     const nodeRequestId = mocks.sendNodeSelected.mock.calls[0][5] as string;
     emit(event, 'node-selected', nodeRequestId);
     emit(event, 'chat', 'stale-request');
-    expect(result.current.thinkingProgress).toEqual([]);
+    expect(result.current.liveActivity?.activity.steps).toEqual([]);
     emit(event);
-    expect(result.current.thinkingProgress).toHaveLength(1);
+    expect(result.current.liveActivity?.activity.steps).toHaveLength(1);
     if (terminal === 'stop') act(() => result.current.stopGeneration());
     else if (terminal === 'thread') rerender({ threadId: 'other' });
     else if (terminal === 'error') emit({ type: 'error', content: 'failed' });
-    else emit({ type: terminal });
-    expect(result.current.thinkingProgress).toEqual([]);
-    if (terminal !== 'response_reset') {
-      emit(event);
-      expect(result.current.thinkingProgress).toEqual([]);
-    }
+    else emit({ type: 'done' });
+    expect(result.current.liveActivity).toBeNull();
+    emit(event);
+    expect(result.current.liveActivity).toBeNull();
   });
 
   it.each(['missing', 'unpainted', 'retained', 'same-version', 'components', 'connections'] as const)(

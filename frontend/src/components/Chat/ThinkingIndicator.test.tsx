@@ -1,107 +1,67 @@
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
-import type { ThinkingProgress, WorkflowProgress } from '../../types';
+import { act, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { LiveActivity, MessageActivity } from '../../types';
 import { ThinkingIndicator } from './ThinkingIndicator';
 
-function progress(phase: string, status: string = 'active'): WorkflowProgress {
-  return { phase, status, title: 'Internal phase title', detail: 'Internal workflow details' } as WorkflowProgress;
-}
+const activity: MessageActivity = { duration_ms: 65_000, steps: [
+  { sequence: 0, kind: 'update', phase: 'context', status: 'complete', text: "I'll check how this fits your diagram.", elapsed_ms: 0 },
+  { sequence: 1, kind: 'tool', phase: 'book', status: 'complete', text: 'Searched the book', elapsed_ms: 1000 },
+] };
+const live: LiveActivity = { clientRequestId: 'request', startedAt: 0, activity };
 
-describe('ThinkingIndicator', () => {
-  it('shows concurrent real operations without exposing internal prose or percentages', () => {
-    const { container } = render(<ThinkingIndicator workflowProgress={[progress('book'), progress('web')]} isGenerating />);
-    expect(screen.getByText('Searching the book…')).toBeTruthy();
-    expect(screen.getByText('Searching the web…')).toBeTruthy();
-    expect(screen.getByRole('status').getAttribute('aria-live')).toBe('polite');
-    expect(screen.queryByText(/Internal/)).toBeNull();
-    expect(container.querySelector('details, progress, button')).toBeNull();
-    expect(container.textContent).not.toContain('%');
+describe('ThinkingIndicator public work activity', () => {
+  afterEach(() => vi.useRealTimers());
+
+  it('opens live updates with quieter tool rows and a timer outside announcements', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(65_000);
+    const view = render(<ThinkingIndicator activity={activity} liveActivity={live} />);
+    expect(view.container.querySelector('details')?.open).toBe(true);
+    expect(screen.getByText('Working for 1m 5s')).toBeTruthy();
+    expect(view.container.querySelector('.thinking-update')?.textContent).toBe(activity.steps[0].text);
+    expect(view.container.querySelector('.thinking-tool')?.textContent).toBe('Searched the book');
+    const announcement = screen.getByRole('status');
+    expect(announcement.textContent).toBe('Searched the book');
+    act(() => vi.advanceTimersByTime(2000));
+    expect(screen.getByText('Working for 1m 7s')).toBeTruthy();
+    expect(announcement.textContent).toBe('Searched the book');
+    expect(view.container.textContent).not.toContain('%');
   });
 
-  it('keeps the other operation visible while one completes and retains only the latest completed milestone', () => {
-    const view = render(<ThinkingIndicator workflowProgress={[progress('book'), progress('web')]} isGenerating />);
-    view.rerender(<ThinkingIndicator workflowProgress={[progress('web'), progress('book', 'complete')]} isGenerating />);
-    expect(screen.queryByText('Searching the book…')).toBeNull();
-    expect(screen.getByText('Book search finished')).toBeTruthy();
-    expect(screen.getByText('Searching the web…')).toBeTruthy();
-    view.rerender(<ThinkingIndicator workflowProgress={[progress('book', 'complete'), progress('web', 'complete'), progress('components')]} isGenerating />);
-    expect(screen.queryByText('Book search finished')).toBeNull();
-    expect(screen.getByText('Web search finished')).toBeTruthy();
-    expect(screen.getByText('Building components…')).toBeTruthy();
-  });
-
-  it('shows retries as ongoing work without treating degraded or rejected stages as active or successful', () => {
-    render(<ThinkingIndicator workflowProgress={[progress('book', 'degraded'), progress('review', 'rejected'), progress('revise', 'retry')]} isGenerating />);
-    expect(screen.getByRole('status').textContent).toBe('Refining the diagram…');
-  });
-
-  it('shows real completion and concurrent answer work during accepted finishing', () => {
-    render(<ThinkingIndicator workflowProgress={[progress('review', 'complete'), progress('explain')]} isGenerating isFinishingDiagram />);
-    expect(screen.getByText('Diagram checked')).toBeTruthy();
-    expect(screen.getByText('Writing the answer…')).toBeTruthy();
-  });
-
-  it('uses neutral finishing feedback while awaiting the next event', () => {
-    render(<ThinkingIndicator isGenerating isFinishingDiagram />);
-    expect(screen.getByRole('status').textContent).toBe('Finishing…');
-  });
-
-  it('does not invent an operation before an event arrives', () => {
-    render(<ThinkingIndicator isGenerating />);
-    expect(screen.getByRole('status').textContent).toBe('Working…');
-  });
-
-  it('deduplicates equivalent answer phase labels', () => {
-    render(<ThinkingIndicator workflowProgress={[progress('explain'), progress('synthesis')]} isGenerating />);
-    expect(screen.getAllByText('Writing the answer…')).toHaveLength(1);
-  });
-
-  it('opens provider text by default as plain text with a bounded collapsed excerpt', () => {
-    const content = '<img src="https://example.test/pixel"> **not markdown** ' + 'x'.repeat(180);
-    const trace: ThinkingProgress = { operationId: 'components-1', phase: 'components', content };
-    const { container } = render(<ThinkingIndicator isGenerating thinkingProgress={[trace]} />);
-    const details = container.querySelector('details')!;
-    expect(details.open).toBe(true);
-    expect(container.querySelector('.thinking-excerpt')?.textContent?.length).toBeLessThanOrEqual(140);
-    expect(screen.getByText(content)).toBeTruthy();
-    expect(container.querySelector('img, a, strong')).toBeNull();
-    expect(screen.getByRole('status').textContent).not.toContain(content);
-  });
-
-  it('preserves the native disclosure toggle and scroll position across trace updates', () => {
-    const trace: ThinkingProgress = { operationId: 'review-1', phase: 'review', content: 'First thought.' };
-    const view = render(<ThinkingIndicator isGenerating thinkingProgress={[trace]} />);
+  it('uses the saved duration and a native collapsed disclosure after completion', () => {
+    const view = render(<ThinkingIndicator activity={activity} />);
     const details = view.container.querySelector('details')!;
-    const transcript = screen.getByRole('region', { name: 'Thinking trace' });
-    transcript.scrollTop = 35;
-    view.rerender(<ThinkingIndicator isGenerating thinkingProgress={[{ ...trace, content: 'First thought. Next thought.' }]} />);
+    expect(details.open).toBe(false);
+    expect(screen.getByText('Worked for 1m 5s')).toBeTruthy();
+    expect(screen.queryByRole('status')).toBeNull();
+    details.open = true;
+    const region = screen.getByRole('region', { name: 'Work activity' });
+    region.scrollTop = 35;
+    view.rerender(<ThinkingIndicator activity={{ ...activity, duration_ms: 65_999 }} />);
     expect(view.container.querySelector('details')).toBe(details);
     expect(details.open).toBe(true);
-    expect(transcript.scrollTop).toBe(35);
-    expect(transcript.querySelector('p')?.textContent).toBe('First thought. Next thought.');
+    expect(region.scrollTop).toBe(35);
+  });
+
+  it('preserves a user toggle across live events and collapses once when completed', () => {
+    const view = render(<ThinkingIndicator activity={activity} liveActivity={live} />);
+    const details = view.container.querySelector('details')!;
     details.open = false;
-    for (const content of ['First thought. More text.', 'First thought. More text. Still streaming.']) {
-      view.rerender(<ThinkingIndicator isGenerating thinkingProgress={[{ ...trace, content }]} />);
-      expect(details.open).toBe(false);
-      expect(transcript.querySelector('p')?.textContent).toBe(content);
-    }
-    view.rerender(<ThinkingIndicator thinkingProgress={[trace]} />);
-    expect(view.container.querySelector('details')).toBeNull();
+    const updated = { ...activity, steps: [...activity.steps, { ...activity.steps[0], sequence: 2, text: 'I have a draft ready to check.' }] };
+    view.rerender(<ThinkingIndicator activity={updated} liveActivity={{ ...live, activity: updated }} />);
+    expect(details.open).toBe(false);
+    view.rerender(<ThinkingIndicator activity={updated} />);
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(details.open).toBe(false);
   });
 
-  it('uses the most recently updated operation for the excerpt without exposing operation identifiers', () => {
-    const thoughts: ThinkingProgress[] = [
-      { operationId: 'internal-plan-uuid', phase: 'components', content: 'Plan thought' },
-      { operationId: 'internal-review-uuid', phase: 'review', content: 'Review thought' },
-    ];
-    const { container } = render(<ThinkingIndicator isGenerating thinkingProgress={thoughts} />);
-    expect(container.querySelector('.thinking-excerpt')?.textContent).toBe('Review thought');
-    expect(container.textContent).not.toContain('internal-');
-  });
-
-  it.each(['complete', 'rejected', 'degraded'])('removes live activity after a %s terminal turn', status => {
-    const view = render(<ThinkingIndicator workflowProgress={[progress('review')]} isGenerating />);
-    view.rerender(<ThinkingIndicator workflowProgress={[progress('review', status)]} />);
-    expect(screen.queryByRole('status')).toBeNull();
+  it('renders public updates as text, without fetching markup or exposing phase identifiers', () => {
+    const text = '<img src="https://example.test/pixel"> **plain text**';
+    const view = render(<ThinkingIndicator activity={{ duration_ms: 1200,
+      steps: [{ ...activity.steps[0], text, phase: 'challenger' }] }} />);
+    expect(view.container.querySelector('.thinking-update')?.textContent).toBe(text);
+    expect(view.container.querySelector('img, a, strong')).toBeNull();
+    expect(view.container.textContent).not.toContain('challenger');
+    expect(screen.getByText('Worked for 1s')).toBeTruthy();
   });
 });

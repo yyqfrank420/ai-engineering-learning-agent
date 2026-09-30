@@ -4,6 +4,37 @@ import { describe, expect, it, vi } from 'vitest';
 import { MessageList } from './MessageList';
 
 describe('MessageList', () => {
+  it('keeps activity in conversation order and preserves disclosure identity as an answer arrives', () => {
+    const activity = { duration_ms: 1200, steps: [{ sequence: 0, kind: 'update' as const,
+      phase: 'context' as const, status: 'active' as const, text: 'I am checking your request.', elapsed_ms: 0 }] };
+    const liveActivity = { clientRequestId: 'run', startedAt: Date.now(), activity };
+    const user = { id: 'user', role: 'user' as const, content: 'Question' };
+    const view = render(<MessageList messages={[user]} liveActivity={liveActivity} />);
+    const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(true);
+    const answer = { id: 'answer', role: 'assistant' as const, clientRequestId: 'run', content: 'Answer' };
+    view.rerender(<MessageList messages={[user, answer]} liveActivity={liveActivity} />);
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(details.compareDocumentPosition(screen.getByText('Answer')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    view.rerender(<MessageList messages={[user, { ...answer, activity }]} />);
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(details.open).toBe(false);
+    expect(screen.getByText('Worked for 1s')).toBeTruthy();
+    expect(screen.queryByText(/Working for/)).toBeNull();
+    expect(view.container.querySelector('[data-testid="message-assistant"]')?.textContent).toBe('Answer');
+  });
+
+  it('renders saved activity only for the owning assistant and excludes it from answer content', () => {
+    const activity = { duration_ms: 62_000, steps: [{ sequence: 0, kind: 'tool' as const,
+      phase: 'book' as const, status: 'complete' as const, text: 'Searched the book', elapsed_ms: 1000 }] };
+    const view = render(<MessageList messages={[{ id: 'first', role: 'assistant', content: 'First answer', activity },
+      { id: 'second', role: 'assistant', content: 'Second answer' }]} />);
+    expect(view.container.querySelectorAll('details')).toHaveLength(1);
+    expect(view.container.querySelector('details')?.open).toBe(false);
+    expect(screen.getByText('Worked for 1m 2s')).toBeTruthy();
+    expect(screen.getAllByTestId('message-assistant').map(message => message.textContent)).toEqual(['First answer', 'Second answer']);
+  });
+
   it('shows retry only on an explicitly failed assistant message and blocks repeat clicks while busy', () => {
     const onRetryMessage = vi.fn();
     const failed = { id: 'failed', role: 'assistant' as const, content: 'Diagram unchanged', retryRequest: {

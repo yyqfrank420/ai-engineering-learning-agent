@@ -22,6 +22,7 @@ from graph.content_edit import (
 
 from storage import graph_history_store
 from storage.errors import ThreadMessageLimitExceeded
+from storage.message_activity import MessageActivity, decode_message_activity
 from storage.message_store import RetryRequest, decode_retry_request
 
 logger = logging.getLogger(__name__)
@@ -515,6 +516,7 @@ def persist_turn(
     graph_contract: dict | None = None,
     client_request_id: str | None = None,
     retry_request: dict | None = None,
+    activity: dict | None = None,
 ) -> bool:
     """Atomically and idempotently persist a completed turn and optional graph.
 
@@ -526,6 +528,11 @@ def persist_turn(
     serialized_retry = (
         RetryRequest.model_validate(retry_request).model_dump_json()
         if retry_request is not None
+        else None
+    )
+    serialized_activity = (
+        MessageActivity.model_validate(activity).model_dump_json()
+        if activity is not None
         else None
     )
     serialized_graph: str | None = None
@@ -629,9 +636,9 @@ def persist_turn(
                 _adapt_query(
                     """
                     INSERT INTO chat_messages (
-                        id, thread_id, user_id, role, content, client_request_id, graph_revision_id, retry_request
+                        id, thread_id, user_id, role, content, client_request_id, graph_revision_id, retry_request, activity
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """
                 ),
                 (
@@ -643,6 +650,7 @@ def persist_turn(
                     client_request_id,
                     revision_id if role == "assistant" else None,
                     serialized_retry if role == "assistant" else None,
+                    serialized_activity if role == "assistant" else None,
                 ),
             )
 
@@ -713,7 +721,7 @@ def get_completed_turn(
 
     rows = fetchall(
         """
-        SELECT role, content, retry_request
+        SELECT role, content, retry_request, activity
         FROM chat_messages
         WHERE user_id = ? AND thread_id = ? AND client_request_id = ?
         """,
@@ -727,8 +735,10 @@ def get_completed_turn(
         raise RuntimeError("Stored turn is incomplete; refusing an ambiguous retry")
     assistant_row = next(row for row in rows if row["role"] == "assistant")
     retry_request = decode_retry_request(assistant_row["retry_request"])
+    activity = decode_message_activity(assistant_row["activity"])
     return {
         **({"retry_request": retry_request} if retry_request is not None else {}),
+        **({"activity": activity} if activity is not None else {}),
         "user_content": content_by_role["user"],
         "assistant_content": content_by_role["assistant"],
     }
