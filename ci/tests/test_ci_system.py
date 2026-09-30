@@ -20,6 +20,7 @@ from scripts.ci_runner import (
     classify_paths,
     TEST_ENV_DEFAULTS,
     load_manifest,
+    prepare_offline_groups,
     run_offline,
     select_offline_groups,
     trust_for_event,
@@ -64,7 +65,7 @@ def test_run_offline_frontend_commands_receive_vite_supabase_defaults(monkeypatc
 
     run_offline(manifest, "frontend")
 
-    assert len(captured) == 4
+    assert len(captured) == 1
     for environment in captured:
         assert (
             environment["VITE_SUPABASE_URL"] == TEST_ENV_DEFAULTS["VITE_SUPABASE_URL"]
@@ -79,13 +80,13 @@ def test_manifest_tracks_every_backend_test():
     validate_manifest(load_manifest())
 
 
-def test_frontend_audits_all_dependency_severities():
+def test_frontend_checks_delegate_to_the_affected_test_runner():
     frontend = next(
         group for group in load_manifest()["offline_groups"]
         if group["name"] == "frontend"
     )
     commands = [command["argv"] for command in frontend["commands"]]
-    assert ["npm", "audit", "--audit-level=low"] in commands
+    assert commands == [["python", "scripts/frontend_checks.py"]]
 
 
 def test_browser_navigation_does_not_wait_for_long_lived_connections_to_close():
@@ -120,7 +121,6 @@ def test_manifest_validation_fails_when_a_tracked_test_is_omitted():
             ["backend/agent/nodes/research_worker.py"],
             {
                 "agent-rag-llm",
-                "backend-coverage",
                 "static-security",
                 "container",
                 "pipeline-policy",
@@ -130,7 +130,6 @@ def test_manifest_validation_fails_when_a_tracked_test_is_omitted():
             ["backend/tests/test_quality_corpus.py"],
             {
                 "eval-quality",
-                "backend-coverage",
                 "static-security",
                 "pipeline-policy",
             },
@@ -145,16 +144,130 @@ def test_offline_selection_runs_only_owning_groups(paths, expected_groups):
 
 
 @pytest.mark.parametrize(
-    "path", ["unknown/new_surface.txt", "ci/quality.json", "backend/config.py"]
+    "path",
+    [
+        "unknown/new_surface.txt", "backend/config.py", "backend/requirements.txt",
+        "backend/tests/conftest.py", "pytest.ini", ".coveragerc",
+    ],
 )
-def test_offline_selection_falls_back_to_every_group_for_risky_changes(path):
+def test_offline_selection_falls_back_to_full_checks_for_shared_or_unknown_changes(path):
     manifest = load_manifest()
 
     selected = select_offline_groups([path], manifest)
 
-    assert [group["name"] for group in selected] == [
-        group["name"] for group in manifest["offline_groups"]
+    assert selected == prepare_offline_groups(manifest["offline_groups"], manifest)
+
+
+def test_offline_selection_with_no_changes_keeps_only_the_policy_guard():
+    selected = select_offline_groups([], load_manifest())
+
+    assert [group["name"] for group in selected] == ["pipeline-policy"]
+
+
+def test_runtime_change_keeps_manifest_validation_without_policy_test_repetition():
+    selected = select_offline_groups(
+        ["backend/agent/nodes/research_worker.py"], load_manifest()
+    )
+    policy = next(group for group in selected if group["name"] == "pipeline-policy")
+
+    assert [command["argv"] for command in policy["commands"]] == [
+        ["./scripts/ci", "validate"]
     ]
+
+
+def test_policy_runner_change_retains_policy_regression_tests():
+    selected = select_offline_groups(["scripts/ci_runner.py"], load_manifest())
+    policy = next(group for group in selected if group["name"] == "pipeline-policy")
+
+    assert any(
+        "pytest" in command["argv"] and "ci/tests" in command["argv"]
+        for command in policy["commands"]
+    )
+
+
+def test_local_offline_run_with_no_changes_executes_no_commands(monkeypatch):
+    def unexpected_run(*args, **kwargs):
+        pytest.fail("unchanged code must not execute checks")
+
+    monkeypatch.setattr("scripts.ci_runner.subprocess.run", unexpected_run)
+
+    run_offline(load_manifest(), None, paths=[])
+
+
+def test_backend_test_only_selection_preserves_manifest_and_limits_test_files():
+    manifest = load_manifest()
+    before = json.dumps(manifest, sort_keys=True)
+    changed_test = "backend/tests/test_quality_corpus.py"
+
+    selected = select_offline_groups([changed_test, changed_test], manifest)
+    test_arguments = [
+        argument
+        for group in selected
+        for command in group["commands"]
+        for argument in command["argv"]
+        if argument.startswith("backend/tests/")
+    ]
+
+    assert test_arguments == [changed_test]
+    assert json.dumps(manifest, sort_keys=True) == before
+
+
+
+def test_runtime_script_change_keeps_its_domain_tests_with_a_backend_test_edit():
+    manifest = load_manifest()
+    selected = select_offline_groups(
+        ["backend/tests/test_api_security.py", "scripts/run_staging_eval.py"],
+        manifest,
+    )
+    selected_eval = next(group for group in selected if group["name"] == "eval-quality")
+    original_eval = next(
+        group for group in manifest["offline_groups"] if group["name"] == "eval-quality"
+    )
+
+    assert selected_eval["commands"] == original_eval["commands"]
+
+
+def test_full_backend_coverage_skips_repeated_domain_tests():
+    manifest = load_manifest()
+    prepared = prepare_offline_groups(manifest["offline_groups"], manifest)
+    commands = [command["argv"] for group in prepared for command in group["commands"]]
+
+    assert sum("backend/tests" in argv and "coverage" in argv for argv in commands) == 1
+    assert not any(
+        argument.startswith("backend/tests/test_")
+        for argv in commands for argument in argv
+    )
+    assert any("compileall" in argv for argv in commands)
+    assert any("terraform" in argv for argv in commands)
+
+
+def test_shared_backend_dependency_tests_execute_once_across_domains():
+    selected = select_offline_groups(["backend/adapters/database_adapter.py"], load_manifest())
+    test_paths = [
+        argument
+        for group in selected for command in group["commands"]
+        for argument in command["argv"]
+        if argument.startswith("backend/tests/test_")
+    ]
+
+    assert len(test_paths) == len(set(test_paths))
+    assert "backend/tests/test_database_adapter_postgres.py" in test_paths
+    assert "backend/tests/test_postgres_schema_guardrails.py" in test_paths
+
+
+@pytest.mark.parametrize(
+    ("path", "required_groups"),
+    [
+        ("backend/graph/schema.py", {"agent-rag-llm", "eval-quality"}),
+        ("backend/storage/thread_store.py", {"api-integration", "agent-rag-llm", "storage-security"}),
+        ("backend/rag/faiss_artifact.py", {"agent-rag-llm", "storage-security"}),
+    ],
+)
+def test_cross_domain_dependencies_select_their_consumers(path, required_groups):
+    selected = select_offline_groups([path], load_manifest())
+
+    assert required_groups <= {group["name"] for group in selected}
+    assert "backend-coverage" not in {group["name"] for group in selected}
 
 
 def test_ci_workflow_selects_groups_from_the_checked_out_event_range():
@@ -201,6 +314,8 @@ def test_change_classification_is_fail_safe(paths, expected):
         "ci/quality.json",
         "scripts/ci",
         "scripts/ci_runner.py",
+        "scripts/prepush_check.sh",
+        "scripts/frontend_checks.py",
         ".github/workflows/ci.yml",
         "frontend/src/components/Chat/ThinkingIndicator.tsx",
         "frontend/src/components/Layout/TitleBar.tsx",
@@ -261,13 +376,18 @@ def test_non_generation_changes_do_not_hide_a_mixed_generation_change():
         "ci/quality.json",
         "scripts/ci",
         "scripts/ci_runner.py",
+        "scripts/prepush_check.sh",
+        "scripts/frontend_checks.py",
         ".github/workflows/ci.yml",
     ],
 )
-def test_policy_changes_skip_paid_calls_but_keep_full_offline_matrix(path):
+def test_policy_changes_skip_paid_calls_and_select_pipeline_checks(path):
     manifest = load_manifest()
     assert classify_paths([path], manifest)["ai_impact"] is False
-    assert select_offline_groups([path], manifest) == manifest["offline_groups"]
+    expected = {"pipeline-policy"}
+    if path.endswith(".py"):
+        expected.add("static-security")
+    assert {group["name"] for group in select_offline_groups([path], manifest)} == expected
 
 
 def test_same_repository_pr_is_trusted(monkeypatch):

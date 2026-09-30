@@ -149,6 +149,22 @@ refactorable changes with evidence that they work.
   it succeeds. Prefer typed forms, deterministic validation, policy gates, and a clear
   cancel path.
 
+## Test scope
+
+- Select tests for changed behavior and affected callers, dependencies, contracts,
+  and shared infrastructure. Unchanged code belongs in the selection when the
+  change can affect its behavior.
+- Do not run unrelated suites by habit, after each edit, or solely because a test
+  runner defaults to the full suite.
+- Broaden testing only for a concrete impact, shared configuration or dependency
+  change, selection uncertainty, or an unresolved failure. Record the reason.
+- Stop after relevant checks pass. Repeat checks only after further changes or
+  new evidence that affects their result.
+- Avoid duplicate execution of the same tests within a verification run. Collect
+  coverage during the required execution where supported.
+- Apply the same scope to subagents, local verification, CI, and live evaluations.
+  Documentation-only changes use document review and applicable static checks.
+
 ## Working agreement
 
 Before editing:
@@ -169,7 +185,7 @@ While editing:
 
 Before handing off:
 
-1. Run the narrow tests first, then the applicable backend/frontend/static checks.
+1. Run only the tests and static checks justified by the test-scope policy.
 2. Distinguish failures introduced by the change from failures already present in an
    active worktree.
 3. Report what changed, evidence run, residual risk, migrations/rollout needs, and any
@@ -186,8 +202,9 @@ Before opening or updating a pull request, or triggering cloud CI/CD evaluations
    changes, submit a representative request, inspect the rendered diagram and answer,
    and check affected editing, failure recovery, and reload/persistence behavior.
    Documentation, test-only, and CI policy changes do not require an unrelated app run.
-3. Inspect relevant browser and backend errors, fix defects locally, and repeat the
-   affected journey before pushing. Keep existing model-call and spending limits.
+3. Inspect relevant browser and backend errors. If a defect requires a change,
+   fix it locally and repeat the affected checks. Reuse passing evidence while its
+   relevant inputs remain unchanged. Keep existing model-call and spending limits.
 4. Record the tested revision, account/environment where applicable, actions, results,
    and remaining gaps. Mocked transports, captured fixtures, unit tests, and screenshots
    support verification. They do not replace fresh generation evidence when generation

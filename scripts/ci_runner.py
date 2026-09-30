@@ -62,9 +62,25 @@ def _command_environment() -> dict[str, str]:
     return environment
 
 
-def run_offline(manifest: dict[str, Any], selected_group: str | None) -> None:
+def run_offline(
+    manifest: dict[str, Any], selected_group: str | None, *, paths: list[str] | None = None
+) -> None:
     groups = group_map(manifest)
-    selected = [groups[selected_group]] if selected_group else list(groups.values())
+    if paths == []:
+        print("No changed files; no offline checks selected.")
+        return
+    selected = (
+        select_offline_groups(paths, manifest)
+        if paths is not None
+        else prepare_offline_groups(
+            [groups[selected_group]] if selected_group else list(groups.values()), manifest
+        )
+    )
+    if paths and any(group["name"] == "backend-coverage" for group in selected):
+        print("Full verification: shared backend settings or unknown test ownership.", flush=True)
+    if selected_group:
+        selected = [group for group in selected if group["name"] == selected_group]
+    print("Selected offline groups: " + ", ".join(group["name"] for group in selected), flush=True)
     for group in selected:
         print(f"\n[{group['name']}]", flush=True)
         for command in group["commands"]:
@@ -73,7 +89,7 @@ def run_offline(manifest: dict[str, Any], selected_group: str | None) -> None:
             if argv[0] == "python":
                 argv[0] = sys.executable
             print(f"  [run] {command['name']}", flush=True)
-            # argv comes only from the reviewed, versioned quality manifest.
+            # argv comes only from the reviewed manifest and changed file paths.
             subprocess.run(argv, cwd=cwd, env=_command_environment(), check=True)  # nosec B603
 
 
@@ -203,16 +219,16 @@ def trust_for_event(event: dict[str, Any]) -> tuple[bool, str]:
     return False, f"unsupported event '{event_name or 'unknown'}'"
 
 
-def _git_changed_paths(base: str, head: str) -> list[str]:
+def _git_changed_paths(base: str, head: str, *, merge_base: bool = True) -> list[str]:
     # Fixed git argv; no shell or path supplied by the event payload.
     completed = subprocess.run(  # nosec B603, B607
-        ["git", "diff", "--name-only", f"{base}...{head}"],
+        ["git", "diff", "--name-only", "-z", "--no-renames", f"{base}{'...' if merge_base else '..'}{head}"],
         cwd=ROOT,
         check=True,
         text=True,
         capture_output=True,
     )
-    return completed.stdout.splitlines()
+    return [path for path in completed.stdout.split("\0") if path]
 
 
 def _event_revisions(event: dict[str, Any]) -> tuple[str, str]:
@@ -283,17 +299,72 @@ def _test_owners(manifest: dict[str, Any]) -> dict[str, set[str]]:
     return owners
 
 
+def prepare_offline_groups(
+    groups: list[dict[str, Any]], manifest: dict[str, Any], *, paths: list[str] | None = None
+) -> list[dict[str, Any]]:
+    """Keep one execution per backend test and scope frontend and dependency checks."""
+    coverage_selected = any(group["name"] == "backend-coverage" for group in groups)
+    backend_changes = [path for path in paths or [] if path.startswith("backend/")]
+    changed_tests = set(backend_changes) & set(_test_owners(manifest))
+    tests_only = bool(changed_tests) and all(
+        path in changed_tests or _matches(path, manifest["impact"]["documentation"])
+        for path in paths or []
+    )
+    seen_tests: set[str] = set()
+    prepared = []
+    for group in groups:
+        commands = []
+        for command in group["commands"]:
+            argv = list(command["argv"])
+            test_paths = {
+                arg for arg in argv
+                if arg.startswith("backend/tests/test_") and arg.endswith(".py")
+            }
+            if test_paths and "pytest" in argv:
+                retained = test_paths - seen_tests
+                if coverage_selected:
+                    retained = set()
+                elif tests_only:
+                    retained &= changed_tests
+                if not retained:
+                    continue
+                argv = [arg for arg in argv if arg not in test_paths or arg in retained]
+                seen_tests.update(retained)
+            if group["name"] == "frontend":
+                frontend_paths = [path for path in paths or [] if path.startswith("frontend/")]
+                if paths is None or not frontend_paths:
+                    argv.append("--full")
+                else:
+                    for path in frontend_paths:
+                        argv.extend(["--path", path])
+            if group["name"] == "pipeline-policy" and "pytest" in argv and paths is not None:
+                if not any(
+                    _matches(path, manifest["offline_selection"]["groups"]["pipeline-policy"])
+                    for path in paths
+                ):
+                    continue
+            if group["name"] == "static-security" and "pip_audit" in argv and paths is not None:
+                requirements = argv[argv.index("-r") + 1]
+                if requirements not in paths:
+                    continue
+            commands.append({**command, "argv": argv})
+        if commands:
+            prepared.append({**group, "commands": commands})
+    return prepared
+
+
 def select_offline_groups(paths: list[str], manifest: dict[str, Any]) -> list[dict[str, Any]]:
-    """Select owning groups, falling back to the full matrix for unknown or policy changes."""
+    """Select affected domains; shared settings and unknown owners require full checks."""
     groups = group_map(manifest)
     selection = manifest["offline_selection"]
-    normalized = sorted({path.strip().removeprefix("./") for path in paths if path.strip()})
-    if not normalized or any(_matches(path, selection["full_run_paths"]) for path in normalized):
-        return list(groups.values())
+    normalized = sorted(set(paths))
+    if any(_matches(path, selection["full_run_paths"]) for path in normalized):
+        return prepare_offline_groups(list(groups.values()), manifest)
 
     selected = set(selection["always"])
     test_owners = _test_owners(manifest)
     documentation_patterns = manifest["impact"]["documentation"]
+    functional_groups = set(manifest["test_tracking"]["explicit_backend_groups"])
     for path in normalized:
         owners = set(test_owners.get(path, set()))
         owners.update(
@@ -301,11 +372,20 @@ def select_offline_groups(paths: list[str], manifest: dict[str, Any]) -> list[di
             for group_name, patterns in selection["groups"].items()
             if _matches(path, patterns)
         )
-        if not owners and not _matches(path, documentation_patterns):
-            return list(groups.values())
+        documentation = _matches(path, documentation_patterns)
+        # Generic lint/container owners cannot certify a new backend domain.
+        unowned_backend = (
+            path.startswith("backend/") and path.endswith(".py")
+            and not owners.intersection(functional_groups | {"backend-coverage"})
+        )
+        if (not owners and not documentation) or (unowned_backend and not documentation):
+            return prepare_offline_groups(list(groups.values()), manifest)
         selected.update(owners)
 
-    return [group for group in groups.values() if group["name"] in selected]
+    return prepare_offline_groups(
+        [group for group in groups.values() if group["name"] in selected],
+        manifest, paths=normalized,
+    )
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -376,15 +456,32 @@ def _groups_json(groups: list[dict[str, Any]]) -> str:
     )
 
 
+def _local_changed_paths(base: str = "origin/main", head: str | None = None) -> list[str]:
+    committed = _git_changed_paths(base, head or "HEAD")
+    if head:
+        return committed
+    paths = set(committed)
+    for arguments in (
+        ["diff", "--cached", "--name-only", "-z", "--no-renames"],
+        ["diff", "--name-only", "-z", "--no-renames"],
+        ["ls-files", "--others", "--exclude-standard", "-z"],
+    ):
+        completed = subprocess.run(  # nosec B603, B607
+            ["git", *arguments], cwd=ROOT, check=True, text=True, capture_output=True,
+        )
+        paths.update(path for path in completed.stdout.split("\0") if path)
+    return sorted(paths)
+
+
 def _changed_paths_for_args(args: argparse.Namespace) -> list[str] | None:
     if args.paths_from:
         return Path(args.paths_from).read_text(encoding="utf-8").splitlines()
     if args.event_file:
         event = json.loads(Path(args.event_file).read_text(encoding="utf-8"))
         base, head = _event_revisions(event)
-        return _git_changed_paths(base, head)
-    if args.base and args.head:
-        return _git_changed_paths(args.base, args.head)
+        return _git_changed_paths(base, head, merge_base="pull_request" in event)
+    if args.base or args.head:
+        return _local_changed_paths(args.base or "origin/main", args.head)
     return None
 
 
@@ -409,7 +506,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Canonical local and GitHub quality runner")
     subparsers = parser.add_subparsers(dest="command", required=True)
     offline = subparsers.add_parser("offline")
-    offline.add_argument("--group", choices=[group["name"] for group in load_manifest()["offline_groups"]])
+    scope = offline.add_mutually_exclusive_group()
+    scope.add_argument("--group", choices=[group["name"] for group in load_manifest()["offline_groups"]])
+    scope.add_argument("--full", action="store_true", help="Run full verification explicitly")
+    offline.add_argument("--base")
+    offline.add_argument("--head")
+    offline.add_argument("--paths-from")
+    offline.add_argument("--event-file")
     groups = subparsers.add_parser("groups")
     groups.add_argument("--base")
     groups.add_argument("--head")
@@ -452,7 +555,18 @@ def main() -> None:
     args = build_parser().parse_args()
     manifest = load_manifest()
     if args.command == "offline":
-        run_offline(manifest, args.group)
+        scope_supplied = bool(args.base or args.head or args.paths_from or args.event_file)
+        if args.full and scope_supplied:
+            raise ValueError("--full cannot be combined with a changed-file scope")
+        if args.head and not args.base:
+            raise ValueError("--head requires --base")
+        scope_sources = sum(bool(value) for value in (args.paths_from, args.event_file, args.base))
+        if scope_sources > 1:
+            raise ValueError("Choose one of --paths-from, --event-file, or --base")
+        changed_paths = _changed_paths_for_args(args)
+        if changed_paths is None and not args.full and not args.group:
+            changed_paths = _local_changed_paths()
+        run_offline(manifest, args.group, paths=changed_paths)
     elif args.command == "groups":
         changed_paths = _changed_paths_for_args(args)
         selected_groups = (
