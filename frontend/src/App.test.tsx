@@ -378,6 +378,7 @@ describe('App coordination', () => {
       expect.objectContaining({ title: 'Architecture thread', graphData: graph }),
     );
 
+    await waitFor(() => expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false));
     await act(async () => { fireEvent.click(screen.getByText('Send message')); });
     expect(selectionState.clearSelection).toHaveBeenCalled();
     expect(agentState.sendMessage).toHaveBeenCalledWith(
@@ -454,17 +455,25 @@ describe('App coordination', () => {
     expect(threadState.handleNewChat).not.toHaveBeenCalled();
   });
 
-  it('waits for initial history before sending into a new chat', async () => {
+  it('waits for initial history before sending or creating a chat', async () => {
     let resolveHistory!: (value: { current_revision_id: null; revisions: [] }) => void;
     vi.mocked(fetchGraphHistory).mockReturnValueOnce(new Promise(done => { resolveHistory = done; }));
     render(<App />);
     await screen.findByTestId('graph-canvas');
     expect(screen.getByText('Updating history…')).toBeTruthy();
     expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(true);
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
     await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
+    expect(agentState.sendMessage).not.toHaveBeenCalled();
+    expect(selectionState.clearSelection).not.toHaveBeenCalled();
     expect(threadState.handleNewChat).not.toHaveBeenCalled();
     await act(async () => resolveHistory({ current_revision_id: null, revisions: [] }));
+    expect((screen.getByText('Send message') as HTMLButtonElement).disabled).toBe(false);
     expect((screen.getByText('Send in new chat') as HTMLButtonElement).disabled).toBe(false);
+    await act(async () => { fireEvent.click(screen.getByText('Send message')); });
+    expect(agentState.sendMessage).toHaveBeenCalledExactlyOnceWith('User question', expect.any(Object));
+    expect(selectionState.clearSelection).toHaveBeenCalledOnce();
     await act(async () => { fireEvent.click(screen.getByText('Send in new chat')); });
     expect(threadState.handleNewChat).toHaveBeenCalledWith({ preserveCurrentView: true });
   });
