@@ -90,7 +90,7 @@ def test_paths_file_and_explicit_paths_are_combined(runner):
     assert calls[1][-1] == "src/feature.test.ts"
 
 
-@pytest.mark.parametrize("arguments", [[], ["--path", "backend/main.py"], ["--path", "frontend/../backend/main.py"]])
+@pytest.mark.parametrize("arguments", [[], ["--path", "frontend"], ["--path", "backend/main.py"], ["--path", "frontend/../backend/main.py"]])
 def test_unscoped_or_invalid_requests_fail_without_commands(runner, arguments):
     _, calls = runner
     with pytest.raises(SystemExit) as error:

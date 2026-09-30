@@ -16,7 +16,7 @@ def frontend_commands(paths: list[str], *, full: bool, root: Path) -> list[list[
         raise ValueError("Provide changed frontend paths or request --full explicitly")
     for path in frontend_paths:
         parts = Path(path).parts
-        if not parts or parts[0] != "frontend" or ".." in parts:
+        if len(parts) < 2 or parts[0] != "frontend" or ".." in parts:
             raise ValueError(f"Expected a repository-relative frontend path: {path}")
 
     audit = full or any(
