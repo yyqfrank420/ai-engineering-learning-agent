@@ -7,7 +7,7 @@ import { TYPE_STYLE } from '../../utils/graphColors';
 import { D3Graph } from './D3Graph';
 import tradingBotSavedGraph from './__fixtures__/tradingBotSavedGraph.json';
 import { learnerSupportGraph } from './__fixtures__/learnerSupportGraph';
-import { diagramConnections } from './diagramConnections';
+import { diagramConnections, routeConnection, type ConnectionZone } from './diagramConnections';
 import { MIN_PUBLISHED_TITLE_PX, NODE_H, NODE_RX, NODE_TITLE_PX, NODE_W } from './graphLayout';
 import {
   customerSupportDenseGraph,
@@ -103,6 +103,115 @@ afterAll(() => {
 });
 
 describe('graph node activation', () => {
+  it('routes current SVG edges inside their own zone or through exterior corridors after drag and border resize', () => {
+    const routingGraph: GraphData = { ...graph,
+      nodes: ['a', 'b', 'c', 'u', 'v'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('a', 'b', 'Internal'), edge('a', 'c', 'External')],
+      groups: [
+        { id: 'source-zone', label: 'Processing cluster', nodeIds: ['a', 'b'] },
+        { id: 'target-zone', label: 'Destination cluster', nodeIds: ['c'] },
+        { id: 'obstacle-zone', label: 'Independent cluster', nodeIds: ['u', 'v'] },
+        { id: 'empty-zone', label: 'Missing members', nodeIds: ['missing', 'missing'] },
+      ] };
+    const initialViewState: GraphViewState = { layoutVersion: 17,
+      nodePositions: { a: { x: 200, y: 180 }, b: { x: 200, y: 340 }, c: { x: 900, y: 180 },
+        u: { x: 550, y: 280 }, v: { x: 550, y: 450 } },
+      zonePadding: { 'obstacle-zone': { top: 120, right: 0, bottom: 0, left: 0 } },
+      viewport: { x: 0, y: 0, k: 1 } };
+    const { container } = render(<D3Graph graphData={routingGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation initialViewState={initialViewState} />);
+    const path = (target: string) => container.querySelector<SVGPathElement>(`.edge-vis[data-source-id="a"][data-target-id="${target}"]`)!;
+    const geometry = () => {
+      const nodes = Array.from(container.querySelectorAll('g.node'), node => {
+        const position = node.getAttribute('transform')!.match(/translate\(([^,]+),\s*([^)]+)\)/)!;
+        return { id: node.getAttribute('data-node-id')!, x: Number(position[1]), y: Number(position[2]) };
+      });
+      const zones: ConnectionZone[] = routingGraph.groups!
+        .filter(group => group.nodeIds.some(id => nodes.some(node => node.id === id))).map(group => {
+        const rect = container.querySelector(`[data-group-id="${group.id}"] > rect`)!;
+        return { id: group.id, nodeIds: group.nodeIds,
+          x: Number(rect.getAttribute('x')), y: Number(rect.getAttribute('y')),
+          width: Number(rect.getAttribute('width')), height: Number(rect.getAttribute('height')) };
+      });
+      return { nodes, zones };
+    };
+    const points = (value: string) => [...value.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)]
+      .map(match => ({ x: Number(match[1]), y: Number(match[2]) }));
+    const samples = (value: string) => {
+      const route = points(value);
+      return route.slice(1).flatMap((end, index) => {
+        const start = route[index];
+        const count = Math.max(1, Math.ceil((Math.abs(end.x - start.x) + Math.abs(end.y - start.y)) / 4));
+        return Array.from({ length: count + 1 }, (_, offset) => ({
+          x: start.x + (end.x - start.x) * offset / count, y: start.y + (end.y - start.y) * offset / count }));
+      });
+    };
+    const inside = (point: { x: number; y: number }, zone: ConnectionZone) => point.x > zone.x && point.x < zone.x + zone.width
+      && point.y > zone.y && point.y < zone.y + zone.height;
+    const assertCurrentPaths = () => {
+      const { nodes, zones } = geometry();
+      for (const target of ['b', 'c']) {
+        const actual = path(target);
+        const expected = routeConnection(nodes.find(node => node.id === 'a')!, nodes.find(node => node.id === target)!, nodes, NODE_W, NODE_H, zones);
+        expect(actual.getAttribute('d')).toBe(expected.path);
+        expect(actual.hasAttribute('data-routing-blocked')).toBe(false);
+      }
+      const source = zones[0], target = zones[1], obstacle = zones[2];
+      expect(points(path('b').getAttribute('d')!).every(point => point.x >= source.x && point.x <= source.x + source.width
+        && point.y >= source.y && point.y <= source.y + source.height)).toBe(true);
+      const cross = samples(path('c').getAttribute('d')!);
+      expect(cross.some(point => inside(point, obstacle))).toBe(false);
+      const sourceExit = cross.findIndex(point => !inside(point, source));
+      expect(sourceExit).toBeGreaterThan(0);
+      expect(cross.slice(sourceExit).some(point => inside(point, source))).toBe(false);
+      const targetEntry = cross.findIndex(point => inside(point, target));
+      expect(targetEntry).toBeGreaterThan(sourceExit);
+      expect(cross.slice(targetEntry).every(point => inside(point, target))).toBe(true);
+    };
+    assertCurrentPaths();
+    const beforeDrag = path('c').getAttribute('d');
+    const node = container.querySelector('[data-node-id="a"]')!;
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number, clientY: number) => {
+      const event = createEvent[type](target, { clientX, clientY, button: 0, altKey: true });
+      Object.defineProperty(event, 'view', { value: document.defaultView });
+      fireEvent(target, event);
+    };
+    mouse(node, 'mouseDown', 200, 180);
+    mouse(window, 'mouseMove', 220, 200);
+    assertCurrentPaths();
+    expect(path('c').getAttribute('d')).not.toBe(beforeDrag);
+    mouse(window, 'mouseUp', 220, 200);
+    const beforeResize = path('c').getAttribute('d');
+    const top = container.querySelector('[data-group-id="obstacle-zone"] [data-side="n"]')!;
+    for (let index = 0; index < 10; index++) fireEvent.keyDown(top, { key: 'ArrowUp', shiftKey: true });
+    assertCurrentPaths();
+    expect(path('c').getAttribute('d')).not.toBe(beforeResize);
+  });
+
+  it('keeps blocked edges inspectable and explains the overlap in the existing tooltip', () => {
+    const overlapGraph: GraphData = { ...graph,
+      nodes: ['a', 'b'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('a', 'b', 'Send')],
+      groups: [{ id: 'first', label: 'First cluster', nodeIds: ['a'] }, { id: 'second', label: 'Second cluster', nodeIds: ['b'] }] };
+    const { container } = render(<D3Graph graphData={overlapGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation initialViewState={{ layoutVersion: 17,
+        nodePositions: { a: { x: 200, y: 180 }, b: { x: 200, y: 180 } }, viewport: { x: 0, y: 0, k: 1 } }} />);
+    expect(container.querySelectorAll('.edge-vis')).toHaveLength(1);
+    expect(container.querySelector('.edge-vis')?.getAttribute('data-routing-blocked')).toBe('true');
+    const hit = container.querySelector('.edge-hit')!;
+    expect(hit.getAttribute('aria-description')).toContain('Move nearby zones or components apart');
+    fireEvent.mouseOver(hit);
+    expect(screen.getByRole('tooltip').textContent).toContain('Move nearby zones or components apart');
+    fireEvent.keyDown(hit, { key: 'Enter' });
+    expect(screen.getByRole('region', { name: 'Connection details' })).toBeTruthy();
+    const target = container.querySelector('[data-node-id="b"]')!;
+    for (let index = 0; index < 60; index++) fireEvent.keyDown(target, { key: 'ArrowRight', shiftKey: true });
+    expect(container.querySelector('.edge-vis')?.hasAttribute('data-routing-blocked')).toBe(false);
+    expect(hit.hasAttribute('aria-description')).toBe(false);
+    fireEvent.mouseOver(hit);
+    expect(screen.getByRole('tooltip').textContent).not.toContain('Move nearby zones or components apart');
+  });
+
   it.each(['node', 'zone', 'border'])('cleans up an active %s drag when the canvas unmounts', targetType => {
     const save = vi.fn();
     const props = { graphData: { ...graph, groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['sensor_gateway'] }] },
