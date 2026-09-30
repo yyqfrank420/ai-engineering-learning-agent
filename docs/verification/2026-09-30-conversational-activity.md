@@ -12,12 +12,22 @@ outside this change.
 ## Implemented boundaries
 
 `backend/agent/activity.py` owns one recorder and workflow-to-public-text mapping.
-It consumes known workflow phases and statuses. Book and web operations produce
-tool rows; other phases produce first-person updates. Component and connection
-completion can use checked public preview titles and counts. Architect and
-challenger completion can use bounded public stage findings. Identifier-shaped
-text is excluded. Arbitrary provider reasoning and arbitrary event details are
-not public update sources.
+It consumes known workflow phases and statuses. Purpose-focused prose explains
+what the next step contributes to the user's request. Book, web, render and review
+operations produce quiet tool rows. Generic update completions are omitted;
+meaningful architect and challenger completion details remain bounded public
+findings. Identifier-shaped text is excluded. Arbitrary provider reasoning and
+arbitrary event details are not public update sources.
+
+Component and connection completion use an explicit draft summary from
+`staged_graph_workflow._stage_progress`, derived from that same attempt's actual
+graph. The summary contains a title limited to 80 characters, component and
+connection counts, and at most two component labels limited to 48 characters each.
+Public facts are sanitized and invalid summaries are dropped, including boolean,
+negative or oversized counts, impossible zero-component/nonzero-connection
+combinations, malformed labels and unexpected fields. There is no preview cache:
+earlier previews cannot supply counts for a later attempt. Draft wording remains
+preliminary and states that checks precede presentation.
 
 SSE and WebSocket record activity at their transport send boundaries. Each supplies
 elapsed time from its existing monotonic request clock and serializes recording
@@ -47,7 +57,10 @@ the owning answer, or at the conversation end before an answer exists.
 and completed "Worked for" labels, update paragraphs, and muted tool rows.
 Completed activity is collapsed. The client timer measures overall work, while the
 saved duration is authoritative after completion. Timer ticks are outside the
-polite announcement text. Activity stays outside the answer-content node.
+polite announcement text. Adjacent same-phase tool active/complete pairs render
+once as the completed row. This projection does not remove or rewrite canonical
+steps, duration or sequence metadata. Activity stays outside the answer-content
+node.
 
 Activity records are feedback only. They do not enter model prompts, authorize
 graph changes, change publication rules, or alter provider budgets and message
@@ -89,9 +102,73 @@ Back up the database before a deliberate downgrade if retained activity must be
 recoverable. Production table size, lock latency, and deployed-version inventory
 still require deployment review.
 
-## Checks and remaining verification
+## Current tone cleanup verification
 
-The canonical offline run passed all 26 selected checks. Its source fingerprint,
+The tone cleanup extends prior revision
+`49c69e0b13497de650b7fd759ef3a6bce3064c77`. It changes public activity wording,
+same-attempt draft facts and the adjacent tool-row presentation projection. No
+new model call, schema or prompt change was introduced. CI classifications,
+runtime exemptions, `PRODUCT.md` and design files are unchanged.
+
+The checked source SHA256 values are:
+
+- `backend/agent/activity.py`: `3ee638cb26b193959408c32dc47a95ee5fc76e8366b83083b4fd5d08462a97ff`.
+- `backend/agent/staged_graph_workflow.py`: `6ff03571bfd2cb8242d0f17f9c412fb178245d6abf7f74d84aef4f0a3a000a28`.
+
+Targeted checks passed 408 backend tests and 22 frontend tests, owned-file ESLint,
+TypeScript checking, Ruff and `git diff --check`. The detector ran once and returned
+an empty violation list.
+
+The current full canonical `./scripts/ci offline` run passed all 11 groups and 26
+commands, exit 0, on 2026-09-30 from 14:30:33 to 14:34:55 UTC. The seven source/test
+hashes remained unchanged. Its tracked diff SHA256 was
+`a3a0c96d30c1b311deb91241f6d0910063d15a7d23eb31d1fab7a608d995f168` at base
+HEAD `49c69e0b13497de650b7fd759ef3a6bce3064c77`. Evidence is retained in the parent
+workspace's `work/tone-verification/canonical-result.json` and `canonical.log`.
+
+Backend coverage passed 3,537 tests with 2 optional PostgreSQL skips and 92%
+coverage. Frontend passed 592 tests across 44 files. API tests passed 299, agent
+checks 2,603, storage 147, evaluation 477, ingestion 7, infrastructure 19 and
+pipeline policy 388. All applicable lint, security, dependency audits, builds,
+artifact, Terraform and migration checks passed; audits found zero vulnerabilities.
+Existing dependency deprecations, Node localStorage notices, Bandit suppression
+warnings and optional PostgreSQL, ingestion and Bash skips remain. This is not a
+warning-free run.
+
+The current mocked browser batch uses steps emitted by the actual recorder,
+fixture SHA256
+`cd3806cfd87e63b898340f8cd342a7dedff97a55f777f5d69500613e0c386224`.
+Its `work/tone-verification/report.json` identifies the exact recorder source
+above and matching frontend before/after hashes. Desktop 1440x1000 and mobile
+390x844 passed normal and 200% wrapping checks, timer advancement without repeated
+polite announcements, three adjacent tool-pair projections, retry/degraded/failure
+states, collapsed completion, reload and native keyboard disclosure. Browser
+errors, external requests and provider calls were zero. HTTP and WebSocket
+responses were mocked; this is current presentation evidence, not a fresh
+provider run.
+
+The second and final capture round corrected only the mobile scroll position so
+the actual eight-component draft paragraph, both component labels and its
+pre-check sentence were visible alongside the quiet check row and connection
+update. The completed 17-second history remained collapsed. The six authoritative
+capture paths were replaced; `report.round1.json` retains the first-round report.
+`report.json` records `capture_round: 2` and matching source/CSS hashes before and
+after. No product code or styling changed for the correction.
+
+A fresh default agent used the supplied finish-reviewer fallback and inspected all
+six authoritative current captures, `PRODUCT.md`, source and report evidence. It
+returned `ship` with no material fixes. No additional detector, capture round or
+provider call was requested. Only this documentation changed after the canonical
+run; source/test identities remain the checked values.
+
+## Prior implementation evidence retained in revision 49c69
+
+The following evidence predates the tone cleanup. The real-provider captures and
+PostgreSQL results verify the earlier implementation; they are not relabeled as
+current tone-copy evidence. The provider captures describe the tree before the
+subsequent unused-state cleanup, as recorded below.
+
+The preceding canonical offline run passed all 26 selected checks. Its source fingerprint,
 start/end timestamps, commands, and output are retained in
 `work/conversational-progress/offline.log` in the parent workspace. The backend
 coverage suite passed 3,489 tests with 2 skips; coverage enforcement passed.

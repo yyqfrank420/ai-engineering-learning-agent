@@ -12,44 +12,25 @@ from storage.message_activity import (
 )
 
 _STATUSES = {"active", "complete", "retry", "rejected", "degraded"}
+# Twenty digits cover real collection lengths and leave room for complete public sentences.
+_MAX_DRAFT_COUNT = 10**20 - 1
 _STAGE_TEXT = {
-    "context": ("I'm checking what you need.", "I've prepared your request."),
-    "evidence": (
-        "I'm reading the sources for your request.",
-        "I've gathered the available evidence.",
-    ),
-    "architect": (
-        "I'm planning a draft diagram for you.",
-        "I've prepared the draft design.",
-    ),
-    "challenger": (
-        "I'm checking the design assumptions.",
-        "I've finished checking the design assumptions.",
-    ),
-    "components": (
-        "I'm building the draft components.",
-        "I've prepared the draft components for review.",
-    ),
-    "connections": (
-        "I'm connecting the draft components.",
-        "I've prepared the draft connections for review.",
-    ),
-    "integrate": (
-        "I'm bringing the diagram together.",
-        "I've combined the draft diagram.",
-    ),
-    "render": ("I'm checking the diagram layout.", "I've finished the layout check."),
-    "review": (
-        "I'm reviewing the draft diagram.",
-        "I've finished reviewing the diagram.",
-    ),
-    "revise": ("I'm refining the draft diagram.", "I've finished this refinement."),
-    "explain": ("I'm writing the answer for you.", "I've prepared your answer."),
-    "synthesis": ("I'm writing the answer for you.", "I've prepared your answer."),
+    "context": "Let me check your request and any existing diagram.",
+    "evidence": "I'm looking for sources that fit this design.",
+    "architect": "I'll work out the responsibilities and boundaries before drafting the diagram.",
+    "challenger": "I'm checking where the design could break down.",
+    "components": "I'll start with the main parts. Once the draft has been checked, I'll add the connections.",
+    "connections": "Now I'll map how the parts work together.",
+    "integrate": "I'm bringing the draft and review findings together.",
+    "revise": "The checks found something to adjust. I'll revise the draft and run them again.",
+    "explain": "I'm putting the answer together with the design choices that matter for your request.",
+    "synthesis": "I'm putting the answer together with the design choices that matter for your request.",
 }
 _TOOL_TEXT = {
     "book": ("Searching the book", "Book search finished"),
     "web": ("Searching the web", "Web search finished"),
+    "render": ("Checking the layout", "Layout checked"),
+    "review": ("Checking the draft", "Draft checked"),
 }
 _INTERNAL_TEXT = re.compile(
     r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b|\b(?:capabilit(?:y|ies)|slot)[.:\[]|[{}]", re.I
@@ -65,51 +46,55 @@ def _public_text(value: object, limit: int) -> str:
     return text[:limit]
 
 
+def _draft_text(phase: str, summary: object) -> str:
+    if not isinstance(summary, dict) or set(summary) - {
+        "title",
+        "component_count",
+        "connection_count",
+        "labels",
+    }:
+        return ""
+    nodes, edges = summary.get("component_count"), summary.get("connection_count")
+    if any(
+        type(count) is not int or not 0 <= count <= _MAX_DRAFT_COUNT
+        for count in (nodes, edges)
+    ):
+        return ""
+    if nodes == 0 and edges > 0:
+        return ""
+    labels = summary.get("labels", [])
+    if (
+        not isinstance(labels, list)
+        or len(labels) > min(2, nodes)
+        or not all(isinstance(label, str) for label in labels)
+    ):
+        return ""
+    title = _public_text(summary.get("title"), 80)
+    public_labels = list(
+        dict.fromkeys(text for label in labels if (text := _public_text(label, 48)))
+    )
+    components = (
+        f"{nodes} component{'s' if nodes != 1 else ''}" if nodes else "no components"
+    )
+    if phase == "components":
+        names = f", including {' and '.join(public_labels)}" if public_labels else ""
+        subject = f"The draft for {title}" if title else "The draft"
+        return f"{subject} has {components}{names}. I'll check it before adding the connections."
+    connections = (
+        f"{edges} connection{'s' if edges != 1 else ''}" if edges else "no connections"
+    )
+    return f"The draft now has {connections} across {components}. I'll check how they fit together before presenting the diagram."
+
+
 class ActivityRecorder:
     def __init__(self) -> None:
         self._steps: list[dict] = []
         self._next_sequence = 0
         self._last_elapsed_ms = 0
-        self._preview: dict | None = None
 
     def record(self, event: dict, elapsed_ms: int) -> dict | None:
         event_type = event.get("type")
         if not isinstance(event_type, str):
-            return None
-        if event_type == "response_reset":
-            self._preview = None
-            return None
-        if event_type in {"graph_preview", "graph_data"}:
-            self._preview = None
-            graph = event.get("data")
-            if isinstance(graph, dict):
-                nodes, edges = graph.get("nodes"), graph.get("edges")
-                if not isinstance(nodes, list) or not isinstance(edges, list):
-                    return None
-                if not all(
-                    isinstance(node, dict)
-                    and isinstance(node.get("id"), str)
-                    and node["id"]
-                    and isinstance(node.get("label"), str)
-                    and node["label"]
-                    for node in nodes
-                ):
-                    return None
-                node_ids = {node["id"] for node in nodes}
-                if len(node_ids) != len(nodes) or not all(
-                    isinstance(edge, dict)
-                    and isinstance(edge.get("source"), str)
-                    and isinstance(edge.get("target"), str)
-                    and edge["source"] in node_ids
-                    and edge["target"] in node_ids
-                    for edge in edges
-                ):
-                    return None
-                self._preview = {
-                    "title": _public_text(graph.get("title"), 120),
-                    "nodes": len(graph["nodes"]),
-                    "edges": len(edges) if isinstance(edges, list) else None,
-                }
             return None
         if event_type != "workflow_progress":
             return None
@@ -122,40 +107,53 @@ class ActivityRecorder:
         ):
             return None
         kind = "tool" if phase in _TOOL_TEXT else "update"
-        labels = _TOOL_TEXT if kind == "tool" else _STAGE_TEXT
-        text = labels[phase][1 if status == "complete" else 0]
+        text = (
+            _TOOL_TEXT[phase][1 if status == "complete" else 0]
+            if kind == "tool"
+            else _STAGE_TEXT[phase]
+        )
         if status == "retry":
-            text = (
-                "I'm refining the draft after its checks."
-                if kind == "update"
-                else "Retrying the search"
-            )
-        elif status == "rejected":
-            text = (
-                "I couldn't complete this diagram check."
-                if kind == "update"
-                else "Search did not complete"
-            )
-        elif status == "degraded":
-            text = (
-                "This step returned limited results."
-                if kind == "update"
-                else "Search coverage is limited"
-            )
-        elif status == "complete" and phase in {"architect", "challenger"}:
-            finding = _public_text(event.get("detail"), 220)
-            if finding:
-                text += " " + finding
-        elif (
-            status == "complete"
-            and phase in {"components", "connections"}
-            and self._preview
-        ):
-            count = self._preview["nodes" if phase == "components" else "edges"]
-            if count is not None:
-                title = self._preview["title"]
-                noun = phase[:-1] if count == 1 else phase
-                text = f"I've prepared {count} draft {noun}{f' for {title}' if title else ''}."
+            if kind == "update":
+                text = _STAGE_TEXT["revise"]
+            elif phase in {"book", "web"}:
+                text = "Retrying the search"
+            else:
+                text = "Checking the draft again"
+        elif status in {"rejected", "degraded"}:
+            if kind == "update":
+                if phase in {"components", "connections"}:
+                    text = (
+                        "I couldn't finish this draft. You can retry the request."
+                        if status == "rejected"
+                        else "I need a little more detail before I can build this part of the diagram."
+                    )
+                else:
+                    text = (
+                        "I couldn't complete this diagram check."
+                        if status == "rejected"
+                        else "This step returned limited results."
+                    )
+            elif phase in {"book", "web"}:
+                text = (
+                    "Search did not complete"
+                    if status == "rejected"
+                    else "Search coverage is limited"
+                )
+            else:
+                text = (
+                    "Layout check not completed"
+                    if phase == "render"
+                    else "Review not completed"
+                )
+        elif status == "complete" and kind == "update":
+            if phase in {"architect", "challenger"}:
+                text = _public_text(event.get("detail"), 220)
+            elif phase in {"components", "connections"}:
+                text = _draft_text(phase, event.get("draft"))
+            else:
+                return None
+            if not text:
+                return None
         elapsed_ms = min(
             MAX_ACTIVITY_DURATION_MS, max(self._last_elapsed_ms, elapsed_ms, 0)
         )

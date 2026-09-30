@@ -20,7 +20,10 @@ def test_mapper_only_records_known_public_workflow_events_and_tool_operations():
         progress(detail="external_effects = True", diagnostic="secret"), 5
     )
     assert update["kind"] == "update"
-    assert update["text"] == "I'm building the draft components."
+    assert (
+        update["text"]
+        == "I'll start with the main parts. Once the draft has been checked, I'll add the connections."
+    )
     tool = recorder.record(progress("book"), 6)
     assert tool["kind"] == "tool" and tool["text"] == "Searching the book"
     assert "private" not in repr(recorder.snapshot(7))
@@ -33,35 +36,98 @@ def test_mapper_only_records_known_public_workflow_events_and_tool_operations():
 )
 def test_internal_public_findings_are_excluded(detail):
     recorder = ActivityRecorder()
-    step = recorder.record(progress("architect", "complete", detail=detail), 0)
-    assert step["text"] == "I've prepared the draft design."
+    assert recorder.record(progress("architect", "complete", detail=detail), 0) is None
 
 
-def test_completed_public_findings_are_bounded_and_preview_counts_remain_drafts():
+@pytest.mark.parametrize("phase", ["architect", "challenger"])
+def test_completed_public_finding_is_its_own_bounded_paragraph(phase):
     recorder = ActivityRecorder()
     finding = "The runtime uses a queue."
-    step = recorder.record(progress("architect", "complete", detail=finding), 10)
-    assert finding in step["text"]
-    recorder.record(
-        {
-            "type": "graph_preview",
-            "data": {
-                "title": "Queue design",
-                "nodes": [{"id": "a", "label": "A"}, {"id": "b", "label": "B"}],
-                "edges": [{"source": "a", "target": "b"}],
-            },
-        },
-        12,
-    )
-    components = recorder.record(progress("components", "complete"), 13)
-    assert components["text"] == "I've prepared 2 draft components for Queue design."
-    connections = recorder.record(progress("connections", "complete"), 14)
-    assert connections["text"] == "I've prepared 1 draft connection for Queue design."
-    assert "approved" not in components["text"] + connections["text"]
     assert (
-        recorder.record(progress("review", "rejected"), 15)["text"]
-        == "I couldn't complete this diagram check."
+        recorder.record(progress(phase, "complete", detail=finding), 10)["text"]
+        == finding
     )
+    assert (
+        len(recorder.record(progress(phase, "complete", detail="x" * 500), 11)["text"])
+        == 220
+    )
+
+
+@pytest.mark.parametrize(
+    "phase",
+    [
+        "context",
+        "evidence",
+        "architect",
+        "challenger",
+        "integrate",
+        "revise",
+        "explain",
+        "synthesis",
+    ],
+)
+def test_generic_completion_is_omitted_without_consuming_sequence(phase):
+    recorder = ActivityRecorder()
+    assert recorder.record(progress(phase, "complete"), 0) is None
+    assert recorder.record(progress(phase, "active"), 1)["sequence"] == 0
+
+
+@pytest.mark.parametrize(
+    "phase,active,complete",
+    [
+        ("render", "Checking the layout", "Layout checked"),
+        ("review", "Checking the draft", "Draft checked"),
+    ],
+)
+def test_layout_and_review_are_quiet_check_rows(phase, active, complete):
+    recorder = ActivityRecorder()
+    for status, text in [
+        ("active", active),
+        ("complete", complete),
+        ("retry", "Checking the draft again"),
+        (
+            "rejected",
+            "Layout check not completed"
+            if phase == "render"
+            else "Review not completed",
+        ),
+        (
+            "degraded",
+            "Layout check not completed"
+            if phase == "render"
+            else "Review not completed",
+        ),
+    ]:
+        step = recorder.record(progress(phase, status, detail="SECRET_DIAGNOSTIC"), 1)
+        assert step["kind"] == "tool" and step["text"] == text
+
+
+@pytest.mark.parametrize(
+    "nodes,edges,components,connections",
+    [
+        (0, 0, "no components", "no connections"),
+        (1, 1, "1 component", "1 connection"),
+        (3, 2, "3 components", "2 connections"),
+    ],
+)
+def test_draft_summaries_use_current_facts_and_grammatical_counts(
+    nodes, edges, components, connections
+):
+    recorder = ActivityRecorder()
+    draft = {
+        "title": "Queue design",
+        "component_count": nodes,
+        "connection_count": edges,
+        "labels": ["Queue", "Worker"][: min(2, nodes)],
+    }
+    first = recorder.record(progress("components", "complete", draft=draft), 1)
+    assert f"for Queue design has {components}" in first["text"]
+    assert ("including" in first["text"]) == bool(nodes)
+    assert "before adding the connections" in first["text"]
+    second = recorder.record(progress("connections", "complete", draft=draft), 2)
+    assert f"{connections} across {components}" in second["text"]
+    assert "before presenting the diagram" in second["text"]
+    assert "approved" not in first["text"] + second["text"]
 
 
 def test_activity_deduplicates_consecutive_steps_bounds_history_and_hoisted_time():
@@ -70,7 +136,7 @@ def test_activity_deduplicates_consecutive_steps_bounds_history_and_hoisted_time
     recorder.record(progress(), 10)
     assert recorder.record(progress(), 20) is None
     for index in range(1, 61):
-        recorder.record(progress(status="complete" if index % 2 else "active"), index)
+        recorder.record(progress(status="retry" if index % 2 else "active"), index)
     snapshot = recorder.snapshot(2)
     assert len(snapshot["steps"]) == 48
     assert snapshot["steps"][0]["sequence"] == 13
@@ -119,44 +185,148 @@ def test_malformed_event_types_are_ignored(event):
 
 
 @pytest.mark.parametrize(
-    "graph",
+    "summary",
     [
-        {"nodes": [{"id": "a"}], "edges": []},
-        {
-            "nodes": [{"id": "a", "label": "A"}],
-            "edges": [{"source": "a", "target": "missing"}],
-        },
-        {"nodes": [{"id": "a", "label": "A"}, {"id": "a", "label": "B"}], "edges": []},
+        None,
+        [],
+        {},
+        {"component_count": True, "connection_count": 1},
+        {"component_count": 2, "connection_count": False},
+        {"component_count": -1, "connection_count": 1},
+        {"component_count": 2, "connection_count": -1},
+        {"component_count": 2.0, "connection_count": 1},
+        {"component_count": 2, "connection_count": "1"},
+        {"component_count": 2, "connection_count": 1, "labels": [False]},
+        {"component_count": 2, "connection_count": 1, "labels": ["A", "B", "C"]},
+        {"component_count": 1, "connection_count": 1, "labels": ["A", "B"]},
+        {"component_count": 2, "connection_count": 1, "diagnostic": "private"},
     ],
 )
-def test_invalid_preview_identity_does_not_personalize_completed_update(graph):
+@pytest.mark.parametrize("phase", ["components", "connections"])
+def test_missing_or_invalid_draft_facts_are_omitted(phase, summary):
     recorder = ActivityRecorder()
-    assert recorder.record({"type": "graph_preview", "data": graph}, 0) is None
-    assert (
-        recorder.record(progress(status="complete"), 1)["text"]
-        == "I've prepared the draft components for review."
-    )
+    assert recorder.record(progress(phase, "complete", draft=summary), 1) is None
+    assert recorder.snapshot(2) is None
 
 
-def test_invalid_or_reset_preview_cannot_reuse_stale_public_counts():
+def test_graph_previews_and_resets_cannot_personalize_completion():
     recorder = ActivityRecorder()
-    preview = {
-        "type": "graph_preview",
-        "data": {
-            "title": "Earlier draft",
-            "nodes": [{"id": "a", "label": "A"}],
-            "edges": [],
+    for event in [
+        {
+            "type": "graph_preview",
+            "data": {
+                "title": "Earlier draft",
+                "nodes": [{"id": "a", "label": "A"}],
+                "edges": [],
+            },
         },
+        {"type": "graph_data", "data": None},
+        {"type": "response_reset"},
+    ]:
+        assert recorder.record(event, 0) is None
+        assert recorder.record(progress("connections", "complete"), 1) is None
+    draft = {
+        "title": "Current",
+        "component_count": 2,
+        "connection_count": 3,
+        "labels": [],
     }
-    recorder.record(preview, 0)
-    recorder.record({"type": "graph_preview", "data": None}, 1)
     assert (
-        recorder.record(progress(status="complete"), 2)["text"]
-        == "I've prepared the draft components for review."
+        "3 connections"
+        in recorder.record(progress("connections", "complete", draft=draft), 2)["text"]
     )
-    recorder.record(preview, 3)
-    recorder.record({"type": "response_reset"}, 4)
+
+
+def test_draft_names_are_sanitized_bounded_and_never_include_internal_fields():
+    recorder = ActivityRecorder()
+    draft = {
+        "title": "internal_title",
+        "component_count": 2,
+        "connection_count": 1,
+        "labels": ["external_effects", "Queue"],
+    }
+    step = recorder.record(
+        progress("components", "complete", draft=draft, diagnostic="secret"), 0
+    )
+    assert "including Queue" in step["text"]
     assert (
-        recorder.record(progress("connections", "complete"), 5)["text"]
-        == "I've prepared the draft connections for review."
+        "internal" not in step["text"]
+        and "external" not in step["text"]
+        and "secret" not in step["text"]
     )
+    draft = {**draft, "title": "😀" * 200, "labels": ["東京" * 100, "🚀" * 100]}
+    step = recorder.record(progress("components", "complete", draft=draft), 1)
+    assert len(step["text"]) <= 400
+    MessageActivity.model_validate(recorder.snapshot(2))
+
+
+@pytest.mark.parametrize("phase", ["components", "connections"])
+def test_draft_clarification_and_failure_describe_known_outcome(phase):
+    recorder = ActivityRecorder()
+    assert (
+        recorder.record(progress(phase, "degraded"), 1)["text"]
+        == "I need a little more detail before I can build this part of the diagram."
+    )
+    assert (
+        recorder.record(progress(phase, "rejected"), 2)["text"]
+        == "I couldn't finish this draft. You can retry the request."
+    )
+
+
+def test_counts_too_large_for_public_sentences_are_rejected_without_formatting():
+    recorder = ActivityRecorder()
+    summary = {"component_count": 10**5000, "connection_count": 1}
+    assert recorder.record(progress("components", "complete", draft=summary), 1) is None
+    summary = {"component_count": 2, "connection_count": 10**5000}
+    assert (
+        recorder.record(progress("connections", "complete", draft=summary), 2) is None
+    )
+
+
+@pytest.mark.parametrize(
+    "phase,ending",
+    [
+        ("components", "I'll check it before adding the connections."),
+        (
+            "connections",
+            "I'll check how they fit together before presenting the diagram.",
+        ),
+    ],
+)
+def test_maximum_draft_display_values_keep_complete_sentences(phase, ending):
+    recorder = ActivityRecorder()
+    summary = {
+        "title": "東京" * 100,
+        "component_count": 10**20 - 1,
+        "connection_count": 10**20 - 1,
+        "labels": ["Queue" * 30, "Worker" * 30],
+    }
+    text = recorder.record(progress(phase, "complete", draft=summary), 0)["text"]
+    assert len(text) <= 400
+    assert text.endswith(ending)
+
+
+@pytest.mark.parametrize("phase", ["components", "connections"])
+def test_connections_without_components_are_not_public_facts(phase):
+    recorder = ActivityRecorder()
+    assert (
+        recorder.record(
+            progress(
+                phase, "complete", draft={"component_count": 0, "connection_count": 1}
+            ),
+            0,
+        )
+        is None
+    )
+
+
+def test_duplicate_public_labels_are_named_once():
+    recorder = ActivityRecorder()
+    summary = {
+        "component_count": 2,
+        "connection_count": 1,
+        "labels": ["Queue", " Queue "],
+    }
+    text = recorder.record(progress("components", "complete", draft=summary), 0)["text"]
+    assert "including Queue." in text
+    assert "Queue and Queue" not in text

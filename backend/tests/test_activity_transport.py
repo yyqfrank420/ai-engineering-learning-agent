@@ -91,7 +91,7 @@ def test_activity_streams_persists_and_replays_with_no_new_provider_work(
         reloaded = client.get(f"/api/threads/{thread['id']}").json()
     live = [event for event in events if event["type"] == "activity_step"]
     assert [step["sequence"] for step in live] == [0, 1, 2]
-    assert [step["kind"] for step in live] == ["tool", "tool", "update"]
+    assert [step["kind"] for step in live] == ["tool", "tool", "tool"]
     assert [step["elapsed_ms"] for step in live] == sorted(
         step["elapsed_ms"] for step in live
     )

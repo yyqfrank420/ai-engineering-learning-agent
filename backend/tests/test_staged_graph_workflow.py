@@ -4825,3 +4825,57 @@ async def test_typed_extension_at_capacity_never_falls_back_to_rebuild(
     assert result["graph_review"]["revision_instruction"] == (
         "I couldn't extend the saved diagram. Start a new chat for a separate diagram."
     )
+
+
+@pytest.mark.asyncio
+async def test_current_draft_activity_is_emitted_before_its_matching_preview(monkeypatch):
+    from agent.activity import ActivityRecorder
+
+    _install_success_boundaries(monkeypatch)
+    recorder = ActivityRecorder()
+    events = []
+    steps = []
+
+    async def send(event):
+        events.append(event)
+        step = recorder.record(event, len(events))
+        if step:
+            steps.append(step)
+
+    original_render = workflow._render
+
+    async def render(state, graph, **arguments):
+        await state["send"]({"type": "graph_preview", "data": graph})
+        return await original_render(state, graph, **arguments)
+
+    monkeypatch.setattr(workflow, "_render", render)
+    result = await workflow.run_staged_graph_pipeline(_state(send=send))
+    assert result["graph_publication"] == "approved"
+    completed = [event for event in events if event.get("draft")]
+    assert [event["phase"] for event in completed] == ["components", "connections"]
+    assert completed[0]["draft"] == {"title": "Payment processing", "component_count": 2,
+                                    "connection_count": 0, "labels": ["Request gateway", "Payment service"]}
+    assert completed[1]["draft"]["connection_count"] == 1
+    previews = [event for event in events if event["type"] == "graph_preview"]
+    assert events.index(completed[0]) < events.index(previews[0]) < events.index(completed[1]) < events.index(previews[1])
+    updates = [step["text"] for step in steps if step["status"] == "complete" and step["kind"] == "update"]
+    assert updates == ["The draft for Payment processing has 2 components, including Request gateway and Payment service. I'll check it before adding the connections.",
+                       "The draft now has 1 connection across 2 components. I'll check how they fit together before presenting the diagram."]
+    assert "capabilities" not in repr(completed)
+    assert "responsibility" not in repr(completed)
+
+
+@pytest.mark.asyncio
+async def test_draft_progress_summary_bounds_names_and_omits_graph_details():
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    graph = {"title": "T" * 200, "nodes": [{"label": "A" * 100}, {"label": "B" * 100}, {"label": "C"}],
+             "edges": [{"description": "PRIVATE_GRAPH_DETAIL"}], "capabilities": {"external_effects": True}}
+    await workflow._stage_progress(_state(send=send), "components", "complete", "Components ready", draft=graph)
+    assert events[0]["draft"] == {"title": "T" * 80, "component_count": 3,
+                                  "connection_count": 1, "labels": ["A" * 48, "B" * 48]}
+    assert "PRIVATE_GRAPH_DETAIL" not in repr(events)
+    assert "capabilities" not in repr(events)

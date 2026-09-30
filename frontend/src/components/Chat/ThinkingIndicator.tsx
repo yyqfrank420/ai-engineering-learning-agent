@@ -22,7 +22,12 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
   }, [liveRequestId]);
   const duration = liveActivity
     ? Math.max(activity.duration_ms, now - liveActivity.startedAt) : activity.duration_ms;
-  const latest = activity.steps.at(-1);
+  const visibleSteps = activity.steps.filter((step, index, steps) => {
+    const next = steps[index + 1];
+    return !(step.kind === 'tool' && step.status === 'active'
+      && next?.kind === 'tool' && next.status === 'complete' && next.phase === step.phase);
+  });
+  const latest = visibleSteps.at(-1);
   return (
     <>
     <details className="thinking-indicator" open={Boolean(liveActivity)}>
@@ -31,7 +36,7 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
         <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3" /></svg>
       </summary>
       <div className="thinking-steps" role="region" aria-label="Work activity">
-        {activity.steps.map(step => step.kind === 'update'
+        {visibleSteps.map(step => step.kind === 'update'
           ? <p key={step.sequence} className="thinking-update">{step.text}</p>
           : <div key={step.sequence} className="thinking-tool" data-status={step.status}>
               <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
