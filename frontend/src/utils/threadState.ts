@@ -1,4 +1,5 @@
 import type { GraphData, Message, ThreadDetail } from '../types';
+import { parseMessageActivity } from './messageActivity';
 import { normalizeGraphData } from './graphData';
 
 export function storageKeyForThread(userId: string) {
@@ -28,6 +29,7 @@ export function readThreadSnapshot(userId: string, threadId: string): ThreadSnap
       messages: parsed.messages.map(message => ({
         ...message,
         isStreaming: false,
+        activity: message.role === 'assistant' ? parseMessageActivity(message.activity) : undefined,
       })),
       graphData: normalizeGraphData(parsed.graphData ?? null),
     };
@@ -75,6 +77,7 @@ export function mapThreadMessages(messages: ThreadDetail['messages']): Message[]
     role: message.role,
     content: message.content,
     graphRevisionId: message.graph_revision_id ?? null,
+    activity: message.role === 'assistant' ? parseMessageActivity(message.activity) : undefined,
     clientRequestId: message.client_request_id ?? null,
     retryRequest: message.retry_request ? {
       content: message.retry_request.content,

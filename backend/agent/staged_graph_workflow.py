@@ -960,14 +960,24 @@ async def _render(
     )
 
 
-async def _stage_progress(state: AgentState, phase: str, status: str, title: str) -> None:
+async def _stage_progress(
+    state: AgentState, phase: str, status: str, title: str, *, draft: GraphData | None = None
+) -> None:
     send = state.get("send")
     if callable(send):
         try:
-            await send({
+            event: dict[str, Any] = {
                 "type": "workflow_progress", "phase": phase, "status": status,
                 "title": title, "detail": "",
-            })
+            }
+            if draft is not None:
+                event["draft"] = {
+                    "title": draft.get("title", "")[:80],
+                    "component_count": len(draft["nodes"]),
+                    "connection_count": len(draft["edges"]),
+                    "labels": [node["label"][:48] for node in draft["nodes"][:2]],
+                }
+            await send(event)
         except Exception:
             logger.info("Stage progress could not be delivered", exc_info=True)
 
@@ -1536,7 +1546,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     },
                 )
             preview = _component_preview(assigned)
-            await _stage_progress(working_state, "components", "complete", "Components ready")
+            await _stage_progress(working_state, "components", "complete", "Components ready", draft=preview)
             rendered = await _render(
                 working_state, preview, preview_count=preview_count, stage="components"
             )
@@ -1830,7 +1840,7 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             ):
                 # Recovery disclosure is server-owned, outside user-editable fields.
                 projected = {**projected, "detail_level": "overview"}
-            await _stage_progress(working_state, "connections", "complete", "Connections ready")
+            await _stage_progress(working_state, "connections", "complete", "Connections ready", draft=projected)
             rendered = await _render(
                 working_state, projected, preview_count=preview_count, stage="connections"
             )

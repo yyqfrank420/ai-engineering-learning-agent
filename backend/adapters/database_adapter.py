@@ -51,7 +51,7 @@ POSTGRES_REQUIRED_POLICIES = {
 POSTGRES_REQUIRED_COLUMNS = {
     "chat_threads": {"graph_contract", "active_graph_revision_id"},
     "chat_messages": {
-        "client_request_id", "message_sequence", "graph_revision_id", "retry_request"
+        "client_request_id", "message_sequence", "graph_revision_id", "retry_request", "activity"
     },
     "rate_limit_events": {
         "key_hash",
@@ -80,6 +80,7 @@ _SQLITE_CHAT_MESSAGES_SCHEMA = """
         content TEXT NOT NULL,
         client_request_id TEXT,
         retry_request TEXT CHECK(retry_request IS NULL OR role = 'assistant'),
+        activity TEXT CHECK(activity IS NULL OR (role = 'assistant' AND json_valid(activity) AND json_type(activity) = 'object')),
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )
 """
@@ -299,6 +300,11 @@ def init_db() -> None:
             conn.execute(
                 "ALTER TABLE chat_messages ADD COLUMN retry_request TEXT "
                 "CHECK(retry_request IS NULL OR role = 'assistant')"
+            )
+        if "activity" not in message_columns and "message_sequence" in message_columns:
+            conn.execute(
+                "ALTER TABLE chat_messages ADD COLUMN activity TEXT "
+                "CHECK(activity IS NULL OR (role = 'assistant' AND json_valid(activity) AND json_type(activity) = 'object'))"
             )
         if "graph_revision_id" not in message_columns:
             conn.execute("ALTER TABLE chat_messages ADD COLUMN graph_revision_id TEXT REFERENCES graph_revisions(id) ON DELETE SET NULL")

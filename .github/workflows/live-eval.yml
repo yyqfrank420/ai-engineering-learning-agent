@@ -7,6 +7,10 @@ on:
         description: Failed protected run whose saved evidence will be validated
         type: string
         default: ''
+      source_run_attempt:
+        description: Positive source attempt to authenticate (defaults to current attempt)
+        type: string
+        default: ''
       reviewed_diff_sha256:
         description: SHA256 of the reviewed binary diff from the source head
         type: string
@@ -51,14 +55,16 @@ jobs:
       - id: impact
         env:
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           REVIEWED_DIFF_SHA256: ${{ inputs.reviewed_diff_sha256 }}
           RESUME_REASON: ${{ inputs.reason }}
         run: |
           ./scripts/ci impact --event-file "$GITHUB_EVENT_PATH" --github-output
           if [ -n "$SOURCE_RUN_ID" ]; then
             [[ "$GITHUB_EVENT_NAME" = workflow_dispatch && "$SOURCE_RUN_ID" =~ ^[0-9]+$ && "$REVIEWED_DIFF_SHA256" =~ ^[0-9a-f]{64}$ && ${#RESUME_REASON} -ge 20 ]] || exit 1
+            [[ -z "$SOURCE_RUN_ATTEMPT" || "$SOURCE_RUN_ATTEMPT" =~ ^[1-9][0-9]*$ ]] || exit 1
             echo "ai-impact=true" >> "$GITHUB_OUTPUT"
-          elif [ -n "$REVIEWED_DIFF_SHA256$RESUME_REASON" ]; then
+          elif [ -n "$SOURCE_RUN_ATTEMPT$REVIEWED_DIFF_SHA256$RESUME_REASON" ]; then
             echo "Recovery inputs require a source run." >&2
             exit 1
           fi
@@ -187,10 +193,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PYTHONPATH: backend
           SOURCE_RUN_ID: ${{ inputs.source_run_id }}
+          SOURCE_RUN_ATTEMPT: ${{ inputs.source_run_attempt }}
           REVIEWED_DIFF_SHA256: ${{ inputs.reviewed_diff_sha256 }}
           RESUME_REASON: ${{ inputs.reason }}
         run: |
-          python -m eval.pr_resume prepare --source-run-id "$SOURCE_RUN_ID" \
+          attempt_args=()
+          if [ -n "$SOURCE_RUN_ATTEMPT" ]; then
+            attempt_args+=(--source-run-attempt "$SOURCE_RUN_ATTEMPT")
+          fi
+          python -m eval.pr_resume prepare --source-run-id "$SOURCE_RUN_ID" "${attempt_args[@]}" \
             --reviewed-diff-sha256 "$REVIEWED_DIFF_SHA256" --reason "$RESUME_REASON" \
             --output-dir artifacts/live-eval/resume
 

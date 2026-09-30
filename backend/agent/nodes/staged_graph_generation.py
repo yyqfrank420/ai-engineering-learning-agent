@@ -40,7 +40,7 @@ from config import settings
 from agent.stream_utils import stream_structured_llm
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v38"
+_COMPONENT_PROMPT_VERSION = "staged_components_v40"
 _CONNECTION_PROMPT_VERSION = "staged_connections_v31"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v2"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
@@ -747,8 +747,6 @@ async def _run_generation(
                 else settings.graph_builder_max_completion_tokens
             ),
             provider_attempt_limit=1,
-            send=state.get("send"),
-            thinking_phase=stage,
         )
     except TimeoutError as exc:
         raise StagedGenerationError("staged_generation_timeout") from exc
@@ -997,6 +995,14 @@ def _attempt_prompt(
             "Use null to preserve a slot's original record; witness records may remain "
             "null when additions resolve a missing control."
         )
+        if stage == "components":
+            edit_rule += (
+                " In the final assembled components, every normalized (label, type) pair "
+                "must be unique across retained rows, authorized updates, and additions. "
+                "Normalize labels by splitting whitespace, joining with a single space, "
+                "and applying Unicode case-folding; compare the type code unchanged. "
+                "Do not re-add retained components."
+            )
         if stage == "connections":
             edit_rule += (
                 " Before removing records or changing connection endpoints, provide "
@@ -1104,7 +1110,10 @@ def _attempt_prompt(
                 "a concrete business use case. Depict that subject and its relevant mechanisms "
                 "or contrasting paths without inventing an application workflow. For a broad "
                 "teaching or overview request, preserve the subject's breadth in a mechanism, "
-                "lifecycle, or topic map. A concrete example may illustrate part of that map "
+                "lifecycle, or topic map. Use concrete lifecycle responsibilities, application "
+                "categories, or relevant human decisions as component boundaries. Distinguish "
+                "conceptual techniques from runtime services; a technique is not automatically "
+                "a service or a separate owner. A concrete example may illustrate part of that map "
                 "but must not replace the requested subject with an unrequested product. "
                 "Proceed with a candidate for that subject. For an applied system design, establish the user's "
                 "business domain and goal from the request "

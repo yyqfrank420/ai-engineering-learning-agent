@@ -28,6 +28,7 @@ from starlette.requests import HTTPConnection
 from analytics.events import enqueue_analytics_event, output_shape_from_final_state
 from adapters.supabase_auth_adapter import get_current_user
 from agent.graph import run_agent
+from agent.activity import ActivityRecorder
 from agent.state import AgentState
 from api.chat_guards import (
     byte_len,
@@ -286,7 +287,7 @@ async def chat_endpoint(
         )
         if completed_turn.get("retry_request") is not None:
             yield sse({"type": "generation_failed"})
-        yield sse({"type": "done"})
+        yield sse({"type": "done", **({"activity": completed_turn["activity"]} if completed_turn.get("activity") is not None else {})})
 
     if completed_turn is not None:
         return streaming_response(replay_completed_turn(completed_turn))
@@ -427,14 +428,24 @@ async def chat_endpoint(
                 },
             )
 
+            activity = ActivityRecorder()
+            send_lock = asyncio.Lock()
+
             async def send(event: dict) -> None:
                 # Only the transport may publish the terminal event, after the
                 # completed turn has been durably persisted.
-                if event.get("type") == "done":
+                if event.get("type") in {"done", "thinking_delta", "activity_step"}:
                     return
                 if event.get("type") in {"graph_preview", "graph_data"}:
                     event = {"type": "graph_preview", "data": event.get("data")}
-                await queue.put(event)
+                async with send_lock:
+                    await queue.put(event)
+                    try:
+                        step = activity.record(event, int((time.perf_counter() - started_at) * 1000))
+                        if step is not None:
+                            await queue.put(step)
+                    except Exception as exc:
+                        logger.info("Optional activity delivery failed (%s)", type(exc).__name__)
 
             async def await_search_tool_request(
                 request_id: str, timeout_s: float
@@ -659,6 +670,7 @@ async def chat_endpoint(
                         title = truncate_utf8(
                             content, min(60, settings.max_thread_title_bytes)
                         )
+                    saved_activity = activity.snapshot(int((time.perf_counter() - started_at) * 1000))
                     graph_saved = thread_store.persist_turn(
                         user_id,
                         thread_id,
@@ -669,6 +681,7 @@ async def chat_endpoint(
                         graph_contract=final_state.get("graph_contract"),
                         client_request_id=body.client_request_id,
                         retry_request=body.failed_generation_retry_request(final_state, original_request),
+                        activity=saved_activity,
                     )
                     if not graph_saved:
                         yield sse(
@@ -762,7 +775,11 @@ async def chat_endpoint(
                         "data": thread_store.get_graph(user_id, thread_id),
                     }
                 )
-                yield sse({"type": "done"})
+                canonical_turn = thread_store.get_completed_turn(user_id, thread_id, body.client_request_id)
+                canonical_activity = canonical_turn.get("activity") if canonical_turn is not None else None
+                if canonical_turn is None and body.client_request_id is None:
+                    canonical_activity = saved_activity
+                yield sse({"type": "done", **({"activity": canonical_activity} if canonical_activity is not None else {})})
         finally:
             # A new turn must not read its base graph before this turn commits.
             try:

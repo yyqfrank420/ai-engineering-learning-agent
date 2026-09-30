@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from adapters.database_adapter import _adapt_query, _connect, fetchall, fetchone
 from config import settings
 from storage.errors import ThreadMessageLimitExceeded
+from storage.message_activity import decode_message_activity
 
 
 logger = logging.getLogger(__name__)
@@ -107,7 +108,7 @@ def get_history(user_id: str, thread_id: str, limit: int = 20) -> list[dict]:
 def get_messages(user_id: str, thread_id: str, limit: int = 100) -> list[dict]:
     rows = fetchall(
         """
-        SELECT id, role, content, created_at, graph_revision_id, client_request_id, retry_request
+        SELECT id, role, content, created_at, graph_revision_id, client_request_id, retry_request, activity
         FROM chat_messages
         WHERE thread_id = ? AND user_id = ?
         ORDER BY message_sequence ASC
@@ -116,6 +117,10 @@ def get_messages(user_id: str, thread_id: str, limit: int = 100) -> list[dict]:
         (thread_id, user_id, limit),
     )
     return [
-        {**row, "retry_request": decode_retry_request(row["retry_request"])}
+        {
+            **row,
+            "retry_request": decode_retry_request(row["retry_request"]),
+            "activity": decode_message_activity(row["activity"]),
+        }
         for row in rows
     ]

@@ -10,7 +10,6 @@ from typing import Any, Literal
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
-from agent.provider_thinking import ThinkingFeed, ThinkingPhase
 from agent.source_references import book_references, canonical_source_url, source_urls
 
 
@@ -50,7 +49,6 @@ async def stream_explanation_blocks(
     allow_fallback: bool = True,
     provider_attempt_limit: int | None = None,
     accepted_graph_detail: Literal["standard", "overview"] | None = None,
-    thinking_phase: ThinkingPhase | None = None,
 ) -> str:
     """Validate each complete JSON block before emitting it from one model call."""
     parse_buffer = ""
@@ -93,40 +91,34 @@ async def stream_explanation_blocks(
         allow_fallback=allow_fallback,
         provider_attempt_limit=provider_attempt_limit,
     )
-    async with ThinkingFeed(send, thinking_phase) as thinking:
-        timed_out = False
-        try:
-            async with asyncio.timeout(timeout_seconds):
-                async for event_type, content in response_stream:
-                    if event_type == "thinking":
-                        await thinking.add(content)
+    timed_out = False
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            async for event_type, content in response_stream:
+                if event_type == "provider_switch":
+                    await send({"type": "provider_switch", "provider": content})
+                    continue
+                if event_type != "text":
+                    continue
+                parse_buffer += content
+                parse_buffer, parsed = _decode_available(
+                    parse_buffer,
+                    decoder,
+                    allowed_node_ids,
+                    allowed_evidence_refs or set(),
+                )
+                for block in parsed:
+                    if len(emitted) >= _MAXIMUM_BLOCKS:
+                        break
+                    if block["block_id"] in emitted_ids:
                         continue
-                    if event_type == "provider_switch":
-                        await thinking.restart()
-                        await send({"type": "provider_switch", "provider": content})
-                        continue
-                    if event_type != "text":
-                        continue
-                    await thinking.flush()
-                    parse_buffer += content
-                    parse_buffer, parsed = _decode_available(
-                        parse_buffer,
-                        decoder,
-                        allowed_node_ids,
-                        allowed_evidence_refs or set(),
-                    )
-                    for block in parsed:
-                        if len(emitted) >= _MAXIMUM_BLOCKS:
-                            break
-                        if block["block_id"] in emitted_ids:
-                            continue
-                        emitted.append(block)
-                        emitted_ids.add(block["block_id"])
-                        await emit_parsed(block)
-        except TimeoutError:
-            timed_out = True
-        finally:
-            await response_stream.aclose()
+                    emitted.append(block)
+                    emitted_ids.add(block["block_id"])
+                    await emit_parsed(block)
+    except TimeoutError:
+        timed_out = True
+    finally:
+        await response_stream.aclose()
     if timed_out:
         await send(
             {

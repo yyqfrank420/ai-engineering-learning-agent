@@ -84,8 +84,6 @@ vi.mock('./components/Layout/ThreadSidebar', () => ({
   ),
 }));
 
-vi.mock('./components/Chat/ThinkingIndicator', () => ({ ThinkingIndicator: () => <div>Live activity</div> }));
-
 vi.mock('./components/Chat/RetrievalNoticeBar', () => ({
   RetrievalNoticeBar: ({ notice, onUseSearchTool }: {
     notice: { message: string } | null;
@@ -282,8 +280,7 @@ const agentState = {
     publishedGraphKey: null,
     graphPreview: null,
   graphCandidate: null,
-  workflowProgress: [],
-  thinkingProgress: [],
+  liveActivity: null,
   workerStatus: {
     rag: null,
     graph: null,

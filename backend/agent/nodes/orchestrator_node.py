@@ -583,7 +583,6 @@ async def quick_synthesise(state: AgentState) -> AgentState:
         ),
         send=send,
         stream_deltas=True,
-        stream_thinking=True,
     )
 
     return {**state, "response_text": response_text}
@@ -879,7 +878,6 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             await send(event)
 
         response_text = await stream_explanation_blocks(
-            thinking_phase="explain",
             model=settings.explanation_model,
             system=(
                 f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}"
@@ -939,7 +937,6 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             telemetry=telemetry,
             send=send,
             stream_deltas=True,
-            stream_thinking=True,
             allow_fallback=True,
             provider_attempt_limit=None,
         )

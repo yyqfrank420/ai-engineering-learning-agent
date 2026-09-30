@@ -1,11 +1,13 @@
-.thinking-indicator { padding: 8px 16px; color: #a5b1c3; font-size: 12px; min-height: 0; flex-shrink: 0; }
-.thinking-activity { display: flex; flex-direction: column; gap: 4px; }
-.thinking-feed { margin-top: 6px; }
-.thinking-feed summary { cursor: pointer; color: #c5b4ee; }
-.thinking-feed summary:focus-visible, .thinking-transcript:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
-.thinking-excerpt { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: #a5b1c3; margin-top: 3px; }
-.thinking-feed[open] .thinking-excerpt { display: none; }
-.thinking-transcript { max-height: min(180px, 25vh); overflow: auto; overscroll-behavior: contain; margin-top: 6px; padding-right: 8px; overflow-wrap: anywhere; }
-.thinking-transcript section + section { margin-top: 12px; }
-.thinking-transcript h3 { font-size: 12px; font-weight: 600; color: #c5b4ee; margin: 0 0 4px; }
-.thinking-transcript p { white-space: pre-wrap; line-height: 1.5; margin: 0; }
+.thinking-indicator { width: 100%; max-width: 72ch; min-width: 0; color: #c9d1d9; font-size: 0.875rem; flex-shrink: 0; }
+.thinking-summary { display: flex; align-items: center; gap: 8px; width: fit-content; max-width: 100%; padding: 4px 0; color: #a5b1c3; font-size: 0.8125rem; line-height: 1.5; cursor: pointer; list-style: none; font-variant-numeric: tabular-nums; }
+.thinking-summary::-webkit-details-marker { display: none; }
+.thinking-summary svg { width: 16px; height: 16px; flex-shrink: 0; stroke: currentColor; stroke-width: 1.5; transition: transform 160ms ease-out; }
+.thinking-indicator[open] .thinking-summary svg { transform: rotate(180deg); }
+.thinking-summary:hover { color: #e6edf3; }
+.thinking-summary:focus-visible { outline: 2px solid #a78bfa; outline-offset: 4px; border-radius: 2px; }
+.thinking-steps { margin-top: 8px; padding: 8px 0 4px; border-top: 1px solid #30363d; overflow-wrap: anywhere; }
+.thinking-update { margin: 10px 0 16px; line-height: 1.65; white-space: pre-wrap; }
+.thinking-tool { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0; color: #a5b1c3; font-size: 0.8125rem; line-height: 1.55; }
+.thinking-tool svg { width: 15px; height: 15px; margin-top: 2px; flex-shrink: 0; stroke: currentColor; stroke-width: 1.5; }
+.thinking-announcement { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; border: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@media (prefers-reduced-motion: reduce) { .thinking-summary svg { transition: none; } }

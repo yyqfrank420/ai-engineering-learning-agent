@@ -94,12 +94,14 @@ def validate_judgments(evaluation: dict, case, corpus, result: dict) -> None:
     citations = {f"[{key}] {value}" for key, value in _artifact_sources(live_runner._judge_payload(result)).items()}
     parsed = []
     for judgment in judgments:
+        require(isinstance(judgment, dict), "invalid judgment")
         require(judgment.get("provider") == calibration.judge_provider
                 and judgment.get("model") == calibration.judge_model
                 and judgment.get("prompt_release") == JUDGE_PROMPT_RELEASE == calibration.judge_release,
                 "judge identity mismatch")
         dimensions = judgment.get("dimensions")
-        require(isinstance(dimensions, list) and [d.get("dimension") for d in dimensions] == list(case.rubric_dimensions),
+        require(isinstance(dimensions, list) and all(isinstance(d, dict) for d in dimensions)
+                and [d.get("dimension") for d in dimensions] == list(case.rubric_dimensions),
                 "judge dimensions mismatch")
         for dimension in dimensions:
             rubric = corpus.rubrics[dimension["dimension"]]
@@ -157,11 +159,12 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
                 evaluation.get("reason", ""),
             )), "infrastructure failure is not an identified judge-provider failure")
             groups["replay"].append(case_id)
-        elif decision in {"pass", "fail"} and judgments:
+        elif decision in {"pass", "fail", "manual_review"} and judgments:
             validate_judgments(evaluation, corpus.by_id[case_id], corpus, result)
-            groups["carried" if decision == "pass" else "fresh"].append(case_id)
+            mode = {"pass": "carried", "fail": "fresh", "manual_review": "replay"}[decision]
+            groups[mode].append(case_id)
         else:
-            raise ValueError("manual or partial semantic result cannot resume")
+            raise ValueError("unvalidated or partial semantic result cannot resume")
     require(bool(groups["fresh"]), "resume requires a fresh quality-failed case")
     reusable = [case_id for case_id in ids if case_id not in groups["fresh"]]
     if reusable:
@@ -173,6 +176,8 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
 def validate_run_identity(run: dict, pr: dict, deployment: dict, *, repo: str, head: str,
                           source_parents: list[str], source_tree: str, merge_tree: str,
                           current_tree: str) -> dict:
+    require(type(run.get("run_attempt")) is int and run["run_attempt"] > 0,
+            "invalid source run attempt")
     require(run.get("event") == "pull_request" and run.get("status") == "completed"
             and run.get("conclusion") == "failure" and run.get("path") == WORKFLOW
             and run.get("repository", {}).get("full_name") == repo
@@ -198,7 +203,7 @@ def validate_run_identity(run: dict, pr: dict, deployment: dict, *, repo: str, h
     require(isinstance(image, str) and bool(re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:/-]*", image))
             and "/" in image, "invalid source image identity")
     require(merge_tree == current_tree, "dispatch tree differs from current PR merge tree")
-    return {"run_id": str(run["id"]), "head": source_head, "base": source_base,
+    return {"run_id": str(run["id"]), "run_attempt": run["run_attempt"], "head": source_head, "base": source_base,
             "commit": deployment["commit_sha"], "tree": source_tree, "pr": pr["number"],
             "image": image, "image_digest": digest}
 
@@ -232,17 +237,65 @@ def validate_eval_code(source: str) -> None:
     require(before in (after, normalized), "live runner changed beyond restrictive budget support")
 
 
-def authenticated_inputs(source_run_id: str, repo: str) -> tuple[dict, dict, dict]:
+def validate_artifact_attempt(artifact: dict, jobs: dict, run: dict) -> None:
+    rows = jobs.get("jobs")
+    require(isinstance(rows, list) and all(isinstance(job, dict) for job in rows)
+            and type(jobs.get("total_count")) is int
+            and jobs["total_count"] == len(rows) <= 100, "attempt job listing incomplete")
+    protected = [job for job in rows if job.get("name") == "Protected staging browser and LLM evaluation"]
+    require(len(protected) == 1, "source protected job missing or ambiguous")
+    job = protected[0]
+    require(job.get("run_id") == run["id"]
+            and type(job.get("run_attempt")) is int and job["run_attempt"] == run["run_attempt"]
+            and job.get("head_sha") == run["head_sha"]
+            and job.get("status") == "completed" and job.get("conclusion") == "failure",
+            "source protected job identity mismatch")
+    steps = job.get("steps")
+    require(isinstance(steps, list) and all(isinstance(step, dict) for step in steps),
+            "source protected job steps missing")
+    uploads = [step for step in steps if step.get("name") == "Upload evaluation evidence"]
+    require(len(uploads) == 1 and uploads[0].get("status") == "completed"
+            and uploads[0].get("conclusion") == "success", "source evidence upload missing or ambiguous")
+    workflow_run = artifact.get("workflow_run")
+    require(isinstance(workflow_run, dict) and workflow_run.get("id") == run["id"]
+            and workflow_run.get("head_sha") == run["head_sha"], "artifact run identity mismatch")
+    timestamps = [job.get("started_at"), uploads[0].get("started_at"),
+                  artifact.get("created_at"), uploads[0].get("completed_at"), job.get("completed_at")]
+    require(all(isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value)
+                for value in timestamps), "source upload timestamps missing or invalid")
+    try:
+        times = [datetime.fromisoformat(value.replace("Z", "+00:00")) for value in timestamps]
+    except ValueError as error:
+        raise ValueError("source upload timestamps missing or invalid") from error
+    require(times == sorted(times), "artifact is outside selected attempt upload window")
+
+
+def authenticated_inputs(source_run_id: str, repo: str,
+                         source_run_attempt: int | None = None) -> tuple[dict, dict, dict]:
     require(bool(re.fullmatch(r"[0-9]+", source_run_id)), "invalid source run ID")
-    run = api(f"repos/{repo}/actions/runs/{source_run_id}")
+    if source_run_attempt is None:
+        snapshot = api(f"repos/{repo}/actions/runs/{source_run_id}")
+        require(str(snapshot.get("id")) == source_run_id, "source run ID mismatch")
+        source_run_attempt = snapshot.get("run_attempt")
+    require(type(source_run_attempt) is int and source_run_attempt > 0, "invalid source run attempt")
+    run = api(f"repos/{repo}/actions/runs/{source_run_id}/attempts/{source_run_attempt}")
     require(str(run.get("id")) == source_run_id, "source run ID mismatch")
+    require(type(run.get("run_attempt")) is int and run["run_attempt"] == source_run_attempt,
+            "source run attempt mismatch")
+    require(run.get("status") == "completed" and run.get("conclusion") == "failure",
+            "selected source attempt is not failed")
     pulls = run.get("pull_requests", [])
     require(len(pulls) == 1, "source PR metadata missing")
     pr = api(f"repos/{repo}/pulls/{int(pulls[0]['number'])}")
     artifacts = api(f"repos/{repo}/actions/runs/{source_run_id}/artifacts?per_page=100")
-    require(artifacts.get("total_count", 101) <= 100, "artifact listing truncated")
-    selected = [a for a in artifacts.get("artifacts", []) if a.get("name") == ARTIFACT]
+    rows = artifacts.get("artifacts")
+    require(isinstance(rows, list) and all(isinstance(row, dict) for row in rows)
+            and type(artifacts.get("total_count")) is int
+            and artifacts["total_count"] == len(rows) <= 100, "artifact listing truncated or invalid")
+    selected = [artifact for artifact in rows if artifact.get("name") == ARTIFACT]
     require(len(selected) == 1 and selected[0].get("expired") is False, "source artifact unavailable")
+    jobs = api(f"repos/{repo}/actions/runs/{source_run_id}/attempts/{source_run_attempt}/jobs?per_page=100")
+    validate_artifact_attempt(selected[0], jobs, run)
     return run, pr, selected[0]
 
 
@@ -279,7 +332,7 @@ def prepare(args: argparse.Namespace) -> None:
     repo = os.environ["GITHUB_REPOSITORY"]
     require(bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)), "invalid repository")
     require(len(args.reason.strip()) >= 20, "review reason must have at least 20 characters")
-    run, pr, artifact = authenticated_inputs(args.source_run_id, repo)
+    run, pr, artifact = authenticated_inputs(args.source_run_id, repo, args.source_run_attempt)
     archive = command("gh", "api", f"repos/{repo}/actions/artifacts/{int(artifact['id'])}/zip")
     raw = extract_reports(archive, artifact.get("digest", ""))
     browser, semantic, deployment = (json.loads(raw[name]) for name in REPORT_FILES)
@@ -344,7 +397,9 @@ def validate_fresh_capture(fresh: dict, source: dict, proof: dict, plan: dict, t
 async def judge(args: argparse.Namespace) -> int:
     out = Path(args.output_dir)
     plan = json.loads((out / "plan.json").read_text())
-    run, pr, artifact = authenticated_inputs(plan["source"]["run_id"], plan["repository"])
+    run, pr, artifact = authenticated_inputs(
+        plan["source"]["run_id"], plan["repository"], plan["source"]["run_attempt"],
+    )
     require(artifact["id"] == plan["artifact"]["id"], "source artifact changed")
     raw = extract_reports((out / "source.zip").read_bytes(), artifact["digest"])
     browser, semantic, deployment = (json.loads(raw[name]) for name in REPORT_FILES)
@@ -457,6 +512,7 @@ def main() -> None:
     subs = parser.add_subparsers(dest="command", required=True)
     prep = subs.add_parser("prepare")
     prep.add_argument("--source-run-id", required=True)
+    prep.add_argument("--source-run-attempt", type=int, help="Pin a positive source run attempt")
     prep.add_argument("--reviewed-diff-sha256", required=True)
     prep.add_argument("--reason", required=True)
     check = subs.add_parser("judge")
