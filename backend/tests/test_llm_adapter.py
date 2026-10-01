@@ -1713,3 +1713,768 @@ async def test_opus_55_uses_always_on_adaptive_request_without_legacy_sampling(
     assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & requests[0].keys()
     assert ("text", "answer") in events
     assert events[-1] == ("done", "")
+
+
+def _search_stream(**overrides):
+    import adapters.llm_adapter as llm
+
+    return llm.stream_response(
+        **{
+            "model": "claude-haiku-4-5",
+            "system": "Search and cite sources",
+            "messages": [{"role": "user", "content": "find service examples"}],
+            "web_search": True,
+            "allow_fallback": False,
+            "provider_attempt_limit": 1,
+            **overrides,
+        }
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"web_search": "true"},
+        {"model": "gpt-5.4"},
+        {"model": "kimi-k3"},
+        {"model": "claude-test"},
+        {"response_schema": {}},
+        {"allow_fallback": True},
+        {"provider_attempt_limit": None},
+        {"provider_attempt_limit": 2},
+        {"provider_attempt_limit": True},
+        {"provider_attempt_limit": 1.0},
+    ],
+)
+async def test_web_search_rejects_invalid_contract_before_quota(monkeypatch, overrides):
+    import adapters.llm_adapter as llm
+
+    def forbidden():
+        pytest.fail("invalid search consumed quota or initialized instrumentation")
+
+    monkeypatch.setattr(llm, "_reserve_evaluation_provider_attempt", forbidden)
+    monkeypatch.setattr(llm, "get_posthog_client", forbidden)
+    with pytest.raises(ValueError):
+        await _collect(_search_stream(**overrides))
+
+
+@pytest.mark.asyncio
+async def test_web_search_projects_sdk_events_and_cumulative_usage(monkeypatch):
+    from anthropic.types import (
+        RawContentBlockStartEvent,
+        RawContentBlockDeltaEvent,
+        RawContentBlockStopEvent,
+    )
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+    monkeypatch.setattr(llm, "get_posthog_client", lambda: object())
+    calls = []
+    reserves = []
+    monkeypatch.setattr(
+        llm, "_reserve_evaluation_provider_attempt", lambda: reserves.append(True)
+    )
+    events = [
+        SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=7,
+                    cache_creation_input_tokens=2,
+                    cache_read_input_tokens=3,
+                    server_tool_use=SimpleNamespace(web_search_requests=1),
+                )
+            ),
+        ),
+        RawContentBlockStartEvent.model_validate(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "name": "web_search",
+                    "id": "srv_1",
+                    "input": {},
+                },
+            }
+        ),
+        RawContentBlockDeltaEvent.model_validate(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"query":"service ',
+                },
+            }
+        ),
+        RawContentBlockDeltaEvent.model_validate(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": 'examples"}'},
+            }
+        ),
+        RawContentBlockStopEvent.model_validate(
+            {"type": "content_block_stop", "index": 0}
+        ),
+        RawContentBlockStartEvent.model_validate(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srv_1",
+                    "content": [
+                        {
+                            "type": "web_search_result",
+                            "url": "https://source.example",
+                            "title": "Source",
+                            "encrypted_content": "NEVER_EXPOSE_ENCRYPTED_CONTENT",
+                        }
+                    ],
+                },
+            }
+        ),
+        RawContentBlockDeltaEvent.model_validate(
+            {
+                "type": "content_block_delta",
+                "index": 2,
+                "delta": {
+                    "type": "citations_delta",
+                    "citation": {
+                        "type": "web_search_result_location",
+                        "url": "https://source.example",
+                        "title": "Source",
+                        "cited_text": "Service example",
+                        "encrypted_index": "NEVER_EXPOSE_ENCRYPTED_INDEX",
+                    },
+                },
+            }
+        ),
+        _Event("content_block_delta", _Delta("text_delta", text="Found examples.")),
+        SimpleNamespace(
+            type="message_delta",
+            usage=SimpleNamespace(
+                output_tokens=9, server_tool_use=SimpleNamespace(web_search_requests=1)
+            ),
+            delta=SimpleNamespace(stop_reason="end_turn"),
+        ),
+    ]
+
+    async def provider(kwargs):
+        calls.append(kwargs)
+        for event in events:
+            yield event
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    observed = await _collect(_search_stream())
+    assert observed == [
+        (
+            "web_search_query",
+            json.dumps({"tool_use_id": "srv_1", "query": "service examples"}),
+        ),
+        (
+            "web_search_result",
+            json.dumps(
+                {
+                    "tool_use_id": "srv_1",
+                    "url": "https://source.example",
+                    "title": "Source",
+                }
+            ),
+        ),
+        (
+            "web_search_citation",
+            json.dumps(
+                {
+                    "url": "https://source.example",
+                    "title": "Source",
+                    "cited_text": "Service example",
+                }
+            ),
+        ),
+        ("text", "Found examples."),
+        ("done", ""),
+    ]
+    assert len(calls) == len(reserves) == 1
+    assert calls[0]["tools"] == [
+        {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}
+    ]
+    assert calls[0]["_capture_content"] is False
+    assert "posthog_privacy_mode" not in calls[0]
+    assert "thinking" not in calls[0] and "tool_choice" not in calls[0]
+    metadata = records[0]["metadata"]
+    assert (
+        metadata["web_search_requests"]
+        == metadata["attempts"][0]["web_search_requests"]
+        == 1
+    )
+    assert (
+        metadata["input_tokens"],
+        metadata["cache_creation_input_tokens"],
+        metadata["cache_read_input_tokens"],
+        metadata["output_tokens"],
+    ) == (7, 2, 3, 9)
+    assert "NEVER_EXPOSE" not in json.dumps([observed, records])
+    assert "service examples" not in json.dumps(records)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "content,expected",
+    [
+        (
+            {"type": "web_search_tool_result_error", "error_code": "unavailable"},
+            [("web_search_error", '{"error_code": "unavailable"}')],
+        ),
+        ([], []),
+        (None, []),
+        ([{"type": "web_search_result", "url": None, "title": "bad"}], []),
+    ],
+)
+async def test_web_search_errors_and_empty_results_do_not_invent_sources(
+    monkeypatch, content, expected
+):
+    import adapters.llm_adapter as llm
+
+    _patch_llm_telemetry(monkeypatch)
+
+    async def provider(_kwargs):
+        yield SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block={
+                "type": "web_search_tool_result",
+                "tool_use_id": "srv_1",
+                "content": content,
+            },
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    assert await _collect(_search_stream()) == expected + [("done", "")]
+
+
+@pytest.mark.asyncio
+async def test_web_search_pause_turn_emits_incomplete_error_without_continuation(
+    monkeypatch,
+):
+    import adapters.llm_adapter as llm
+
+    _patch_llm_telemetry(monkeypatch)
+    calls = []
+
+    async def provider(_kwargs):
+        calls.append(True)
+        yield SimpleNamespace(
+            type="message_delta",
+            usage=None,
+            delta=SimpleNamespace(stop_reason="pause_turn"),
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    assert await _collect(_search_stream()) == [
+        ("web_search_error", '{"error_code": "pause_turn"}'),
+        ("done", ""),
+    ]
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_web_search_connect_failure_has_no_retry_or_fallback(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    _patch_llm_telemetry(monkeypatch)
+    monkeypatch.setattr(settings, "llm_max_retries", 3)
+    calls = []
+
+    async def provider(_kwargs):
+        calls.append(True)
+        raise RuntimeError("connection failed")
+        yield
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    monkeypatch.setattr(
+        llm, "_get_openai_client", lambda: pytest.fail("search attempted fallback")
+    )
+    with pytest.raises(RuntimeError, match="connection failed"):
+        await _collect(_search_stream())
+    assert calls == [True]
+
+
+@pytest.mark.asyncio
+async def test_web_search_quota_prevents_dispatch(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    def reject():
+        raise llm.EvaluationProviderAttemptLimitExceeded("exhausted")
+
+    async def provider(_kwargs):
+        pytest.fail("quota allowed provider dispatch")
+        yield
+
+    monkeypatch.setattr(llm, "_reserve_evaluation_provider_attempt", reject)
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    with pytest.raises(llm.EvaluationProviderAttemptLimitExceeded):
+        await _collect(_search_stream())
+
+
+@pytest.mark.asyncio
+async def test_web_search_cancellation_closes_sdk_stream_and_releases_slot(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+    monkeypatch.setattr(llm, "get_posthog_client", lambda: None)
+    monkeypatch.setattr(llm, "_reserve_evaluation_provider_attempt", lambda: None)
+    monkeypatch.setattr(settings, "anthropic_max_concurrent_streams", 1)
+    monkeypatch.setattr(llm, "_anthropic_stream_semaphore", None)
+    entered = asyncio.Event()
+    closed = []
+
+    class Stream:
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            entered.set()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            closed.append(True)
+
+    async def create(**_kwargs):
+        return Stream()
+
+    monkeypatch.setattr(
+        llm,
+        "_get_anthropic_client",
+        lambda **_kwargs: SimpleNamespace(messages=SimpleNamespace(create=create)),
+    )
+    task = asyncio.create_task(_collect(_search_stream()))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed == [True]
+    assert not llm._get_anthropic_stream_semaphore().locked()
+    assert records[-1]["status"] == "error"
+    assert records[-1]["error_type"] == "CancelledError"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "start_count,end_count,expected,complete",
+    [
+        (0, 1, 1, True),
+        (1, 1, 1, True),
+        (0, 0, 0, True),
+        (None, None, 0, False),
+        (0, None, 0, False),
+        (1, None, 1, False),
+        (0, -1, 0, False),
+        (0, True, 0, False),
+        (0, "1", 0, False),
+    ],
+)
+async def test_web_search_usage_distinguishes_known_zero_from_missing_counter(
+    monkeypatch,
+    start_count,
+    end_count,
+    expected,
+    complete,
+):
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+
+    async def provider(_kwargs):
+        yield SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                usage=SimpleNamespace(
+                    server_tool_use=SimpleNamespace(web_search_requests=start_count)
+                )
+            ),
+        )
+        yield SimpleNamespace(
+            type="message_delta",
+            usage=SimpleNamespace(
+                server_tool_use=SimpleNamespace(web_search_requests=end_count)
+            ),
+            delta=SimpleNamespace(stop_reason="end_turn"),
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    await _collect(_search_stream())
+    metadata = records[0]["metadata"]
+    assert metadata["web_search"] is True
+    assert (
+        metadata["web_search_requests"]
+        == metadata["attempts"][0]["web_search_requests"]
+        == expected
+    )
+    assert metadata["web_search_usage_complete"] is complete
+    assert metadata["attempts"][0]["web_search_usage_complete"] is complete
+
+
+@pytest.mark.parametrize(
+    "query_input,partial,expected",
+    [
+        (
+            {"query": "actual query"},
+            "",
+            [("web_search_query", '{"tool_use_id": "srv_1", "query": "actual query"}')],
+        ),
+        ({}, "{bad json", []),
+        ({"query": 4}, "", []),
+        ({"query": ""}, "", []),
+    ],
+)
+def test_web_search_query_uses_only_completed_server_tool_input(
+    query_input, partial, expected
+):
+    from adapters.llm_adapter import _web_search_events
+
+    blocks = {}
+    assert (
+        _web_search_events(
+            SimpleNamespace(
+                type="content_block_start",
+                index=4,
+                content_block={
+                    "type": "server_tool_use",
+                    "name": "web_search",
+                    "id": "srv_1",
+                    "input": query_input,
+                },
+            ),
+            blocks,
+        )
+        == []
+    )
+    assert (
+        _web_search_events(
+            SimpleNamespace(
+                type="content_block_delta",
+                index=4,
+                delta={"type": "input_json_delta", "partial_json": partial},
+            ),
+            blocks,
+        )
+        == []
+    )
+    assert (
+        _web_search_events(SimpleNamespace(type="content_block_stop", index=4), blocks)
+        == expected
+    )
+    assert blocks == {}
+
+
+@pytest.mark.parametrize(
+    "code,expected",
+    [
+        ("request_too_large", "request_too_large"),
+        ("UNTRUSTED_PROVIDER_TEXT", "unknown_error"),
+    ],
+)
+def test_web_search_tool_error_always_projects_sanitized_failure(code, expected):
+    from adapters.llm_adapter import _web_search_events
+
+    assert _web_search_events(
+        SimpleNamespace(
+            type="content_block_start",
+            index=0,
+            content_block={
+                "type": "web_search_tool_result",
+                "content": {"type": "web_search_tool_result_error", "error_code": code},
+            },
+        ),
+        {},
+    ) == [("web_search_error", json.dumps({"error_code": expected}))]
+
+
+def test_web_search_citation_preserves_sdk_optional_title_without_encrypted_index():
+    from anthropic.types import RawContentBlockDeltaEvent
+    from adapters.llm_adapter import _web_search_events
+
+    event = RawContentBlockDeltaEvent.model_validate(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "citations_delta",
+                "citation": {
+                    "type": "web_search_result_location",
+                    "url": "https://source.example",
+                    "title": None,
+                    "cited_text": "A cited fact",
+                    "encrypted_index": "SECRET_INDEX",
+                },
+            },
+        }
+    )
+    assert _web_search_events(event, {}) == [
+        (
+            "web_search_citation",
+            json.dumps(
+                {
+                    "url": "https://source.example",
+                    "title": "",
+                    "cited_text": "A cited fact",
+                }
+            ),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("early_event", ["web_search_error", "web_search_query"])
+async def test_native_search_early_close_closes_real_http_response_and_records_usage(
+    monkeypatch,
+    early_event,
+):
+    import anthropic
+    import httpx
+    import posthog.ai.anthropic
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+    reservations = []
+    monkeypatch.setattr(
+        llm, "_reserve_evaluation_provider_attempt", lambda: reservations.append(True)
+    )
+    monkeypatch.setattr(settings, "anthropic_max_concurrent_streams", 1)
+    monkeypatch.setattr(llm, "_anthropic_stream_semaphore", None)
+    monkeypatch.setattr(llm, "get_posthog_client", lambda: object())
+    monkeypatch.setattr(
+        posthog.ai.anthropic,
+        "AsyncAnthropic",
+        lambda **_kwargs: pytest.fail("native search used content-capturing wrapper"),
+    )
+    sdk_class = anthropic.AsyncAnthropic
+    responses = []
+    closes = []
+    dispatched = []
+    payloads = [
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_test",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5",
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {
+                    "input_tokens": 7,
+                    "output_tokens": 3,
+                    "server_tool_use": {"web_search_requests": 0},
+                },
+            },
+        }
+    ]
+    if early_event == "web_search_error":
+        payloads.append(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "web_search_tool_result",
+                    "tool_use_id": "srv_test",
+                    "content": {
+                        "type": "web_search_tool_result_error",
+                        "error_code": "unavailable",
+                    },
+                },
+            }
+        )
+    else:
+        payloads.extend(
+            [
+                {
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": {
+                        "type": "server_tool_use",
+                        "name": "web_search",
+                        "id": "srv_test",
+                        "input": {},
+                    },
+                },
+                {
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": '{"query":"actual query"}',
+                    },
+                },
+                {"type": "content_block_stop", "index": 0},
+            ]
+        )
+
+    class ResponseBytes(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for payload in payloads:
+                yield (
+                    "event: "
+                    + payload["type"]
+                    + "\ndata: "
+                    + json.dumps(payload)
+                    + "\n\n"
+                ).encode()
+            await asyncio.Event().wait()
+
+        async def aclose(self):
+            closes.append(True)
+
+    async def handle(request):
+        dispatched.append(json.loads(request.content))
+        response = httpx.Response(
+            200, headers={"content-type": "text/event-stream"}, stream=ResponseBytes()
+        )
+        responses.append(response)
+        return response
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    sdk_client = sdk_class(
+        api_key="offline-test-key", http_client=http_client, max_retries=0
+    )
+    monkeypatch.setattr(anthropic, "AsyncAnthropic", lambda **_kwargs: sdk_client)
+    try:
+        stream = _search_stream()
+        event = await anext(stream)
+        assert event[0] == early_event
+        await stream.aclose()
+        assert responses[0].is_closed is True
+        assert closes == [True]
+        assert not llm._get_anthropic_stream_semaphore().locked()
+        assert reservations == [True] and len(dispatched) == 1
+        assert "_capture_content" not in dispatched[0]
+        assert "posthog_privacy_mode" not in dispatched[0]
+        assert len(records) == 1
+        assert records[0]["status"] == "error"
+        assert records[0]["error_type"] == "GeneratorExit"
+        metadata = records[0]["metadata"]
+        assert metadata["input_tokens"] == 7
+        assert metadata["output_tokens"] == 3
+        assert metadata["attempts"][0]["usage_complete"] is False
+        assert metadata["web_search_usage_complete"] is False
+        assert metadata["attempts"][0]["status"] == "cancelled_incomplete_usage"
+        assert metadata["attempts"][0]["error_type"] == "GeneratorExit"
+        assert "actual query" not in json.dumps(records)
+    finally:
+        await sdk_client.close()
+
+
+@pytest.mark.asyncio
+async def test_native_search_close_after_done_does_not_duplicate_telemetry(monkeypatch):
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+
+    async def provider(_kwargs):
+        yield SimpleNamespace(
+            type="message_delta",
+            usage=SimpleNamespace(
+                output_tokens=1, server_tool_use=SimpleNamespace(web_search_requests=0)
+            ),
+            delta=SimpleNamespace(stop_reason="end_turn"),
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    stream = _search_stream()
+    assert await anext(stream) == ("done", "")
+    await stream.aclose()
+    assert len(records) == 1 and records[0]["status"] == "success"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "native,final_inputs,expected",
+    [
+        (
+            True,
+            {
+                "input_tokens": 10682,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 200,
+            },
+            (10682, 100, 200),
+        ),
+        (False, {}, (2679, 10, 20)),
+        (
+            False,
+            {
+                "input_tokens": None,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+            },
+            (2679, 10, 20),
+        ),
+        (
+            True,
+            {
+                "input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+            (0, 0, 0),
+        ),
+    ],
+)
+async def test_anthropic_final_usage_supersedes_supplied_input_counters(
+    monkeypatch,
+    native,
+    final_inputs,
+    expected,
+):
+    from anthropic.types import MessageDeltaUsage
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+
+    async def provider(_kwargs):
+        yield SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=2679,
+                    output_tokens=3,
+                    cache_creation_input_tokens=10,
+                    cache_read_input_tokens=20,
+                    server_tool_use=SimpleNamespace(web_search_requests=0),
+                )
+            ),
+        )
+        yield SimpleNamespace(
+            type="message_delta",
+            usage=MessageDeltaUsage.model_validate(
+                {
+                    "output_tokens": 510,
+                    "server_tool_use": {
+                        "web_search_requests": 1,
+                        "web_fetch_requests": 0,
+                    },
+                    **final_inputs,
+                }
+            ),
+            delta=SimpleNamespace(stop_reason="end_turn"),
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    if native:
+        await _collect(_search_stream())
+    else:
+        await _collect(llm.stream_response("claude-haiku-4-5", "system", []))
+    metadata = records[0]["metadata"]
+    fields = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    assert tuple(metadata[field] for field in fields) == expected
+    assert tuple(metadata["attempts"][0][field] for field in fields) == expected
+    assert metadata["output_tokens"] == metadata["attempts"][0]["output_tokens"] == 510
+    assert metadata["attempts"][0]["usage_complete"] is True
+    if native:
+        assert metadata["web_search_requests"] == 1
+        assert metadata["web_search_usage_complete"] is True

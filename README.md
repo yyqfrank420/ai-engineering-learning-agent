@@ -8,7 +8,7 @@ Ask for a system, inspect its components, follow the walkthrough, and refine the
 
 ## What you can do
 
-- **Learn through questions.** Ask about AI engineering concepts and discuss tradeoffs using book retrieval, conversation history, and web research.
+- **Learn through questions.** Ask about AI engineering concepts and discuss tradeoffs using book retrieval, conversation history, and optional authenticated web research. Research uses Haiku 4.5 with one search and accepts cited excerpts tied to returned sources; unavailable research continues with book evidence.
 - **Build a visual understanding.** Generate architecture diagrams, inspect component responsibilities and connections, and follow a guided walkthrough.
 - **Refine a design.** Request targeted changes through chat. Scoped edits preserve retained component IDs and locked records; a rejected edit keeps the previously approved graph.
 - **Make the canvas your own.** Move components and zones, resize zone borders, and save diagram positions, pan, and zoom with the conversation.

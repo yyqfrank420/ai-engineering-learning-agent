@@ -6,9 +6,14 @@ import re
 from typing import Any, Literal
 
 
-PRICE_RELEASE = "2026-09-28"
+# Native search prices verified against Claude pricing/tool docs on 2026-10-01:
+# https://platform.claude.com/docs/en/about-claude/pricing
+# https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+PRICE_RELEASE = "2026-10-01"
+WEB_SEARCH_PRICE_USD_PER_REQUEST = 0.01
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
+    "claude-haiku-4-5": (1.00, 5.00),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-opus-5-5": (4.00, 20.00),
@@ -83,12 +88,15 @@ def _usage_attempts(call: dict[str, Any]) -> list[dict[str, Any]]:
             "status": call.get("status"),
             "usage_complete": call.get("usage_complete"),
             "input_tokens": call.get("input_tokens"),
-            "cache_creation_input_tokens": call.get(
-                "cache_creation_input_tokens"
-            ),
+            "cache_creation_input_tokens": call.get("cache_creation_input_tokens"),
             "cache_read_input_tokens": call.get("cache_read_input_tokens"),
             "output_tokens": call.get("output_tokens"),
             "queue_wait_ms": call.get("queue_wait_ms"),
+            **{
+                key: call[key]
+                for key in ("web_search_requests", "web_search_usage_complete")
+                if key in call
+            },
         }
     ]
 
@@ -132,7 +140,9 @@ def account_application_cost(
         thread_id = str(call.get("thread_id") or "")
         case_id = case_by_thread.get(thread_id)
         if case_id is None:
-            errors.append(f"application call {call_index} has no browser-case thread attribution")
+            errors.append(
+                f"application call {call_index} has no browser-case thread attribution"
+            )
             continue
         attributed_calls[case_id] += 1
         operation = str(call.get("operation") or "unknown")
@@ -142,20 +152,63 @@ def account_application_cost(
         )
         operation_usage["calls"] += 1
 
+        native_search = call.get("web_search") is True or (
+            isinstance(call.get("metadata"), dict)
+            and call["metadata"].get("web_search") is True
+        )
         attempts = _usage_attempts(call)
         if not attempts:
-            errors.append(f"application call {call_index} has no usable provider attempts")
+            errors.append(
+                f"application call {call_index} has no usable provider attempts"
+            )
             invalid_cases.add(case_id)
             invalid_operations.add((case_id, operation))
             continue
         for attempt_index, attempt in enumerate(attempts, start=1):
+            search_incomplete = False
             if (
-                attempt.get("usage_complete") is False
+                native_search
+                or "web_search_requests" in attempt
+                or "web_search_usage_complete" in attempt
+            ):
+                count = attempt.get("web_search_requests")
+                valid_count = type(count) is int and count >= 0
+                try:
+                    fee = (
+                        count * WEB_SEARCH_PRICE_USD_PER_REQUEST if valid_count else 0.0
+                    )
+                except OverflowError:
+                    fee = 0.0
+                    valid_count = False
+                if not math.isfinite(fee):
+                    valid_count = False
+                search_incomplete = not (
+                    valid_count and attempt.get("web_search_usage_complete") is True
+                )
+                for target in (operation_usage, per_case[case_id], total):
+                    target.setdefault("web_search_requests", 0)
+                    target.setdefault("web_search_estimated_usd", 0.0)
+                    target["web_search_usage_complete"] = (
+                        target.get("web_search_usage_complete", True)
+                        and not search_incomplete
+                    )
+                    if valid_count:
+                        target["web_search_requests"] += count
+                        target["web_search_estimated_usd"] += fee
+                        target["estimated_usd"] += fee
+            if (
+                search_incomplete
+                or attempt.get("usage_complete") is False
                 or "incomplete_usage" in str(attempt.get("status") or "")
             ):
                 # No observed acceptance event does not prove the provider did no work.
                 incomplete_attempts.append(
                     f"application call {call_index} attempt {attempt_index} has incomplete usage"
+                    + (
+                        " (native web search usage unavailable)"
+                        if search_incomplete
+                        else ""
+                    )
                 )
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
@@ -185,13 +238,16 @@ def account_application_cost(
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
                 continue
-            if min(
-                input_tokens,
-                cache_creation_input_tokens,
-                cache_read_input_tokens,
-                output_tokens,
-                queue_wait_ms,
-            ) < 0:
+            if (
+                min(
+                    input_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                    output_tokens,
+                    queue_wait_ms,
+                )
+                < 0
+            ):
                 errors.append(
                     f"application call {call_index} attempt {attempt_index} has negative usage"
                 )
@@ -226,10 +282,7 @@ def account_application_cost(
                 * price[0]
                 * CACHE_WRITE_5M_INPUT_PRICE_MULTIPLIER
                 / 1_000_000
-                + cache_read_input_tokens
-                * price[0]
-                * cache_read_multiplier
-                / 1_000_000
+                + cache_read_input_tokens * price[0] * cache_read_multiplier / 1_000_000
                 + output_tokens * price[1] / 1_000_000
             )
             operation_usage["provider_attempts"] += 1
@@ -248,6 +301,24 @@ def account_application_cost(
             )
             invalid_cases.add(case_id)
 
+    for target in (
+        total,
+        *per_case.values(),
+        *(
+            operation
+            for usage in per_case.values()
+            for operation in usage["operations"].values()
+        ),
+    ):
+        if "web_search_requests" in target:
+            if not target["web_search_usage_complete"]:
+                target["web_search_requests"] = None
+                target["web_search_estimated_usd"] = None
+            else:
+                target["web_search_estimated_usd"] = round(
+                    target["web_search_estimated_usd"], 6
+                )
+
     cases = []
     for case_id in case_order:
         usage = per_case[case_id]
@@ -260,9 +331,7 @@ def account_application_cost(
             )
             operations.append({"operation": operation, **operation_usage})
         usage["estimated_usd"] = (
-            None
-            if case_id in invalid_cases
-            else round(usage["estimated_usd"], 6)
+            None if case_id in invalid_cases else round(usage["estimated_usd"], 6)
         )
         cases.append({"id": case_id, **usage, "operations": operations})
     total["known_subtotal_usd"] = round(total["estimated_usd"], 6)
@@ -270,7 +339,11 @@ def account_application_cost(
         None if errors or incomplete_attempts else total["known_subtotal_usd"]
     )
     return {
-        "status": "infrastructure" if errors else "incomplete" if incomplete_attempts else "pass",
+        "status": "infrastructure"
+        if errors
+        else "incomplete"
+        if incomplete_attempts
+        else "pass",
         "reason": "; ".join(dict.fromkeys(errors + incomplete_attempts)) or None,
         "usage_complete": not errors and not incomplete_attempts,
         "incomplete_attempt_count": len(incomplete_attempts),

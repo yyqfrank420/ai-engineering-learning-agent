@@ -210,10 +210,29 @@ async def test_book_and_web_search_can_progress_independently(monkeypatch):
         if event.get("phase") == "web" and event.get("status") == "complete":
             web_finished.set()
 
-    monkeypatch.setattr(
-        "agent.nodes.research_worker._run_ddgs_searches",
-        lambda *_: [{"href": "https://example.com/agents", "title": "Agents", "body": "Agents use tools."}],
-    )
+    async def search_stream(**_kwargs):
+        yield (
+            "web_search_query",
+            json.dumps({"tool_use_id": "tool-1", "query": "agents"}),
+        )
+        yield (
+            "web_search_result",
+            json.dumps(
+                {
+                    "tool_use_id": "tool-1",
+                    "url": "https://example.com/agents",
+                    "title": "Agents",
+                }
+            ),
+        )
+        yield (
+            "web_search_citation",
+            json.dumps(
+                {"url": "https://example.com/agents", "cited_text": "Agents use tools."}
+            ),
+        )
+
+    monkeypatch.setattr("agent.nodes.research_worker.stream_response", search_stream)
     task = asyncio.create_task(run_parallel_research_phase(
         {"user_message": "agents", "send": send}, [WaitingTool()],
     ))

@@ -272,9 +272,10 @@ class Settings(BaseSettings):
     # Backpressure for the temporary HTTP/SSE compatibility transport.
     max_sse_queue_events: int = 256
 
-    # Research worker uses Brave through DDGS.
-    # Design searches use three queries; a single topic query shares that result budget.
-    research_results_per_query: int = 2
+    # Authenticated basic web search uses the existing Anthropic credentials.
+    research_model: Literal["claude-haiku-4-5", "claude-haiku-4-5-20251001"] = (
+        "claude-haiku-4-5"
+    )
     # Domains whose results are filtered out as low-quality noise
     research_noise_domains: list[str] = [
         "pinterest.com",

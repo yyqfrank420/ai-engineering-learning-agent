@@ -550,3 +550,65 @@ async def test_eval_telemetry_sanitizes_specialist_fields_without_exposing_metad
     assert "metadata" not in call
     assert "private_secret" not in call
     assert "never-return" not in str(payload)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "usage,complete,count",
+    [
+        ({"web_search_requests": 0, "web_search_usage_complete": True}, True, 0),
+        ({"web_search_requests": 1, "web_search_usage_complete": True}, True, 1),
+        ({"web_search_requests": -1, "web_search_usage_complete": True}, False, None),
+        ({"web_search_requests": "1", "web_search_usage_complete": True}, False, None),
+        ({"web_search_requests": True, "web_search_usage_complete": True}, False, None),
+        ({"web_search_requests": 1.0, "web_search_usage_complete": True}, False, None),
+        ({"web_search_requests": 1, "web_search_usage_complete": False}, False, 1),
+        ({"web_search_requests": 1}, False, 1),
+        ({}, False, None),
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+async def test_eval_native_search_accounting_survives_sanitized_dashboard_endpoint(
+    monkeypatch, usage, complete, count, nested
+):
+    from eval.cost_gate import account_application_cost
+
+    base = {
+        "model": "claude-haiku-4-5",
+        "input_tokens": 1_000,
+        "output_tokens": 100,
+        "usage_complete": True,
+        **usage,
+    }
+    metadata = {
+        "web_search": True,
+        "query": "private search text",
+        "source_urls": ["private URL"],
+        **base,
+        "attempts": [base] if nested else [],
+    }
+    row = _llm("web_research", "anthropic", "claude-haiku-4-5", metadata=metadata) | {
+        "thread_id": "thread"
+    }
+    monkeypatch.setattr(
+        dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
+    )
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900,
+        thread_id=["thread"],
+        _user={"email": "admin@example.com"},
+    )
+    call = payload["calls"][0]
+    assert call["web_search"] is True
+    normalized = call["attempts"][0] if nested else call
+    assert normalized["web_search_requests"] == count
+    assert normalized["web_search_usage_complete"] is complete
+    assert "private" not in str(payload)
+    assert "query" not in call and "source_urls" not in call
+    accounting = account_application_cost(
+        [{"id": "research", "thread_id": "thread"}], payload["calls"]
+    )
+    assert accounting["usage_complete"] is complete
+    assert accounting["total"]["estimated_usd"] == (
+        pytest.approx(0.0015 + count * 0.01) if complete else None
+    )

@@ -70,13 +70,22 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
-   Web research selects Bing through DDGS with safe search and makes one Brave fallback query
-   if the primary results contain no usable snippets. Provider failures log their backend and
-   exception class without recording user queries. Ordinary research keeps
-   the original topic in one query; applied design requests also search the domain workflow and
-   failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
-   of relevance or factual support; synthesis must cite supported findings or state the evidence
-   limitation. Internal evaluation captures the retained URLs' query and backend provenance.
+   Web research uses authenticated Anthropic basic `web_search_20250305` with
+   `RESEARCH_MODEL=claude-haiku-4-5` and prompt release `web_research_v1`.
+   Each research turn permits one application provider attempt, one server search,
+   2,048 output tokens, and a 30-second asynchronous deadline. There are no paid
+   retries or fallback providers. Only nonempty cited excerpts whose URLs match actual
+   provider search results become evidence. Native cited text is limited to 150
+   characters; overlong excerpts are skipped without clipping. Generated summaries and encrypted result
+   content do not. At most six sources reach synthesis. Errors, empty results, or
+   missing citations report research unavailable and continue with book evidence.
+   Logs contain bounded provider/error codes, never queries or source bodies.
+   Internal evaluation captures retained source URLs with the actual tool query and
+   `anthropic_web_search` provenance. The existing Anthropic key is used; no search
+   credentials or scraping dependency are required. Model selection is explicit in
+   configuration (Haiku 4.5 alias or `claude-haiku-4-5-20251001`); prompt changes receive
+   a new code release identity. Roll back research model configuration and the prompt
+   code release together through the normal application deployment.
    Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
    formatting is stated or its quantitative claim omitted, without silently repairing a number.
    The optional route classifier uses one low-effort provider attempt, at most 1,024 output

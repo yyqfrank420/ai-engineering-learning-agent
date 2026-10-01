@@ -736,3 +736,138 @@ def test_sonnet_55_prices_input_output_and_default_ephemeral_cache(model):
     assert accounting["status"] == "pass"
     assert accounting["total"]["estimated_usd"] == 14.7
     assert accounting["total"]["known_subtotal_usd"] == 14.7
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+@pytest.mark.parametrize("model", ["claude-haiku-4-5", "claude-haiku-4-5-20251001"])
+def test_native_search_prices_actual_uses_and_haiku_tokens_with_cache(count, model):
+    accounting = account_application_cost(
+        [{"id": "research", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "web_research",
+                "web_search": True,
+                "model": model,
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+                "cache_creation_input_tokens": 1_000,
+                "cache_read_input_tokens": 1_000,
+                "web_search_requests": count,
+                "web_search_usage_complete": True,
+            }
+        ],
+    )
+    assert accounting["status"] == "pass"
+    assert accounting["price_release"] == "2026-10-01"
+    assert accounting["total"]["estimated_usd"] == pytest.approx(0.00285 + count * 0.01)
+    for usage in [
+        accounting["total"],
+        accounting["cases"][0],
+        accounting["cases"][0]["operations"][0],
+    ]:
+        assert usage["web_search_requests"] == count
+        assert usage["web_search_estimated_usd"] == pytest.approx(count * 0.01)
+        assert usage["web_search_usage_complete"] is True
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {},
+        {"web_search_requests": 0},
+        {"web_search_requests": 0, "web_search_usage_complete": False},
+        {"web_search_requests": 1, "web_search_usage_complete": False},
+        {"web_search_requests": -1, "web_search_usage_complete": True},
+        {"web_search_requests": None, "web_search_usage_complete": True},
+        {"web_search_requests": True, "web_search_usage_complete": True},
+        {"web_search_requests": "1", "web_search_usage_complete": True},
+        {"web_search_requests": 1.0, "web_search_usage_complete": True},
+        {"web_search_requests": 10**1000, "web_search_usage_complete": True},
+        {"web_search_requests": 1, "web_search_usage_complete": "true"},
+    ],
+)
+@pytest.mark.parametrize("nested", [False, True])
+def test_native_search_missing_or_invalid_usage_has_unknown_full_cost(usage, nested):
+    attempt = {
+        "model": "claude-haiku-4-5",
+        "input_tokens": 1_000,
+        "output_tokens": 100,
+        "usage_complete": True,
+        **usage,
+    }
+    call = {"thread_id": "thread", "operation": "web_research", "web_search": True}
+    call.update({"attempts": [attempt]} if nested else attempt)
+    accounting = account_application_cost(
+        [{"id": "research", "thread_id": "thread"}], [call]
+    )
+    assert accounting["status"] == "incomplete"
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["usage_complete"] is False
+    known_count = usage.get("web_search_requests")
+    fee = 0.01 if known_count == 1 and type(known_count) is int else 0
+    assert accounting["total"]["known_subtotal_usd"] == pytest.approx(0.0015 + fee)
+    for target in [
+        accounting["total"],
+        accounting["cases"][0],
+        accounting["cases"][0]["operations"][0],
+    ]:
+        assert target["estimated_usd"] is None
+        assert target["web_search_requests"] is None
+        assert target["web_search_estimated_usd"] is None
+        assert target["web_search_usage_complete"] is False
+
+
+def test_native_search_retries_charge_actual_uses_once_per_attempt():
+    accounting = account_application_cost(
+        [{"id": "research", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "web_research",
+                "metadata": {"web_search": True},
+                "attempts": [
+                    {
+                        "model": "claude-haiku-4-5",
+                        "input_tokens": 1_000,
+                        "output_tokens": 100,
+                        "web_search_requests": 2,
+                        "web_search_usage_complete": True,
+                        "usage_complete": False,
+                    },
+                    {
+                        "model": "claude-haiku-4-5",
+                        "input_tokens": 1_000,
+                        "output_tokens": 100,
+                        "web_search_requests": 1,
+                        "web_search_usage_complete": True,
+                        "usage_complete": True,
+                    },
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "incomplete"
+    assert accounting["incomplete_attempt_count"] == 1
+    assert accounting["total"]["known_subtotal_usd"] == pytest.approx(0.033)
+    assert accounting["total"]["web_search_requests"] == 3
+    assert accounting["total"]["web_search_estimated_usd"] == 0.03
+    assert accounting["cases"][0]["operations"][0]["provider_attempts"] == 2
+
+
+def test_legacy_external_research_operation_has_no_native_fee():
+    accounting = account_application_cost(
+        [{"id": "research", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "operation": "web_research",
+                "model": "claude-haiku-4-5",
+                "input_tokens": 1_000,
+                "output_tokens": 100,
+            }
+        ],
+    )
+    assert accounting["status"] == "pass"
+    assert accounting["total"]["estimated_usd"] == 0.0015
+    assert "web_search_requests" not in accounting["total"]
