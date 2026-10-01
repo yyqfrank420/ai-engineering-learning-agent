@@ -1097,6 +1097,11 @@ async def test_final_graph_inspection_keeps_typed_failure_kind(
         )
     ]
     assert result["passed"] is False
+    context.add_init_script.assert_awaited_once_with(
+        browser_runner._session_init_script(
+            {"access_token": "test-token"}, "http://frontend"
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -3848,3 +3853,126 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
     assert [(item["kind"], item["code"]) for item in result["failure_details"]] == (
         [] if expected_failure is None else [expected_failure]
     )
+
+
+@pytest.mark.parametrize(
+    "origin,existing,expected,storage_accesses",
+    [
+        ("null", None, None, 0),
+        ("https://other.example", None, None, 0),
+        ("https://frontend.example:8443", None, None, 0),
+        ("https://frontend.example", None, "seed", 2),
+        ("https://frontend.example", "existing", "existing", 1),
+    ],
+)
+def test_browser_session_initializer_seeds_only_the_target_origin(
+    origin, existing, expected, storage_accesses
+):
+    import shutil
+    import subprocess
+
+    from eval.browser_runner import (
+        EVAL_AUTH_STORAGE_KEY,
+        _session_init_script,
+        _serialized_session,
+    )
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the browser initializer invariant")
+    session = {"access_token": "offline-test-token", "expires_at": 12345}
+    script = _session_init_script(session, "https://frontend.example/eval?case=offline")
+    runner = """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+        const values = new Map(input.existing === null ? [] : [[input.key, input.existing]]);
+        let accesses = 0;
+        const sandbox = { location: { origin: input.origin }, URL };
+        Object.defineProperty(sandbox, 'localStorage', {
+            get() {
+                accesses += 1;
+                if (input.origin === 'null') throw new Error('opaque storage accessed');
+                return {
+                    getItem: key => values.get(key) ?? null,
+                    setItem: (key, value) => values.set(key, value),
+                };
+            },
+        });
+        vm.runInNewContext(input.script, sandbox);
+        process.stdout.write(JSON.stringify({ accesses, value: values.get(input.key) ?? null }));
+    """
+    result = subprocess.run(
+        [node, "-e", runner],
+        input=json.dumps(
+            {
+                "origin": origin,
+                "existing": existing,
+                "key": EVAL_AUTH_STORAGE_KEY,
+                "script": script,
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {
+        "accesses": storage_accesses,
+        "value": _serialized_session(session) if expected == "seed" else expected,
+    }
+
+
+@pytest.mark.asyncio
+async def test_browser_suite_bootstrap_uses_target_scoped_session_initializer(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from eval import browser_runner
+
+    session = {"access_token": "offline-test-token"}
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(
+            return_value=SimpleNamespace(
+                on=lambda *_args: None,
+                goto=AsyncMock(side_effect=RuntimeError("stop after initializer")),
+            )
+        ),
+    )
+    browser = SimpleNamespace(
+        new_context=AsyncMock(return_value=context), close=AsyncMock()
+    )
+
+    class PlaywrightContext:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                chromium=SimpleNamespace(launch=AsyncMock(return_value=browser))
+            )
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(browser_runner, "async_playwright", PlaywrightContext)
+    monkeypatch.setattr(
+        browser_runner, "_internal_session", AsyncMock(return_value=session)
+    )
+    monkeypatch.setattr(browser_runner, "_capture_bootstrap_failure", AsyncMock())
+    args = SimpleNamespace(
+        suite="diagnostic",
+        case=["memory"],
+        output=str(tmp_path / "results.json"),
+        headed=False,
+        target="https://frontend.example/eval",
+        backend_target="http://backend",
+        email="eval@example.com",
+        internal_password="offline-password",
+    )
+    with pytest.raises(RuntimeError, match="stop after initializer"):
+        await browser_runner._execute_browser(args)
+    context.add_init_script.assert_awaited_once_with(
+        browser_runner._session_init_script(session, args.target)
+    )
+    browser.close.assert_awaited_once()

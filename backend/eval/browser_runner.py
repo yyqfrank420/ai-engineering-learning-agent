@@ -204,6 +204,20 @@ def _serialized_session(session: dict[str, Any]) -> str:
     return json.dumps(session, separators=(",", ":"))
 
 
+def _session_init_script(session: dict[str, Any], frontend_target: str) -> str:
+    return (
+        "if (location.origin !== 'null' && location.origin === new URL("
+        + json.dumps(frontend_target)
+        + ").origin && !localStorage.getItem("
+        + json.dumps(EVAL_AUTH_STORAGE_KEY)
+        + ")) localStorage.setItem("
+        + json.dumps(EVAL_AUTH_STORAGE_KEY)
+        + ", "
+        + json.dumps(_serialized_session(session))
+        + ");"
+    )
+
+
 async def _wait_for_composer_ready(page: Page, *, timeout_seconds: int = 30) -> None:
     composer = page.get_by_placeholder(re.compile(r"Ask a question"))
     await composer.wait_for(state="visible", timeout=timeout_seconds * 1000)
@@ -2030,15 +2044,7 @@ async def _run_browser_attempt(
         # trace screenshots during multi-minute model waits make captures huge
         # without adding useful timing evidence.
         await context.tracing.start(screenshots=False, snapshots=True, sources=True)
-        await context.add_init_script(
-            "if (!localStorage.getItem("
-            + json.dumps(EVAL_AUTH_STORAGE_KEY)
-            + ")) localStorage.setItem("
-            + json.dumps(EVAL_AUTH_STORAGE_KEY)
-            + ", "
-            + json.dumps(_serialized_session(session))
-            + ");"
-        )
+        await context.add_init_script(_session_init_script(session, args.target))
         page = await context.new_page()
     except PlaywrightError as exc:
         if "context" in locals():
@@ -2384,13 +2390,7 @@ async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
                     screenshots=True, snapshots=True, sources=True
                 )
                 await context.add_init_script(
-                    "if (!localStorage.getItem("
-                    + json.dumps(EVAL_AUTH_STORAGE_KEY)
-                    + ")) localStorage.setItem("
-                    + json.dumps(EVAL_AUTH_STORAGE_KEY)
-                    + ", "
-                    + json.dumps(_serialized_session(session))
-                    + ");"
+                    _session_init_script(session, args.target)
                 )
                 page = await context.new_page()
                 browser_events: list[dict[str, str]] = []
