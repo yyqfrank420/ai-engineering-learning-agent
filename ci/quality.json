@@ -307,11 +307,18 @@
         "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
+        "path": "frontend/src/components/GraphCanvas/diagramConnections.ts",
+        "before_blob": "3df2c9bccc5625f9f4ac62f969fab4c1255d9d9f",
+        "after_blob": "3a8687a415dbb8f1e9818f59e76fff8fe7493c8d",
+        "reason": "Add bounded zone-aware geometry routing for learner navigation connections while preserving unzoned paths; no model, prompt, transport or persistence behavior changes.",
+        "verification": "docs/verification/2026-09-30-zone-edge-routing.md"
+      },
+      {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
-        "before_blob": "a935d524899ba20cffb60813cb3e363062cf0ad6",
-        "after_blob": "af35270fb964e9306cefc92c88778fde8144a627",
-        "reason": "Open normal details on pointer selection, retain explicit F2 editing, and defer node reparenting until drag movement; capture geometry and generation protocols are unchanged.",
-        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+        "before_blob": "5f9d6122f24486d92e5eef6410e942660b6d54ea",
+        "after_blob": "e67adb5e318da2847621d3c920a380d74c8d818a",
+        "reason": "Route learner navigation connections against the same current zone frames that are drawn, including drag and resize ticks, and disclose blocked fallback paths; private rendering and generation protocols are unchanged.",
+        "verification": "docs/verification/2026-09-30-zone-edge-routing.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",

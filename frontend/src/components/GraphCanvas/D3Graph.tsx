@@ -14,7 +14,7 @@ import { graphStructureKey } from '../../utils/graphStructureKey';
 import { TYPE_STYLE, FALLBACK_STYLE } from '../../utils/graphColors';
 import { architectureRegions, regionRole } from './architectureRegions';
 import './D3Graph.css';
-import { diagramConnections, overviewConnections, routeConnection, type DiagramConnection } from './diagramConnections';
+import { diagramConnections, overviewConnections, routeConnection, type DiagramConnection, type ConnectionZone } from './diagramConnections';
 import { snapBounds, resizeCenteredZone, zoneFrame, type Box, type AlignmentGuide } from './diagramAlignment';
 import {
   boundLabelCenter,
@@ -49,6 +49,7 @@ import {
 } from './graphLayout';
 
 const EDGE_LABEL_MAX_CHARS = 24;
+const BLOCKED_ZONE_ROUTE_DESCRIPTION = 'This connection needs a clearer path. Move nearby zones or components apart to clear its route.';
 
 // Color palette imported from ../../utils/graphColors (TYPE_STYLE, FALLBACK_STYLE)
 
@@ -847,6 +848,7 @@ export function D3Graph({
       path: string;
       anchorX: number;
       anchorY: number;
+      zoneRoutingBlocked?: boolean;
     }
 
     const cardBorderPoint = (
@@ -866,8 +868,9 @@ export function D3Graph({
       };
     };
 
+    let routingZones: ConnectionZone[] = [];
     const computeRouteLink = (d: RenderLink): EdgeRoute => {
-      if (navigation) return routeConnection(d.source, d.target, nodes, NODE_W, NODE_H);
+      if (navigation) return routeConnection(d.source, d.target, nodes, NODE_W, NODE_H, routingZones);
       const laneOffset = parallelLaneOffset(d.parallelIndex, d.parallelCount);
       if (orientation === 'horizontal') {
         const forward = isForward(d);
@@ -1403,7 +1406,7 @@ export function D3Graph({
           const svgRect = svgRef.current!.getBoundingClientRect();
           setEdgeTooltip({ x: Math.max(0, Math.min(ev.clientX - svgRect.left, svgRect.width - 270)),
             y: ev.clientY - svgRect.top, label: `${d.source.label} / ${d.target.label}`,
-            technology: '', sync: '', description: '', count: d.connection.members.length });
+            technology: '', sync: '', description: routeLink(d).zoneRoutingBlocked ? BLOCKED_ZONE_ROUTE_DESCRIPTION : '', count: d.connection.members.length });
           return;
         }
         const idx = links.indexOf(d);
@@ -1818,37 +1821,37 @@ export function D3Graph({
     // ── renderAll: position everything from current node.x/y ─────────────────
     // Called once on init, and on every drag tick.
     function renderAll() {
+      // Navigation routing and drawn boundaries share this tick's geometry.
+      const groupLayouts = groupEls.map((groupEl) => {
+        const { grp: groupDef } = groupEl;
+        const memberNodes = membersOf(groupDef);
+        if (!memberNodes.length) return null;
+        let bounds: Box;
+        if (navigation) bounds = boundsOf(groupDef);
+        else {
+          const content = contentBounds(memberNodes);
+          const padding = zonePadding[groupDef.id];
+          bounds = { x: content.x - 16 - (padding?.left ?? 0), y: content.y - 8 - (padding?.top ?? 0),
+            width: content.width + 32 + (padding?.left ?? 0) + (padding?.right ?? 0),
+            height: content.height + 12 + (padding?.top ?? 0) + (padding?.bottom ?? 0) };
+        }
+        return { ...groupEl, memberNodes, bounds };
+      }).filter(layout => layout !== null);
+      routingZones = navigation ? groupLayouts.map(({ grp, bounds }) => ({
+        id: grp.id, nodeIds: grp.nodeIds, ...bounds,
+      })) : [];
+
       routeCache.clear();
       // Update edge paths
-      link.attr('d', pathD);
-      linkHit.attr('d', pathD);
+      link.attr('d', pathD).attr('data-routing-blocked', d => routeLink(d).zoneRoutingBlocked ? 'true' : null);
+      linkHit.attr('d', pathD).attr('data-routing-blocked', d => routeLink(d).zoneRoutingBlocked ? 'true' : null)
+        .attr('aria-description', d => routeLink(d).zoneRoutingBlocked ? BLOCKED_ZONE_ROUTE_DESCRIPTION : null);
 
       // Position nodes
       nodeSel.attr('transform', (d: RenderNode) => `translate(${d.x},${d.y})`);
 
       // Position step badges at exact edge midpoint
       stepBadgeGroup.attr('transform', (d: RenderLink) => `translate(${midX(d)},${midY(d)})`);
-
-      // Refit group boundaries to their member nodes. Some valid topologies
-      // interleave responsibility zones; overlapping rectangles imply false
-      // containment, so those diagrams fall back to per-zone eyebrow chips.
-      const groupLayouts = groupEls.map((groupEl) => {
-        const { grp: groupDef } = groupEl;
-        const memberNodes = groupDef.nodeIds
-          .map(id => nodeById[id])
-          .filter((n): n is RenderNode => n?.x != null && n?.y != null);
-        const PX = navigation ? 24 : 16, PT = navigation ? 42 : 8, PB = navigation ? 20 : 4;
-        const padding = zonePadding[groupDef.id];
-        const minX = Math.min(...memberNodes.map((n: RenderNode) => n.x)) - NODE_W / 2 - PX - (padding?.left ?? 0);
-        const maxX = Math.max(...memberNodes.map((n: RenderNode) => n.x)) + NODE_W / 2 + PX + (padding?.right ?? 0);
-        const minY = Math.min(...memberNodes.map((n: RenderNode) => n.y)) - NODE_H / 2 - PT - (padding?.top ?? 0);
-        const maxY = Math.max(...memberNodes.map((n: RenderNode) => n.y)) + NODE_H / 2 + PB + (padding?.bottom ?? 0);
-        return {
-          ...groupEl,
-          memberNodes,
-          bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
-        };
-      }).filter(layout => layout.memberNodes.length > 0);
 
       const boundaryLayouts = groupLayouts.filter(layout => (
         layout.memberNodes.length > 1
