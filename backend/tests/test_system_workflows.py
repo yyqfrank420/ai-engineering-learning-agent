@@ -118,13 +118,16 @@ def test_recruiter_demo_happy_path_system_workflow(temp_data_dir, monkeypatch):
         chat_events = _events(chat.text)
         assert {"type": "response_delta", "content": "Agents can plan and use tools."} in chat_events
         assert any(event["type"] == "graph_data" for event in chat_events)
-        assert chat_events[-1] == {"type": "done"}
+        assert chat_events[-1]["type"] == "done"
 
         fetched = client.get(f"/api/threads/{thread_id}", headers=headers)
         assert fetched.status_code == 200
         payload = fetched.json()
         assert [message["role"] for message in payload["messages"]] == ["user", "assistant"]
         assert payload["thread"]["graph_data"]["title"] == "Agent Workflow"
+        saved_activity = payload["messages"][-1]["activity"]
+        assert saved_activity is not None
+        assert chat_events[-1] == {"type": "done", "activity": saved_activity}
 
         node = client.post(
             "/api/node-selected",

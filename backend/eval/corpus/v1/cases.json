@@ -1,7 +1,7 @@
 {
   "format_version": 1,
-  "corpus_version": "2026-09-28.v1",
-  "release_identity": "browser-rubric-v5",
+  "corpus_version": "2026-10-01.v1",
+  "release_identity": "browser-rubric-v6",
   "approval": {
     "status": "pending_human_review",
     "reviewed_by": null,
@@ -18,7 +18,7 @@
       "critical_false_passes": null,
       "evaluated_at": null
     },
-    "notes": "The 2026-09-28.v1 corpus uses the fixed product settings: Auto complexity, graph on and research enabled. Canonical intent preflight selects diagram requests automatically; answer-only and memory cases request no diagram in their prompts. The education-diagram journey covers a broad education request with a fresh diagram, answer and persistence. Graph-off API compatibility remains covered outside the browser corpus. Graph, persistence, streaming, safety and expansion requirements remain in place. Human corpus approval remains pending until a new full protected capture, human review of all 20 cases, judge calibration and approved manifest hash are recorded. The protected automated release gates remain required."
+    "notes": "The 2026-10-01.v1 corpus uses the fixed product settings: Auto complexity, graph on and research enabled. Canonical intent preflight selects diagram requests automatically; answer-only and memory cases request no diagram in their prompts. The education-diagram journey covers a broad education request with a fresh diagram, answer and persistence. Graph-off API compatibility remains covered outside the browser corpus. Graph, persistence, streaming, safety and expansion requirements remain in place. Human corpus approval remains pending until a new full protected capture, human review of all 20 cases, judge calibration and approved manifest hash are recorded. The protected automated release gates remain required. The graph-expansion journey retains its bounded Serving Monitor follow-up and adds a complex internal expansion of Serving API and Model release service. This third turn requires preserved graph records, Component ownership and specialist model evidence within the existing protected case and call budgets."
   },
   "rubrics": {
     "correctness": {
@@ -329,7 +329,7 @@
       "provenance": "Seeded from graph expansion behavior.",
       "steps": [
         {
-          "prompt": "Design a production model-serving stack with a monitoring component named Serving Monitor.",
+          "prompt": "Design a production model-serving stack with two application services named Serving API and Model release service, plus a monitoring component named Serving Monitor.",
           "ui": {
             "complexity": "auto",
             "graph_mode": "on",
@@ -350,6 +350,23 @@
             "added_node_count": 1,
             "new_node_directly_connected_to_prior_graph": true,
             "new_node_connected_to_prior_label_contains": "serving monitor"
+          }
+        },
+        {
+          "prompt": "Expand the Serving API and Model release service application services internally. Show their components for state transitions, concurrency control, idempotency, bounded retries and failure handling. Preserve the existing graph, service boundaries and external interfaces, including all prior components and connections. Place each internal component under its owning application service.",
+          "ui": {
+            "complexity": "auto",
+            "graph_mode": "on",
+            "research_enabled": true
+          },
+          "graph_output_max_latency_ms": 180000,
+          "service_expansion": {
+            "target_service_labels": [
+              "Serving API",
+              "Model release service"
+            ],
+            "specialist_model": "claude-opus-5-5",
+            "specialist_effort": "medium"
           }
         }
       ],

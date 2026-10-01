@@ -1238,7 +1238,22 @@ def test_websocket_rejects_commands_then_stops_matching_work(
                     "client_request_id": "client-command",
                 }
             )
-            _receive_until(socket, "worker_status")
+            assert socket.receive_json() == {
+                "type": "worker_status",
+                "worker": "orchestrator",
+                "status": "Question received \u2014 preparing the steerable workflow\u2026",
+            }
+            startup_activity = socket.receive_json()
+            assert startup_activity == {
+                "type": "activity_step",
+                "sequence": 0,
+                "kind": "update",
+                "phase": "context",
+                "status": "active",
+                "text": "Let me check your request and any existing diagram.",
+                "elapsed_ms": startup_activity["elapsed_ms"],
+            }
+            assert startup_activity["elapsed_ms"] >= 0
 
             socket.send_json({"type": "unknown"})
             assert socket.receive_json() == {

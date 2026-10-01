@@ -436,6 +436,20 @@ async def dashboard_eval_telemetry(
                 }
             )
         allocated_timeout_s = metadata.get("allocated_timeout_s")
+        specialist_version = metadata.get("specialist_tool_version")
+        expansion_complexity = metadata.get("service_expansion_complexity")
+        target_service_ids = metadata.get("target_service_ids")
+        safe_target_ids = (
+            target_service_ids
+            if isinstance(target_service_ids, list)
+            and 1 <= len(target_service_ids) <= 64
+            and all(
+                isinstance(target, str) and _safe_eval_identifier(target) is not None
+                for target in target_service_ids
+            )
+            and len(set(target_service_ids)) == len(target_service_ids)
+            else None
+        )
         calls.append(
             {
                 "thread_id": row.get("thread_id"),
@@ -488,6 +502,14 @@ async def dashboard_eval_telemetry(
                 "client_request_id": _safe_eval_identifier(
                     metadata.get("client_request_id")
                 ),
+                "specialist_tool_version": _safe_eval_identifier(specialist_version)
+                if isinstance(specialist_version, str)
+                else None,
+                "service_expansion_complexity": expansion_complexity
+                if isinstance(expansion_complexity, str)
+                and expansion_complexity in {"low", "high"}
+                else None,
+                "target_service_ids": safe_target_ids,
                 "created_at_epoch": row["created_at_epoch"],
             }
         )

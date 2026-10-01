@@ -2489,16 +2489,24 @@ async def test_recovered_timeout_cost_stays_unknown_through_live_report(
 def complete_calibration_capture():
     corpus = load_corpus()
     results = []
+    telemetry = []
     for case in corpus.cases:
         results.append(
             {
                 "id": case.id,
+                "thread_id": case.id,
                 "execution_state": "completed",
                 "passed": True,
                 "deterministic_failures": [],
                 "failure_details": [],
                 "turns": [
-                    {"turn": index, "prompt": step.prompt, "answer": "Captured answer."}
+                    {
+                        "turn": index,
+                        "prompt": step.prompt,
+                        "answer": "Captured answer.",
+                        "request_id": f"{case.id}-turn-{index}",
+                        "client_request_id": f"client-{case.id}-turn-{index}",
+                    }
                     for index, step in enumerate(case.steps, start=1)
                 ],
                 "events": [
@@ -2509,6 +2517,59 @@ def complete_calibration_capture():
                 "trace": f"{case.id}.zip",
             }
         )
+        for index, step in enumerate(case.steps, start=1):
+            expectation = step.service_expansion
+            if expectation is None:
+                continue
+            previous_graph = {
+                "title": "Serving architecture",
+                "assumptions": [],
+                "sequence": [],
+                "nodes": [
+                    {"id": f"service-{parent}", "label": label, "type": "service"}
+                    for parent, label in enumerate(expectation.target_service_labels)
+                ],
+                "edges": [],
+                "groups": [],
+            }
+            current_graph = deepcopy(previous_graph)
+            current_graph["nodes"].extend(
+                {
+                    "id": f"component-{parent}",
+                    "label": f"Internal owner {parent}",
+                    "type": "component",
+                    "technology": "Component",
+                    "parent_service_id": node["id"],
+                }
+                for parent, node in enumerate(previous_graph["nodes"])
+            )
+            turns = results[-1]["turns"]
+            turns[index - 2]["graph"] = previous_graph
+            turns[index - 1]["graph"] = current_graph
+            for operation in ("staged_graph_components", "staged_graph_connections"):
+                telemetry.append(
+                    {
+                        "thread_id": case.id,
+                        "operation": operation,
+                        "request_id": turns[index - 1]["request_id"],
+                        "client_request_id": turns[index - 1]["client_request_id"],
+                        "model": expectation.specialist_model,
+                        "effort": expectation.specialist_effort,
+                        "status": "success",
+                        "fallback": False,
+                        "provider_attempts": 1,
+                        "specialist_tool_version": "service_expansion_v1",
+                        "service_expansion_complexity": "high",
+                        "target_service_ids": [
+                            node["id"] for node in previous_graph["nodes"]
+                        ],
+                        "usage_complete": True,
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "cache_creation_input_tokens": 0,
+                        "cache_read_input_tokens": 0,
+                    }
+                )
     return {
         "format_version": 1,
         "kind": "browser_capture",
@@ -2519,7 +2580,7 @@ def complete_calibration_capture():
         "dashboard_smoke": {"passed": True},
         "results": results,
         "case_states": [{"id": case.id, "state": "completed"} for case in corpus.cases],
-        "application_telemetry": [],
+        "application_telemetry": telemetry,
     }
 
 
@@ -2584,7 +2645,7 @@ async def test_calibration_grades_complete_product_failures_without_overriding_t
     assert evaluation["deterministic_failures"] == ["graph missing"]
     assert report["reason"] == f"{evaluation['id']}: {evaluation['reason']}"
     assert len(evaluation["judgments"]) == int(replay)
-    assert len(calls) == (len(capture["results"]) if replay else 0)
+    assert len(calls) == len(capture["results"]) - int(not replay)
     assert report["cost_accounting"]["application"]["status"] == "infrastructure"
     if replay:
         assert all(item["decision"] == "pass" for item in report["evaluations"][1:])
@@ -2665,6 +2726,9 @@ async def test_replay_retains_priced_source_usage_without_spending_application_b
     monkeypatch, complete_calibration_capture
 ):
     capture = complete_calibration_capture
+    specialist_attempts = sum(
+        call["provider_attempts"] for call in capture["application_telemetry"]
+    )
     for row in capture["results"]:
         row["thread_id"] = row["id"]
         capture["application_telemetry"].append(
@@ -2683,7 +2747,10 @@ async def test_replay_retains_priced_source_usage_without_spending_application_b
     report, code = await evaluate(_full_replay_args())
     assert code == 0
     assert report["budget"]["application_calls"] == 0
-    assert report["budget"]["source_application_calls"] == 100 * len(capture["results"])
+    assert (
+        report["budget"]["source_application_calls"]
+        == 100 * len(capture["results"]) + specialist_attempts
+    )
     assert report["estimated_cost"]["application_usd"] == 0
     assert report["estimated_cost"]["source_application_usd"] > 0
     assert report["cost_accounting"]["application"]["status"] == "pass"

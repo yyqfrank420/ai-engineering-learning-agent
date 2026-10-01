@@ -235,16 +235,67 @@ def test_graph_expansion_contract_requires_a_prior_renderable_graph_turn(tmp_pat
         load_corpus(path=path)
 
 
-def test_graph_expansion_corpus_has_one_bounded_expansion():
+@pytest.mark.parametrize(
+    "labels", [[], [""], [" "], [" Serving API"], ["Serving API", "Serving API"]]
+)
+def test_service_expansion_targets_require_distinct_exact_labels(labels):
+    from eval.quality_corpus import ServiceExpansionExpectation
+
+    with pytest.raises(ValueError):
+        ServiceExpansionExpectation(target_service_labels=labels)
+
+
+def test_service_expansion_schema_defaults_to_the_medium_specialist():
+    from eval.quality_corpus import ServiceExpansionExpectation
+
+    expectation = ServiceExpansionExpectation(target_service_labels=["Serving API"])
+    assert expectation.specialist_model == "claude-opus-5-5"
+    assert expectation.specialist_effort == "medium"
+    with pytest.raises(ValueError, match="specialist_effort"):
+        ServiceExpansionExpectation(
+            target_service_labels=["Serving API"], specialist_effort="high"
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["first_turn", "previous_graph_off", "graph_not_renderable", "both_kinds"],
+)
+def test_service_expansion_requires_one_kind_and_consecutive_renderable_graphs(
+    tmp_path, mutation
+):
+    raw = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+    case = next(case for case in raw["cases"] if case["id"] == "graph-expansion")
+    if mutation == "first_turn":
+        case["steps"][0]["service_expansion"] = case["steps"][2]["service_expansion"]
+    elif mutation == "previous_graph_off":
+        case["steps"][1]["ui"]["graph_mode"] = "off"
+        case["steps"][1]["graph_output_max_latency_ms"] = None
+        case["steps"][1].pop("graph_expansion")
+    elif mutation == "graph_not_renderable":
+        case["deterministic"]["graph_renderable"] = False
+    else:
+        case["steps"][2]["graph_expansion"] = case["steps"][1]["graph_expansion"]
+    path = tmp_path / "invalid-service-expansion.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="cannot expand a prior graph|consecutive graph-on|mutually exclusive",
+    ):
+        load_corpus(path=path)
+
+
+def test_graph_expansion_corpus_keeps_bounded_followup_and_adds_service_expansion():
     from agent.complexity import resolve_complexity
     from agent.nodes import graph_worker
 
     corpus = load_corpus()
     case = corpus.by_id["graph-expansion"]
-    first_turn, second_turn = case.steps
+    first_turn, second_turn, third_turn = case.steps
 
-    assert corpus.corpus_version == "2026-09-28.v1"
-    assert corpus.release_identity == "browser-rubric-v5"
+    assert corpus.corpus_version == "2026-10-01.v1"
+    assert corpus.release_identity == "browser-rubric-v6"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
@@ -281,7 +332,8 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         for other in corpus.cases
     )
     assert first_turn.prompt == (
-        "Design a production model-serving stack with a monitoring component named Serving Monitor."
+        "Design a production model-serving stack with two application services named "
+        "Serving API and Model release service, plus a monitoring component named Serving Monitor."
     )
     assert second_turn.prompt == (
         "Expand the Serving Monitor component while preserving the original graph topic "
@@ -298,6 +350,21 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         second_turn.graph_expansion.new_node_connected_to_prior_label_contains
         == "serving monitor"
     )
+    assert first_turn.service_expansion is None
+    assert second_turn.service_expansion is None
+    assert third_turn.graph_expansion is None
+    assert third_turn.service_expansion is not None
+    assert third_turn.service_expansion.target_service_labels == [
+        "Serving API",
+        "Model release service",
+    ]
+    assert third_turn.service_expansion.specialist_model == "claude-opus-5-5"
+    assert third_turn.service_expansion.specialist_effort == "medium"
+    assert third_turn.graph_output_max_latency_ms == 180_000
+    assert third_turn.ui == second_turn.ui
+    assert "concurrency" in third_turn.prompt
+    assert "retries" in third_turn.prompt
+    assert "failure handling" in third_turn.prompt
     stored_maturity = resolve_complexity(
         first_turn.ui.complexity,
         first_turn.prompt,
@@ -337,7 +404,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
 def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
     corpus = load_corpus()
     one_turn = [corpus.by_id["rag-grounding"]]
-    two_turns = [corpus.by_id["graph-expansion"]]
+    three_turns = [corpus.by_id["graph-expansion"]]
     manifest = json.loads(
         (CORPUS_PATH.parents[4] / "ci" / "quality.json").read_text(encoding="utf-8")
     )
@@ -348,17 +415,20 @@ def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
     )
     assert browser_suite_timeout_seconds(one_turn) > application_turn_timeout_seconds()
     assert (
-        browser_suite_timeout_seconds(two_turns)
-        > 2 * application_turn_timeout_seconds()
+        browser_suite_timeout_seconds(three_turns)
+        > 3 * application_turn_timeout_seconds()
     )
     pr_graph_turns = sum(
         len(case.steps) for case in pr_cases if case.deterministic.graph_emitted is True
     )
     graph_lane_count = manifest["live"]["budgets"]["browser_graph_case_concurrency"]
     graph_lane_batches = (pr_graph_turns + graph_lane_count - 1) // graph_lane_count
-    assert browser_suite_timeout_seconds(pr_cases) >= (
-        manifest["live"]["budgets"]["browser_suite_base_timeout_seconds"]
-        + graph_lane_batches * application_turn_timeout_seconds()
+    assert browser_suite_timeout_seconds(pr_cases) >= min(
+        4200,
+        (
+            manifest["live"]["budgets"]["browser_suite_base_timeout_seconds"]
+            + graph_lane_batches * application_turn_timeout_seconds()
+        ),
     )
     assert browser_suite_timeout_seconds(corpus.cases * 10) == 4200
     assert browser_case_concurrency() == 4
@@ -1241,6 +1311,7 @@ async def test_expected_error_case_can_continue_to_a_later_turn(monkeypatch):
                     update={
                         "graph_output_max_latency_ms": None,
                         "graph_expansion": None,
+                        "service_expansion": None,
                     }
                 )
                 for step in original.steps
@@ -1259,7 +1330,7 @@ async def test_expected_error_case_can_continue_to_a_later_turn(monkeypatch):
     monkeypatch.setattr("eval.browser_runner._send_step", fake_send_step)
     await _send_case_steps(None, case, [], [], timeout_seconds=390)
 
-    assert step_order == [0, 1]
+    assert step_order == list(range(len(case.steps)))
 
 
 @pytest.mark.asyncio
@@ -1822,7 +1893,8 @@ def test_graph_expansion_rejects_topic_component_composition_and_anchor_rewrites
 async def test_required_graph_turn_accepts_graph_data_at_its_latency_limit(monkeypatch):
     from eval.browser_runner import _send_case_steps
 
-    case = load_corpus().by_id["graph-expansion"]
+    original = load_corpus().by_id["graph-expansion"]
+    case = original.model_copy(update={"steps": original.steps[:2]})
 
     async def fake_send_step(page, sent_case, step_index, frames, *, timeout_seconds):
         del page, sent_case, timeout_seconds

@@ -310,6 +310,9 @@ async def test_eval_telemetry_is_thread_scoped_bounded_and_sanitized(monkeypatch
                 ],
                 "request_id": "request-1",
                 "client_request_id": None,
+                "specialist_tool_version": None,
+                "service_expansion_complexity": None,
+                "target_service_ids": None,
                 "created_at_epoch": 1000.0,
             }
         ]
@@ -506,3 +509,44 @@ async def test_dashboard_self_improvement_surfaces_latency_scores_and_errors(
     assert payload["output_shapes"] == [
         {"label": "chat_response / graph:True / retrieval:strong", "count": 1}
     ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("specialist_tool_version", "private/path"),
+        ("specialist_tool_version", 42),
+        ("specialist_tool_version", {"secret": "value"}),
+        ("service_expansion_complexity", "private scope"),
+        ("service_expansion_complexity", ["high"]),
+        ("target_service_ids", []),
+        ("target_service_ids", ["service", "service"]),
+        ("target_service_ids", ["valid", "private/path"]),
+        ("target_service_ids", [42]),
+        ("target_service_ids", [{"private": "value"}]),
+        ("target_service_ids", [f"service-{index}" for index in range(65)]),
+    ],
+)
+async def test_eval_telemetry_sanitizes_specialist_fields_without_exposing_metadata(
+    monkeypatch, field, value
+):
+    metadata = {
+        "specialist_tool_version": "service_expansion_v1",
+        "service_expansion_complexity": "high",
+        "target_service_ids": ["service-1"],
+        "private_secret": "never-return",
+        field: value,
+    }
+    row = _llm(
+        "staged_graph_components", "anthropic", "claude-opus-5-5", metadata=metadata
+    ) | {"thread_id": "thread-1"}
+    monkeypatch.setattr(dashboard, "list_recent_llm_telemetry", lambda **_kwargs: [row])
+    payload = await dashboard.dashboard_eval_telemetry(
+        since_epoch=900, thread_id=["thread-1"], _user={}
+    )
+    call = payload["calls"][0]
+    assert call[field] is None
+    assert "metadata" not in call
+    assert "private_secret" not in call
+    assert "never-return" not in str(payload)

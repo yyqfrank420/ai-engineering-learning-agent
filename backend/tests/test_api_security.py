@@ -1126,7 +1126,21 @@ def test_chat_stream_persists_messages_and_graph(temp_data_dir, monkeypatch):
 
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
-    assert [event["type"] for event in events[:2]] == ["worker_status", "worker_status"]
+    assert [event["type"] for event in events[:3]] == [
+        "worker_status",
+        "activity_step",
+        "worker_status",
+    ]
+    assert events[1] == {
+        "type": "activity_step",
+        "sequence": 0,
+        "kind": "update",
+        "phase": "context",
+        "status": "active",
+        "text": "Let me check your request and any existing diagram.",
+        "elapsed_ms": events[1]["elapsed_ms"],
+    }
+    assert events[1]["elapsed_ms"] >= 0
     graph_events = [
         event["type"]
         for event in events
@@ -1400,7 +1414,27 @@ async def test_chat_releases_stream_lease_and_cancels_agent_when_stream_ends(
         request,
         {"id": "user-1", "email": "friend@example.com"},
     )
-    await anext(response.body_iterator)
+    startup_status = _parse_sse_events(await anext(response.body_iterator))
+    assert startup_status == [
+        {
+            "type": "worker_status",
+            "worker": "orchestrator",
+            "status": "Question received \u2014 preparing context\u2026",
+        }
+    ]
+    startup_activity = _parse_sse_events(await anext(response.body_iterator))
+    assert len(startup_activity) == 1
+    step = startup_activity[0]
+    assert step == {
+        "type": "activity_step",
+        "sequence": 0,
+        "kind": "update",
+        "phase": "context",
+        "status": "active",
+        "text": "Let me check your request and any existing diagram.",
+        "elapsed_ms": step["elapsed_ms"],
+    }
+    assert step["elapsed_ms"] >= 0
     await asyncio.wait_for(started.wait(), timeout=1)
     if termination == "close":
         await response.body_iterator.aclose()

@@ -29,7 +29,12 @@ from playwright.async_api import (
 )
 
 from agent.complexity import diagram_submission_action
-from eval.quality_corpus import EvaluationCase, corpus_sha256, load_corpus
+from eval.quality_corpus import (
+    EvaluationCase,
+    ServiceExpansionExpectation,
+    corpus_sha256,
+    load_corpus,
+)
 from eval.response_capture import extract_response_text, extract_response_turns
 from eval.runtime_budget import (
     application_turn_timeout_seconds,
@@ -627,11 +632,9 @@ def _persisted_graph_failure(
     return None
 
 
-def _graph_expansion_failure(
+def _graph_preservation_failure(
     previous_graph: dict[str, Any],
     current_graph: dict[str, Any],
-    *,
-    anchor_label_contains: str,
 ) -> tuple[str, str] | None:
     if current_graph.get("title") != previous_graph.get("title"):
         return (
@@ -729,6 +732,26 @@ def _graph_expansion_failure(
             "graph_expansion_prior_assumption_missing",
             "graph expansion removed a prior assumption",
         )
+    return None
+
+
+def _graph_expansion_failure(
+    previous_graph: dict[str, Any],
+    current_graph: dict[str, Any],
+    *,
+    anchor_label_contains: str,
+) -> tuple[str, str] | None:
+    preservation_failure = _graph_preservation_failure(previous_graph, current_graph)
+    if preservation_failure is not None:
+        return preservation_failure
+    previous_nodes = {
+        str(node.get("id") or ""): node for node in previous_graph.get("nodes") or []
+    }
+    current_nodes = {
+        str(node.get("id") or ""): node for node in current_graph.get("nodes") or []
+    }
+    previous_node_ids = set(previous_nodes)
+    current_node_ids = set(current_nodes)
     added_node_ids = current_node_ids - previous_node_ids
     if len(added_node_ids) != 1:
         return (
@@ -762,6 +785,66 @@ def _graph_expansion_failure(
         return (
             "graph_expansion_new_node_not_connected",
             "graph expansion did not connect the new node to the requested prior component",
+        )
+    return None
+
+
+def _service_expansion_failure(
+    previous_graph: dict[str, Any],
+    current_graph: dict[str, Any],
+    expectation: ServiceExpansionExpectation,
+) -> tuple[str, str] | None:
+    preservation_failure = _graph_preservation_failure(previous_graph, current_graph)
+    if preservation_failure is not None:
+        return preservation_failure
+    previous_nodes = previous_graph.get("nodes") or []
+    current_nodes = current_graph.get("nodes") or []
+    current_ids = [node.get("id") for node in current_nodes]
+    if any(
+        not isinstance(node_id, str) or not node_id for node_id in current_ids
+    ) or len(current_ids) != len(set(current_ids)):
+        return (
+            "service_expansion_node_identity_invalid",
+            "service expansion requires distinct nonempty node IDs",
+        )
+    parents = {}
+    for label in expectation.target_service_labels:
+        matches = [
+            node
+            for node in previous_nodes
+            if node.get("type") == "service" and node.get("label") == label
+        ]
+        if len(matches) != 1:
+            return (
+                "service_expansion_target_missing_or_ambiguous",
+                f"prior graph must contain exactly one application service named {label!r}",
+            )
+        parents[matches[0]["id"]] = label
+    previous_ids = {node["id"] for node in previous_nodes}
+    additions = [node for node in current_nodes if node["id"] not in previous_ids]
+    counts = dict.fromkeys(parents, 0)
+    for node in additions:
+        if node.get("type") != "component":
+            return (
+                "service_expansion_new_node_type_mismatch",
+                "service expansion must add internal components only",
+            )
+        parent_id = node.get("parent_service_id")
+        if not isinstance(parent_id, str) or parent_id not in parents:
+            return (
+                "service_expansion_component_parent_invalid",
+                "new component must belong to a requested prior application service",
+            )
+        if node.get("technology") != "Component":
+            return (
+                "service_expansion_component_display_mismatch",
+                "service expansion internals must display the Component type",
+            )
+        counts[parent_id] += 1
+    if any(not 1 <= count <= 3 for count in counts.values()):
+        return (
+            "service_expansion_component_count_mismatch",
+            "each requested service must receive one to three internal components",
         )
     return None
 
@@ -1215,21 +1298,29 @@ async def _send_case_steps(
             ) from exc
         if render_failure is not None:
             raise BrowserQualityError(*render_failure)
-        if case.steps[step_index].graph_expansion is not None:
+        step = case.steps[step_index]
+        if step.graph_expansion is not None or step.service_expansion is not None:
             if previous_turn_graph is None or turn_graph is None:
                 raise BrowserQualityError(
-                    "graph_expansion_baseline_missing",
+                    (
+                        "service_expansion_baseline_missing"
+                        if step.service_expansion is not None
+                        else "graph_expansion_baseline_missing"
+                    ),
                     f"case {case.id} turn {step_index + 1} has no prior graph baseline",
                 )
-            expansion_failure = _graph_expansion_failure(
-                previous_turn_graph,
-                turn_graph,
-                anchor_label_contains=(
-                    case.steps[
-                        step_index
-                    ].graph_expansion.new_node_connected_to_prior_label_contains
-                ),
-            )
+            if step.service_expansion is not None:
+                expansion_failure = _service_expansion_failure(
+                    previous_turn_graph,
+                    turn_graph,
+                    step.service_expansion,
+                )
+            else:
+                expansion_failure = _graph_expansion_failure(
+                    previous_turn_graph,
+                    turn_graph,
+                    anchor_label_contains=step.graph_expansion.new_node_connected_to_prior_label_contains,
+                )
             if expansion_failure is not None:
                 raise BrowserQualityError(*expansion_failure)
         if turn_graph is not None:
