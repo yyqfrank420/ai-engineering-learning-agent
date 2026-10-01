@@ -986,17 +986,17 @@ def validate_component_write_set(
             "addition or removal count does not match", path="component_write_set"
         )
     for node_id in (set(base_components) & set(revised_components)) - allowed:
-        # Model indexes address the current candidate; server IDs own identity
-        # when a deletion shifts the remaining records.
+        # Model and parent indexes address the current candidate and shift on deletion.
+        # Assigned server IDs and parent_service_id preserve identity and ownership.
         before = {
             key: value
             for key, value in base_components[node_id].items()
-            if key != "model_index"
+            if key not in {"model_index", "parent_index"}
         }
         after = {
             key: value
             for key, value in revised_components[node_id].items()
-            if key != "model_index"
+            if key not in {"model_index", "parent_index"}
         }
         if before != after:
             raise GraphContractError(

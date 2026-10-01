@@ -471,80 +471,61 @@ def _retain_component_ids(
     base_build: Mapping[str, Any] | None,
     permissions: Mapping[str, Any] | None,
 ) -> None:
-    if not base_build:
+    # Unscoped rebuilds retain identity through parent-aware assign_server_ids.
+    if not base_build or permissions is None:
         return
     base_components = list(base_build.get("components") or [])
-    removable = set((permissions or {}).get("removable_node_ids") or [])
-    if permissions is not None:
-        # Scoped generation assembles retained base rows before authorized additions.
-        retained = [
-            component
-            for component in base_components
-            if component["server_id"] not in removable
-        ]
-        for component, prior in zip(components, retained):
-            component["server_id"] = prior["server_id"]
-        named_ids = permissions.get("allowed_new_node_ids")
-        if named_ids is not None:
-            if not isinstance(named_ids, list) or any(
-                not isinstance(node_id, str)
-                or not node_id
-                or node_id != node_id.strip()
-                or len(node_id) > 80
-                for node_id in named_ids
-            ):
-                raise GraphContractError(
-                    "named additions require exact bounded IDs",
-                    path="components.server_id",
-                )
-            additions = components[len(retained) :]
-            count = permissions.get("allowed_new_node_count", 0)
-            if (
-                isinstance(count, bool)
-                or not isinstance(count, int)
-                or count < 0
-                or len(named_ids) != count
-                or len(additions) != count
-            ):
-                raise GraphContractError(
-                    "named addition count does not match authority",
-                    path="components.server_id",
-                )
-            if len(named_ids) != len(set(named_ids)) or set(named_ids).intersection(
-                component["server_id"] for component in base_components
-            ):
-                raise GraphContractError(
-                    "named addition IDs must be unique and new",
-                    path="components.server_id",
-                )
-            # The scope compiler authorizes one named addition. Multiple names
-            # need an explicit row-to-ID contract before they can be assigned.
-            if len(named_ids) > 1:
-                raise GraphContractError(
-                    "multiple named additions have no identity mapping",
-                    path="components.server_id",
-                )
-            if named_ids:
-                additions[0]["server_id"] = named_ids[0]
-        return
-    available = {
-        str(component.get("server_id")): component
+    removable = set(permissions.get("removable_node_ids") or [])
+    # Scoped generation assembles retained base rows before authorized additions.
+    retained = [
+        component
         for component in base_components
-        if component.get("server_id") and component.get("server_id") not in removable
-    }
-    for component in components:
-        exact = next(
-            (
-                node_id
-                for node_id, prior in available.items()
-                if prior.get("label") == component.get("label")
-                and prior.get("type") == component.get("type")
-            ),
-            None,
-        )
-        if exact:
-            component["server_id"] = exact
-            available.pop(exact)
+        if component["server_id"] not in removable
+    ]
+    for component, prior in zip(components, retained):
+        component["server_id"] = prior["server_id"]
+    named_ids = permissions.get("allowed_new_node_ids")
+    if named_ids is not None:
+        if not isinstance(named_ids, list) or any(
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id != node_id.strip()
+            or len(node_id) > 80
+            for node_id in named_ids
+        ):
+            raise GraphContractError(
+                "named additions require exact bounded IDs",
+                path="components.server_id",
+            )
+        additions = components[len(retained) :]
+        count = permissions.get("allowed_new_node_count", 0)
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or len(named_ids) != count
+            or len(additions) != count
+        ):
+            raise GraphContractError(
+                "named addition count does not match authority",
+                path="components.server_id",
+            )
+        if len(named_ids) != len(set(named_ids)) or set(named_ids).intersection(
+            component["server_id"] for component in base_components
+        ):
+            raise GraphContractError(
+                "named addition IDs must be unique and new",
+                path="components.server_id",
+            )
+        # The scope compiler authorizes one named addition. Multiple names
+        # need an explicit row-to-ID contract before they can be assigned.
+        if len(named_ids) > 1:
+            raise GraphContractError(
+                "multiple named additions have no identity mapping",
+                path="components.server_id",
+            )
+        if named_ids:
+            additions[0]["server_id"] = named_ids[0]
 
 
 def _apply_scoped_addition_defaults(

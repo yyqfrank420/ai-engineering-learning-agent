@@ -36,6 +36,7 @@ from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import stream_llm
 from agent.tools.service_expansion_tool import (
+    SERVICE_EXPANSION_TARGET_QUESTION,
     plan_service_expansion,
     service_expansion_request,
 )
@@ -359,7 +360,7 @@ async def orchestrator_route(state: AgentState) -> AgentState:
             expansion = await plan_service_expansion(state, expansion_request)
         except Exception as exc:
             logger.warning("Service expansion planning failed (%s)", type(exc).__name__)
-            question = "Which application services should I expand? Please name the services in your diagram."
+            question = SERVICE_EXPANSION_TARGET_QUESTION
             await send({"type": "response_delta", "content": question})
             return {
                 **state,

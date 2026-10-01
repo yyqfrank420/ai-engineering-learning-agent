@@ -608,3 +608,345 @@ async def test_component_generation_retains_selected_parents_after_projection_an
     assert [row["parent_index"] for row in corrected["wire"]["components"][3:]] == [
         parent_indexes[target] for target in targets
     ]
+
+
+@pytest.mark.parametrize("target_reply", ["Tutoring service", "All of them"])
+def test_target_clarification_reply_resumes_prior_user_expansion(state, target_reply):
+    state.update(
+        user_message=target_reply,
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) == (
+        f"Original expansion request: Expand the backend service\nLatest user reply: {target_reply}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "history",
+    [
+        [
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": "Which service would you like to discuss?",
+            },
+        ],
+        [
+            {"role": "user", "content": "What is a token?"},
+            {"role": "assistant", "content": "I can expand the Tutoring service."},
+        ],
+        [
+            {
+                "role": "user",
+                "content": 'Explain this quote: "Expand the backend service"',
+            },
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+        [
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            }
+        ],
+        [
+            {"role": "user", "content": "Expand the backend service"},
+            {"role": "user", "content": "What is a token?"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    ],
+)
+async def test_target_reply_does_not_create_intent_from_assistant_content(
+    monkeypatch, state, history
+):
+    state.update(user_message="Tutoring service", history=history)
+    assert expansion_tool.service_expansion_request(state) is None
+    calls = mock_plan(
+        monkeypatch,
+        {"operation": "expand", "complexity": "high", "target_service_ids": ["tutor"]},
+    )
+
+    async def router(**_kwargs):
+        return "SEARCH"
+
+    monkeypatch.setattr(orchestrator, "stream_llm", router)
+    result = await orchestrator.orchestrator_route(state)
+    assert not calls
+    assert not result.get("service_expansion")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "target_reply,targets",
+    [("Tutoring service", ["tutor"]), ("All of them", ["tutor", "release"])],
+)
+async def test_orchestrator_routes_target_reply_to_scoped_service_expansion(
+    monkeypatch, state, target_reply, targets
+):
+    state.update(
+        user_message=target_reply,
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    calls = mock_plan(
+        monkeypatch,
+        {"operation": "expand", "complexity": "high", "target_service_ids": targets},
+    )
+    result = await orchestrator.orchestrator_route(state)
+    assert result["route"] == "search"
+    assert result["graph_intent"] == "edit"
+    assert result["service_expansion"]["target_service_ids"] == targets
+    assert result["service_expansion"]["complexity"] == "high"
+    combined = f"Original expansion request: Expand the backend service\nLatest user reply: {target_reply}"
+    assert json.loads(calls[0]["messages"][0]["content"])["request"] == combined
+    assert result["design_query"] == combined
+    assert result["service_expansion"]["request"] == combined
+
+
+@pytest.mark.asyncio
+async def test_target_reply_cancellation_reaches_planner_and_does_not_select_specialist(
+    monkeypatch, state
+):
+    state.update(
+        user_message="Never mind, explain tokenization instead",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    calls = mock_plan(
+        monkeypatch,
+        {"operation": "other", "complexity": "low", "target_service_ids": []},
+    )
+
+    async def router(**_kwargs):
+        return "SEARCH"
+
+    monkeypatch.setattr(orchestrator, "stream_llm", router)
+    result = await orchestrator.orchestrator_route(state)
+    request = json.loads(calls[0]["messages"][0]["content"])["request"]
+    assert request.endswith(
+        "Latest user reply: Never mind, explain tokenization instead"
+    )
+    assert not result.get("service_expansion")
+
+
+@pytest.mark.asyncio
+async def test_failed_planner_uses_shared_target_question(monkeypatch, state):
+    mock_plan(
+        monkeypatch,
+        {"operation": "clarify", "complexity": "low", "target_service_ids": []},
+    )
+    result = await orchestrator.orchestrator_route(state)
+    assert result["response_text"] == expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION
+    assert result["clarification_questions"] == [
+        expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repeated_target_clarifications_resume_with_all_replies_in_order(
+    monkeypatch, state
+):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": "The learning backend"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": "The one that handles students"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    combined = (
+        "Original expansion request: Expand the backend service\n"
+        "Prior target reply: The learning backend\n"
+        "Prior target reply: The one that handles students\n"
+        "Latest user reply: Tutoring service"
+    )
+    assert expansion_tool.service_expansion_request(state) == combined
+    calls = mock_plan(
+        monkeypatch,
+        {"operation": "expand", "complexity": "high", "target_service_ids": ["tutor"]},
+    )
+    result = await orchestrator.orchestrator_route(state)
+    assert result["graph_intent"] == "edit"
+    assert result["service_expansion"]["target_service_ids"] == ["tutor"]
+    assert result["design_query"] == combined
+    assert json.loads(calls[0]["messages"][0]["content"])["request"] == combined
+
+
+@pytest.mark.parametrize(
+    "intervening_reply,assistant_response",
+    [
+        ("The learning backend", "Would you like a walkthrough?"),
+        ("Never mind, explain tokens instead", "Tokens are units of model input."),
+    ],
+)
+def test_ordinary_assistant_response_breaks_pending_clarification_chain(
+    state, intervening_reply, assistant_response
+):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": intervening_reply},
+            {"role": "assistant", "content": assistant_response},
+            {"role": "user", "content": "Which service?"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) is None
+
+
+@pytest.mark.parametrize(
+    "invalid_message",
+    [
+        None,
+        {"role": "assistant", "content": "Target"},
+        {"role": "user", "content": None},
+        {"role": "user", "content": " "},
+    ],
+)
+def test_invalid_user_message_breaks_clarification_chain(state, invalid_message):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            invalid_message,
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) is None
+
+
+def test_clarification_chain_without_original_user_expansion_does_not_resume(state):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": 'Explain "expand backend services"'},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": "The learning backend"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) is None
+
+
+def test_pending_clarification_chain_keeps_prior_cancellation_visible_to_planner(state):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": "Never mind, explain tokenization"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) == (
+        "Original expansion request: Expand the backend service\n"
+        "Prior target reply: Never mind, explain tokenization\n"
+        "Latest user reply: Tutoring service"
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_question",
+    [
+        None,
+        {"role": "tool", "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION},
+        {"role": "assistant", "content": None},
+    ],
+)
+def test_invalid_assistant_question_breaks_clarification_chain(state, invalid_question):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand the backend service"},
+            invalid_question,
+            {"role": "user", "content": "The learning backend"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) is None
+
+
+def test_clarification_chain_uses_nearest_user_expansion_request(state):
+    state.update(
+        user_message="Tutoring service",
+        history=[
+            {"role": "user", "content": "Expand all services"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+            {"role": "user", "content": "Expand only one backend service"},
+            {
+                "role": "assistant",
+                "content": expansion_tool.SERVICE_EXPANSION_TARGET_QUESTION,
+            },
+        ],
+    )
+    assert expansion_tool.service_expansion_request(state) == (
+        "Original expansion request: Expand only one backend service\n"
+        "Latest user reply: Tutoring service"
+    )

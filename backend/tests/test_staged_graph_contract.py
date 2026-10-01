@@ -490,3 +490,59 @@ def test_same_component_label_is_distinct_under_different_services():
     changed["components"][3]["parent_service_id"] = "n3"
     changed["components"][3]["label"] = "Other validator"
     assert component_fingerprint(changed) != component_fingerprint(assigned)
+
+
+def test_authorized_removal_reindexes_component_owner_without_changing_ownership():
+    plan = _service_expansion_plan()
+    plan["components"][1], plan["components"][2] = (
+        plan["components"][2],
+        plan["components"][1],
+    )
+    for index, component in enumerate(plan["components"]):
+        component["model_index"] = index
+    plan["components"][3]["parent_index"] = 2
+    plan["connections"][0]["target_id"] = "2"
+    plan["connections"][1].update(source_id="2", target_id="1")
+    base = assign_server_ids(plan)
+    candidate = copy.deepcopy(base)
+    candidate["components"].pop(1)
+    candidate["components"][1]["model_index"] = 1
+    candidate["components"][2].update(model_index=2, parent_index=1)
+    candidate["connections"].pop(1)
+    before = copy.deepcopy(base)
+
+    accepted = validate_component_write_set(
+        base,
+        candidate,
+        {
+            "allowed_ids": ["n2"],
+            "removal_count": 1,
+            "incident_edge_ids": ["n3|n2|records authorization"],
+        },
+    )
+
+    child = accepted["components"][2]
+    assert child["parent_index"] == 1
+    assert (
+        child["parent_service_id"] == base["components"][3]["parent_service_id"] == "n3"
+    )
+    assert child == {**base["components"][3], "model_index": 2, "parent_index": 1}
+    assert base == before
+
+
+def test_uncited_component_cannot_be_reassigned_to_another_service():
+    plan = _service_expansion_plan()
+    plan["components"][2]["type"] = "service"
+    base = assign_server_ids(plan)
+    candidate = copy.deepcopy(base)
+    candidate["components"][3].update(parent_index=2, parent_service_id="n3")
+
+    with pytest.raises(
+        GraphContractError, match="changes an uncited component"
+    ) as caught:
+        validate_component_write_set(
+            base,
+            candidate,
+            {"allowed_ids": ["n2", "n3"], "addition_count": 0, "removal_count": 0},
+        )
+    assert caught.value.path == "components.n4"

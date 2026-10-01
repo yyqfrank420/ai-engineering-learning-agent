@@ -1124,6 +1124,67 @@ def test_scoped_renames_keep_server_identity_when_labels_match_prior_nodes(first
     ]
 
 
+@pytest.mark.parametrize("order", [(0, 1, 2, 4, 3), (0, 2, 1, 4, 3)])
+def test_unscoped_rebuild_keeps_same_label_component_details_with_parent(order):
+    wire = _components_wire()
+    wire["components"].append(
+        {**wire["components"][1], "label": "Order service"}
+    )
+    for parent_index in (1, 2):
+        wire["components"].append({
+            "label": "Request handler", "type": 109, "parent_index": parent_index,
+            "responsibility": "Handles requests inside its application service.",
+            "group_label": "Runtime", "group_kind": 600,
+            "primary_flow_member": False,
+        })
+    original = {
+        **wire, "request_id": "approved-request", "maturity": "prototype",
+        "components": workflow._decode_components(wire),
+        "connections": [
+            {"source_id": str(source), "target_id": str(target),
+             "label": "delegates request", "flow": "runtime", "sync": "sync"}
+            for source, target in ((0, 1), (0, 2), (1, 3), (2, 4))
+        ],
+    }
+    saved = project_graph_data(assign_server_ids(original))
+    children_by_parent = {}
+    for node in saved["nodes"]:
+        if node["type"] == "component":
+            parent_id = node["parent_service_id"]
+            node["detail"] = {"summary": f"Saved internals for {parent_id}"}
+            children_by_parent[parent_id] = copy.deepcopy(node)
+    base_build = workflow.reconstruct_staged_graph_build(saved, None)
+    new_indexes = {old_index: index for index, old_index in enumerate(order)}
+    reordered_wire = copy.deepcopy(wire)
+    reordered_wire["components"] = [
+        {
+            **wire["components"][old_index],
+            **({"parent_index": new_indexes[wire["components"][old_index]["parent_index"]]}
+               if "parent_index" in wire["components"][old_index] else {}),
+        }
+        for old_index in order
+    ]
+    rebuilt_components = workflow._decode_components(reordered_wire)
+
+    workflow._retain_component_ids(rebuilt_components, base_build, permissions=None)
+    assigned = assign_server_ids({
+        **original, "request_id": "rebuild-request", "components": rebuilt_components,
+        "base_graph": saved,
+        "connections": [
+            {**edge, "source_id": str(new_indexes[int(edge["source_id"])]),
+             "target_id": str(new_indexes[int(edge["target_id"])])}
+            for edge in original["connections"]
+        ],
+    })
+    rebuilt = workflow._preserve_existing_presentation(project_graph_data(assigned), saved)
+
+    for node in rebuilt["nodes"]:
+        if node["type"] == "component":
+            prior = children_by_parent[node["parent_service_id"]]
+            assert node["id"] == prior["id"]
+            assert node["detail"] == prior["detail"]
+
+
 @pytest.mark.asyncio
 async def test_component_gate_retries_at_most_twice_and_renders_each_candidate(
     monkeypatch,

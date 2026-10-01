@@ -10,7 +10,11 @@ from agent.complexity import _routing_intent_text
 from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
-_PLAN_VERSION = "service_expansion_plan_v1"
+_PLAN_VERSION = "service_expansion_plan_v2"
+SERVICE_EXPANSION_TARGET_QUESTION = (
+    "Which application services should I expand? "
+    "Please name the services in your diagram."
+)
 _TOOL_VERSION = "service_expansion_v1"
 _EXPANSION = re.compile(
     r"\b(?:expand|decompose|break\s+down|zoom\s+in|unpack|drill\s+into)\b", re.I
@@ -29,6 +33,9 @@ For a named target, select only that service. Never select a similarly named nod
 when the target is ambiguous. Return clarify with no targets for an ambiguous target.
 Return other with no targets for an ordinary explanation, a new system design,
 or an expansion of another kind of node.
+A clarification reply includes the original expansion request and latest user reply.
+Use the latest reply to resolve targets. Return other if it cancels the expansion
+or changes the objective.
 Complexity describes this request, independently of the diagram's maturity setting.
 Choose high for a whole backend decomposition, multiple services, interacting
 responsibilities, state, concurrency, retries, security, or failure handling.
@@ -51,13 +58,46 @@ def service_expansion_request(state: Mapping[str, Any]) -> str | None:
     intent = _routing_intent_text(request)
     if _EXPANSION.search(intent):
         return request
+    history = state.get("history") or []
+    if not isinstance(history, list):
+        return None
+    if (
+        history
+        and isinstance(history[-1], Mapping)
+        and history[-1].get("role") == "assistant"
+        and history[-1].get("content") == SERVICE_EXPANSION_TARGET_QUESTION
+    ):
+        replies = [request]
+        for index in range(len(history) - 1, 0, -2):
+            question, previous = history[index], history[index - 1]
+            if (
+                not isinstance(question, Mapping)
+                or question.get("role") != "assistant"
+                or question.get("content") != SERVICE_EXPANSION_TARGET_QUESTION
+                or not isinstance(previous, Mapping)
+                or previous.get("role") != "user"
+                or not isinstance(previous.get("content"), str)
+                or not previous["content"].strip()
+            ):
+                return None
+            previous_request = previous["content"]
+            if _EXPANSION.search(_routing_intent_text(previous_request)):
+                prior_replies = "".join(
+                    f"Prior target reply: {reply}\n" for reply in reversed(replies[1:])
+                )
+                return (
+                    f"Original expansion request: {previous_request}\n"
+                    f"{prior_replies}Latest user reply: {request}"
+                )
+            replies.append(previous_request)
+        return None
     if not _CONFIRMATION.fullmatch(intent.strip()):
         return None
     previous = next(
         (
             message.get("content")
-            for message in reversed(state.get("history") or [])
-            if message.get("role") == "user"
+            for message in reversed(history)
+            if isinstance(message, Mapping) and message.get("role") == "user"
         ),
         None,
     )
