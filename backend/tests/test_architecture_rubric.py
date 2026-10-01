@@ -29,3 +29,27 @@ def test_retry_policy_retains_unsafe_boundary_and_external_effect_requirements()
     assert "STILL_UNKNOWN has bounded escalation" in rule
     assert "authorization, policy, freshness, fencing" in rule
     assert "bounded compensation for late anomalies" in rule
+
+
+def test_output_delivery_rule_is_shared_by_generic_and_staged_review():
+    from agent.architecture_rubric import RUBRIC_CRITERIA
+
+    generic = RUBRIC_CRITERIA["edge_semantics"][1]
+    shared = generic[generic.index("When a declared consumer") :]
+    for maturity in ("prototype", "production"):
+        rule = staged_review_requirements("connections", maturity)["edge_semantics"]
+        assert shared in rule
+        assert (
+            "Every intermediary contract on that output route must carry the actual output"
+            in rule
+        )
+        assert (
+            "validation verdict, acknowledgment, or commit status alone is insufficient"
+            in rule
+        )
+        assert (
+            "Direct delivery, explicit forwarding, or declared persistence with a consumer read"
+            in rule
+        )
+        assert "Preserve this output route during scoped edits and repairs" in rule
+        assert "independent declared route already delivers all required output" in rule

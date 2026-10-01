@@ -777,7 +777,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v32"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v33"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -998,7 +998,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v41"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v42"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1556,6 +1556,7 @@ async def test_connection_delta_matches_original_selector_after_incident_edge_re
         write_set=_write_set(),
         upstream_fingerprint=_fingerprint("base"),
         accepted_components=_accepted_components(),
+        saved_component_ids=["n1", "n2"],
         accepted_context=_accepted_context(),
         base_connections=base,
         edit_permissions=permissions,
@@ -1819,6 +1820,7 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         write_set=write_set,
         upstream_fingerprint="b" * 64,
         accepted_components=accepted,
+        saved_component_ids=[row["server_id"] for row in base["components"]],
         accepted_context={key: base[key] for key in ("assumptions", "capabilities")},
         base_connections=[],
         edit_permissions=permissions,
@@ -3886,6 +3888,7 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
         write_set=write_set,
         upstream_fingerprint="a" * 64,
         accepted_components=_accepted_components(),
+        saved_component_ids=["n1", "n2"],
         accepted_context=_accepted_context(),
         base_connections=original["edges"],
         edit_permissions=permissions,
@@ -4128,7 +4131,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
     )
     assert "Do not re-add retained components" in prompt
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v41"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v42"
     )
 
     # A fresh bounded response must fix the collision; invalid rows are never dropped.
@@ -4146,3 +4149,185 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
         )
     assert result["wire"]["components"][17:] == response["additions"]
     assert case["original_candidate"] == original
+
+
+@pytest.mark.parametrize(
+    "accepted_ids,anchors,expected_anchors,expected_additions",
+    [
+        (
+            ["n1", "n2", "n3", "n4", "n5", "n6", "n7"],
+            ["n2", "n3", "n5", "n6"],
+            [1, 2, 4, 5],
+            [6],
+        ),
+        (
+            ["n6", "n1", "n4", "n2", "n5", "n3", "n7"],
+            ["n2", "n3", "n5", "n6"],
+            [3, 5, 4, 0],
+            [6],
+        ),
+        (
+            ["n7", "n6", "n1", "n4", "n2", "n5", "n3"],
+            ["n2", "n3", "n5", "n6"],
+            [4, 6, 5, 1],
+            [0],
+        ),
+        (
+            ["n1", "n2", "n3", "n4", "n5", "n6", "n7"],
+            ["n1", "n2", "n3", "n4", "n5", "n6"],
+            [0, 1, 2, 3, 4, 5],
+            [6],
+        ),
+        (
+            ["n7", "n1", "n8", "n2", "n3", "n4", "n5", "n6"],
+            ["n2", "n3", "n5", "n6"],
+            [3, 4, 6, 7],
+            [0, 2],
+        ),
+    ],
+)
+def test_connection_extension_identifies_additions_against_saved_ids(
+    accepted_ids, anchors, expected_anchors, expected_additions
+):
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        minimum_new_node_count=1,
+        allowed_new_node_count=3,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=6,
+        added_edge_anchor_node_ids=anchors,
+        enforce_added_edge_contract_label=False,
+    )
+    plan = generation._connection_addition_plan(
+        permissions,
+        {node_id: index for index, node_id in enumerate(accepted_ids)},
+        components_accepted=True,
+        saved_component_ids=["n1", "n2", "n3", "n4", "n5", "n6"],
+    )
+    assert plan["anchor_component_indexes"] == expected_anchors
+    assert plan["accepted_addition_indexes"] == expected_additions
+    assert plan["component_addition_count"] == len(expected_additions)
+    assert permissions["added_edge_anchor_node_ids"] == anchors
+
+
+@pytest.mark.parametrize("mode", ["exact", "attachment"])
+def test_connection_plan_identifies_reordered_addition_for_scoped_edits(mode):
+    permissions = _permissions(
+        connection_addition_mode=mode,
+        allowed_new_node_count=1,
+        allowed_new_edge_count=1,
+        added_edge_anchor_node_ids=["n1"],
+        enforce_added_edge_contract_label=mode == "exact",
+        connection_addition_obligations=[
+            {
+                "source": "n1",
+                "target": "$new_node_1",
+                "required_contract": "requests validation",
+            }
+        ],
+    )
+    plan = generation._connection_addition_plan(
+        permissions,
+        {"n3": 0, "n2": 1, "n1": 2},
+        components_accepted=True,
+        saved_component_ids=["n1", "n2"],
+    )
+    assert plan["accepted_addition_indexes"] == [0]
+    assert plan["anchor_component_indexes"] == [2]
+    assert plan["obligations"] == [
+        {
+            "source": {"component_index": 2},
+            "target": {"addition_index": 0},
+            "required_contract": "requests validation",
+        }
+    ]
+
+
+@pytest.mark.parametrize(
+    "saved_ids,accepted_ids,permissions_change",
+    [
+        (None, ["n1", "n2"], {}),
+        (["n1", "n1"], ["n1", "n2"], {}),
+        (["n1"], ["n1"], {}),
+        (["n1"], ["n1", "n2", "n3", "n4"], {}),
+        (["n1"], ["n1", "n2"], {"minimum_new_node_count": True}),
+        (["n1"], ["n1", "n2"], {"allowed_new_node_count": False}),
+        (["n1"], ["n1", "n2"], {"added_edge_anchor_node_ids": ["n2"]}),
+    ],
+)
+def test_connection_extension_rejects_invalid_baseline_counts_and_new_node_anchors(
+    saved_ids, accepted_ids, permissions_change
+):
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        minimum_new_node_count=1,
+        allowed_new_node_count=2,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=2,
+        added_edge_anchor_node_ids=["n1"],
+    )
+    permissions.update(permissions_change)
+    with pytest.raises(
+        generation.StagedGenerationError, match="edit_connection_plan_invalid"
+    ):
+        generation._connection_addition_plan(
+            permissions,
+            {node_id: index for index, node_id in enumerate(accepted_ids)},
+            components_accepted=True,
+            saved_component_ids=saved_ids,
+        )
+
+
+@pytest.mark.asyncio
+async def test_connection_extension_prompt_retains_restricted_anchors_and_only_new_ids(
+    monkeypatch,
+):
+    calls = []
+    addition = {
+        "source_index": 1,
+        "target_index": 6,
+        "label": "requests approval",
+        "flow": 400,
+        "sync": 500,
+    }
+
+    async def generate(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(
+            {
+                "candidate": {"updates": {}, "additions": [addition]},
+                "clarification_questions": [],
+            }
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    accepted = [
+        {**_accepted_components()[1], "id": f"n{index + 1}", "index": index}
+        for index in range(7)
+    ]
+    permissions = _permissions(
+        connection_addition_mode="extension",
+        minimum_new_node_count=1,
+        allowed_new_node_count=3,
+        minimum_new_edge_count=1,
+        allowed_new_edge_count=6,
+        added_edge_anchor_node_ids=["n2", "n3", "n5", "n6"],
+        enforce_added_edge_contract_label=False,
+    )
+    result = await generation.generate_connection_candidate(
+        request="Add approval inside the existing service.",
+        resolved_maturity="prototype",
+        write_set=generation.create_write_set(component_limit=9, edge_limit=12),
+        upstream_fingerprint="a" * 64,
+        accepted_components=accepted,
+        saved_component_ids=["n1", "n2", "n3", "n4", "n5", "n6"],
+        accepted_context=_accepted_context(),
+        base_connections=[],
+        edit_permissions=permissions,
+    )
+    prompt = json.loads(calls[0]["prompt"].split("\nINPUT\n", 1)[1])
+    plan = prompt["connection_addition_plan"]
+    assert plan["anchor_component_indexes"] == [1, 2, 4, 5]
+    assert plan["accepted_addition_indexes"] == [6]
+    assert plan["component_addition_count"] == 1
+    assert result["wire"]["edges"] == [addition]

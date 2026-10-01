@@ -1757,6 +1757,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     }
                     for component in component_build["components"]
                 ],
+                saved_component_ids=(
+                    [component["server_id"] for component in base_build["components"]]
+                    if base_build is not None
+                    else None
+                ),
                 accepted_context={
                     "assumptions": copy.deepcopy(component_build["assumptions"]),
                     "capabilities": copy.deepcopy(component_build["capabilities"]),

@@ -475,7 +475,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "connections" and code == "edge_semantics":
             assert "Block a missing required input or answer return" in requirement
             assert "a path that bypasses a required control" in requirement
-            assert "duplicate description is advisory unless" in requirement
+            assert "duplicate description is advisory only when" in requirement
         elif stage == "components" and code == "mece_scope":
             assert "Block conflicting material ownership" in requirement
             assert "naming preferences are advisory" in requirement
@@ -660,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v31"
+        == "staged_connection_gate_v32"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -2448,3 +2448,127 @@ def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reas
     assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
     assert result["findings"][0]["record_indexes"] == [0]
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("attempt", [0, 1])
+def test_connection_authoring_and_repair_receive_output_delivery_rule(
+    maturity, attempt
+):
+    write_set = {"mode": "edit", "component_ids": [], "edge_ids": ["result-edge"]}
+    findings = [
+        {
+            "code": "edge_semantics",
+            "path": "connections",
+            "rule": "edge_semantics",
+            "reason": "Commit status loses the execution output.",
+            "record_indexes": [0],
+        }
+    ]
+    prompt, _ = generation._attempt_prompt(
+        stage="connections",
+        request="Preserve the result path while editing the contract.",
+        resolved_maturity=maturity,
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        attempt=attempt,
+        prior_prompt_fingerprint="b" * 64 if attempt else None,
+        prior_write_set_fingerprint=generation._fingerprint(write_set)
+        if attempt
+        else None,
+        structural_findings=[],
+        gate_findings=findings if attempt else [],
+        base={"edges": []},
+        rejected_candidate={"edges": []} if attempt else None,
+        accepted_components=[],
+    )
+    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert (
+        payload["acceptance_criteria"]["edge_semantics"]
+        == staged_review_requirements("connections", maturity)["edge_semantics"]
+    )
+    assert "Preserve this output route during scoped edits and repairs" in prompt
+    if attempt:
+        assert payload["findings"]["gate"] == findings
+
+
+@pytest.mark.parametrize("route", ["status_only", "direct", "forwarded", "persisted"])
+def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
+    monkeypatch, route
+):
+    # Controlled reviewer verdicts test evidence transport and gate enforcement.
+    # They do not establish that a model distinguishes these contracts.
+    components = [
+        {
+            "id": "consumer",
+            "responsibility": "Use execution output to answer the caller.",
+        },
+        {
+            "id": "executor",
+            "responsibility": "Execute the requested work and produce its output.",
+        },
+        {"id": "validator", "responsibility": "Validate and forward execution output."},
+        {
+            "id": "store",
+            "responsibility": "Persist execution output for consumer reads.",
+        },
+    ]
+    routes = {
+        "status_only": [
+            ("executor", "validator", "execution output"),
+            ("validator", "consumer", "validation verdict and commit status"),
+        ],
+        "direct": [("executor", "consumer", "execution output")],
+        "forwarded": [
+            ("executor", "validator", "execution output"),
+            ("validator", "consumer", "validated execution output"),
+        ],
+        "persisted": [
+            ("executor", "store", "persist execution output"),
+            ("consumer", "store", "read execution output"),
+            ("store", "consumer", "stored execution output"),
+        ],
+    }
+    records = [
+        {"source": source, "target": target, "label": label}
+        for source, target, label in routes[route]
+    ]
+    findings = (
+        [
+            {
+                "rule_code": "edge_semantics",
+                "record_indexes": [1],
+                "reason": "Validator returns status alone; consumer cannot obtain execution output.",
+            }
+        ]
+        if route == "status_only"
+        else []
+    )
+    calls = _stub_response(
+        monkeypatch, {"approved": not findings, "findings": findings}
+    )
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Execute work and answer using its output.",
+            evidence_bundle={"candidate_components": components},
+            resolved_maturity="prototype",
+            candidate_records=records,
+        )
+    )
+    prompt = calls[0]["messages"][0]["content"]
+    assert json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    ) == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    assert (
+        "Every intermediary contract on that output route must carry the actual output"
+        in prompt
+    )
+    assert (
+        "return is advisory only after the declared consumer has a complete output route"
+        in prompt
+    )
+    assert result["approved"] is (route != "status_only")
+    assert result["findings"] == findings

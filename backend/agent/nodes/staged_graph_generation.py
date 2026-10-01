@@ -41,8 +41,8 @@ from agent.stream_utils import stream_structured_llm
 from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v41"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v32"
+_COMPONENT_PROMPT_VERSION = "staged_components_v42"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v33"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -551,6 +551,7 @@ async def generate_connection_candidate(
     upstream_fingerprint: str,
     accepted_components: Sequence[Mapping[str, Any]],
     accepted_context: Mapping[str, Any],
+    saved_component_ids: list[str] | None = None,
     attempt: int = 0,
     prior_prompt_fingerprint: str | None = None,
     prior_write_set_fingerprint: str | None = None,
@@ -625,6 +626,7 @@ async def generate_connection_candidate(
             edit_permissions,
             {row["id"]: row["index"] for row in accepted_components},
             components_accepted=True,
+            saved_component_ids=saved_component_ids,
         )
         if delta
         else None,
@@ -1844,13 +1846,12 @@ def _connection_addition_plan(
     component_indexes: Mapping[str, int],
     *,
     components_accepted: bool = False,
+    saved_component_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     node_count = permissions.get("allowed_new_node_count", 0)
     edge_count = permissions.get("allowed_new_edge_count", 0)
     minimum = permissions.get("minimum_new_edge_count", edge_count)
     mode = permissions.get("connection_addition_mode", "exact")
-    if mode == "extension" and components_accepted:
-        node_count = len(set(component_indexes) - set(permissions.get("added_edge_anchor_node_ids", [])))
     anchors = _exact_ids(permissions.get("added_edge_anchor_node_ids", []))
     obligations = permissions.get("connection_addition_obligations", [])
     enforce_label = permissions.get("enforce_added_edge_contract_label", True)
@@ -1875,13 +1876,27 @@ def _connection_addition_plan(
                 or enforce_label
             )
         )
-        or (components_accepted and node_count > len(component_indexes))
     ):
         raise StagedGenerationError("edit_connection_plan_invalid")
     ordered_ids = sorted(component_indexes, key=component_indexes.__getitem__)
-    added_ids = (
-        ordered_ids[len(ordered_ids) - node_count :] if components_accepted else []
-    )
+    added_ids: list[str] = []
+    if components_accepted:
+        saved_ids = _exact_ids(saved_component_ids)
+        if saved_ids is None:
+            raise StagedGenerationError("edit_connection_plan_invalid")
+        # Anchors grant connection authority; only saved IDs establish existing identity.
+        saved = set(saved_ids)
+        added_ids = [node_id for node_id in ordered_ids if node_id not in saved]
+        if mode == "extension":
+            minimum_nodes = permissions.get("minimum_new_node_count", node_count)
+            if (
+                not _nonnegative_limit(minimum_nodes)
+                or not minimum_nodes <= len(added_ids) <= node_count
+            ):
+                raise StagedGenerationError("edit_connection_plan_invalid")
+            node_count = len(added_ids)
+        elif len(added_ids) != node_count:
+            raise StagedGenerationError("edit_connection_plan_invalid")
     unavailable = set(permissions.get("removable_node_ids", [])) | set(added_ids)
     existing_indexes = {
         node_id: index

@@ -4532,6 +4532,8 @@ async def test_explicit_additive_layer_preserves_whole_saved_graph_with_several_
         assert kwargs["edit_permissions"]["kind"] == "extension"
         return {"wire": wire, "prompt_fingerprint": "component-extension"}
     async def edges(**kwargs):
+        assert kwargs["saved_component_ids"] == [node["id"] for node in saved["nodes"]]
+        assert len(kwargs["accepted_components"]) == 4
         return {"wire": connections, "prompt_fingerprint": "connection-extension"}
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
     monkeypatch.setattr(workflow, "generate_connection_candidate", edges)
@@ -4940,3 +4942,95 @@ async def test_draft_progress_summary_bounds_names_and_omits_graph_details():
                                   "connection_count": 1, "labels": ["A" * 48, "B" * 48]}
     assert "PRIVATE_GRAPH_DETAIL" not in repr(events)
     assert "capabilities" not in repr(events)
+
+
+@pytest.mark.parametrize("delivers_output", [False, True])
+@pytest.mark.asyncio
+async def test_scoped_output_contract_edit_obeys_connection_gate_and_preserves_baseline(
+    monkeypatch,
+    delivers_output,
+):
+    # The reviewer verdict is controlled; the real scoped edit/publication path runs.
+    previous = _accepted_staged_graph()
+    previous["nodes"][0]["description"] = (
+        "Execute work and return its execution output."
+    )
+    previous["nodes"][1]["description"] = "Use execution output to continue processing."
+    previous["edges"][0]["description"] = (
+        "Carries the execution output to its consumer."
+    )
+    _, contract = _current_review_contract(previous)
+    original = copy.deepcopy(previous)
+    description = (
+        "Carries validated execution output to the consumer."
+        if delivers_output
+        else "Carries only a validation verdict and commit status."
+    )
+    request = f"Rename edge_1 label to {description}"
+    reviews = []
+
+    async def generate_delta(**kwargs):
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [],
+                    "updates": {},
+                    "capabilities": _components_wire()["capabilities"],
+                }
+            )
+        assert set(
+            kwargs["schema"]["properties"]["updates"]["properties"]["slot_0"][
+                "properties"
+            ]
+        ) == {"label"}
+        return json.dumps(
+            {"additions": [], "updates": {"slot_0": {"label": description}}}
+        )
+
+    async def review_connections(**kwargs):
+        reviews.append(copy.deepcopy(kwargs))
+        assert kwargs["candidate_records"][0]["label"] == description
+        assert kwargs["evidence_bundle"]["review_scope"]["trusted_baseline"] is True
+        if delivers_output:
+            return _approved_gate()
+        return _rejected_gate_with_findings(
+            [
+                {
+                    "rule_code": "edge_semantics",
+                    "record_indexes": [0],
+                    "reason": "Commit status alone cannot supply the consumer's required execution output.",
+                }
+            ],
+            terminal=True,
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", review_connections)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message=request,
+            design_query=request,
+            approved_graph_data=previous,
+            graph_data=previous,
+            approved_graph_contract=contract,
+        )
+    )
+    assert len(reviews) == 1
+    assert previous == original
+    if delivers_output:
+        assert result["graph_publication"] == "approved", result.get(
+            "graph_review_diagnostics"
+        )
+        assert result["graph_data"]["edges"][0]["label"] == description
+        for key in ("nodes", "groups", "sequence", "title", "assumptions"):
+            assert result["graph_data"][key] == original[key]
+    else:
+        assert result["graph_publication"] == "preserved"
+        assert result["graph_data"] == original
+        assert (
+            result["graph_review"]["staged_gate"]["findings"][0]["rule_code"]
+            == "edge_semantics"
+        )

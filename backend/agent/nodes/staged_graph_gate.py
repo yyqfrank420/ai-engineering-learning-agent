@@ -28,7 +28,7 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v31"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v32"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -440,7 +440,8 @@ def _prompt(
                 "and deployment exchanges. Each data-returning alternative in a combined "
                 "contract needs its payload reply or a separate contract; a write verdict "
                 "is not read data. One-way events need no reply; a redundant processed-artifact "
-                "return is advisory without concrete behavior or control harm. "
+                "return is advisory only after the declared consumer has a complete output "
+                "route, without concrete behavior or control harm. "
                 "A paired reply or incidental reachability cannot invoke a separate action. "
                 "For each required action, check its actual trigger or change input. "
                 "A proposal service's declared metric pull with reply is a valid normal "

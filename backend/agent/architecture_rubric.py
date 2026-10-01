@@ -16,6 +16,16 @@ STAGED_REVIEW_STANDARD = (
     "expand the graph just to illustrate each checklist item."
 )
 
+_EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
+    "When a declared consumer needs execution output to continue work or answer, "
+    "trace that output across the complete route to the consumer. Every "
+    "intermediary contract on that output route must carry the actual output. "
+    "A validation verdict, acknowledgment, or commit status alone is insufficient. "
+    "Direct delivery, explicit forwarding, or declared persistence with a consumer "
+    "read can satisfy output delivery. Preserve this output route during scoped "
+    "edits and repairs."
+)
+
 RUBRIC_CRITERIA = {
     "domain_specificity": (
         "components",
@@ -35,7 +45,8 @@ RUBRIC_CRITERIA = {
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload.",
+        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload. "
+        + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT,
     ),
     "assumption_hygiene": (
         "composition",
@@ -348,10 +359,12 @@ def staged_review_requirements(
             "the complete declared path: an orchestrator may invoke work directly or "
             "delegate invocation and receive the result through another component. "
             "An unrelated verdict or acknowledgment cannot replace required data. "
-            "A redundant intermediate return or duplicate description is advisory unless "
-            "it changes execution or violates a required control; identify that concrete "
+            "A redundant intermediate return or duplicate description is advisory only when "
+            "an independent declared route already delivers all required output and it "
+            "neither changes execution nor violates a required control; identify that concrete "
             "failure when rejecting. Feedback and deployment contracts cannot substitute "
-            "for required runtime or control interactions."
+            "for required runtime or control interactions. "
+            + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
         )
     if stage == "components":
         if maturity == "production":

@@ -41,7 +41,7 @@ from agent.tools.service_expansion_tool import (
     service_expansion_request,
 )
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v33"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v34"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
 _ROUTER_PROMPT_VERSION = "intent_router_v4"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -160,7 +160,9 @@ _RESEARCH_ANSWER_CONTRACT = """
 <requested_web_research>
 Web research was requested and snippets were supplied. Address the relevant web findings
 that answer the user's question. Cite each supported finding inline with its exact supplied
-URL immediately after the claim. Book citations and engineering inference do not substitute
+URL immediately after the claim. Lead with the relevant source-supported finding and its
+inline citation before diagram interpretation or engineering inference. Metadata evidence_refs
+alone are not learner-facing citations. Book citations and engineering inference do not substitute
 for reporting web findings. Apply the same direct-entailment and source-allowlist rules.
 If snippets are irrelevant, omit them. State their limitation only if the user explicitly
 asked for current web findings; otherwise give the useful answer without a source audit.
