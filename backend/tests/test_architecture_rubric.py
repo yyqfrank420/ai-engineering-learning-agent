@@ -53,3 +53,18 @@ def test_output_delivery_rule_is_shared_by_generic_and_staged_review():
         )
         assert "Preserve this output route during scoped edits and repairs" in rule
         assert "independent declared route already delivers all required output" in rule
+
+
+def test_output_delivery_names_payload_and_preserves_status_only_consumers():
+    rule = staged_review_requirements("connections", "prototype")["edge_semantics"]
+    assert "Name the actual needed output data in each forwarding connection" in rule
+    assert (
+        "Generic 'success', 'failure', or 'outcome' does not imply a result payload"
+        in rule
+    )
+    assert "planner must receive tool observations or result content" in rule
+    assert "execution status as accompanying data" in rule
+    assert (
+        "A commit/status-only contract is valid when its consumer needs only commit information"
+        in rule
+    )

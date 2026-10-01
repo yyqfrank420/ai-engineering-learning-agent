@@ -660,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v32"
+        == "staged_connection_gate_v33"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -2488,6 +2488,15 @@ def test_connection_authoring_and_repair_receive_output_delivery_rule(
         == staged_review_requirements("connections", maturity)["edge_semantics"]
     )
     assert "Preserve this output route during scoped edits and repairs" in prompt
+    assert "Name the actual needed output data in each forwarding connection" in prompt
+    assert (
+        "Generic 'success', 'failure', or 'outcome' does not imply a result payload"
+        in prompt
+    )
+    assert (
+        "tool observations or result content, with execution status as accompanying data"
+        in prompt
+    )
     if attempt:
         assert payload["findings"]["gate"] == findings
 
@@ -2505,7 +2514,7 @@ def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
         },
         {
             "id": "executor",
-            "responsibility": "Execute the requested work and produce its output.",
+            "responsibility": "Execute work and produce tool observations and result content.",
         },
         {"id": "validator", "responsibility": "Validate and forward execution output."},
         {
@@ -2516,17 +2525,21 @@ def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
     routes = {
         "status_only": [
             ("executor", "validator", "execution output"),
-            ("validator", "consumer", "validation verdict and commit status"),
+            ("validator", "consumer", "success or failure outcome"),
         ],
         "direct": [("executor", "consumer", "execution output")],
         "forwarded": [
             ("executor", "validator", "execution output"),
-            ("validator", "consumer", "validated execution output"),
+            (
+                "validator",
+                "consumer",
+                "tool observations and result content with execution status",
+            ),
         ],
         "persisted": [
-            ("executor", "store", "persist execution output"),
-            ("consumer", "store", "read execution output"),
-            ("store", "consumer", "stored execution output"),
+            ("executor", "store", "persist tool observations and result content"),
+            ("consumer", "store", "read tool observations and result content"),
+            ("store", "consumer", "stored tool observations and result content"),
         ],
     }
     records = [
@@ -2572,3 +2585,47 @@ def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
     )
     assert result["approved"] is (route != "status_only")
     assert result["findings"] == findings
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_output_payload_clarification_changes_only_connection_prompt_release(
+    stage, maturity
+):
+    authored, _ = generation._attempt_prompt(
+        stage=stage,
+        request="Draw an agent loop using tool observations to answer.",
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=4, edge_limit=6),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Accepted evidence frame."
+        if stage == "components"
+        else None,
+    )
+    reviewed = gate._prompt(
+        gate=stage,
+        user_request="Draw an agent loop using tool observations to answer.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+        required_production_guarantees=(),
+    )
+    rule = "Generic 'success', 'failure', or 'outcome' does not imply a result payload"
+    assert (rule in authored) is (stage == "connections")
+    assert (rule in reviewed) is (stage == "connections")
+    forwarding = "Name the actual needed output data in each forwarding connection"
+    assert (forwarding in authored) is (stage == "connections")
+    assert (forwarding in reviewed) is (stage == "connections")
+    if stage == "connections":
+        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v34"
+        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v33"
+    else:
+        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v42"
+        assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v26"

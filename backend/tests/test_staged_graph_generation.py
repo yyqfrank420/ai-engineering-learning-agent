@@ -777,7 +777,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v33"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v34"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]

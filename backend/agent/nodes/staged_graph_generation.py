@@ -42,7 +42,7 @@ from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v42"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v33"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v34"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
