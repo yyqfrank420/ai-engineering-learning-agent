@@ -101,7 +101,7 @@ def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
 
 def _eval_web_search_usage(usage: dict[str, Any]) -> dict[str, Any]:
     count = usage.get("web_search_requests")
-    valid_count = type(count) is int and count >= 0
+    valid_count = type(count) is int and count in (0, 1)
     return {
         "web_search_requests": count if valid_count else None,
         "web_search_usage_complete": valid_count

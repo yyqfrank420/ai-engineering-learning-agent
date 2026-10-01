@@ -70,22 +70,23 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
-   Web research uses authenticated Anthropic basic `web_search_20250305` with
-   `RESEARCH_MODEL=claude-haiku-4-5` and prompt release `web_research_v1`.
-   Each research turn permits one application provider attempt, one server search,
-   2,048 output tokens, and a 30-second asynchronous deadline. There are no paid
-   retries or fallback providers. Only nonempty cited excerpts whose URLs match actual
-   provider search results become evidence. Native cited text is limited to 150
-   characters; overlong excerpts are skipped without clipping. Generated summaries and encrypted result
-   content do not. At most six sources reach synthesis. Errors, empty results, or
-   missing citations report research unavailable and continue with book evidence.
-   Logs contain bounded provider/error codes, never queries or source bodies.
-   Internal evaluation captures retained source URLs with the actual tool query and
-   `anthropic_web_search` provenance. The existing Anthropic key is used; no search
-   credentials or scraping dependency are required. Model selection is explicit in
-   configuration (Haiku 4.5 alias or `claude-haiku-4-5-20251001`); prompt changes receive
-   a new code release identity. Roll back research model configuration and the prompt
-   code release together through the normal application deployment.
+   Web research uses the authenticated Moonshot standalone Basic search API with
+   API contract release `web_research_v2`. It sends one normalized canonical design
+   query or original topic, without a model rewrite, retries, or fallback providers.
+   Each research turn permits one actual API call, a 20-second server search timeout,
+   and a 30-second HTTP timeout bounded by the worker's 30-second asynchronous deadline. A successful nonempty Basic search costs $0.002;
+   no additional language-model tokens are generated. The nonempty provider result
+   array incurs the fee before local filtering. Actual returned plaintext
+   snippets, titles, and source URLs become bounded evidence. At most six sources
+   reach synthesis after URL validation, noise filtering, and deduplication.
+   Errors, empty results, or unusable snippets report research unavailable and
+   continue with book evidence. Logs contain bounded provider/error codes, never
+   queries or source bodies. Internal evaluation captures retained URLs with the
+   exact submitted query and `moonshot_search` provenance. The existing
+   `MOONSHOT_API_KEY` and `MOONSHOT_BASE_URL` settings are used; no scraping
+   dependency or separate search credentials are required. API contract changes
+   receive a new code release identity. Roll back the adapter and worker release
+   together through the normal application deployment.
    Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
    formatting is stated or its quantitative claim omitted, without silently repairing a number.
    The optional route classifier uses one low-effort provider attempt, at most 1,024 output

@@ -272,10 +272,6 @@ class Settings(BaseSettings):
     # Backpressure for the temporary HTTP/SSE compatibility transport.
     max_sse_queue_events: int = 256
 
-    # Authenticated basic web search uses the existing Anthropic credentials.
-    research_model: Literal["claude-haiku-4-5", "claude-haiku-4-5-20251001"] = (
-        "claude-haiku-4-5"
-    )
     # Domains whose results are filtered out as low-quality noise
     research_noise_domains: list[str] = [
         "pinterest.com",

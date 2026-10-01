@@ -558,6 +558,12 @@ async def test_eval_telemetry_sanitizes_specialist_fields_without_exposing_metad
     [
         ({"web_search_requests": 0, "web_search_usage_complete": True}, True, 0),
         ({"web_search_requests": 1, "web_search_usage_complete": True}, True, 1),
+        ({"web_search_requests": 2, "web_search_usage_complete": True}, False, None),
+        (
+            {"web_search_requests": None, "web_search_usage_complete": False},
+            False,
+            None,
+        ),
         ({"web_search_requests": -1, "web_search_usage_complete": True}, False, None),
         ({"web_search_requests": "1", "web_search_usage_complete": True}, False, None),
         ({"web_search_requests": True, "web_search_usage_complete": True}, False, None),
@@ -574,9 +580,9 @@ async def test_eval_native_search_accounting_survives_sanitized_dashboard_endpoi
     from eval.cost_gate import account_application_cost
 
     base = {
-        "model": "claude-haiku-4-5",
-        "input_tokens": 1_000,
-        "output_tokens": 100,
+        "model": "moonshot-web-search-basic",
+        "input_tokens": 0,
+        "output_tokens": 0,
         "usage_complete": True,
         **usage,
     }
@@ -587,9 +593,9 @@ async def test_eval_native_search_accounting_survives_sanitized_dashboard_endpoi
         **base,
         "attempts": [base] if nested else [],
     }
-    row = _llm("web_research", "anthropic", "claude-haiku-4-5", metadata=metadata) | {
-        "thread_id": "thread"
-    }
+    row = _llm(
+        "web_research", "moonshot", "moonshot-web-search-basic", metadata=metadata
+    ) | {"thread_id": "thread"}
     monkeypatch.setattr(
         dashboard, "list_recent_llm_telemetry", lambda since_epoch: [row]
     )
@@ -610,5 +616,5 @@ async def test_eval_native_search_accounting_survives_sanitized_dashboard_endpoi
     )
     assert accounting["usage_complete"] is complete
     assert accounting["total"]["estimated_usd"] == (
-        pytest.approx(0.0015 + count * 0.01) if complete else None
+        pytest.approx(count * 0.002) if complete else None
     )

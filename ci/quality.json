@@ -43,6 +43,7 @@
             "backend/tests/test_graph_review_budget.py",
             "backend/tests/test_applied_graph_spec.py",
             "backend/tests/test_llm_adapter.py",
+            "backend/tests/test_web_search_adapter.py",
             "backend/tests/test_mode_controls.py",
             "backend/tests/test_node_selected_service.py",
             "backend/tests/test_orchestrator_node.py",

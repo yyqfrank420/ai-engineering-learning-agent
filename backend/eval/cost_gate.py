@@ -6,14 +6,14 @@ import re
 from typing import Any, Literal
 
 
-# Native search prices verified against Claude pricing/tool docs on 2026-10-01:
-# https://platform.claude.com/docs/en/about-claude/pricing
-# https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+# Basic search costs $0.002 per successful, nonempty response, verified 2026-10-01:
+# https://platform.kimi.ai/docs/pricing/websearch
 PRICE_RELEASE = "2026-10-01"
-WEB_SEARCH_PRICE_USD_PER_REQUEST = 0.01
+WEB_SEARCH_MODEL = "moonshot-web-search-basic"
+WEB_SEARCH_PRICE_USD_PER_REQUEST = 0.002
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
-    "claude-haiku-4-5": (1.00, 5.00),
+    WEB_SEARCH_MODEL: (0.0, 0.0),
     "claude-sonnet-5": (2.00, 10.00),
     "claude-sonnet-5-5": (2.00, 10.00),
     "claude-opus-5-5": (4.00, 20.00),
@@ -165,25 +165,25 @@ def account_application_cost(
             invalid_operations.add((case_id, operation))
             continue
         for attempt_index, attempt in enumerate(attempts, start=1):
+            model = str(attempt.get("model") or "")
             search_incomplete = False
             if (
-                native_search
+                model == WEB_SEARCH_MODEL
+                or native_search
                 or "web_search_requests" in attempt
                 or "web_search_usage_complete" in attempt
             ):
                 count = attempt.get("web_search_requests")
-                valid_count = type(count) is int and count >= 0
-                try:
-                    fee = (
-                        count * WEB_SEARCH_PRICE_USD_PER_REQUEST if valid_count else 0.0
-                    )
-                except OverflowError:
-                    fee = 0.0
-                    valid_count = False
-                if not math.isfinite(fee):
-                    valid_count = False
+                valid_count = type(count) is int and count in (0, 1)
                 search_incomplete = not (
-                    valid_count and attempt.get("web_search_usage_complete") is True
+                    model == WEB_SEARCH_MODEL
+                    and valid_count
+                    and attempt.get("web_search_usage_complete") is True
+                )
+                fee = (
+                    count * WEB_SEARCH_PRICE_USD_PER_REQUEST
+                    if not search_incomplete
+                    else 0.0
                 )
                 for target in (operation_usage, per_case[case_id], total):
                     target.setdefault("web_search_requests", 0)
@@ -192,7 +192,7 @@ def account_application_cost(
                         target.get("web_search_usage_complete", True)
                         and not search_incomplete
                     )
-                    if valid_count:
+                    if not search_incomplete:
                         target["web_search_requests"] += count
                         target["web_search_estimated_usd"] += fee
                         target["estimated_usd"] += fee
@@ -212,7 +212,6 @@ def account_application_cost(
                 )
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
-            model = str(attempt.get("model") or "")
             price = _price_for_model(model)
             if price is None:
                 errors.append(
@@ -250,6 +249,21 @@ def account_application_cost(
             ):
                 errors.append(
                     f"application call {call_index} attempt {attempt_index} has negative usage"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
+                continue
+            if model == WEB_SEARCH_MODEL and any(
+                (
+                    input_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                    output_tokens,
+                )
+            ):
+                errors.append(
+                    f"application call {call_index} attempt {attempt_index} has "
+                    "token usage for a non-LLM search service"
                 )
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))

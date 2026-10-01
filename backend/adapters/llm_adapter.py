@@ -19,7 +19,6 @@ from __future__ import annotations
 import asyncio
 import atexit
 from collections.abc import AsyncGenerator
-from contextlib import aclosing
 from functools import lru_cache
 import hashlib
 import inspect
@@ -58,9 +57,9 @@ def get_posthog_client():
     return client
 
 
-def create_anthropic_client(*, api_key: str, capture_content: bool = True):
+def create_anthropic_client(*, api_key: str):
     """Create an Anthropic client with optional PostHog instrumentation."""
-    posthog_client = get_posthog_client() if capture_content else None
+    posthog_client = get_posthog_client()
     if posthog_client is None:
         from anthropic import AsyncAnthropic
 
@@ -117,9 +116,9 @@ def build_posthog_properties(
     return properties
 
 
-@lru_cache(maxsize=2)
-def _get_anthropic_client(*, capture_content: bool = True):
-    return create_anthropic_client(api_key=settings.anthropic_api_key, capture_content=capture_content)
+@lru_cache(maxsize=1)
+def _get_anthropic_client():
+    return create_anthropic_client(api_key=settings.anthropic_api_key)
 
 
 @lru_cache(maxsize=1)
@@ -237,122 +236,6 @@ def _field(value: object, name: str, default=0):
     if isinstance(value, dict):
         return value.get(name, default)
     return getattr(value, name, default)
-
-
-def _web_search_events(
-    event: object,
-    query_blocks: dict[int, dict[str, object]],
-) -> list[tuple[str, str]]:
-    """Project server search events without retaining encrypted result content."""
-    events: list[tuple[str, str]] = []
-    event_type = _field(event, "type", None)
-    index = _field(event, "index", None)
-    if event_type == "content_block_start":
-        block = _field(event, "content_block", None)
-        block_type = _field(block, "type", None)
-        if (
-            block_type == "server_tool_use"
-            and _field(block, "name", None) == "web_search"
-        ):
-            tool_id = _field(block, "id", None)
-            if isinstance(index, int) and isinstance(tool_id, str) and tool_id:
-                query_blocks[index] = {
-                    "tool_use_id": tool_id,
-                    "input": _field(block, "input", None),
-                    "partial_json": "",
-                }
-        elif block_type == "web_search_tool_result":
-            content = _field(block, "content", None)
-            if _field(content, "type", None) == "web_search_tool_result_error":
-                code = _field(content, "error_code", None)
-                if isinstance(code, str) and code in {
-                    "invalid_tool_input",
-                    "unavailable",
-                    "max_uses_exceeded",
-                    "too_many_requests",
-                    "query_too_long",
-                    "request_too_large",
-                }:
-                    events.append(
-                        ("web_search_error", json.dumps({"error_code": code}))
-                    )
-                else:
-                    events.append(
-                        (
-                            "web_search_error",
-                            json.dumps({"error_code": "unknown_error"}),
-                        )
-                    )
-            elif isinstance(content, list):
-                tool_id = _field(block, "tool_use_id", None)
-                for result in content:
-                    url = _field(result, "url", None)
-                    title = _field(result, "title", None)
-                    if (
-                        _field(result, "type", None) == "web_search_result"
-                        and isinstance(tool_id, str)
-                        and tool_id
-                        and isinstance(url, str)
-                        and url
-                        and isinstance(title, str)
-                        and title
-                    ):
-                        events.append(
-                            (
-                                "web_search_result",
-                                json.dumps(
-                                    {
-                                        "tool_use_id": tool_id,
-                                        "url": url,
-                                        "title": title,
-                                    }
-                                ),
-                            )
-                        )
-    elif event_type == "content_block_delta":
-        delta = _field(event, "delta", None)
-        if _field(delta, "type", None) == "input_json_delta" and index in query_blocks:
-            partial = _field(delta, "partial_json", None)
-            if isinstance(partial, str):
-                query_blocks[index]["partial_json"] = (
-                    str(query_blocks[index]["partial_json"]) + partial
-                )
-        elif _field(delta, "type", None) == "citations_delta":
-            citation = _field(delta, "citation", None)
-            if _field(citation, "type", None) == "web_search_result_location":
-                payload = {
-                    name: _field(citation, name, None)
-                    for name in ("url", "title", "cited_text")
-                }
-                if payload["title"] is None:
-                    payload["title"] = ""
-                if isinstance(payload["title"], str) and all(
-                    isinstance(payload[name], str) and payload[name]
-                    for name in ("url", "cited_text")
-                ):
-                    events.append(("web_search_citation", json.dumps(payload)))
-    elif event_type == "content_block_stop" and index in query_blocks:
-        block = query_blocks.pop(index)
-        query_input = block["input"]
-        if block["partial_json"]:
-            try:
-                query_input = json.loads(str(block["partial_json"]))
-            except json.JSONDecodeError:
-                query_input = None
-        query = _field(query_input, "query", None)
-        if isinstance(query, str) and query.strip():
-            events.append(
-                (
-                    "web_search_query",
-                    json.dumps(
-                        {
-                            "tool_use_id": block["tool_use_id"],
-                            "query": query,
-                        }
-                    ),
-                )
-            )
-    return events
 
 
 def _aggregate_attempt_token_usage(
@@ -710,34 +593,23 @@ async def _anthropic_stream_once(kwargs: dict) -> AsyncGenerator[object, None]:
     if semaphore is None:
         if queue_wait_observer:
             queue_wait_observer(0)
-        async with aclosing(_iterate_anthropic_stream(sdk_kwargs)) as stream:
-            async for event in stream:
-                yield event
+        async for event in _iterate_anthropic_stream(sdk_kwargs):
+            yield event
         return
 
     queued_at = time.perf_counter()
     async with semaphore:
         if queue_wait_observer:
             queue_wait_observer(max(0, int((time.perf_counter() - queued_at) * 1000)))
-        async with aclosing(_iterate_anthropic_stream(sdk_kwargs)) as stream:
-            async for event in stream:
-                yield event
+        async for event in _iterate_anthropic_stream(sdk_kwargs):
+            yield event
 
 
 async def _iterate_anthropic_stream(
     sdk_kwargs: dict,
 ) -> AsyncGenerator[object, None]:
     """Iterate the low-level streaming interface shared by both clients."""
-    capture_content = sdk_kwargs.pop("_capture_content", True)
-    # PostHog 7.12's stream wrapper does not close its underlying SDK response on
-    # early exit. Native search uses the direct client until that wrapper closes
-    # responses deterministically; application usage telemetry remains enabled.
-    client = (
-        _get_anthropic_client()
-        if capture_content
-        else _get_anthropic_client(capture_content=False)
-    )
-    stream = await client.messages.create(
+    stream = await _get_anthropic_client().messages.create(
         **sdk_kwargs,
         stream=True,
     )
@@ -766,7 +638,6 @@ async def stream_response(
     response_schema: dict | None = None,
     allow_fallback: bool = True,
     provider_attempt_limit: int | None = None,
-    web_search: bool = False,
 ) -> AsyncGenerator[tuple[str, str], None]:
     """
     Stream a response with automatic retry + OpenAI fallback.
@@ -789,20 +660,6 @@ async def stream_response(
     - ("done", "")                   — signals stream completion
     - ("provider_switch", provider)  — signals fallback to another provider
     """
-    if not isinstance(web_search, bool):
-        raise ValueError("web_search must be a bool")
-    if web_search:
-        if model not in {"claude-haiku-4-5", "claude-haiku-4-5-20251001"}:
-            raise ValueError("web_search requires Claude Haiku 4.5")
-        if response_schema is not None:
-            raise ValueError("web_search does not support response_schema")
-        if (
-            allow_fallback is not False
-            or provider_attempt_limit != 1
-            or not isinstance(provider_attempt_limit, int)
-            or isinstance(provider_attempt_limit, bool)
-        ):
-            raise ValueError("web_search requires no fallback and exactly one provider attempt")
     if max_output_tokens is not None and max_output_tokens <= 0:
         raise ValueError("max_output_tokens must be positive")
     if provider_attempt_limit is not None and provider_attempt_limit <= 0:
@@ -854,12 +711,7 @@ async def stream_response(
         "system":     [system_block],
         "messages":   messages,
     }
-    if web_search:
-        kwargs["_capture_content"] = False
-        kwargs["tools"] = [
-            {"type": "web_search_20250305", "name": "web_search", "max_uses": 1}
-        ]
-    if not web_search and get_posthog_client() is not None:
+    if get_posthog_client() is not None:
         if posthog_distinct_id:
             kwargs["posthog_distinct_id"] = posthog_distinct_id
         if posthog_trace_id:
@@ -937,22 +789,6 @@ async def stream_response(
             "cache_read_input_tokens": cache_read_input_tokens,
             "output_tokens": output_tokens,
             "provider_attempts": provider_attempts,
-            **(
-                {
-                    "web_search": True,
-                    "web_search_requests": sum(
-                        int(attempt.get("web_search_requests") or 0)
-                        for attempt in attempts
-                    ),
-                    "web_search_usage_complete": bool(attempts)
-                    and all(
-                        attempt.get("web_search_usage_complete") is True
-                        for attempt in attempts
-                    ),
-                }
-                if web_search
-                else {}
-            ),
             "queue_wait_ms": sum(
                 int(attempt.get("queue_wait_ms") or 0) for attempt in attempts
             ),
@@ -1016,8 +852,6 @@ async def stream_response(
     def _record_cancellation(
         attempt_usage: dict[str, object],
         attempt_started: float,
-        *,
-        error_type: str = "CancelledError",
     ) -> None:
         attempt_usage["status"] = (
             "cancelled_incomplete_usage"
@@ -1025,11 +859,11 @@ async def stream_response(
             and not attempt_usage["usage_complete"]
             else "cancelled"
         )
-        attempt_usage["error_type"] = error_type
+        attempt_usage["error_type"] = "CancelledError"
         attempt_usage["duration_ms"] = max(
             1, int((time.perf_counter() - attempt_started) * 1000)
         )
-        _record("error", error_type=error_type)
+        _record("error", error_type="CancelledError")
 
     async def _stream_chat_completions_route(
         chat_model: str,
@@ -1207,7 +1041,6 @@ async def stream_response(
         )
     for attempt in range(1, anthropic_attempt_limit + 1):
         finish_reason: str | None = None
-        query_blocks: dict[int, dict[str, object]] = {}
         _reserve_evaluation_provider_attempt()
         provider_attempts += 1
         attempt_started = time.perf_counter()
@@ -1226,113 +1059,78 @@ async def stream_response(
             "accepted": False,
             "usage_complete": False,
         }
-        if web_search:
-            attempt_usage["web_search_requests"] = 0
-            attempt_usage["web_search_usage_complete"] = False
         attempts.append(attempt_usage)
 
         def observe_queue_wait(queue_wait_ms: int) -> None:
             attempt_usage["queue_wait_ms"] = queue_wait_ms
 
         try:
-            async with aclosing(
-                _anthropic_stream_once(
-                    {**kwargs, "_queue_wait_observer": observe_queue_wait}
-                )
-            ) as provider_stream:
-                async for event in provider_stream:
-                    if web_search:
-                        if event.type in {"message_start", "message_delta"}:
-                            search_usage = (
-                                _field(_field(event, "message", None), "usage", None)
-                                if event.type == "message_start"
-                                else _field(event, "usage", None)
-                            )
-                            count = _field(
-                                _field(search_usage, "server_tool_use", None),
-                                "web_search_requests",
-                                None,
-                            )
-                            valid_count = (
-                                isinstance(count, int)
-                                and not isinstance(count, bool)
-                                and count >= 0
-                            )
-                            if event.type == "message_delta":
-                                attempt_usage["web_search_usage_complete"] = valid_count
-                            if valid_count:
-                                # Message usage snapshots are cumulative within one attempt.
-                                attempt_usage["web_search_requests"] = max(
-                                    int(attempt_usage["web_search_requests"]), count
-                                )
-                        for search_event in _web_search_events(event, query_blocks):
-                            attempt_usage["accepted"] = True
-                            yield search_event
-                    if event.type == "message_start":
-                        attempt_usage["accepted"] = True
-                        usage = getattr(getattr(event, "message", None), "usage", None)
-                        attempt_usage["input_tokens"] = int(
-                            getattr(usage, "input_tokens", 0) or 0
+            async for event in _anthropic_stream_once(
+                {**kwargs, "_queue_wait_observer": observe_queue_wait}
+            ):
+                if event.type == "message_start":
+                    attempt_usage["accepted"] = True
+                    usage = getattr(getattr(event, "message", None), "usage", None)
+                    attempt_usage["input_tokens"] = int(
+                        getattr(usage, "input_tokens", 0) or 0
+                    )
+                    attempt_usage["cache_creation_input_tokens"] = int(
+                        getattr(usage, "cache_creation_input_tokens", 0) or 0
+                    )
+                    attempt_usage["cache_read_input_tokens"] = int(
+                        getattr(usage, "cache_read_input_tokens", 0) or 0
+                    )
+                    initial_output_tokens = getattr(usage, "output_tokens", None)
+                    if initial_output_tokens is not None:
+                        attempt_usage["output_tokens"] = int(initial_output_tokens)
+                    (
+                        input_tokens,
+                        cache_creation_input_tokens,
+                        cache_read_input_tokens,
+                        output_tokens,
+                    ) = _aggregate_attempt_token_usage(attempts)
+                elif event.type == "message_delta":
+                    attempt_usage["accepted"] = True
+                    attempt_usage["usage_complete"] = True
+                    usage = getattr(event, "usage", None)
+                    for field in (
+                        "input_tokens",
+                        "cache_creation_input_tokens",
+                        "cache_read_input_tokens",
+                    ):
+                        final_count = getattr(usage, field, None)
+                        if final_count is not None:
+                            attempt_usage[field] = int(final_count)
+                    attempt_usage["output_tokens"] = int(
+                        getattr(usage, "output_tokens", 0) or 0
+                    )
+                    (
+                        input_tokens,
+                        cache_creation_input_tokens,
+                        cache_read_input_tokens,
+                        output_tokens,
+                    ) = _aggregate_attempt_token_usage(attempts)
+                    stop_reason = getattr(getattr(event, "delta", None), "stop_reason", None)
+                    if isinstance(stop_reason, str):
+                        finish_reason = stop_reason
+                if event.type == "content_block_delta":
+                    attempt_usage["accepted"] = True
+                    delta = event.delta
+                    if delta.type == "thinking_delta":
+                        _record_first_delta_latency(
+                            attempt_usage,
+                            field="first_reasoning_delta_ms",
+                            attempt_started=attempt_started,
                         )
-                        attempt_usage["cache_creation_input_tokens"] = int(
-                            getattr(usage, "cache_creation_input_tokens", 0) or 0
+                        yield ("thinking", delta.thinking)
+                    elif delta.type == "text_delta":
+                        _record_first_delta_latency(
+                            attempt_usage,
+                            field="first_text_delta_ms",
+                            attempt_started=attempt_started,
                         )
-                        attempt_usage["cache_read_input_tokens"] = int(
-                            getattr(usage, "cache_read_input_tokens", 0) or 0
-                        )
-                        initial_output_tokens = getattr(usage, "output_tokens", None)
-                        if initial_output_tokens is not None:
-                            attempt_usage["output_tokens"] = int(initial_output_tokens)
-                        (
-                            input_tokens,
-                            cache_creation_input_tokens,
-                            cache_read_input_tokens,
-                            output_tokens,
-                        ) = _aggregate_attempt_token_usage(attempts)
-                    elif event.type == "message_delta":
-                        attempt_usage["accepted"] = True
-                        attempt_usage["usage_complete"] = True
-                        usage = getattr(event, "usage", None)
-                        for field in (
-                            "input_tokens",
-                            "cache_creation_input_tokens",
-                            "cache_read_input_tokens",
-                        ):
-                            final_count = getattr(usage, field, None)
-                            if final_count is not None:
-                                attempt_usage[field] = int(final_count)
-                        attempt_usage["output_tokens"] = int(
-                            getattr(usage, "output_tokens", 0) or 0
-                        )
-                        (
-                            input_tokens,
-                            cache_creation_input_tokens,
-                            cache_read_input_tokens,
-                            output_tokens,
-                        ) = _aggregate_attempt_token_usage(attempts)
-                        stop_reason = getattr(
-                            getattr(event, "delta", None), "stop_reason", None
-                        )
-                        if isinstance(stop_reason, str):
-                            finish_reason = stop_reason
-                    if event.type == "content_block_delta":
-                        attempt_usage["accepted"] = True
-                        delta = event.delta
-                        if delta.type == "thinking_delta":
-                            _record_first_delta_latency(
-                                attempt_usage,
-                                field="first_reasoning_delta_ms",
-                                attempt_started=attempt_started,
-                            )
-                            yield ("thinking", delta.thinking)
-                        elif delta.type == "text_delta":
-                            _record_first_delta_latency(
-                                attempt_usage,
-                                field="first_text_delta_ms",
-                                attempt_started=attempt_started,
-                            )
-                            output_chars += len(delta.text)
-                            yield ("text", delta.text)
+                        output_chars += len(delta.text)
+                        yield ("text", delta.text)
             attempt_usage["status"] = (
                 "success_incomplete_usage"
                 if attempt_usage["accepted"]
@@ -1343,8 +1141,6 @@ async def stream_response(
                 1, int((time.perf_counter() - attempt_started) * 1000)
             )
             _record("success")
-            if web_search and finish_reason == "pause_turn":
-                yield ("web_search_error", json.dumps({"error_code": "pause_turn"}))
             if response_schema is not None:
                 yield (
                     "response_metadata",
@@ -1357,14 +1153,8 @@ async def stream_response(
                     }),
                 )
             yield ("done", "")
-            return  # Anthropic succeeded
+            return   # Anthropic succeeded
 
-        except GeneratorExit:
-            if attempt_usage["status"] == "started":
-                _record_cancellation(
-                    attempt_usage, attempt_started, error_type="GeneratorExit"
-                )
-            raise
         except asyncio.CancelledError:
             _record_cancellation(attempt_usage, attempt_started)
             raise
@@ -1372,7 +1162,8 @@ async def stream_response(
             last_exc = exc
             attempt_usage["status"] = (
                 "error_incomplete_usage"
-                if attempt_usage["accepted"] and not attempt_usage["usage_complete"]
+                if attempt_usage["accepted"]
+                and not attempt_usage["usage_complete"]
                 else "error"
             )
             attempt_usage["error_type"] = type(exc).__name__
