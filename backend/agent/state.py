@@ -24,7 +24,8 @@ def format_conversation_history(history: list[dict]) -> str:
 class GraphNode(TypedDict):
     id: str
     label: str  # 1-4 word display name
-    type: str  # "client" | "service" | "datastore" | "queue" | "gateway" | "network" | "external" | "control" | "decision"
+    type: str  # Functional role in the architecture.
+    parent_service_id: NotRequired[str]
     technology: str  # specific tech choice, e.g. "Python / FastAPI", "PostgreSQL 15"
     description: str  # 1-sentence responsibility summary (graph worker)
     tier: str | None  # "public" | "private" | None (concept graphs omit this)
@@ -112,6 +113,7 @@ class Chunk(TypedDict):
 
 
 class AgentState(TypedDict):
+    service_expansion: NotRequired[dict[str, Any]]
     _graph_review_control: NotRequired[Any]
     # ── Input ─────────────────────────────────────────────────────────────────
     session_id: str  # thread identifier; field name kept for runtime compatibility
@@ -151,7 +153,7 @@ class AgentState(TypedDict):
     # but is not itself part of the public transport payload.
     graph_publication: NotRequired[GraphPublicationDisposition]
     graph_review: NotRequired[dict[str, Any]]
-    graph_operation: NotRequired[GraphOperation]
+    graph_operation: NotRequired[GraphOperation | None]
     clarification_questions: NotRequired[list[str]]
     graph_intent: NotRequired[Literal["create", "edit"] | None]
     graph_revision_count: NotRequired[int]

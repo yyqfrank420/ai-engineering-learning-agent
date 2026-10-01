@@ -416,3 +416,77 @@ def test_control_flow_does_not_require_control_or_decision_component_types():
         "sync": "sync",
     }
     assert plan == before
+
+
+def _service_expansion_plan():
+    plan = _plan()
+    plan["components"][1]["type"] = "service"
+    plan["components"].append(
+        {
+            "model_index": 3,
+            "label": "Request validator",
+            "type": "component",
+            "parent_index": 1,
+            "responsibility": "Validates requests inside the payment service.",
+            "group_label": "Runtime",
+            "group_kind": "runtime",
+            "primary_flow_member": False,
+        }
+    )
+    return plan
+
+
+def test_service_component_ownership_roundtrip_and_identity():
+    plan = _service_expansion_plan()
+    assigned = assign_server_ids(plan)
+    assert assigned["components"][3]["parent_service_id"] == "n2"
+    graph = project_graph_data(assigned)
+    assert graph["nodes"][3]["parent_service_id"] == "n2"
+    assert graph["nodes"][3]["technology"] == "Component"
+    rebuilt = reconstruct_staged_graph_build(graph)
+    assert rebuilt["components"][3]["parent_index"] == 1
+    assert rebuilt["components"][3]["parent_service_id"] == "n2"
+    assert project_graph_data(rebuilt) == graph
+
+
+@pytest.mark.parametrize("parent_index", [None, 0, 2, 3, 99, True])
+def test_component_requires_an_application_service_parent(parent_index):
+    plan = _service_expansion_plan()
+    plan["components"][3]["parent_index"] = parent_index
+    with pytest.raises(GraphContractError):
+        assign_server_ids(plan)
+
+
+def test_non_component_cannot_have_service_parent():
+    plan = _service_expansion_plan()
+    plan["components"][2]["parent_index"] = 1
+    with pytest.raises(GraphContractError, match="only components"):
+        assign_server_ids(plan)
+
+
+def test_parent_id_and_index_cannot_disagree():
+    plan = assign_server_ids(_service_expansion_plan())
+    plan["components"][3]["parent_service_id"] = "n1"
+    with pytest.raises(GraphContractError, match="same service"):
+        assign_server_ids(plan)
+
+
+def test_same_component_label_is_distinct_under_different_services():
+    plan = _service_expansion_plan()
+    plan["components"][2]["type"] = "service"
+    plan["components"].append(
+        {**plan["components"][3], "model_index": 4, "parent_index": 2}
+    )
+    assigned = assign_server_ids(plan)
+    graph = project_graph_data(assigned)
+    assert graph["nodes"][3]["parent_service_id"] == "n2"
+    assert graph["nodes"][4]["parent_service_id"] == "n3"
+    plan["base_graph"] = graph
+    assert [item["server_id"] for item in assign_server_ids(plan)["components"]] == [
+        node["id"] for node in graph["nodes"]
+    ]
+    changed = copy.deepcopy(assigned)
+    changed["components"][3]["parent_index"] = 2
+    changed["components"][3]["parent_service_id"] = "n3"
+    changed["components"][3]["label"] = "Other validator"
+    assert component_fingerprint(changed) != component_fingerprint(assigned)

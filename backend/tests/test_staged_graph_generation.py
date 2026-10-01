@@ -348,6 +348,130 @@ def _connection_wire() -> dict:
     }
 
 
+def _owned_component_wire() -> dict:
+    wire = _component_wire()
+    template = wire["components"][0]
+    wire["components"] = [
+        {**template, "label": "Student client", "type": 100},
+        {**template, "label": "Cache", "type": 102, "primary_flow_member": False},
+        {**template, "label": "Tutoring service", "type": 101},
+        {
+            **template,
+            "label": "Conversation coordinator",
+            "type": 109,
+            "parent_index": 2,
+        },
+    ]
+    return wire
+
+
+@pytest.mark.parametrize("removed_index", [1, 2])
+@pytest.mark.parametrize("recovery", [False, True])
+def test_component_removal_reindexes_owned_internals(removed_index, recovery):
+    original = _owned_component_wire()
+    if recovery:
+        delta = _recovery_delta("components", original, [removed_index])
+        response = {
+            "additions": [],
+            "updates": {f"slot_{removed_index}": None},
+            "capabilities": original["capabilities"],
+            "removals": [removed_index],
+        }
+    else:
+        base = {
+            **original,
+            "components": [
+                {
+                    **component,
+                    "type": generation.NODE_TYPE_CODES[component["type"]],
+                    "group_kind": "runtime",
+                    "model_index": index,
+                    "server_id": f"n{index}",
+                }
+                for index, component in enumerate(original["components"])
+            ],
+        }
+        permissions = _permissions(removable_node_ids=[f"n{removed_index}"])
+        delta = generation._component_edit_delta(
+            base,
+            permissions,
+            generation.component_generation_schema(
+                generation.create_write_set(component_limit=4, edge_limit=4),
+            ),
+        )
+        response = {
+            "additions": [],
+            "updates": {},
+            "capabilities": original["capabilities"],
+        }
+    if removed_index == 2:
+        with pytest.raises(
+            generation.StagedGenerationError, match="component_parent_removed"
+        ):
+            delta.assemble(json.dumps(response))
+        return
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
+    assert parsed["components"][2]["parent_index"] == 1
+    assert parsed["components"][1]["label"] == "Tutoring service"
+
+
+@pytest.mark.parametrize("parent", [None, True, -1, 1, 3, 9])
+def test_component_wire_requires_a_valid_application_service_parent(parent):
+    wire = _owned_component_wire()
+    wire["components"][3]["parent_index"] = parent
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ):
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+
+
+def test_component_wire_forbids_parent_on_application_service():
+    wire = _owned_component_wire()
+    wire["components"][2]["parent_index"] = 0
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ):
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+
+
+def test_component_correction_can_assign_an_added_service_owner():
+    original = _owned_component_wire()
+    delta = _recovery_delta("components", original, [1], component_limit=5)
+    new_service = {**original["components"][2], "label": "Cache service"}
+    updated = {**original["components"][1], "type": 109, "parent_index": 4}
+    response = {
+        "updates": {"slot_1": updated},
+        "additions": [new_service],
+        "capabilities": original["capabilities"],
+        "removals": [],
+    }
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    assert parsed["components"][1]["parent_index"] == 4
+    assert parsed["components"][4]["label"] == "Cache service"
+
+
+def test_component_correction_preserves_explicit_parent_after_removal():
+    original = _owned_component_wire()
+    practice_service = {**original["components"][2], "label": "Practice service"}
+    original["components"].insert(3, practice_service)
+    delta = _recovery_delta("components", original, [1, 4], component_limit=5)
+    response = {
+        "updates": {
+            "slot_1": None,
+            "slot_4": {**original["components"][4], "parent_index": 2},
+        },
+        "additions": [],
+        "capabilities": original["capabilities"],
+        "removals": [1],
+    }
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    assert parsed["components"][3]["parent_index"] == 2
+    assert parsed["components"][2]["label"] == "Practice service"
+
+
 def _connection_exchanges() -> dict:
     return {
         "exchanges": [{**_connection_wire()["edges"][0], "response_label": "response"}]
@@ -653,7 +777,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v31"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v32"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -874,7 +998,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v41"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2497,6 +2621,7 @@ async def test_marketing_semantic_correction_preserves_owners_and_rejects_full_r
     for index in targeted_indexes:
         response["updates"][f"slot_{index}"] = {
             **case["original_candidate"]["components"][index],
+            "parent_index": None,
             "responsibility": f"Corrected ownership for component {index}.",
         }
     calls = []
@@ -3942,11 +4067,16 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
         response["additions"] = [{**retained, "label": normalized_variant}]
         duplicate_index = 17
     elif collision == "edited_retained":
-        response["updates"]["slot_7"] = {**retained, "label": normalized_variant}
+        response["updates"]["slot_7"] = {
+            **retained,
+            "label": normalized_variant,
+            "parent_index": None,
+        }
         duplicate_index = 7
     else:
         response["updates"]["slot_7"] = {
             **retained,
+            "parent_index": None,
             "label": "Straße lifecycle owner"
             if unicode_label
             else "New lifecycle owner",
@@ -3961,7 +4091,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
             response["additions"] = [duplicate]
             duplicate_index = 17
         else:
-            response["updates"]["slot_15"] = duplicate
+            response["updates"]["slot_15"] = {**duplicate, "parent_index": None}
             duplicate_index = 15
     calls = []
 
@@ -3998,7 +4128,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
     )
     assert "Do not re-add retained components" in prompt
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v41"
     )
 
     # A fresh bounded response must fix the collision; invalid rows are never dropped.

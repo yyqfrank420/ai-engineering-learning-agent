@@ -23,6 +23,7 @@ from agent.nodes.graph_worker import (
     admit_staged_graph_edit,
     sequence_after_node_removal,
     staged_edit_scope,
+    validate_service_expansion_components,
 )
 from agent.nodes.staged_graph_gate import (
     COMPONENT_RULE_CODES,
@@ -73,9 +74,14 @@ logger = logging.getLogger(__name__)
 
 def should_use_staged_graph_pipeline(state: Mapping[str, Any]) -> bool:
     return bool(
-        settings.graph_pipeline_mode == "staged"
+        # Service containment requires the reviewed staged contract in legacy deployments too.
+        (
+            settings.graph_pipeline_mode == "staged"
+            or bool(state.get("service_expansion"))
+        )
         and state.get("is_applied_design")
         and state.get("graph_intent") in {"create", "edit"}
+        and state.get("graph_action") != "answer"
         and state.get("graph_mode", "auto") != "off"
     )
 
@@ -288,6 +294,11 @@ def _decode_components(wire: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "group_label": raw["group_label"],
                 "group_kind": GROUP_KIND_CODES.get(raw["group_kind"], ""),
                 "primary_flow_member": raw["primary_flow_member"],
+                **(
+                    {"parent_index": raw["parent_index"]}
+                    if "parent_index" in raw
+                    else {}
+                ),
             }
         )
     return components
@@ -613,7 +624,14 @@ def _component_preview(build: Mapping[str, Any]) -> GraphData:
                 "id": node_id,
                 "label": component["label"],
                 "type": component["type"],
-                "technology": "Pending connection contract",
+                **(
+                    {"parent_service_id": component["parent_service_id"]}
+                    if "parent_service_id" in component
+                    else {}
+                ),
+                "technology": "Component"
+                if component["type"] == "component"
+                else "Pending connection contract",
                 "description": component["responsibility"],
                 "tier": None,
                 "lane": "bottom" if component["group_kind"] == "operations" else "main",
@@ -1254,7 +1272,17 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
     maturity, maturity_changed = _maturity(state)
     request = str(state.get("design_query") or state.get("user_message") or "")
+    service_expansion = state.get("service_expansion")
     raw_request = str(state.get("user_message") or "")
+    if (
+        service_expansion
+        and state.get("graph_action") != "answer"
+        and state.get("graph_mode") != "off"
+    ):
+        request = str(service_expansion.get("request") or request)
+        raw_request = request
+    else:
+        service_expansion = None
     approved_graph = state.get("approved_graph_data") or state.get("graph_data")
     approved_contract = state.get("approved_graph_contract") or state.get(
         "graph_contract"
@@ -1297,9 +1325,10 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 approved_graph,
                 resolved_complexity=maturity,
                 add_only=state.get("graph_action") == "extend",
+                service_expansion=service_expansion,
             )
         except ValueError:
-            if state.get("graph_action") == "extend":
+            if state.get("graph_action") == "extend" or service_expansion:
                 return await _failed(
                     state,
                     "staged_extension_scope_unavailable",
@@ -1546,6 +1575,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     },
                 )
             preview = _component_preview(assigned)
+            if service_expansion and base_build is not None and permissions is not None:
+                base_ids = {
+                    component["server_id"] for component in base_build["components"]
+                }
+                validate_service_expansion_components(
+                    [node for node in preview["nodes"] if node["id"] not in base_ids],
+                    permissions,
+                )
             await _stage_progress(working_state, "components", "complete", "Components ready", draft=preview)
             rendered = await _render(
                 working_state, preview, preview_count=preview_count, stage="components"
@@ -1728,6 +1765,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                             if value == component["type"]
                         ),
                         "responsibility": component["responsibility"],
+                        **(
+                            {"parent_index": component["parent_index"]}
+                            if "parent_index" in component
+                            else {}
+                        ),
                         "primary_flow_member": component["primary_flow_member"],
                         "is_root": component["model_index"]
                         == component_build["root_index"],

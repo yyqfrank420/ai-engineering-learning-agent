@@ -35,6 +35,10 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import stream_llm
+from agent.tools.service_expansion_tool import (
+    plan_service_expansion,
+    service_expansion_request,
+)
 
 _SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v33"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
@@ -349,6 +353,41 @@ async def orchestrator_route(state: AgentState) -> AgentState:
         {"type": "worker_status", "worker": "orchestrator", "status": "Routing…"}
     )
 
+    expansion_request = service_expansion_request(state)
+    if expansion_request is not None and state.get("graph_action") != "new":
+        try:
+            expansion = await plan_service_expansion(state, expansion_request)
+        except Exception as exc:
+            logger.warning("Service expansion planning failed (%s)", type(exc).__name__)
+            question = "Which application services should I expand? Please name the services in your diagram."
+            await send({"type": "response_delta", "content": question})
+            return {
+                **state,
+                "route": "memory",
+                "graph_intent": None,
+                "graph_changed": False,
+                "response_text": question,
+                "clarification_questions": [question],
+                "graph_operation": {
+                    "kind": "edit",
+                    "status": "needs_clarification",
+                    "failure_code": None,
+                },
+            }
+        if expansion is not None:
+            answer_only = (
+                state.get("graph_mode") == "off"
+                or state.get("graph_action") == "answer"
+            )
+            return {
+                **state,
+                "route": "search",
+                "service_expansion": expansion,
+                "design_query": expansion_request,
+                "graph_intent": None if answer_only else "edit",
+                **({"graph_operation": None} if answer_only else {}),
+            }
+
     graph_intent = state.get("graph_intent") or resolve_graph_operation(
         state.get("user_message", ""),
         state.get("graph_data"),
@@ -523,16 +562,37 @@ async def _emit_answer_evidence(
 
 
 async def _stream_answer_with_progress(send, **arguments) -> str:
-    await send({"type": "workflow_progress", "phase": "explain", "status": "active",
-                "title": "Writing the answer", "detail": ""})
+    await send(
+        {
+            "type": "workflow_progress",
+            "phase": "explain",
+            "status": "active",
+            "title": "Writing the answer",
+            "detail": "",
+        }
+    )
     try:
         answer = await stream_llm(send=send, **arguments)
     except Exception:
-        await send({"type": "workflow_progress", "phase": "explain", "status": "degraded",
-                    "title": "Answer interrupted", "detail": ""})
+        await send(
+            {
+                "type": "workflow_progress",
+                "phase": "explain",
+                "status": "degraded",
+                "title": "Answer interrupted",
+                "detail": "",
+            }
+        )
         raise
-    await send({"type": "workflow_progress", "phase": "explain", "status": "complete",
-                "title": "Answer ready", "detail": ""})
+    await send(
+        {
+            "type": "workflow_progress",
+            "phase": "explain",
+            "status": "complete",
+            "title": "Answer ready",
+            "detail": "",
+        }
+    )
     return answer
 
 
@@ -659,7 +719,8 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             "graph_preview_timeout",
         }
         render_failed = review.get("render_failure_code") in {
-            "diagram_evaluation_layout_rejected", "diagram_evaluation_capture_failed",
+            "diagram_evaluation_layout_rejected",
+            "diagram_evaluation_capture_failed",
         }
         if render_failed:
             content = "The diagram could not be rendered. Please try again."
@@ -850,6 +911,10 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         research_context=state.get("research_context") or "",
     )
     synthesis_timeout_s = synthesis_timeout_seconds(state)
+    expansion = state.get("service_expansion") or {}
+    specialist_answer = bool(
+        expansion.get("complexity") == "high" and state.get("graph_intent") != "edit"
+    )
     if current_graph:
         explain_title, explain_detail = _explanation_start_status(
             graph_is_preserved=graph_is_preserved,
@@ -878,14 +943,18 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             await send(event)
 
         response_text = await stream_explanation_blocks(
-            model=settings.explanation_model,
+            model=(
+                settings.service_expansion_model
+                if specialist_answer
+                else settings.explanation_model
+            ),
             system=(
                 f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}"
                 f"{_EXPLANATION_WRITING_STYLE}{_BLOCK_OUTPUT_CONTRACT}"
             ),
             messages=messages,
-            effort="low",
-            max_output_tokens=4500,
+            effort="medium" if specialist_answer else "low",
+            max_output_tokens=16384 if specialist_answer else 4500,
             timeout_seconds=synthesis_timeout_s,
             telemetry=telemetry,
             send=explanation_send,
@@ -1005,7 +1074,10 @@ def _format_trusted_turn_result(state: AgentState) -> str:
             + (
                 "The user chose the rendered component preview. Those components were retained "
                 "while the connections were completed. "
-                if ((state.get("graph_contract") or {}).get("acceptance") or {}).get("stage") == "components"
+                if ((state.get("graph_contract") or {}).get("acceptance") or {}).get(
+                    "stage"
+                )
+                == "components"
                 else "The user chose the complete rendered diagram. "
             )
             + "The complete graph passed structural and browser rendering checks. "

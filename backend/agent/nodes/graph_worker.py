@@ -22,6 +22,7 @@ from agent.graph_repair_contract import (
     validate_repair_contract,
 )
 from agent.state import AgentState, GraphData, format_conversation_history
+from agent.staged_graph_contract import validate_graph_component_parents
 from agent.stream_utils import StructuredLLMResponse, stream_llm, stream_structured_llm
 from agent.applied_graph_spec import (
     AppliedGraphSpecError,
@@ -1508,6 +1509,7 @@ def _log_initial_topology_rejection(
 _NODE_TYPE_CAPABILITIES = {
     "client": "User-facing client",
     "service": "Application service",
+    "component": "Component",
     "datastore": "Versioned data store",
     "queue": "Durable message queue",
     "gateway": "API gateway",
@@ -1614,6 +1616,7 @@ _PATCH_NODE_FIELDS = set(_PATCH_NODE_MUTABLE_FIELDS)
 _PATCH_EDGE_FIELDS = set(_PATCH_EDGE_MUTABLE_FIELDS)
 
 _ALLOWED_NODE_TYPES = {
+    "component",
     "client",
     "service",
     "datastore",
@@ -2382,6 +2385,12 @@ def _validate_added_record_scope(
     if not edge_minimum <= len(added_edges) <= edge_limit:
         raise ValueError("graph patch added the wrong number of edges")
     anchor_node_ids = set(permissions["added_edge_anchor_node_ids"])
+    added_parent_ids = {
+        node["id"]: node.get("parent_service_id")
+        for node in added_nodes
+        if isinstance(node, dict)
+    }
+    expansion_anchors = permissions.get("service_expansion_anchors")
     added_edge_node_ids: set[str] = set()
     actual_added_edge_endpoints: list[tuple[str, str]] = []
     for edge in added_edges:
@@ -2391,6 +2400,20 @@ def _validate_added_record_scope(
         target = _patch_reference(edge.get("target"), "added edge target")
         actual_added_edge_endpoints.append((source, target))
         endpoints = {source, target}
+        if expansion_anchors is not None:
+            for endpoint in endpoints.intersection(added_node_ids):
+                parent = added_parent_ids[endpoint]
+                siblings = {
+                    node_id
+                    for node_id, parent_id in added_parent_ids.items()
+                    if parent_id == parent
+                }
+                if parent not in expansion_anchors or not endpoints.issubset(
+                    set(expansion_anchors[parent]) | siblings
+                ):
+                    raise ValueError(
+                        "service expansion connection escapes its parent interface"
+                    )
         added_edge_node_ids.update(endpoints.intersection(added_node_ids))
         if not endpoints.issubset(added_node_ids | anchor_node_ids):
             raise ValueError("added edge is outside the named connection scope")
@@ -2778,7 +2801,7 @@ def _validate_locked_nodes_after_normalization(
                 raise ValueError(
                     f"normalization changed locked node field: {node_id}.{field}"
                 )
-        for field in ("tier", "detail"):
+        for field in ("tier", "detail", "parent_service_id"):
             if (field in candidate_node) != (field in node) or (
                 candidate_node.get(field) != node.get(field)
             ):
@@ -2958,7 +2981,7 @@ def _apply_node_patch(
         updated_node_ids.add(node_id)
 
     added_node_ids: set[str] = set()
-    allowed_node_fields = _PATCH_NODE_FIELDS | {"id"}
+    allowed_node_fields = _PATCH_NODE_FIELDS | {"id", "parent_service_id"}
     for node in _patch_list(patch, "add_nodes"):
         if not isinstance(node, dict) or set(node) - allowed_node_fields:
             raise ValueError("added node contains invalid fields")
@@ -3134,7 +3157,7 @@ def _preserve_existing_record_metadata(
             continue
         # Saved presentation details are outside patch authority. Creation
         # defaults apply only to new records, including field presence.
-        for field in ("tier", "detail"):
+        for field in ("tier", "detail", "parent_service_id"):
             if field in prior:
                 node[field] = copy.deepcopy(prior[field])
             else:
@@ -3308,9 +3331,16 @@ def _same_graph_payload(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def staged_edit_scope(
-    query: str, graph: GraphData, *, resolved_complexity: str, add_only: bool = False,
+    query: str,
+    graph: GraphData,
+    *,
+    resolved_complexity: str,
+    add_only: bool = False,
+    service_expansion: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Compile precise edits or an explicitly chosen bounded additive layer."""
+    if service_expansion is not None:
+        add_only = True
     if not add_only:
         return _user_edit_scope(query, graph, resolved_complexity=resolved_complexity)
     node_ids = [node["id"] for node in graph.get("nodes", [])]
@@ -3330,7 +3360,80 @@ def staged_edit_scope(
         "added_edge_anchor_node_ids": node_ids, "allowed_new_group_ids": None,
         "connection_addition_mode": "extension", "enforce_added_edge_contract_label": False,
     })
+    if service_expansion is not None:
+        targets = service_expansion.get("target_service_ids")
+        services = {
+            node["id"]
+            for node in graph.get("nodes", [])
+            if node.get("type") == "service"
+        }
+        if (
+            not isinstance(targets, list)
+            or not targets
+            or any(
+                not isinstance(target, str) or target not in services
+                for target in targets
+            )
+            or len(targets) != len(set(targets))
+        ):
+            raise ValueError(
+                "service expansion requires distinct current application services"
+            )
+        anchors_by_parent = {}
+        for target in targets:
+            anchors = {target} | {
+                node["id"]
+                for node in graph.get("nodes", [])
+                if node.get("parent_service_id") == target
+            }
+            for edge in graph.get("edges", []):
+                if edge["source"] == target:
+                    anchors.add(edge["target"])
+                if edge["target"] == target:
+                    anchors.add(edge["source"])
+            anchors_by_parent[target] = sorted(anchors)
+        maximum = min(node_limit, edge_limit, 3 * len(targets))
+        if maximum < len(targets):
+            raise ValueError("the saved graph cannot expand every requested service")
+        permissions.update(
+            {
+                "service_expansion_target_ids": list(targets),
+                "max_components_per_service": 3,
+                "service_expansion_anchors": anchors_by_parent,
+                "added_edge_anchor_node_ids": sorted(
+                    {
+                        anchor
+                        for anchors in anchors_by_parent.values()
+                        for anchor in anchors
+                    }
+                ),
+                "minimum_new_node_count": len(targets),
+                "allowed_new_node_count": maximum,
+            }
+        )
     return None, permissions
+
+
+def validate_service_expansion_components(
+    added_nodes: list[dict[str, Any]],
+    permissions: dict[str, Any],
+) -> None:
+    targets = permissions.get("service_expansion_target_ids")
+    if targets is None:
+        return
+    counts = dict.fromkeys(targets, 0)
+    for node in added_nodes:
+        parent = node.get("parent_service_id")
+        if node.get("type") != "component" or parent not in counts:
+            raise ValueError(
+                "service expansion additions must be components of a selected service"
+            )
+        counts[parent] += 1
+    if any(
+        not 1 <= count <= permissions["max_components_per_service"]
+        for count in counts.values()
+    ):
+        raise ValueError("every requested service requires one to three new components")
 
 
 def admit_graph_extension(existing: GraphData, candidate: GraphData,
@@ -3358,6 +3461,7 @@ def admit_graph_extension(existing: GraphData, candidate: GraphData,
     if len(nodes) > settings.graph_safety_max_nodes or len(edges) > settings.graph_safety_max_edges:
         raise ValueError("extension exceeds graph safety caps")
     patch = {"add_nodes": added_nodes, "add_edges": added_edges}
+    validate_service_expansion_components(added_nodes, permissions)
     _validate_added_record_scope(patch, permissions)
     old_ids = {node["id"] for node in old_nodes}
     new_ids = set(ids) - old_ids
@@ -3926,6 +4030,16 @@ def _normalise_applied_graph(
                 "design_origin": "applied",
             }
         )
+
+    for raw_node, node in zip(raw_nodes, nodes):
+        if "parent_service_id" in raw_node:
+            raw_parent = raw_node["parent_service_id"]
+            if not isinstance(raw_parent, str) or raw_parent not in id_map:
+                raise ValueError(
+                    "component parent must name a known application service"
+                )
+            node["parent_service_id"] = id_map[raw_parent]
+    validate_graph_component_parents(nodes)
 
     if validate_generic_labels and any(
         node["label"].strip().lower() in _GENERIC_LABELS for node in nodes

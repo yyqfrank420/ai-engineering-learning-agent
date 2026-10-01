@@ -79,6 +79,13 @@ describe('graphStructureKey', () => {
     }))).not.toBe(graphStructureKey(base));
   });
 
+  it('includes component ownership in identity', () => {
+    const base = graph();
+    const original = graph({ nodes: [{ ...base.nodes[0], type: 'component', parent_service_id: 'service-a' }] });
+    const changed = graph({ nodes: [{ ...base.nodes[0], type: 'component', parent_service_id: 'service-b' }] });
+    expect(graphStructureKey(original)).not.toBe(graphStructureKey(changed));
+  });
+
   it('treats an omitted detail level as standard and detects an overview promotion', () => {
     const base = graph();
     expect(graphStructureKey(graph({ detail_level: 'standard' }))).toBe(graphStructureKey(base));

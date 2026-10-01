@@ -161,3 +161,41 @@ def test_graph_emission_metric_ignores_private_candidates():
 
     assert result["graph_emitted"] is False
     assert result["graph_emitted_pass"] is True
+
+
+def test_schema_admits_components_only_under_application_services():
+    graph = {
+        "nodes": [
+            {
+                "id": "svc",
+                "label": "Service",
+                "type": "service",
+                "technology": "Python",
+                "description": "Owns requests.",
+            },
+            {
+                "id": "part",
+                "label": "Validator",
+                "type": "component",
+                "parent_service_id": "svc",
+                "technology": "Component",
+                "description": "Validates requests.",
+            },
+        ],
+        "edges": [],
+    }
+    assert (
+        score_schema(graph, {"node_types_valid": True})["node_types_valid_pass"] is True
+    )
+    for parent in (None, "missing", "part"):
+        graph["nodes"][1]["parent_service_id"] = parent
+        assert (
+            score_schema(graph, {"node_types_valid": True})["node_types_valid_pass"]
+            is False
+        )
+    graph["nodes"][1]["parent_service_id"] = "svc"
+    graph["nodes"][0]["type"] = "datastore"
+    assert (
+        score_schema(graph, {"node_types_valid": True})["node_types_valid_pass"]
+        is False
+    )

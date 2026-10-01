@@ -29,6 +29,26 @@ const props = {
 };
 
 describe('NodeDetailPopup editing', () => {
+  it('shows a component owner and keeps its type fixed during content edits', () => {
+    const component: GraphNode = { ...node, id: 'validator', type: 'component',
+      label: 'Evidence validator', technology: 'Component', parent_service_id: 'service' };
+    render(<NodeDetailPopup {...props} node={component} nodes={[node, component]}
+      edges={[]} onSave={vi.fn()} />);
+    expect(screen.getByText('Part of Retrieval API')).toBeTruthy();
+    expect(screen.getByText('COMPONENT')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('option', { name: 'Component' })).toHaveProperty('value', 'component');
+  });
+
+  it('keeps the type fixed for a service that owns components', () => {
+    const component: GraphNode = { ...node, id: 'validator', type: 'component', parent_service_id: 'service' };
+    render(<NodeDetailPopup {...props} nodes={[node, component]} onSave={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Edit details' }));
+    expect(screen.getByRole('combobox', { name: 'Type' })).toHaveProperty('disabled', true);
+    expect(screen.queryByRole('option', { name: 'Component' })).toBeNull();
+  });
+
   it('saves only changed node fields and keeps source detail read-only', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     const onDirtyChange = vi.fn();

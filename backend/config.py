@@ -41,6 +41,8 @@ class Settings(BaseSettings):
     # General conversation roles retain their independent fallback policy.
     orchestrator_model: str = "claude-opus-5"
     explanation_model: str = "claude-sonnet-5-5"
+    service_expansion_model: str = "claude-opus-5-5"
+    service_expansion_answer_timeout_s: float = 180.0
     worker_model: str = "claude-opus-5"
     # Applied-design roles are explicit so quality and cost changes cannot drift
     # behind a shared model setting.
@@ -434,6 +436,7 @@ class Settings(BaseSettings):
             "GRAPH_QA_MAX_COMPLETION_TOKENS": self.graph_qa_max_completion_tokens,
             "GRAPH_PATCH_TIMEOUT_S": self.graph_patch_timeout_s,
             "GRAPH_SYNTHESIS_TIMEOUT_S": self.graph_synthesis_timeout_s,
+            "SERVICE_EXPANSION_ANSWER_TIMEOUT_S": self.service_expansion_answer_timeout_s,
             "GRAPH_FINALIZATION_RESERVE_S": self.graph_finalization_reserve_s,
             "STAGED_COMPONENT_TIMEOUT_S": self.staged_component_timeout_s,
             "STAGED_CONNECTION_TIMEOUT_S": self.staged_connection_timeout_s,

@@ -222,9 +222,17 @@ def patch_timeout_seconds(state: dict[str, Any]) -> float:
 
 
 def synthesis_timeout_seconds(state: dict[str, Any]) -> float:
+    expansion = state.get("service_expansion") or {}
+    specialist_answer = (
+        expansion.get("complexity") == "high" and state.get("graph_intent") != "edit"
+    )
     return _stage_timeout(
         state,
-        max_s=settings.graph_synthesis_timeout_s,
+        max_s=(
+            settings.service_expansion_answer_timeout_s
+            if specialist_answer
+            else settings.graph_synthesis_timeout_s
+        ),
         downstream_reserve_s=settings.graph_finalization_reserve_s,
         stage="synthesis",
     )

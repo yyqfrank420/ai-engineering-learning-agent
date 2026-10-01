@@ -96,6 +96,21 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    composition layer. Scoped edits instead emit additions and permitted field updates in
    server-selected slots. The server assembles complete candidates from immutable prior records
    and authorized removals. Both stages receive the same applicable criteria as their reviewers.
+   Service expansion requests have a separate orchestrator planning call that selects existing
+   application services and classifies the request as low or high complexity. Clients, stores,
+   and standalone retrieval processes retain ordinary routing. High complexity selects the
+   `expand_application_services` tool with `SERVICE_EXPANSION_MODEL=claude-opus-5-5` and medium
+   effort for both draft stages and their bounded corrections. Low complexity uses the ordinary
+   builder. This complexity decision is separate from prototype or production maturity.
+   The server permits one to three internal nodes per selected service and preserves existing
+   records. Each internal node has type `component`, the displayed label `Component`, and
+   `parent_service_id` referencing its owning service. Wire `parent_index` resolves to that ID
+   at the server boundary. Ownership survives projection, reload, and unrelated removals.
+   Expansion connections stay within the parent's existing interfaces and internal components.
+   Both render and semantic gates remain required. These expansions use the staged contract
+   even when the default pipeline is legacy. Explicit answer-only requests retain the graph;
+   high complexity answers use Opus 5.5 medium with a 180-second maximum, bounded by the remaining
+   terminal deadline. A terse continuation uses the preceding user expansion request.
 7. The server owns IDs, group records, breadth-first sequence derivation, projection, graph
    versions, selected maturity, exact edit admission, validation, state transitions, and
    persistence. The component-only candidate has no edges. During edits the live UI retains the
@@ -488,8 +503,10 @@ completed review on a later edit. The UI disables repeated Stop and steering whi
 Navigation, account changes, disconnects, and normal cancellation never imply acceptance.
 Stale request or candidate commands are rejected without cancelling the active turn.
 
-Live thinking uses provider-emitted text from the existing builder, reviewer, and explanation
-streams. It is request-scoped, bounded, and displayed as plain text in an expandable feed.
-Structured graph JSON, provider signatures, and tool results never enter that feed. Thinking
-is transient UI state; it is not saved in messages, graph history, or analytics. Provider
-reasoning can quote request context and should not be treated as a verified answer.
+Live activity is a bounded public feed derived from workflow events. Known startup, routing,
+and steering statuses produce public context steps immediately. The expanded panel shows
+"Working on your request." while no step has arrived. Book search, web search, rendering,
+and review appear as tool steps; public design updates explain the current phase. Raw provider
+reasoning, signatures, graph JSON, and retrieved tool content stay outside this feed.
+The transports persist the activity with the completed message. Reload restores its steps
+and duration without another model call. Completion collapses the feed, which can be reopened.
