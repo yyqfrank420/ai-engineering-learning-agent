@@ -371,10 +371,10 @@
       },
       {
         "path": "frontend/src/hooks/useBackendReadiness.ts",
-        "before_blob": "45ea444c61ea4c9818143663acea705ca6c07505",
-        "after_blob": "a47bc08f43ba5dcd84b310e5066ce5a2b10de30d",
-        "reason": "Remove unused frontend percentage normalization and state; polling, lifecycle and generation behavior are unchanged.",
-        "verification": "docs/verification/2026-09-28-startup-status.md"
+        "before_blob": "a47bc08f43ba5dcd84b310e5066ce5a2b10de30d",
+        "after_blob": "a2e5551ae749d2037bcd9694379074eb8c060d75",
+        "reason": "Add the usual 30-60 second startup duration to the initial readiness message only; polling, lifecycle and generation behavior are unchanged.",
+        "verification": "docs/verification/2026-09-30-startup-time-copy.md"
       },
       {
         "path": "frontend/src/services/api.ts",
