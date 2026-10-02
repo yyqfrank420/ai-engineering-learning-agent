@@ -448,6 +448,13 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
         "A validation verdict, acknowledgment, or commit status alone is insufficient",
         "Direct delivery, explicit forwarding, or declared persistence with a consumer read can satisfy output delivery",
         "Preserve this output route during scoped edits and repairs",
+        "If execution is denied or halted while a declared consumer waits for action output",
+        "deliver the final decision, action identity, and reason to that consumer as the terminal result",
+        "Do not require tool observations for an action that did not run",
+        "A reply emitted only after execution cannot close a branch that skips execution",
+        "An audit write alone needs a declared consumer read of that result",
+        "Declared same-owner handling can also satisfy output delivery without extra edges",
+        "A commit/status-only contract is valid when its consumer needs only commit information",
     ):
         assert output_requirement in shared_criterion
         assert output_requirement in criterion
@@ -1378,3 +1385,151 @@ def test_action_validation_policy_changes_production_identity_only(
     assert (gate.review_identity(stage, maturity, guarantees) != current) is (
         maturity == "production"
     )
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("scope", ["universal", "declared_subset"])
+def test_declared_approval_scope_is_preserved_in_shared_authoring_and_review_contract(
+    stage, maturity, scope
+):
+    if scope == "universal":
+        request = "Design ad management. Require human review before every external advertising write."
+        assumption = "Every external advertising write requires human review."
+        responsibility = "Automatically approves undefined material changes within the budget envelope."
+    else:
+        request = "Design ad management. Human review is required for above-limit budget increases; pause actions may be approved automatically."
+        assumption = "Above-limit budget increases require human review; automatic approval is permitted only for pause actions."
+        responsibility = "Routes above-limit increases to human review and approves pause actions within the declared scope."
+    context = generation.AcceptedContext(
+        assumptions=(assumption,),
+        external_effects=True,
+        retrieval_or_reuse=False,
+        learning_or_release=False,
+    )
+    guarantees = production_proofs_for_capabilities(
+        context.prompt_value()["capabilities"], maturity=maturity
+    )
+    components = [
+        {
+            "id": "approval",
+            "label": "Approval service",
+            "responsibility": responsibility,
+        }
+    ]
+    authored, _ = generation._attempt_prompt(
+        stage=stage,
+        request=request,
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=2, edge_limit=4),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        accepted_components=components if stage == "connections" else None,
+        accepted_context=context if stage == "connections" else None,
+        architecture_context=("Accepted design assumption: " + assumption)
+        if stage == "components"
+        else None,
+    )
+    evidence = {
+        "candidate_context": context.prompt_value(),
+        "candidate_components": components,
+    }
+    reviewed = gate._prompt(
+        gate=stage,
+        user_request=request,
+        evidence_bundle=evidence,
+        resolved_maturity=maturity,
+        candidate_records=components if stage == "components" else [],
+        required_production_guarantees=guarantees if stage == "connections" else (),
+    )
+    generated = json.loads(authored.split("\nINPUT\n", 1)[1])
+    reviewed_criteria = json.loads(
+        reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert generated["request"] == request
+    assert generated["acceptance_criteria"] == reviewed_criteria
+    rule = reviewed_criteria[
+        "brief_coverage" if stage == "components" else "safe_action_boundary"
+    ]
+    for obligation in (
+        "Keep approval scope consistent with the request and accepted assumptions",
+        "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset",
+        "Automatic or delegated approval needs an explicit permitted scope",
+        "do not infer it from a budget envelope or a generic 'approved' label",
+    ):
+        assert obligation in rule
+    decoder = json.JSONDecoder()
+    reviewed_evidence, _ = decoder.raw_decode(reviewed.split("Evidence bundle: ", 1)[1])
+    assert reviewed_evidence == evidence
+    if stage == "connections":
+        assert generated["accepted_context"] == context.prompt_value()
+        assert generated["accepted_components"] == components
+        assert (
+            "trace presentation of the applicable action for that review and its human decision before execution"
+            in rule
+        )
+    else:
+        assert (
+            "At the component stage, assess responsibilities and approval scope only"
+            in rule
+        )
+    # Fresh generation verifies model acceptance.
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    "owner,criterion,removed",
+    [
+        (
+            "components",
+            "brief_coverage",
+            "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset. ",
+        ),
+        (
+            "connections",
+            "safe_action_boundary",
+            "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset. ",
+        ),
+        (
+            "connections",
+            "edge_semantics",
+            "If execution is denied or halted while a declared consumer waits for action output, deliver the final decision, action identity, and reason to that consumer as the terminal result. ",
+        ),
+    ],
+)
+def test_removed_approval_scope_or_terminal_reply_invalidates_only_owning_cached_review(
+    monkeypatch, stage, maturity, owner, criterion, removed
+):
+    current = gate.review_identity(stage, maturity)
+    original = gate.staged_review_requirements
+    current_requirements = original(stage, maturity)
+
+    def previous_requirements(selected_stage, depth, guarantees=()):
+        requirements = original(selected_stage, depth, guarantees)
+        if selected_stage == owner:
+            assert removed in requirements[criterion]
+            requirements[criterion] = requirements[criterion].replace(removed, "")
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    prior = gate.review_identity(stage, maturity)
+    assert tuple(previous_requirements(stage, maturity)) == tuple(current_requirements)
+    assert (prior != current) is (stage == owner)
+    monkeypatch.setattr(gate, "staged_review_requirements", original)
+    if stage == owner:
+        with pytest.raises(ValueError, match="policy differs"):
+            gate._previous_review_evidence(
+                {"stage": stage, "review_identity": prior},
+                gate=stage,
+                identity=current,
+                rule_codes=(),
+                records=[],
+                evidence_bundle={},
+            )

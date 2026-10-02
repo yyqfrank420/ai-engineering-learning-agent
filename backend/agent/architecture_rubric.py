@@ -22,14 +22,28 @@ _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
     "intermediary contract on that output route must carry the actual output. "
     "Name the actual needed output data in each forwarding connection. "
     "Generic 'success', 'failure', or 'outcome' does not "
-    "imply a result payload. For example, in an agent loop the planner must receive "
+    "imply a result payload. For performed execution in an agent loop, the planner must receive "
     "tool observations or result content, with execution status as accompanying "
     "data. A commit/status-only contract is valid when its consumer needs only "
     "commit information. "
     "A validation verdict, acknowledgment, or commit status alone is insufficient. "
     "Direct delivery, explicit forwarding, or declared persistence with a consumer "
-    "read can satisfy output delivery. Preserve this output route during scoped "
-    "edits and repairs."
+    "read can satisfy output delivery. Declared same-owner handling can also satisfy "
+    "output delivery without extra edges. If execution is denied or halted while a declared consumer waits "
+    "for action output, deliver the final decision, action identity, and reason to "
+    "that consumer as the terminal result. Do not require tool observations for "
+    "an action that did not run. A reply emitted only after execution cannot close "
+    "a branch that skips execution. An audit write alone needs a declared consumer "
+    "read of that result. Preserve this "
+    "output route during scoped edits and repairs."
+)
+
+_APPROVAL_SCOPE_REQUIREMENT = (
+    "Keep approval scope consistent with the request and accepted assumptions. "
+    "Universal human review cannot narrow to an undefined 'material' or 'sensitive' "
+    "subset. Automatic or delegated approval needs an explicit permitted scope "
+    "consistent with those declarations; do not infer it from a budget envelope "
+    "or a generic 'approved' label."
 )
 
 _ACTION_APPROVAL_DELIVERY_REQUIREMENT = (
@@ -41,7 +55,9 @@ _ACTION_APPROVAL_DELIVERY_REQUIREMENT = (
     "Rejected or halted actions must reach a bounded observable outcome without "
     "execution. Direct delivery, explicit forwarding, authoritative persisted "
     "decision reads, or declared same-owner enforcement can satisfy this path; "
-    "do not require duplicate gates or services."
+    "do not require duplicate gates or services. When human review is required, "
+    "trace presentation of the applicable action for that review and its human "
+    "decision before execution. " + _APPROVAL_SCOPE_REQUIREMENT
 )
 
 RUBRIC_CRITERIA = {
@@ -97,7 +113,10 @@ RUBRIC_CRITERIA = {
     ),
     "brief_coverage": (
         "components",
-        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities.",
+        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities. "
+        + _APPROVAL_SCOPE_REQUIREMENT
+        + " At the component stage, assess responsibilities and approval scope only; "
+        "do not require connection-stage delivery proof.",
     ),
     "branch_completion": (
         "connections",

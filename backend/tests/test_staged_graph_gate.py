@@ -2629,8 +2629,8 @@ def test_output_payload_clarification_changes_only_connection_prompt_release(
     assert (forwarding in authored) is (stage == "connections")
     assert (forwarding in reviewed) is (stage == "connections")
     if stage == "connections":
-        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v37"
+        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v38"
         assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v35"
     else:
-        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v43"
+        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v44"
         assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v26"
