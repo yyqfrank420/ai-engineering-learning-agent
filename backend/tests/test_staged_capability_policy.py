@@ -422,20 +422,35 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
     ):
         assert obligation in criterion
     assert (
-        "A redundant intermediate return or duplicate description is advisory unless "
-        "it changes execution or violates a required control"
+        "A redundant intermediate return or duplicate description is advisory only when "
+        "an independent declared route already delivers all required output and it "
+        "neither changes execution nor violates a required control"
     ) in criterion
     assert "identify that concrete failure when rejecting" in criterion
-    assert RUBRIC_CRITERIA["edge_semantics"] == (
-        "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate "
-        "interactions, and keep reverse or parallel contracts compatible. Classify each "
-        "interaction by its actual behavior; feedback and deployment contracts cannot "
-        "substitute for required runtime or control interactions. Each read or request "
-        "that expects returned data needs its matching payload from the authoritative "
-        "owner back to the requester. An unrelated reverse verdict or acknowledgment "
-        "does not supply that payload.",
-    )
+    owner, shared_criterion = RUBRIC_CRITERIA["edge_semantics"]
+    assert owner == "connections"
+    for obligation in (
+        "Give each directed edge one distinct necessary contract",
+        "consolidate duplicate interactions",
+        "keep reverse or parallel contracts compatible",
+        "Classify each interaction by its actual behavior",
+        "feedback and deployment contracts cannot substitute for required runtime or control interactions",
+        "Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester",
+        "An unrelated reverse verdict or acknowledgment does not supply that payload",
+    ):
+        assert obligation in shared_criterion
+    for output_requirement in (
+        "When a declared consumer needs execution output to continue work or answer",
+        "trace that output across the complete route to the consumer",
+        "Every intermediary contract on that output route must carry the actual output",
+        "Name the actual needed output data in each forwarding connection",
+        "Generic 'success', 'failure', or 'outcome' does not imply a result payload",
+        "A validation verdict, acknowledgment, or commit status alone is insufficient",
+        "Direct delivery, explicit forwarding, or declared persistence with a consumer read can satisfy output delivery",
+        "Preserve this output route during scoped edits and repairs",
+    ):
+        assert output_requirement in shared_criterion
+        assert output_requirement in criterion
 
 
 def test_prototype_action_policy_preserves_required_controls_without_extra_stages():
