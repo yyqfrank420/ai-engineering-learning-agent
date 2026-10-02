@@ -758,6 +758,77 @@ def test_chat_blocks_prompt_injection(temp_data_dir, monkeypatch):
     assert "Message blocked by security filter" in response.text
 
 
+def test_node_selected_correlates_request_ids_and_releases_stream(
+    temp_data_dir, monkeypatch
+):
+    monkeypatch.setattr(settings, "max_active_node_streams_per_user", 1)
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    calls = []
+    closed = []
+
+    async def suggestions(title, description, history, *, telemetry):
+        try:
+            calls.append((title, description, history, telemetry))
+            yield {
+                "type": "suggested_questions",
+                "questions": [
+                    "Clarify observation vs. task input",
+                    "Expand nodes between input and Planner",
+                    "Task input vs. memory retrieval context",
+                ],
+            }
+            yield {"type": "done"}
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr("api.sse_handler.stream_suggested_questions", suggestions)
+    with TestClient(_authed_app()) as client:
+        response = client.post(
+            "/api/node-selected",
+            json={
+                "thread_id": thread["id"],
+                "node_id": "n1",
+                "title": "RAG",
+                "description": "retrieval",
+                "client_request_id": "node-selection-1",
+            },
+        )
+        assert response.status_code == 200
+        assert _parse_sse_events(response.text) == [
+            {
+                "type": "suggested_questions",
+                "questions": [
+                    "Clarify observation vs. task input",
+                    "Expand nodes between input and Planner",
+                    "Task input vs. memory retrieval context",
+                ],
+            },
+            {"type": "done"},
+        ]
+        assert len(calls) == 1
+        title, description, history, telemetry = calls[0]
+        assert (title, description, history) == ("RAG", "retrieval", [])
+        assert response.headers["x-request-id"]
+        assert telemetry == {
+            "operation": "node_selected_chips",
+            "user_id": "user-1",
+            "thread_id": thread["id"],
+            "metadata": {
+                "node_id": "n1",
+                "request_id": response.headers["x-request-id"],
+                "client_request_id": "node-selection-1",
+            },
+        }
+        assert closed == [True]
+        acquired = runtime_state_store.try_acquire_active_stream(
+            "user-1", "node-selected", limit=1, ttl_s=60
+        )
+        assert acquired is not None
+        runtime_state_store.release_active_stream(acquired)
+
+
 def test_node_selected_rejects_oversized_payload(temp_data_dir, monkeypatch):
     monkeypatch.setattr(settings, "max_node_text_bytes", 12)
     init_db()
