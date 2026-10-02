@@ -5058,3 +5058,51 @@ async def test_scoped_output_contract_edit_obeys_connection_gate_and_preserves_b
             result["graph_review"]["staged_gate"]["findings"][0]["rule_code"]
             == "edge_semantics"
         )
+
+
+@pytest.mark.asyncio
+async def test_connection_review_evidence_preserves_validated_component_owner(
+    monkeypatch,
+):
+    _install_success_boundaries(monkeypatch)
+    reviews = []
+
+    async def components(**_kwargs):
+        wire = _components_wire()
+        wire["components"].append(
+            {
+                **wire["components"][1],
+                "label": "Release reconciliation",
+                "type": 109,
+                "parent_index": 1,
+                "primary_flow_member": False,
+            }
+        )
+        return {"wire": wire, "prompt_fingerprint": "components"}
+
+    async def connections(**_kwargs):
+        wire = _connections_wire()
+        wire["edges"].append(
+            {
+                **wire["edges"][0],
+                "source_index": 1,
+                "target_index": 2,
+                "label": "Reconcile release state",
+            }
+        )
+        return {"wire": wire, "prompt_fingerprint": "connections"}
+
+    async def connection_gate(**kwargs):
+        reviews.append(kwargs)
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+    result = await workflow.run_staged_graph_pipeline(_state())
+    assert result["graph_publication"] == "approved"
+    rows = reviews[0]["evidence_bundle"]["candidate_components"]
+    assert rows[2]["type"] == "component"
+    assert rows[2]["parent_service_id"] == rows[1]["id"]
+    assert all("parent_service_id" not in row for row in rows[:2])
+    assert result["graph_data"]["nodes"][2]["parent_service_id"] == rows[1]["id"]

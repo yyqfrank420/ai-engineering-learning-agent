@@ -42,7 +42,7 @@ from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v43"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v35"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v36"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -965,6 +965,18 @@ def _attempt_prompt(
             "interface and all existing records. Containment is ownership metadata; "
             "draw only real runtime, control, or data-flow connections."
         )
+        if stage == "connections":
+            service_expansion_rule += (
+                " Match each label to the actual sender and recipient. A delegated reply "
+                "must name the relay and forwarded origin. For a declared controlled release "
+                "transition, carry the exact authorized payload and stable operation ID "
+                "through every hop to the owner that applies it. Retained parent edges "
+                "satisfy this only when their explicit contracts carry those values; otherwise "
+                "use allowed new internal-to-anchor exchanges. For a declared uncertain-outcome "
+                "read-back, request authoritative state and return the correlated state to "
+                "the reconciliation owner. Preserve locked parent records. Containment does "
+                "not imply runtime forwarding."
+            )
     if edit_delta is not None:
         edit_rule = (
             " The base is immutable server-owned context. Return only the delta schema: "

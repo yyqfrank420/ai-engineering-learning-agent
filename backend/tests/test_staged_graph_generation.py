@@ -872,7 +872,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v35"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v36"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -4436,3 +4436,40 @@ async def test_connection_extension_prompt_retains_restricted_anchors_and_only_n
     assert plan["accepted_addition_indexes"] == [6]
     assert plan["component_addition_count"] == 1
     assert result["wire"]["edges"] == [addition]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("expansion", [False, True])
+def test_service_expansion_connection_guidance_is_scoped(stage, expansion):
+    prompt, _ = generation._attempt_prompt(
+        stage=stage,
+        request="Expand the release service.",
+        state={"service_expansion": {"target_service_ids": ["n2"]}}
+        if expansion
+        else {},
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context=_architecture_context() if stage == "components" else None,
+        accepted_components=_accepted_components() if stage == "connections" else None,
+        accepted_context=generation._accepted_context(_accepted_context())
+        if stage == "connections"
+        else None,
+    )
+    for guidance in (
+        "Match each label to the actual sender and recipient",
+        "delegated reply must name the relay and forwarded origin",
+        "carry the exact authorized payload and stable operation ID through every hop",
+        "Retained parent edges satisfy this only when their explicit contracts carry those values",
+        "use allowed new internal-to-anchor exchanges",
+        "request authoritative state and return the correlated state to the reconciliation owner",
+        "Preserve locked parent records. Containment does not imply runtime forwarding",
+    ):
+        assert (guidance in prompt) == (expansion and stage == "connections")

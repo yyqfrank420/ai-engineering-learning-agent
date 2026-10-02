@@ -28,7 +28,7 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v34"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v35"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -426,6 +426,8 @@ def _prompt(
                 "\nUse evidence_bundle.candidate_context.capabilities and "
                 "evidence_bundle.candidate_context.assumptions with the accepted "
                 "candidate component responsibilities in evidence_bundle.candidate_components. "
+                "A Component's parent_service_id establishes containment, not implicit "
+                "runtime forwarding. Require explicit contracts for every cross-component hop. "
                 "Resolved maturity remains authoritative. "
                 "evidence_bundle.connection_exchanges, when present, is server-derived "
                 "pairing of model-authored connection contracts: request_record_index "

@@ -1,6 +1,8 @@
 """Server-owned limits for expanding application service internals."""
 
 import copy
+import json
+from pathlib import Path
 
 import pytest
 
@@ -39,11 +41,11 @@ def _graph():
     }
 
 
-def _scope(graph, targets):
+def _scope(graph, targets, *, resolved_complexity="prototype"):
     return graph_worker.staged_edit_scope(
         "Expand the selected services",
         graph,
-        resolved_complexity="prototype",
+        resolved_complexity=resolved_complexity,
         service_expansion={
             "target_service_ids": targets,
             "complexity": "high",
@@ -296,3 +298,184 @@ async def test_multi_service_expansion_preserves_parent_ownership_and_runs_exist
         for node in expanded["nodes"][3:]
     )
     assert "component_gate" in events and "connection_gate" in events
+
+
+# Accepted baseline and proposed children from the October 2 capture on 5eaf519.
+# Turn 3 was rejected; this fixture tests routing admission and preservation only,
+# and does not establish semantic approval.
+
+
+def _local_serving_expansion():
+    from agent.nodes import staged_graph_generation as generation
+    from agent.staged_graph_contract import (
+        project_graph_data,
+        reconstruct_staged_graph_build,
+    )
+
+    records = json.loads(
+        (
+            Path(__file__).parent / "fixtures/service_expansion_release_20261002.json"
+        ).read_text()
+    )
+    baseline = records["baseline"]
+    candidate = copy.deepcopy(baseline)
+    candidate["nodes"].extend(records["internals"])
+    candidate["groups"][0]["nodeIds"].extend(["n5", "n6"])
+    candidate["groups"][1]["nodeIds"].extend(["n7", "n8"])
+    permissions = _scope(baseline, ["n1", "n2"], resolved_complexity="production")
+    additions = [
+        ("n1", "n5", "Authenticated inference request with request ID"),
+        ("n5", "n1", "Inference output with model version or typed error"),
+        ("n1", "n6", "Apply version transition keyed by operation ID"),
+        ("n6", "n1", "Applied active version or rejected transition with reason"),
+        ("n2", "n7", "Request release transition with target and version"),
+        ("n7", "n2", "Accepted transition operation ID or rejection reason"),
+        (
+            "n7",
+            "n8",
+            "Dispatch accepted transition with stable operation ID and version",
+        ),
+        (
+            "n8",
+            "n7",
+            "Recorded applied version, rejection reason, or unresolved outcome",
+        ),
+        (
+            "n8",
+            "n1",
+            "Apply release command with stable operation ID and expected active version",
+        ),
+        (
+            "n1",
+            "n8",
+            "Command reply with matching operation ID, applied active version or rejection reason",
+        ),
+        (
+            "n8",
+            "n1",
+            "Read authoritative active version and operation outcome after uncertain reply",
+        ),
+        (
+            "n1",
+            "n8",
+            "Authoritative active version and recorded outcome keyed by operation ID",
+        ),
+    ]
+    candidate["edges"].extend(
+        {
+            "source": source,
+            "target": target,
+            "label": label,
+            "flow": "deployment",
+            "sync": "sync",
+        }
+        for source, target, label in additions
+    )
+    build = reconstruct_staged_graph_build(
+        candidate, request_id="offline-route-regression"
+    )
+    index_by_id = {row["server_id"]: row["model_index"] for row in build["components"]}
+    flow_codes = {value: code for code, value in generation.FLOW_CODES.items()}
+    sync_codes = {value: code for code, value in generation.SYNC_CODES.items()}
+    wire = {
+        "edges": [
+            {
+                "source_index": index_by_id[edge["source"]],
+                "target_index": index_by_id[edge["target"]],
+                "label": edge["label"],
+                "flow": flow_codes[edge["flow"]],
+                "sync": sync_codes[edge["sync"]],
+            }
+            for edge in candidate["edges"]
+        ]
+    }
+    parsed = generation._parse_connection_wire(
+        json.dumps(wire),
+        accepted_components=[
+            {**row, "index": row["model_index"]} for row in build["components"]
+        ],
+        edge_limit=settings.graph_safety_max_edges,
+    )
+    projected = project_graph_data(
+        {**build, "connections": workflow._decode_connections(parsed)}
+    )
+    projected = workflow._preserve_existing_presentation(
+        projected,
+        baseline,
+        edit_permissions=permissions,
+    )
+    return baseline, projected, permissions
+
+
+def test_captured_service_scope_admits_dispatch_to_actual_serving_owner_and_read_back():
+    baseline, candidate, permissions = _local_serving_expansion()
+    before = copy.deepcopy(baseline)
+    admitted = graph_worker.admit_staged_graph_edit(
+        baseline,
+        candidate,
+        resolved_complexity="production",
+        repair_contract=None,
+        mutation_permissions=permissions,
+    )
+    assert "n1" in permissions["service_expansion_anchors"]["n2"]
+    assert [
+        (node["id"], node["parent_service_id"]) for node in admitted["nodes"][4:]
+    ] == [
+        ("n5", "n1"),
+        ("n6", "n1"),
+        ("n7", "n2"),
+        ("n8", "n2"),
+    ]
+    for collection in ("nodes", "edges"):
+        assert json.dumps(
+            admitted[collection][: len(baseline[collection])]
+        ) == json.dumps(baseline[collection])
+    command, reply, read_back, observed = admitted["edges"][-4:]
+    assert [
+        (edge["source"], edge["target"])
+        for edge in (command, reply, read_back, observed)
+    ] == [
+        ("n8", "n1"),
+        ("n1", "n8"),
+        ("n8", "n1"),
+        ("n1", "n8"),
+    ]
+    assert "stable operation ID" in command["label"]
+    assert "matching operation ID" in reply["label"]
+    assert "Read authoritative active version" in read_back["label"]
+    assert "Authoritative active version and recorded outcome" in observed["label"]
+    assert baseline == before
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "foreign_anchor",
+        "foreign_owner",
+        "cross_service_internal",
+        "saved_node",
+        "saved_edge",
+    ],
+)
+def test_captured_service_scope_rejects_foreign_authority_and_baseline_rewrites(change):
+    baseline, candidate, permissions = _local_serving_expansion()
+    if change == "foreign_anchor":
+        candidate["edges"][-4]["target"] = "n4"
+    elif change == "foreign_owner":
+        candidate["nodes"][-1]["parent_service_id"] = "n3"
+    elif change == "cross_service_internal":
+        candidate["edges"][-4]["target"] = "n5"
+    elif change == "saved_node":
+        candidate["nodes"][0]["description"] = "Rewritten serving ownership"
+    else:
+        candidate["edges"][0]["label"] = "Rewritten release contract"
+    with pytest.raises(
+        ValueError, match="parent interface|selected service|changed saved"
+    ):
+        graph_worker.admit_staged_graph_edit(
+            baseline,
+            candidate,
+            resolved_complexity="production",
+            repair_contract=None,
+            mutation_permissions=permissions,
+        )

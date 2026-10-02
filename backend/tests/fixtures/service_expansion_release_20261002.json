@@ -1,0 +1,277 @@
+{
+  "baseline": {
+    "graph_type": "architecture",
+    "title": "Production Model-Serving Stack",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Serving API",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Accepts inference requests, authenticates callers, runs the active released model version, and returns responses with version metadata for traceability.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n2",
+        "label": "Model release service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Owns the release lifecycle: curates versioned evaluation evidence including hostile traces, runs offline evaluation, publishes reviewed immutable releases, and controls canary, promotion, rollback, and recorded outcomes.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n3",
+        "label": "Serving Monitor",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Collects serving metrics, latency and error signals, and canary outcome data; raises alerts when released model health degrades.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n4",
+        "label": "Serving alert notifier",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Receives degradation alerts from the Serving Monitor and routes acknowledged, deduplicated alert notifications to on-call operators with correlated model version and canary context.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      }
+    ],
+    "edges": [
+      {
+        "source": "n2",
+        "target": "n1",
+        "label": "Deploy reviewed immutable model release as canary with version identity and traffic scope",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Deploy reviewed immutable model release as canary with version identity and traffic scope",
+        "flow": "deployment",
+        "edge_id": "applied:n2__deploy_reviewed_immutable_model_release_1039e104154f72ce82888097__n1",
+        "relation": "deploy_reviewed_immutable_model_release_1039e104154f72ce82888097"
+      },
+      {
+        "source": "n1",
+        "target": "n2",
+        "label": "Canary applied with active version or rejected with reason",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Canary applied with active version or rejected with reason",
+        "flow": "deployment",
+        "edge_id": "applied:n1__canary_applied_with_active_version_or_r_79c41cba6af613fc2ae4b02e__n2",
+        "relation": "canary_applied_with_active_version_or_r_79c41cba6af613fc2ae4b02e"
+      },
+      {
+        "source": "n3",
+        "target": "n1",
+        "label": "Pull serving latency, error, and per-version inference metrics",
+        "technology": "Feedback flow",
+        "sync": "sync",
+        "description": "Pull serving latency, error, and per-version inference metrics",
+        "flow": "feedback",
+        "edge_id": "applied:n3__pull_serving_latency_error_and_per_vers_5a3abd63f45d385b75110c41__n1",
+        "relation": "pull_serving_latency_error_and_per_vers_5a3abd63f45d385b75110c41"
+      },
+      {
+        "source": "n1",
+        "target": "n3",
+        "label": "Current latency, error, and version-tagged inference metrics",
+        "technology": "Feedback flow",
+        "sync": "sync",
+        "description": "Current latency, error, and version-tagged inference metrics",
+        "flow": "feedback",
+        "edge_id": "applied:n1__current_latency_error_and_version_tagge_423502623bdc7c442ebdb1da__n3",
+        "relation": "current_latency_error_and_version_tagge_423502623bdc7c442ebdb1da"
+      },
+      {
+        "source": "n3",
+        "target": "n2",
+        "label": "Report canary health signals and degradation alerts with version identity",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Report canary health signals and degradation alerts with version identity",
+        "flow": "feedback",
+        "edge_id": "applied:n3__report_canary_health_signals_and_degrad_4775813e6ce17296e003c4ed__n2",
+        "relation": "report_canary_health_signals_and_degrad_4775813e6ce17296e003c4ed"
+      },
+      {
+        "source": "n2",
+        "target": "n1",
+        "label": "Promote canary to full traffic or roll back to prior immutable version",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Promote canary to full traffic or roll back to prior immutable version",
+        "flow": "deployment",
+        "edge_id": "applied:n2__promote_canary_to_full_traffic_or_roll__5e10ce36b2876cfaee4ac9d0__n1",
+        "relation": "promote_canary_to_full_traffic_or_roll__5e10ce36b2876cfaee4ac9d0"
+      },
+      {
+        "source": "n1",
+        "target": "n2",
+        "label": "Promotion or rollback applied with active version, or rejected with reason",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Promotion or rollback applied with active version, or rejected with reason",
+        "flow": "deployment",
+        "edge_id": "applied:n1__promotion_or_rollback_applied_with_acti_cfd1b930a1cccd9dbb51bc9e__n2",
+        "relation": "promotion_or_rollback_applied_with_acti_cfd1b930a1cccd9dbb51bc9e"
+      },
+      {
+        "source": "n3",
+        "target": "n4",
+        "label": "Forward acknowledged, deduplicated degradation alerts with model version and canary context",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Forward acknowledged, deduplicated degradation alerts with model version and canary context",
+        "flow": "feedback",
+        "edge_id": "applied:n3__forward_acknowledged_deduplicated_degra_0d6b8633fa29eb422798bef1__n4",
+        "relation": "forward_acknowledged_deduplicated_degra_0d6b8633fa29eb422798bef1"
+      }
+    ],
+    "sequence": [
+      {
+        "step": 1,
+        "nodes": [
+          "n1"
+        ],
+        "description": "Primary flow stage 1"
+      },
+      {
+        "step": 2,
+        "nodes": [
+          "n2",
+          "n3"
+        ],
+        "description": "Primary flow stage 2"
+      }
+    ],
+    "groups": [
+      {
+        "id": "group_conversation_services",
+        "label": "Conversation services",
+        "kind": "runtime",
+        "nodeIds": [
+          "n1"
+        ]
+      },
+      {
+        "id": "group_release_management",
+        "label": "Release management",
+        "kind": "operations",
+        "nodeIds": [
+          "n2"
+        ]
+      },
+      {
+        "id": "group_logs_and_monitoring",
+        "label": "Logs and monitoring",
+        "kind": "operations",
+        "nodeIds": [
+          "n3",
+          "n4"
+        ]
+      }
+    ],
+    "design_origin": "applied",
+    "resolved_complexity": "production",
+    "assumptions": [
+      "Serving API answers inference requests only; it does not propose or execute model-selected actions.",
+      "Model release service owns offline evaluation and release decisions; training pipelines are out of scope.",
+      "Monitoring observes and alerts but does not change model releases."
+    ],
+    "version": "bec9bdcd-8e0b-4900-a253-4b1491c0003a",
+    "view_state": {
+      "layoutVersion": 17,
+      "zonePadding": {},
+      "nodePositions": {
+        "n1": {
+          "x": 137,
+          "y": 106
+        },
+        "n2": {
+          "x": 137,
+          "y": 258
+        },
+        "n3": {
+          "x": 403,
+          "y": 258
+        }
+      },
+      "viewport": {
+        "x": 50,
+        "y": 146,
+        "k": 1
+      }
+    }
+  },
+  "internals": [
+    {
+      "id": "n5",
+      "label": "Inference request executor",
+      "type": "component",
+      "parent_service_id": "n1",
+      "technology": "Component",
+      "description": "Runs authenticated requests on the active version under a concurrency cap, applies timeouts and bounded retries, and returns typed errors with version metadata.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n6",
+      "label": "Version activation controller",
+      "type": "component",
+      "parent_service_id": "n1",
+      "technology": "Component",
+      "description": "Applies canary, promote, and rollback commands to the local active-version pointer by compare-and-set, dedupes by operation ID, and replies applied or rejected.",
+      "tier": null,
+      "lane": "main",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n7",
+      "label": "Release state machine",
+      "type": "component",
+      "parent_service_id": "n2",
+      "technology": "Component",
+      "description": "Authoritative owner of release lifecycle state; validates allowed transitions with optimistic versioning and permits one in-flight transition per serving target.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    },
+    {
+      "id": "n8",
+      "label": "Release command dispatcher",
+      "type": "component",
+      "parent_service_id": "n2",
+      "technology": "Component",
+      "description": "Sends transition commands with stable operation IDs, retries with bounded backoff, reads back the active version on uncertain outcomes, and escalates after the limit.",
+      "tier": null,
+      "lane": "bottom",
+      "detail": null,
+      "layer": "architecture",
+      "design_origin": "applied"
+    }
+  ]
+}

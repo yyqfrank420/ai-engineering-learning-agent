@@ -1897,6 +1897,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "label": component["label"],
                     "type": component["type"],
                     "responsibility": component["responsibility"],
+                    **(
+                        {"parent_service_id": component["parent_service_id"]}
+                        if component["type"] == "component"
+                        else {}
+                    ),
                 }
                 for component in candidate_build["components"]
             ]
