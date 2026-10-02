@@ -42,7 +42,7 @@ from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v43"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v36"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v37"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -974,8 +974,13 @@ def _attempt_prompt(
                 "satisfy this only when their explicit contracts carry those values; otherwise "
                 "use allowed new internal-to-anchor exchanges. For a declared uncertain-outcome "
                 "read-back, request authoritative state and return the correlated state to "
-                "the reconciliation owner. Preserve locked parent records. Containment does "
-                "not imply runtime forwarding."
+                "the reconciliation owner. In an add-only expansion, locked saved edges "
+                "that lack a required cross-service payload, query, or reply cannot support "
+                "a new relay through the internal's own parent. Connect the new internal "
+                "directly to a permitted foreign service anchor with the exact authorized "
+                "payload, stable operation ID, and correlated reply. A request-only relay "
+                "must not claim status from an unconnected owner. Retain all existing records. "
+                "Preserve locked parent records. Containment does not imply runtime forwarding."
             )
     if edit_delta is not None:
         edit_rule = (

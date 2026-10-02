@@ -306,12 +306,6 @@ async def test_multi_service_expansion_preserves_parent_ownership_and_runs_exist
 
 
 def _local_serving_expansion():
-    from agent.nodes import staged_graph_generation as generation
-    from agent.staged_graph_contract import (
-        project_graph_data,
-        reconstruct_staged_graph_build,
-    )
-
     records = json.loads(
         (
             Path(__file__).parent / "fixtures/service_expansion_release_20261002.json"
@@ -371,6 +365,20 @@ def _local_serving_expansion():
         }
         for source, target, label in additions
     )
+    return (
+        baseline,
+        _strict_connection_projection(baseline, candidate, permissions),
+        permissions,
+    )
+
+
+def _strict_connection_projection(baseline, candidate, permissions):
+    from agent.nodes import staged_graph_generation as generation
+    from agent.staged_graph_contract import (
+        project_graph_data,
+        reconstruct_staged_graph_build,
+    )
+
     build = reconstruct_staged_graph_build(
         candidate, request_id="offline-route-regression"
     )
@@ -404,7 +412,7 @@ def _local_serving_expansion():
         baseline,
         edit_permissions=permissions,
     )
-    return baseline, projected, permissions
+    return projected
 
 
 def test_captured_service_scope_admits_dispatch_to_actual_serving_owner_and_read_back():
@@ -475,6 +483,159 @@ def test_captured_service_scope_rejects_foreign_authority_and_baseline_rewrites(
         graph_worker.admit_staged_graph_edit(
             baseline,
             candidate,
+            resolved_complexity="production",
+            repair_contract=None,
+            mutation_permissions=permissions,
+        )
+
+
+# Graph-only baseline and rejected second connection preview from cloud 00a69b8.
+# The corrected exchanges below establish wire/scope admission and preservation,
+# without claiming a fresh semantic approval.
+def _cloud_serving_expansion():
+    records = json.loads(
+        (
+            Path(__file__).parent / "fixtures/service_expansion_cloud_00a69b8.json"
+        ).read_text()
+    )
+    baseline = records["baseline"]
+    rejected = records["rejected_candidate"]
+    permissions = _scope(baseline, ["n1", "n3"], resolved_complexity="production")
+    return baseline, rejected, permissions
+
+
+def _correct_cloud_dispatcher_exchanges(candidate):
+    from agent.graph_identity import applied_edge_metadata
+
+    corrected = copy.deepcopy(candidate)
+    exchanges = [
+        (
+            "n11",
+            "n1",
+            "Deploy approved version/action to target with approval ref and stable operation ID",
+        ),
+        (
+            "n1",
+            "n11",
+            "Serving API reply matching operation ID: loaded version, replayed result, or rejection reason",
+        ),
+        (
+            "n11",
+            "n1",
+            "Read authoritative loaded version and activation status for operation ID after uncertain reply",
+        ),
+        (
+            "n1",
+            "n11",
+            "Serving API authoritative status for operation ID: loaded version committed, not found, or applying",
+        ),
+    ]
+    for index, (source, target, label) in enumerate(exchanges, start=36):
+        corrected["edges"][index] = {
+            **corrected["edges"][index],
+            "source": source,
+            "target": target,
+            "label": label,
+            "description": label,
+            **applied_edge_metadata(source, target, label),
+        }
+    return corrected
+
+
+def test_cloud_service_expansion_recovery_can_use_foreign_parent_with_existing_children():
+    baseline, rejected, permissions = _cloud_serving_expansion()
+    assert len(baseline["nodes"]) == 7 and len(baseline["edges"]) == 17
+    assert len(rejected["nodes"]) == 12 and len(rejected["edges"]) == 43
+    assert {
+        node["id"]
+        for node in baseline["nodes"]
+        if node.get("parent_service_id") == "n1"
+    } == {"n2", "n6", "n7"}
+    assert "n1" in permissions["service_expansion_anchors"]["n3"]
+    # Admission of the captured candidate does not establish semantic correctness.
+    graph_worker.admit_staged_graph_edit(
+        baseline,
+        _strict_connection_projection(baseline, rejected, permissions),
+        resolved_complexity="production",
+        repair_contract=None,
+        mutation_permissions=permissions,
+    )
+    corrected = _correct_cloud_dispatcher_exchanges(rejected)
+    projected = _strict_connection_projection(baseline, corrected, permissions)
+    admitted = graph_worker.admit_staged_graph_edit(
+        baseline,
+        projected,
+        resolved_complexity="production",
+        repair_contract=None,
+        mutation_permissions=permissions,
+    )
+    changed = {
+        index
+        for index, (before, after) in enumerate(
+            zip(rejected["edges"], admitted["edges"])
+        )
+        if before != after
+    }
+    assert changed == {36, 37, 38, 39}
+    assert admitted["nodes"] == rejected["nodes"]
+    assert admitted["groups"] == rejected["groups"]
+    for field in ("sequence", "assumptions"):
+        assert admitted[field] == baseline[field] == rejected[field]
+    for collection in ("nodes", "edges"):
+        assert json.dumps(
+            admitted[collection][: len(baseline[collection])], sort_keys=True
+        ) == json.dumps(baseline[collection], sort_keys=True)
+    for before, after in zip(baseline["groups"], admitted["groups"]):
+        assert {k: v for k, v in before.items() if k != "nodeIds"} == {
+            k: v for k, v in after.items() if k != "nodeIds"
+        }
+        assert after["nodeIds"][: len(before["nodeIds"])] == before["nodeIds"]
+    pairs = admitted["edges"][36:40]
+    assert [(edge["source"], edge["target"]) for edge in pairs] == [
+        ("n11", "n1"),
+        ("n1", "n11"),
+        ("n11", "n1"),
+        ("n1", "n11"),
+    ]
+    assert pairs == corrected["edges"][36:40]
+
+
+@pytest.mark.parametrize(
+    "change", ["new_retained_relay", "rewrite_old_command", "rewrite_old_reply"]
+)
+def test_cloud_service_recovery_cannot_add_retained_relay_or_rewrite_saved_contract(
+    change,
+):
+    baseline, rejected, permissions = _cloud_serving_expansion()
+    corrected = _correct_cloud_dispatcher_exchanges(rejected)
+    if change == "new_retained_relay":
+        corrected["edges"].append(
+            {
+                "source": "n3",
+                "target": "n1",
+                "label": "Add missing operation-ID relay over retained services",
+                "flow": "deployment",
+                "sync": "sync",
+            }
+        )
+    elif change == "rewrite_old_command":
+        corrected["edges"][6]["label"] = (
+            "Rewrite saved deploy contract to carry operation ID"
+        )
+    else:
+        corrected["edges"][7]["label"] = (
+            "Rewrite saved reply to return operation-correlated activation status"
+        )
+    projected = _strict_connection_projection(baseline, corrected, permissions)
+    reason = (
+        "extension connections must involve a new node"
+        if change == "new_retained_relay"
+        else "extension changed saved edges"
+    )
+    with pytest.raises(ValueError, match=reason):
+        graph_worker.admit_staged_graph_edit(
+            baseline,
+            projected,
             resolved_complexity="production",
             repair_contract=None,
             mutation_permissions=permissions,

@@ -42,6 +42,14 @@ def evidence():
         semantic["evaluations"].append({"id": case_id, "decision": "fail" if failed else "pass" if judgments else "infrastructure",
             "reason": "judge infrastructure failure: InternalServerError: 503 overloaded", "judgments": judgments,
             "deterministic_failures": failures})
+    semantic["application_telemetry"] = copy.deepcopy(browser["application_telemetry"])
+    for result, evaluation in zip(browser["results"], semantic["evaluations"], strict=True):
+        derived = resume.live_runner._service_expansion_failures(
+            result, corpus.by_id[result["id"]], semantic["application_telemetry"],
+        )
+        if derived:
+            evaluation.update(decision="fail", judgments=[],
+                              deterministic_failures=[*result["deterministic_failures"], *derived])
     return browser, semantic, corpus, ids
 
 
@@ -59,7 +67,7 @@ def test_partition_keeps_full_provenance_and_does_not_regenerate_passes():
     browser, semantic, corpus, ids = evidence()
     before = copy.deepcopy(browser)
     groups = resume.partition(browser, semantic, corpus, ids)
-    assert groups == {"fresh": [ids[3]], "replay": [ids[2], *ids[4:]], "carried": ids[:2]}
+    assert groups == {"fresh": [ids[3], ids[5]], "replay": [ids[2], ids[4], *ids[6:]], "carried": ids[:2]}
     subset = resume.subset_browser_capture(browser, selected_case_ids=groups["replay"],
                  expected_source_case_ids=ids, forbidden_operation_prefixes=())
     assert subset["results"] == [row for row in browser["results"] if row["id"] in groups["replay"]]
@@ -234,9 +242,16 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     (tmp_path / "source.zip").write_bytes(archive)
     fresh = copy.deepcopy(browser)
     fresh.update(suite="diagnostic", backend_target="https://new", started_at="2026-01-01T00:00:01Z")
-    fresh["results"] = [dict(browser["results"][3], thread_id="fresh-thread", passed=True, deterministic_failures=[], failure_details=[])]
-    fresh["application_telemetry"] = [{"thread_id": "fresh-thread", "request_id": "fresh-request", "created_at_epoch": 1767225601}]
-    fresh["case_states"] = [browser["case_states"][3]]
+    fresh["results"] = [
+        dict(row, thread_id=f"fresh-{row['id']}", passed=True,
+             deterministic_failures=[], failure_details=[])
+        for row in browser["results"] if row["id"] in groups["fresh"]
+    ]
+    fresh["application_telemetry"] = [
+        {"thread_id": row["thread_id"], "request_id": f"request-{row['id']}",
+         "created_at_epoch": 1767225601} for row in fresh["results"]
+    ]
+    fresh["case_states"] = [row for row in browser["case_states"] if row["id"] in groups["fresh"]]
     fresh_path = tmp_path / "fresh.json"
     resume.write_json(fresh_path, fresh)
     monkeypatch.setenv("GITHUB_RUN_ID", "2")
@@ -295,10 +310,10 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
         assert not (tmp_path / "combined-evidence.json").exists()
         return
     assert await resume.judge(args) == (1 if outcome == "manual_review" else 0)
-    assert [c.judge_call_limit for c in calls] == [16, 15]
+    assert [c.judge_call_limit for c in calls] == [16, 16 - len(groups["fresh"])]
     assert [c.capture_replay for c in calls] == [False, True]
     combined = json.loads((tmp_path / "combined-evidence.json").read_text())
-    assert combined["new_judge_calls"] == (3 if source_kind == "manual_review" else 6)
+    assert combined["new_judge_calls"] == (4 if source_kind == "manual_review" else 6)
     assert combined["status"] == ("fail" if outcome == "manual_review" else "pass")
     assert calls[0].case == groups["fresh"] and calls[1].case == groups["replay"]
     assert all(call.manual_review_policy == "blocking" for call in calls)
@@ -379,7 +394,7 @@ def manual_evidence():
     browser, semantic, corpus, ids = evidence()
     template = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
     for index, row in enumerate(semantic["evaluations"]):
-        if index == 3:
+        if row["deterministic_failures"]:
             continue
         judgment = copy.deepcopy(template)
         judgment["dimensions"] = [
@@ -395,8 +410,8 @@ def manual_evidence():
 def test_validated_manual_review_is_replayed_and_never_carried():
     browser, semantic, corpus, ids = manual_evidence()
     assert resume.partition(browser, semantic, corpus, ids) == {
-        "fresh": [ids[3]], "replay": [ids[2], ids[4]],
-        "carried": [ids[0], ids[1], *ids[5:]],
+        "fresh": [ids[3], ids[5]], "replay": [ids[2], ids[4]],
+        "carried": [ids[0], ids[1], *ids[6:]],
     }
 
 
@@ -545,3 +560,93 @@ def test_run_identity_rejects_invalid_attempt_metadata(attempt):
         run["run_attempt"] = attempt
     with pytest.raises(ValueError, match="invalid source run attempt"):
         resume.validate_run_identity(run, pr, deployment, **kwargs)
+
+
+@pytest.mark.parametrize("browser_passed", [True, False])
+@pytest.mark.parametrize("tamper", [None, "omitted", "additional", "decision", "judgments"])
+def test_browser_version_reuse_requires_fresh_service_case_with_missing_turn_graph(tamper, browser_passed):
+    browser, semantic, corpus, ids = evidence()
+    result = browser["results"][5]
+    graph = {"version": "approved-1", "nodes": [{"id": "service", "type": "service"}]}
+    result["graph"] = graph
+    result["turns"] = [
+        {"turn": 1, "graph": graph},
+        {"turn": 2, "graph": graph},
+        {"turn": 3, "request_id": "expand-3", "graph": None},
+    ]
+    browser_failures = [] if browser_passed else [
+        "case graph-expansion turn 3 reused graph version approved-1"
+    ]
+    result.update(passed=browser_passed, deterministic_failures=browser_failures,
+                  failure_details=[] if browser_passed else [{
+                      "kind": "quality", "code": "required_graph_version_reused",
+                      "message": browser_failures[0], "blocking": True, "retryable": False,
+                  }])
+    evaluation = semantic["evaluations"][5]
+    failures = [*browser_failures, "service expansion turn 3: missing prior or expanded turn graph"]
+    evaluation.update(decision="fail", judgments=[], deterministic_failures=failures.copy())
+    if tamper == "omitted":
+        evaluation["deterministic_failures"] = browser_failures.copy()
+    elif tamper == "additional":
+        evaluation["deterministic_failures"].append("invented failure")
+    elif tamper == "decision":
+        evaluation["decision"] = "infrastructure"
+    elif tamper == "judgments":
+        evaluation["judgments"] = [semantic["evaluations"][0]["judgments"][0]]
+    before = copy.deepcopy((browser, semantic))
+    if tamper is not None:
+        with pytest.raises(ValueError):
+            resume.partition(browser, semantic, corpus, ids)
+    else:
+        assert result["passed"] is browser_passed
+        assert result["deterministic_failures"] == browser_failures
+        assert evaluation["deterministic_failures"] == failures
+        assert ids[5] in resume.partition(browser, semantic, corpus, ids)["fresh"]
+    assert (browser, semantic) == before
+
+
+@pytest.mark.parametrize("telemetry", [None, {}, [None], ["invalid"]])
+def test_partition_rejects_invalid_persisted_application_telemetry(telemetry):
+    browser, semantic, corpus, ids = evidence()
+    semantic["application_telemetry"] = telemetry
+    with pytest.raises(ValueError, match="invalid source application telemetry"):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "model", "fallback", "correlation"])
+def test_partition_recomputes_service_provider_evidence_from_semantic_telemetry(mutation):
+    browser, semantic, corpus, ids = evidence()
+    case = corpus.by_id[ids[5]]
+    expectation = case.steps[2].service_expansion
+    parents = [{"id": f"service-{index}", "type": "service", "label": label}
+               for index, label in enumerate(expectation.target_service_labels)]
+    prior = {"nodes": parents}
+    expanded = {"nodes": [*parents, *[
+        {"id": f"internal-{index}", "type": "component", "technology": "Component",
+         "parent_service_id": node["id"]} for index, node in enumerate(parents)
+    ]]}
+    result = browser["results"][5]
+    result["turns"] = [{"turn": 2, "graph": prior},
+                       {"turn": 3, "graph": expanded, "request_id": "expand-3"}]
+    calls = [{"thread_id": result["thread_id"], "request_id": "expand-3",
+              "operation": operation, "provider_attempts": 1, "status": "success",
+              "model": expectation.specialist_model, "effort": expectation.specialist_effort,
+              "specialist_tool_version": "service-expansion-v1",
+              "service_expansion_complexity": "high",
+              "target_service_ids": [node["id"] for node in parents], "fallback": False}
+             for operation in ("staged_graph_components", "staged_graph_connections")]
+    semantic["application_telemetry"].extend(calls)
+    browser["application_telemetry"].extend(copy.deepcopy(calls))
+    evaluation = semantic["evaluations"][5]
+    evaluation.update(decision="infrastructure", judgments=[], deterministic_failures=[])
+    assert ids[5] in resume.partition(browser, semantic, corpus, ids)["replay"]
+    if mutation == "missing":
+        semantic["application_telemetry"].remove(calls[0])
+    elif mutation == "model":
+        calls[0]["model"] = "unexpected-model"
+    elif mutation == "fallback":
+        calls[0]["fallback"] = True
+    else:
+        calls[0]["request_id"] = "another-request"
+    with pytest.raises(ValueError, match="deterministic evidence mismatch"):
+        resume.partition(browser, semantic, corpus, ids)

@@ -366,5 +366,5 @@ def test_changed_approval_policy_invalidates_connection_review_identity(
 
 
 def test_approval_delivery_connection_release_versions():
-    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v36"
+    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v37"
     assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v35"
