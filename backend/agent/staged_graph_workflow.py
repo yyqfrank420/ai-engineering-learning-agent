@@ -120,6 +120,14 @@ def _safe_finding(exc: Exception, *, stage: str) -> dict[str, str]:
     safe_path = _safe_path(path, fallback=stage)
     code = exc.code if isinstance(exc, StagedGenerationError) else "invalid_contract"
     reason = " ".join(str(exc).split())[:280]
+    if isinstance(exc, StagedGenerationError):
+        diagnostic = _failure_diagnostic(exc, stage=stage, attempt=0, candidate=None)
+        if diagnostic.get("reason") in {
+            "component_parent_invalid",
+            "component_parent_forbidden",
+        } and re.fullmatch(r"components\.[0-9]+\.parent_index", diagnostic["path"]):
+            safe_path = diagnostic["path"]
+            reason = diagnostic["reason"]
     return {
         "code": code,
         "path": safe_path[:96],
@@ -155,11 +163,12 @@ def _failure_diagnostic(
             "responsibility_type", "responsibility_length", "group_label_type",
             "group_label_length", "component_type_enum", "group_kind_enum",
             "primary_flow_type", "duplicate_component", "root_not_primary",
+            "component_parent_invalid", "component_parent_forbidden",
         }:
             diagnostic_reason = exc.diagnostic_reason
         if isinstance(exc.diagnostic_path, str) and re.fullmatch(
             r"(?:edges(?:\.[0-9]+(?:\.(?:source_index|target_index|label|flow|sync))?)?"
-            r"|components(?:\.[0-9]+(?:\.(?:label|type|responsibility|group_label|group_kind|primary_flow_member))?)?"
+            r"|components(?:\.[0-9]+(?:\.(?:label|type|responsibility|group_label|group_kind|primary_flow_member|parent_index))?)?"
             r"|title|root_index|assumptions(?:\.[0-9]+)?"
             r"|capabilities(?:\.(?:external_effects|retrieval_or_reuse|learning_or_release))?)",
             exc.diagnostic_path,

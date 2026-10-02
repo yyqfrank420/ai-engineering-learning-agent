@@ -861,8 +861,8 @@ def test_judge_evidence_uses_typed_bounded_artifact_sources():
     _validate_evidence(raw, sources)
 
     assert sources["answer-1"] == 'The service says "ready" before promotion.'
-    assert sources["graph-node-1-1"] == '{"id": "candidate"}'
-    assert sources["event-1-1"] == '{"type": "done"}'
+    assert json.loads(sources["graph-node-1-1"]) == {"id": "candidate"}
+    assert json.loads(sources["event-1-1"]) == {"type": "done"}
     assert all(len(source) <= 500 for source in sources.values())
 
     long_token_sources = _artifact_sources({"answer": "x" * 1001})
@@ -916,9 +916,9 @@ def test_judge_evidence_exposes_each_turn_graph_and_render_identity():
         }
     )
 
-    assert sources["turn-1-graph-node-1-1"] == '{"id": "original-monitor"}'
+    assert json.loads(sources["turn-1-graph-node-1-1"]) == {"id": "original-monitor"}
     assert "original-monitor" in sources["turn-1-render-1"]
-    assert sources["turn-2-graph-node-1-1"] == '{"id": "replacement-monitor"}'
+    assert json.loads(sources["turn-2-graph-node-1-1"]) == {"id": "replacement-monitor"}
 
 
 def test_judge_evidence_keeps_retrieval_text_and_provenance_separate():
@@ -941,7 +941,7 @@ def test_judge_evidence_keeps_retrieval_text_and_provenance_separate():
         sources["retrieval-1-text-1"]
         == "Evaluation examples can seed synthesized data."
     )
-    assert '"page_number": 404' in sources["retrieval-1-metadata-1"]
+    assert json.loads(sources["retrieval-1-metadata-1"])["page_number"] == 404
     assert "text" not in sources["retrieval-1-metadata-1"]
 
     research_sources = _artifact_sources(
@@ -2846,7 +2846,7 @@ def test_judge_sources_omit_only_equal_top_level_graph(matching_turn):
 def test_judge_sources_preserve_legacy_or_distinct_final_graph(turns):
     graph = {"nodes": [{"id": "final"}], "edges": []}
     sources = _artifact_sources({"answer": "Answer.", "turns": turns, "graph": graph})
-    assert sources["graph-node-1-1"] == '{"id": "final"}'
+    assert json.loads(sources["graph-node-1-1"]) == {"id": "final"}
 
 
 def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
@@ -2892,11 +2892,16 @@ def test_judge_prompt_preserves_large_graph_once_below_existing_limit():
     assert len(prompt) < 80000
     duplicated = dict(sources)
     _add_graph_sources(duplicated, "graph", evidence["graph"])
+    _, deduplicated_prompt = _judge_prompt(corpus, corpus.by_id["applied-domain"], duplicated)
+    assert len(deduplicated_prompt) < 80000
     with pytest.raises(RuntimeError, match="bounded prompt size"):
-        _judge_prompt(corpus, corpus.by_id["applied-domain"], duplicated)
+        _judge_prompt(corpus, corpus.by_id["applied-domain"], {"answer-1": "x" * 80000})
     assert not any(key.startswith("graph-") for key in sources)
     assert "".join(value for key, value in sources.items() if key.startswith("turn-1-answer-")) == answer
-    assert json.loads("".join(value for key, value in sources.items() if key.startswith("turn-1-render-"))) == render
+    compact_render = json.loads("".join(value for key, value in sources.items() if key.startswith("turn-1-render-")))
+    assert compact_render["rendered_edge_record_indexes"] == list(range(1, 93))
+    assert compact_render["rendered_node_ids"] == render["rendered_node_ids"]
+    assert compact_render["rendered_graph_version"] == render["rendered_graph_version"]
     for index, edge in enumerate(evidence["turns"][0]["graph"]["edges"], start=1):
         prefix = f"turn-1-graph-edge-{index}-"
         assert json.loads("".join(value for key, value in sources.items() if key.startswith(prefix))) == edge
@@ -2917,7 +2922,7 @@ def test_judge_prompt_checks_payload_direction_and_component_ownership():
         provider="openai",
     )
 
-    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v18"
+    assert JUDGE_PROMPT_RELEASE == "semantic-rubric-judge-v19"
     assert corpus.approval.calibration.judge_release == JUDGE_PROMPT_RELEASE
     assert f"release {JUDGE_PROMPT_RELEASE}" in system
     assert "Verify graph read requests and payload returns against authoritative component ownership" in system
@@ -2975,9 +2980,11 @@ def test_retained_marketing_graph_keeps_conflicting_payload_and_verdict_evidence
     corpus = load_corpus()
     _, user = _judge_prompt(corpus, corpus.by_id["applied-domain"], sources)
     payload = json.loads(user)
-    assert list(payload) == ["case", "rubrics", "artifact_sources"]
-    supplied = payload["artifact_sources"]
-    assert list(supplied) == list(sources)
+    assert list(payload)[:3] == ["case", "rubrics", "artifact_sources"]
+    canonical = payload["artifact_sources"]
+    aliases = payload.get("artifact_source_aliases", {})
+    supplied = {key: canonical[aliases.get(key, key)] for key in sources}
+    assert supplied == sources
     source_keys = list(supplied)
     assert source_keys.index("turn-1-graph-edge-2-1") < source_keys.index(
         "turn-1-graph-edge-10-1"
@@ -3098,3 +3105,199 @@ async def test_optional_approved_corpus_flag_still_rejects_pending_before_judgin
     ])
     with pytest.raises(RuntimeError, match="pending human review"):
         await evaluate(args)
+
+
+def test_judge_prompt_aliases_preserve_exact_turn_sources_and_original_citations():
+    sources = {
+        "turn-1-graph-node-1-1": '{"id": "service", "description": "Owns output."}',
+        "turn-2-graph-node-1-1": '{"id": "service", "description": "Owns output."}',
+        "turn-3-graph-node-1-1": '{"id": "service", "description": "Changed output."}',
+        "turn-1-synthesis-1-book-1": "Exact current book excerpt.",
+        "turn-2-synthesis-2-book-1": "Exact current book excerpt.",
+    }
+    original = dict(sources)
+    corpus = load_corpus()
+    system, user = _judge_prompt(corpus, corpus.by_id["graph-expansion"], sources)
+    display = json.loads(user)
+    canonical = display["artifact_sources"]
+    aliases = display["artifact_source_aliases"]
+    assert aliases == {
+        "turn-2-graph-node-1-1": "turn-1-graph-node-1-1",
+        "turn-2-synthesis-2-book-1": "turn-1-synthesis-1-book-1",
+    }
+    assert all(
+        target in canonical and target not in aliases for target in aliases.values()
+    )
+    assert {key: canonical[aliases.get(key, key)] for key in sources} == original
+    assert sources == original
+    assert "its original turn and record identity still apply" in system
+    schema = _response_schema(tuple(sources), ("correctness",))
+    assert "turn-2-graph-node-1-1" in str(schema)
+    judgment = _RawJudgment.model_validate(
+        {
+            "dimensions": {
+                "correctness": {
+                    "grade": "pass",
+                    "rationale": "Supported.",
+                    "evidence": [{"source_id": "turn-2-graph-node-1-1"}],
+                }
+            }
+        }
+    )
+    _validate_evidence(judgment, sources)
+
+
+@pytest.mark.parametrize("unresolved", [False, "extra", "unknown"])
+def test_judge_render_references_preserve_exact_order_or_literal_unknown_identity(
+    unresolved,
+):
+    edges = [
+        {
+            "source": "a",
+            "target": "b",
+            "label": "Request",
+            "description": "Full request.",
+        },
+        {
+            "source": "b",
+            "target": "a",
+            "label": "Result",
+            "description": "Full payload.",
+        },
+    ]
+    identities = [
+        {key: edge[key] for key in ("source", "target", "label")}
+        for edge in reversed(edges)
+    ]
+    if unresolved == "extra":
+        identities[0]["unexpected"] = "Retain this evidence."
+    elif unresolved == "unknown":
+        identities[0]["label"] = "Unresolved captured edge."
+    render = {
+        "rendered_graph_version": "v2",
+        "rendered_node_ids": ["b", "a"],
+        "rendered_edge_identities": identities,
+    }
+    evidence = {"turns": [{"graph": {"edges": edges}, **render}]}
+    original = deepcopy(evidence)
+    sources = _artifact_sources(evidence)
+    displayed = json.loads(
+        "".join(
+            value for key, value in sources.items() if key.startswith("turn-1-render-")
+        )
+    )
+    if unresolved:
+        assert displayed == render
+    else:
+        assert displayed["rendered_edge_record_indexes"] == [2, 1]
+        reconstructed = [
+            {key: edges[index - 1][key] for key in ("source", "target", "label")}
+            for index in displayed["rendered_edge_record_indexes"]
+        ]
+        assert reconstructed == identities
+    assert evidence == original
+    for index, edge in enumerate(edges, start=1):
+        assert (
+            json.loads(
+                "".join(
+                    value
+                    for key, value in sources.items()
+                    if key.startswith(f"turn-1-graph-edge-{index}-")
+                )
+            )
+            == edge
+        )
+
+
+def test_judge_activity_projection_preserves_duration_failures_and_unexpected_steps():
+    steps = [
+        {"kind": "tool", "status": "active", "text": "Searching"},
+        {"kind": "update", "status": "complete", "text": "Finished"},
+        {"kind": "tool", "status": "retry", "text": "Retrying"},
+        {"kind": "tool", "status": "rejected", "text": "Rejected graph"},
+        {"kind": "tool", "status": "error", "text": "Provider failed"},
+        {"kind": "unknown", "status": "active", "text": "Unexpected evidence"},
+        {"kind": "tool", "status": "complete", "error": "Unexpected failure field"},
+    ]
+    event = {
+        "type": "done",
+        "activity": {"duration_ms": 123, "steps": steps},
+        "request_id": "r",
+    }
+    original = deepcopy(event)
+    sources = _artifact_sources({"events": [event]})
+    displayed = json.loads(
+        "".join(value for key, value in sources.items() if key.startswith("event-1-"))
+    )
+    assert displayed == {**event, "activity": {"duration_ms": 123, "steps": steps[2:]}}
+    assert event == original
+
+
+def test_judge_display_reconstructs_every_graph_record_and_exact_grounding_across_journey():
+    turns = [
+        {
+            "answer": f"Answer {index}",
+            "graph": {
+                "nodes": [
+                    {"id": "parent", "description": "Same parent."},
+                    {
+                        "id": f"child-{index}",
+                        "parent_service_id": "parent",
+                        "description": f"Work {index}",
+                    },
+                ],
+                "edges": [
+                    {
+                        "source": "parent",
+                        "target": f"child-{index}",
+                        "label": f"Payload {index}",
+                    }
+                ],
+            },
+        }
+        for index in range(1, 4)
+    ]
+    packets = [
+        {
+            "eval_turn": index,
+            "source": "synthesis_input",
+            "prompt_version": "test",
+            "book_context": "Exact shared book input.",
+            "research_context": f"Exact external input {index}.",
+        }
+        for index in range(1, 4)
+    ]
+    evidence = {"turns": turns, "answer_evidence": packets}
+    original = deepcopy(evidence)
+    sources = _artifact_sources(evidence)
+    corpus = load_corpus()
+    _, user = _judge_prompt(corpus, corpus.by_id["graph-expansion"], sources)
+    display = json.loads(user)
+    aliases = display["artifact_source_aliases"]
+    resolved = {
+        key: display["artifact_sources"][aliases.get(key, key)] for key in sources
+    }
+    assert resolved == sources
+    for index, turn in enumerate(turns, start=1):
+        for kind in ("node", "edge"):
+            for record_index, record in enumerate(turn["graph"][kind + "s"], start=1):
+                prefix = f"turn-{index}-graph-{kind}-{record_index}-"
+                assert (
+                    json.loads(
+                        "".join(
+                            value
+                            for key, value in resolved.items()
+                            if key.startswith(prefix)
+                        )
+                    )
+                    == record
+                )
+        for kind in ("book", "research"):
+            prefix = f"turn-{index}-synthesis-{index}-{kind}-"
+            assert (
+                "".join(
+                    value for key, value in resolved.items() if key.startswith(prefix)
+                )
+                == packets[index - 1][kind + "_context"]
+            )
+    assert evidence == original

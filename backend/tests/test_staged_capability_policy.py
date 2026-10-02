@@ -474,10 +474,10 @@ def test_prototype_action_policy_preserves_required_controls_without_extra_stage
 def test_production_and_legacy_action_policy_retain_exact_controls():
     criterion = "Put policy, exact-action approval, audit, and recovery controls on external mutations."
 
-    assert RUBRIC_CRITERIA["safe_action_boundary"][1] == criterion
+    assert RUBRIC_CRITERIA["safe_action_boundary"][1].startswith(criterion)
     assert (
         staged_review_requirements("connections", "production")["safe_action_boundary"]
-        == criterion
+        == RUBRIC_CRITERIA["safe_action_boundary"][1]
     )
 
 

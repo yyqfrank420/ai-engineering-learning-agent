@@ -57,6 +57,30 @@ def test_failure_diagnostic_rejects_unsafe_optional_details():
     assert "private" not in json.dumps(diagnostic)
 
 
+@pytest.mark.parametrize(
+    "reason,path",
+    [
+        ("component_parent_invalid", "components.private_output.parent_index"),
+        ("private output", "components.0.parent_index"),
+        ("component_parent_forbidden", "components.0.private_output"),
+    ],
+)
+def test_parent_retry_finding_rejects_unknown_reason_and_unsafe_path(reason, path):
+    error = generation.StagedGenerationError(
+        "component_wire_invalid",
+        diagnostic_reason=reason,
+        diagnostic_path=path,
+    )
+    finding = workflow._safe_finding(error, stage="components")
+    assert finding == {
+        "code": "component_wire_invalid",
+        "path": "components",
+        "rule": "contract_validation",
+        "reason": "component_wire_invalid",
+    }
+    assert "private" not in json.dumps(finding)
+
+
 def test_captured_gate_reason_reaches_correction_without_losing_route_context():
     capture = json.loads(
         (

@@ -660,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v33"
+        == "staged_connection_gate_v34"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -2624,8 +2624,8 @@ def test_output_payload_clarification_changes_only_connection_prompt_release(
     assert (forwarding in authored) is (stage == "connections")
     assert (forwarding in reviewed) is (stage == "connections")
     if stage == "connections":
-        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v34"
-        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v33"
+        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v35"
+        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v34"
     else:
-        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v42"
+        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v43"
         assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v26"

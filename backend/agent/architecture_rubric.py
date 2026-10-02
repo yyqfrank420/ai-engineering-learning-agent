@@ -32,6 +32,18 @@ _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
     "edits and repairs."
 )
 
+_ACTION_APPROVAL_DELIVERY_REQUIREMENT = (
+    "For each declared policy or approval gate, trace its final allow, reject, or "
+    "halt decision to the owner that dispatches the action or to the executor "
+    "before the effect. Every intermediary must forward that decision with its "
+    "action identity and scope. A preliminary validation verdict or an invocation "
+    "label saying 'approved' does not establish delivery of the final approval. "
+    "Rejected or halted actions must reach a bounded observable outcome without "
+    "execution. Direct delivery, explicit forwarding, authoritative persisted "
+    "decision reads, or declared same-owner enforcement can satisfy this path; "
+    "do not require duplicate gates or services."
+)
+
 RUBRIC_CRITERIA = {
     "domain_specificity": (
         "components",
@@ -47,7 +59,8 @@ RUBRIC_CRITERIA = {
     ),
     "safe_action_boundary": (
         "connections",
-        "Put policy, exact-action approval, audit, and recovery controls on external mutations.",
+        "Put policy, exact-action approval, audit, and recovery controls on external mutations. "
+        + _ACTION_APPROVAL_DELIVERY_REQUIREMENT,
     ),
     "edge_semantics": (
         "connections",
@@ -487,7 +500,8 @@ def staged_review_requirements(
             "alone do not require distinct approval, audit, or rollback mechanisms. "
             "Read-only tool calls and internal memory operations do not require a new "
             "approval stage unless explicitly requested. Identify the concrete mutation "
-            "or requested control when rejecting a candidate."
+            "or requested control when rejecting a candidate. "
+            + _ACTION_APPROVAL_DELIVERY_REQUIREMENT
         )
     return requirements
 

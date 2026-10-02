@@ -41,7 +41,7 @@ from agent.tools.service_expansion_tool import (
     service_expansion_request,
 )
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v34"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v35"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
 _ROUTER_PROMPT_VERSION = "intent_router_v4"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -200,6 +200,11 @@ Preserved means the prior graph remains unchanged; withheld means no new graph w
 Never describe a failed or unreviewed candidate as approved or applied. Follow any required
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
+When the trusted turn result identifies an add-only expansion, retained parent responsibilities
+and public or direct contracts still apply. Describe new internal paths as refinements or
+supplements at their own scope. Do not claim they replace retained contracts, disable a direct
+path, or exclusively take over the parent's responsibility. An explicitly authorized replacement
+edit may replace a contract when the resulting graph supports that change.
 For a newly approved overview, the server adds the overview disclosure to the first block.
 Do not restate or paraphrase that status in a block title or content. For a requested
 system design, explain its workflow and directed exchanges. For a broad educational
@@ -1124,11 +1129,27 @@ def _format_trusted_turn_result(state: AgentState) -> str:
         else ""
     )
 
+    add_only_result = (
+        "Change scope: add-only expansion.\n"
+        "Existing components, parent responsibilities, and directed contracts were retained. "
+        "Added internal paths refine or supplement those contracts; they do not remove or "
+        "replace a retained public or direct path.\n"
+        if publication in {"approved", "user_accepted"}
+        and operation_kind == "edit"
+        and operation.get("status") == "applied"
+        and (
+            state.get("graph_action") == "extend"
+            or bool(state.get("service_expansion"))
+        )
+        else ""
+    )
+
     return (
         "\n<trusted_turn_result>\n"
         f"Graph operation: {operation_kind}.\n"
         f"{overview_detail}"
         f"{result_by_publication[publication]}\n"
+        f"{add_only_result}"
         "</trusted_turn_result>\n\n"
     )
 

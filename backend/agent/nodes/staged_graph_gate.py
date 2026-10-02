@@ -28,7 +28,7 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v33"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v34"
 _GATE_EFFORT = "medium"
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
@@ -444,6 +444,13 @@ def _prompt(
                 "route, without concrete behavior or control harm. "
                 "A paired reply or incidental reachability cannot invoke a separate action. "
                 "For each required action, check its actual trigger or change input. "
+                "For required approval and execution-output delivery, reconstruct the "
+                "complete directed route from the decision or output producer to its "
+                "declared consumer before marking the rule satisfied. Cite the actual "
+                "record indexes for every cross-component hop, checking each direction "
+                "and payload. Pairwise compatible exchanges do not establish that "
+                "complete route. Do not invent a hop from a component responsibility "
+                "or reverse an existing edge to complete the route. "
                 "A proposal service's declared metric pull with reply is a valid normal "
                 "input; do not demand a redundant push or timer. "
                 + production_effect_input_instructions

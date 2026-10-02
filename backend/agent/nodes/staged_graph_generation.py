@@ -41,8 +41,8 @@ from agent.stream_utils import stream_structured_llm
 from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
-_COMPONENT_PROMPT_VERSION = "staged_components_v42"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v34"
+_COMPONENT_PROMPT_VERSION = "staged_components_v43"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v35"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -1092,7 +1092,10 @@ def _attempt_prompt(
                 "exchange and add its complete replacement. "
                 "A removal removes the whole exchange. Each exchange counts as one edge "
                 "plus one when response_label is nonnull; the final expanded graph must "
-                "fit the edge_limit."
+                "fit the edge_limit. Compare expanded forward and reply contracts against "
+                "unchanged, updated, and added contracts in the complete assembled candidate. "
+                "Never copy a retained contract into additions. Use authorized update slots "
+                "to change an existing contract."
             )
     recovery_rule = (
         " Recovery mode applies only to this new graph's second generation attempt. "
@@ -1129,6 +1132,12 @@ def _attempt_prompt(
             "satisfy a checkbox. Preserve unrelated content. "
             "Change only fields authorized by the write set and supplied schema; capability "
             "reassessment does not authorize changes to frozen responsibilities or metadata. "
+            "Type 101 is an independently deployable application service. Type 109 is an "
+            "internal Component owned by an application service. Every type 109 record "
+            "requires parent_index pointing to a type 101 record in the complete components "
+            "array, using its zero-based index. Other types have no parent ownership: "
+            "omit parent_index when optional, or use null when the update schema requires it. "
+            "Do not infer ownership from groups or labels, or remap an invalid parent. "
             f"Use these integer codes: {codebook}."
         )
         if base is not None or edit_delta is not None or correction_delta is not None:

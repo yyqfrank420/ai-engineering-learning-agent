@@ -416,14 +416,16 @@ def test_component_removal_reindexes_owned_internals(removed_index, recovery):
     assert parsed["components"][1]["label"] == "Tutoring service"
 
 
-@pytest.mark.parametrize("parent", [None, True, -1, 1, 3, 9])
+@pytest.mark.parametrize("parent", [None, True, "2", 2.0, -1, 1, 3, 9])
 def test_component_wire_requires_a_valid_application_service_parent(parent):
     wire = _owned_component_wire()
     wire["components"][3]["parent_index"] = parent
     with pytest.raises(
         generation.StagedGenerationError, match="component_wire_invalid"
-    ):
+    ) as caught:
         generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_invalid"
+    assert caught.value.diagnostic_path == "components.3.parent_index"
 
 
 def test_component_wire_forbids_parent_on_application_service():
@@ -431,8 +433,101 @@ def test_component_wire_forbids_parent_on_application_service():
     wire["components"][2]["parent_index"] = 0
     with pytest.raises(
         generation.StagedGenerationError, match="component_wire_invalid"
-    ):
+    ) as caught:
         generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_forbidden"
+    assert caught.value.diagnostic_path == "components.2.parent_index"
+
+
+@pytest.mark.parametrize("index,parent", [(2, None), (3, 2)])
+def test_component_correction_schema_requires_parent_field_in_nonnull_updates(
+    index, parent
+):
+    original = _owned_component_wire()
+    write_set = generation.create_write_set(component_limit=4, edge_limit=4)
+    delta = generation._semantic_correction_delta(
+        stage="components",
+        maturity="prototype",
+        write_set=write_set,
+        attempt=1,
+        rejected_candidate=original,
+        findings=[
+            {
+                "code": "mece_scope",
+                "path": "components",
+                "rule": "semantic_gate",
+                "record_indexes": [index],
+            }
+        ],
+        schema=generation.component_generation_schema(write_set),
+    )
+    slot = f"slot_{index}"
+    update_schema = delta.schema["properties"]["updates"]["properties"][slot]["anyOf"][
+        0
+    ]
+    assert "parent_index" in update_schema["required"]
+    update = {**original["components"][index], "parent_index": parent}
+    response = {**delta.extract(original), "updates": {slot: update}}
+    assembled = delta.assemble(json.dumps(response))
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=4)
+    assert parsed["components"][index]["parent_index"] == parent
+    del update["parent_index"]
+    with pytest.raises(
+        generation.StagedGenerationError, match="staged_generation_schema_invalid"
+    ):
+        delta.assemble(json.dumps(response))
+
+
+def test_component_wire_requires_explicit_parent_without_inference():
+    wire = _owned_component_wire()
+    del wire["components"][3]["parent_index"]
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    assert caught.value.diagnostic_reason == "component_parent_invalid"
+    assert caught.value.diagnostic_path == "components.3.parent_index"
+
+
+@pytest.mark.parametrize("forbidden", [False, True])
+def test_component_parent_failure_reaches_retry_prompt(forbidden):
+    from agent import staged_graph_workflow as workflow
+
+    wire = _owned_component_wire()
+    index = 2 if forbidden else 3
+    wire["components"][index]["parent_index"] = 0
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_component_wire(json.dumps(wire), component_limit=4)
+    reason = "component_parent_forbidden" if forbidden else "component_parent_invalid"
+    path = f"components.{index}.parent_index"
+    diagnostic = workflow._failure_diagnostic(
+        caught.value,
+        stage="components",
+        attempt=1,
+        candidate=None,
+    )
+    assert diagnostic["reason"] == reason
+    assert diagnostic["path"] == path
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    finding = workflow._safe_finding(caught.value, stage="components")
+    assert finding["reason"] == reason
+    assert finding["path"] == path
+    prompt, _ = generation._attempt_prompt(
+        stage="components",
+        request="Expand tutoring internals.",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        attempt=1,
+        prior_prompt_fingerprint="b" * 64,
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[finding],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context=_architecture_context(),
+    )
+    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert payload["findings"]["structural"][0]["reason"] == reason
+    assert payload["findings"]["structural"][0]["path"] == path
 
 
 def test_component_correction_can_assign_an_added_service_owner():
@@ -777,7 +872,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v34"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v35"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -998,7 +1093,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v42"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v43"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -2841,6 +2936,9 @@ async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
     async def fake_stream(**kwargs):
         prompt = kwargs["messages"][0]["content"]
         assert '"original_edge_to_exchange_slot":{"0":"slot_0","1":"slot_0","2":"slot_1"}' in prompt
+        assert "Compare expanded forward and reply contracts against unchanged, updated, and added contracts in the complete assembled candidate" in prompt
+        assert "Never copy a retained contract into additions" in prompt
+        assert "Use authorized update slots to change an existing contract" in prompt
         return _response({"updates": {"slot_0": update}, "additions": [], "removals": []})
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
@@ -3840,6 +3938,13 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
     )
     assert "concrete lifecycle responsibilities, application categories, or relevant human decisions" in instructions
     assert "Distinguish conceptual techniques from runtime services" in instructions
+    assert "Type 101 is an independently deployable application service" in instructions
+    assert "Type 109 is an internal Component owned by an application service" in instructions
+    assert "requires parent_index pointing to a type 101 record" in instructions
+    assert "complete components array, using its zero-based index" in instructions
+    assert "Other types have no parent ownership" in instructions
+    assert "omit parent_index when optional, or use null when the update schema requires it" in instructions
+    assert "Do not infer ownership from groups or labels, or remap an invalid parent" in instructions
     complement = "choose a complementary responsibility for each addition that is not already owned"
     assert (complement in instructions) == has_base
     if has_base:
@@ -4131,7 +4236,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
     )
     assert "Do not re-add retained components" in prompt
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v42"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v43"
     )
 
     # A fresh bounded response must fix the collision; invalid rows are never dropped.
