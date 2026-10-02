@@ -235,13 +235,19 @@ def validate_eval_code(source: str) -> None:
                 f"evaluation definition changed: {path}")
     before = command("git", "show", f"{source}:backend/eval/live_runner.py").decode()
     after = (ROOT / "backend/eval/live_runner.py").read_text()
-    parser_line = '    parser.add_argument("--judge-call-limit", type=int, help="Restrict the suite judge-call budget")\n'
+    parser_line = (
+        '    parser.add_argument(\n'
+        '        "--judge-call-limit", type=int, help="Restrict the suite judge-call budget"\n'
+        '    )\n'
+    )
     helper = after[after.index("def _restricted_judge_limit("):after.index("async def evaluate(")]
     # Authenticate the one allowed runner addition, not arbitrary code in that span.
-    require(sha256(helper.encode()) == "821fd0902c11944e5cc1a215d6e0abfece39df154d21771e425dc525ff0492db",
+    require(sha256(helper.encode()) == "ab3f5e18e5154db7369f077694b07aef1f73fc73ae24a27abc151e01c1d16284",
             "restrictive budget helper changed")
     normalized = after.replace(parser_line, "").replace(helper, "").replace(
-        'judge_calls=_restricted_judge_limit(args, limits["judge_calls"] if is_pr_budget else 40),',
+        'judge_calls=_restricted_judge_limit(\n'
+        '            args, limits["judge_calls"] if is_pr_budget else 40\n'
+        '        ),',
         'judge_calls=limits["judge_calls"] if is_pr_budget else 40,',
     )
     require(before in (after, normalized), "live runner changed beyond restrictive budget support")

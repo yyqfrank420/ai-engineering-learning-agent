@@ -650,3 +650,78 @@ def test_partition_recomputes_service_provider_evidence_from_semantic_telemetry(
         calls[0]["request_id"] = "another-request"
     with pytest.raises(ValueError, match="deterministic evidence mismatch"):
         resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("mutation,expected_error", [
+    (None, None),
+    ("legacy_source", None),
+    ("raised_helper_limit", "restrictive budget helper changed"),
+    ("unrelated_runner", "live runner changed beyond restrictive budget support"),
+    ("live_policy", "live evaluation policy changed"),
+    ("eval_definition", "evaluation definition changed"),
+])
+def test_eval_code_gate_authenticates_actual_runner_and_manifest(monkeypatch, mutation, expected_error):
+    from pathlib import Path
+
+    runner_path = resume.ROOT / "backend/eval/live_runner.py"
+    manifest_path = resume.ROOT / "ci/quality.json"
+    runner = runner_path.read_text()
+    manifest = manifest_path.read_text()
+    source_manifest = json.loads(manifest)
+    current_runner = runner
+    source_runner = runner
+    if mutation == "legacy_source":
+        helper = runner[runner.index("def _restricted_judge_limit("):runner.index("async def evaluate(")]
+        parser_addition = (
+            '    parser.add_argument(\n'
+            '        "--judge-call-limit", type=int, help="Restrict the suite judge-call budget"\n'
+            '    )\n'
+        )
+        budget_call = (
+            'judge_calls=_restricted_judge_limit(\n'
+            '            args, limits["judge_calls"] if is_pr_budget else 40\n'
+            '        ),'
+        )
+        assert runner.count(parser_addition) == runner.count(budget_call) == 1
+        source_runner = runner.replace(parser_addition, "").replace(helper, "").replace(
+            budget_call, 'judge_calls=limits["judge_calls"] if is_pr_budget else 40,'
+        )
+        assert "_restricted_judge_limit" not in source_runner
+        assert "--judge-call-limit" not in source_runner
+        compile(source_runner, "legacy-live-runner.py", "exec")
+    if mutation == "raised_helper_limit":
+        current_runner = runner.replace("1 <= limit <= default", "1 <= limit <= default + 1")
+        assert current_runner != runner
+    elif mutation == "unrelated_runner":
+        current_runner = runner + "\n# Unrelated evaluation change.\n"
+    elif mutation == "live_policy":
+        source_manifest["live"]["budgets"]["judge_calls"] -= 1
+    original_read = Path.read_text
+    original_command = resume.command
+
+    def read_text(path, *args, **kwargs):
+        if path == runner_path:
+            return current_runner
+        return original_read(path, *args, **kwargs)
+
+    def source_command(*args):
+        if args == ("git", "show", "source:ci/quality.json"):
+            return json.dumps(source_manifest).encode()
+        if args == ("git", "show", "source:backend/eval/live_runner.py"):
+            return source_runner.encode()
+        if mutation == "eval_definition" and args == (
+            "git", "rev-parse", "source:backend/eval/semantic_gate.py"
+        ):
+            return b"changed-source-definition"
+        return original_command(*(
+            "HEAD" + arg[len("source"):] if arg == "source" or arg.startswith("source:") else arg
+            for arg in args
+        ))
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(resume, "command", source_command)
+    if expected_error is None:
+        resume.validate_eval_code("source")
+    else:
+        with pytest.raises(ValueError, match=expected_error):
+            resume.validate_eval_code("source")
