@@ -113,7 +113,7 @@ const mdComponents = {
     );
   },
   pre: ({ children }: MarkdownChildrenProps) => (
-    <pre style={{
+    <pre className="chat-message__code" style={{
       background: '#0d1117',
       border: '1px solid #21262d',
       borderRadius: '6px',
@@ -141,7 +141,7 @@ const mdComponents = {
   ),
   // Tables (GFM)
   table: ({ children }: MarkdownChildrenProps) => (
-    <div style={{ overflowX: 'auto', margin: '0.5rem 0' }}>
+    <div className="chat-message__table" style={{ overflowX: 'auto', margin: '0.5rem 0' }}>
       <table style={{ borderCollapse: 'collapse', fontSize: '0.82rem', width: '100%' }}>{children}</table>
     </div>
   ),
@@ -196,7 +196,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
   return (
     <>
       {segments.map((seg, i) => {
-        if (seg.type === 'block-math') return <BlockMath key={i} math={seg.value} />;
+        if (seg.type === 'block-math') return <div className="chat-message__math" key={i}><BlockMath math={seg.value} /></div>;
         if (seg.type === 'inline-math') return <InlineMath key={i} math={seg.value} />;
         return (
           <ReactMarkdown key={i} remarkPlugins={isAssistant ? [remarkGfm, remarkBookCitationLabels] : [remarkGfm]} components={mdComponents}>
@@ -280,7 +280,7 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
 
   return (
     <div className="message-list-shell">
-    <div ref={listRef} className="message-list" role="region" aria-label="Conversation" tabIndex={0}
+    <div ref={listRef} className="message-list chat-messages" role="region" aria-label="Conversation" tabIndex={0}
       onPointerDown={() => { pointerDown.current = true; }}
       onScroll={() => {
         const list = listRef.current;
@@ -313,7 +313,7 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
             justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
           }}
         >
-          <div className={msg.role === 'user' ? 'message-user' : 'message-assistant'}>
+          <div className={`chat-message__body ${msg.role === 'user' ? 'message-user' : 'message-assistant'}`}>
             {msg.kind === 'explanation' && msg.title && (
               <h2 className="message-heading">{msg.title}</h2>
             )}

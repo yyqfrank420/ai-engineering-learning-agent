@@ -134,13 +134,6 @@ body {
   margin-inline: auto;
 }
 
-.split-pane__conversation [data-testid^="message-"] > div {
-  min-width: 0;
-  max-width: min(90%, 72ch) !important;
-  overflow-wrap: anywhere;
-  color: #c9d1d9 !important;
-}
-
 .split-pane__conversation [data-testid^="message-"] a {
   text-decoration: underline !important;
   text-underline-offset: 3px;
@@ -217,102 +210,18 @@ body {
   overflow-wrap: anywhere;
 }
 
-@media (pointer: coarse) {
-  .thread-sidebar button[aria-label^="Delete chat"] {
-    opacity: 1 !important;
-    width: 32px !important;
-    height: 32px !important;
-  }
-}
-
 /* ── Focus ring (keyboard nav) ────────────────────────────────────────────── */
 :focus-visible {
   outline: 2px solid rgba(167, 139, 250, 0.4);
   outline-offset: 2px;
 }
 
-/* ── Responsive application shell ────────────────────────────────────────── */
-@media (max-width: 1023px) {
-  .title-bar {
-    padding-inline: 0.6rem !important;
-    gap: 0.5rem;
-  }
-
-  .title-bar__identity,
-  .title-bar__actions {
-    gap: 0.5rem !important;
-  }
-
-  .title-bar__book,
-  .title-bar__thread,
-  .title-bar__email {
-    display: none !important;
-  }
-
-  .title-bar__provider {
-    max-width: 9rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .thread-sidebar {
-    position: fixed !important;
-    top: 48px;
-    bottom: 0;
-    left: 0;
-    z-index: 30;
-    max-width: min(82vw, 300px);
-    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.5) !important;
-    transition: width 0.22s ease, transform 0.22s ease !important;
-  }
-
-  .thread-sidebar--open {
-    width: min(82vw, 300px) !important;
-    transform: translateX(0);
-  }
-
-  .thread-sidebar--closed {
-    width: 0 !important;
-    transform: translateX(-100%);
-    pointer-events: none;
-  }
-
-  .thread-sidebar__inner {
-    width: min(82vw, 300px) !important;
-  }
-}
-
-@media (max-width: 520px) {
-  .split-pane__conversation textarea,
-  input[autocomplete="email"] {
+/* Touch input text stays readable without triggering focus zoom on iOS. */
+@media (pointer: coarse), (max-width: 1279px) {
+  input[autocomplete="email"],
+  input[autocomplete="one-time-code"] {
     font-size: 1rem !important;
-  }
-
-  .split-pane__conversation textarea,
-  .split-pane__conversation button[aria-label="Message options"],
-  .split-pane__conversation button[aria-label="Send message"],
-  .split-pane__conversation button[aria-label="Prepare backend"],
-  .split-pane__conversation button[aria-label="Stop generation"] {
-    min-height: 44px !important;
-  }
-
-  .title-bar__product {
-    font-size: 0.82rem !important;
-  }
-
-  .title-bar__actions {
-    gap: 0.35rem !important;
-  }
-
-  .title-bar__status span,
-  .title-bar__provider,
-  .title-bar__dashboard {
-    display: none !important;
-  }
-
-  .title-bar__logout {
-    padding-inline: 0.55rem !important;
+    min-height: 44px;
   }
 }
 

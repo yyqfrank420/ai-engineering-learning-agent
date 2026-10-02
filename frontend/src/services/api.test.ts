@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthSession, GraphData } from '../types';
 import {
   captureAnalyticsEvent,
+  checkDiagramIntent,
   createThread,
   deleteThread,
   fetchDashboardFailures,
@@ -53,6 +54,59 @@ describe('API service boundary', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  function mockIntentTransport(responseDelay?: number) {
+    vi.useFakeTimers();
+    const deadline = vi.spyOn(AbortSignal, 'timeout').mockImplementation(timeout => {
+      const controller = new AbortController();
+      setTimeout(() => controller.abort(new DOMException('signal timed out', 'TimeoutError')), timeout);
+      return controller.signal;
+    });
+    fetchMock.mockImplementation((_url, init) => new Promise<Response>((resolve, reject) => {
+      const signal = init.signal as AbortSignal;
+      signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      if (responseDelay !== undefined) setTimeout(() => resolve(response({ action: 'new_chat' })), responseDelay);
+    }));
+    return deadline;
+  }
+
+  it('accepts a canonical intent response after the former five-second deadline', async () => {
+    const deadline = mockIntentTransport(8470);
+    const pending = checkDiagramIntent(session, 'thread-1', 'Explain RAG');
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(3469);
+    await expect(pending).resolves.toBe('new_chat');
+    expect(deadline).toHaveBeenCalledExactlyOnceWith(15_000);
+    expect(fetchMock).toHaveBeenCalledExactlyOnceWith('/api/threads/thread-1/diagram-intent', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ message: 'Explain RAG' }),
+    }));
+  });
+
+  it('aborts intent checking at fifteen seconds with a draft-preserving error and no retry', async () => {
+    const deadline = mockIntentTransport();
+    const pending = checkDiagramIntent(session, 'thread-1', 'Explain RAG');
+    const rejected = expect(pending).rejects.toThrow('Checking your request timed out. Your draft is saved. Please try again.');
+    await vi.advanceTimersByTimeAsync(14_999);
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await rejected;
+    expect(fetchMock.mock.calls[0][1].signal.aborted).toBe(true);
+    expect(deadline).toHaveBeenCalledExactlyOnceWith(15_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    new DOMException('cancelled', 'AbortError'),
+    new TypeError('Failed to fetch'),
+    Object.assign(new Error('unrelated timeout'), { name: 'TimeoutError' }),
+  ])('preserves non-deadline intent errors', async error => {
+    fetchMock.mockRejectedValueOnce(error);
+    await expect(checkDiagramIntent(session, 'thread-1', 'Explain RAG')).rejects.toBe(error);
+    expect(fetchMock).toHaveBeenCalledOnce();
   });
 
   it('sends authenticated thread operations and returns their typed payloads', async () => {

@@ -60,6 +60,7 @@ def test_application_cost_is_attributed_by_attempt_thread_and_operation():
         "cache_read_input_tokens": 0,
         "output_tokens": 160,
         "queue_wait_ms": 35,
+        "web_search_requests": 0,
         "estimated_usd": 0.0098,
         "known_subtotal_usd": 0.0098,
     }
@@ -92,6 +93,7 @@ def test_application_cost_prices_anthropic_cache_writes_and_reads():
         "cache_read_input_tokens": 1_000,
         "output_tokens": 100,
         "queue_wait_ms": 0,
+        "web_search_requests": 0,
         "estimated_usd": 0.01425,
         "known_subtotal_usd": 0.01425,
     }
@@ -736,3 +738,148 @@ def test_sonnet_55_prices_input_output_and_default_ephemeral_cache(model):
     assert accounting["status"] == "pass"
     assert accounting["total"]["estimated_usd"] == 14.7
     assert accounting["total"]["known_subtotal_usd"] == 14.7
+
+
+@pytest.mark.parametrize("with_attempts", [False, True])
+def test_official_web_search_pricing_counts_retries_without_aggregate_double_count(
+    with_attempts,
+):
+    attempt = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-5-5",
+        "input_tokens": 1000,
+        "output_tokens": 100,
+        "web_search_requests": 1,
+    }
+    call = {"thread_id": "thread", "operation": "research", **attempt}
+    if with_attempts:
+        call["attempts"] = [attempt, {**attempt, "web_search_requests": 2}]
+        call["web_search_requests"] = 3
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}], [call]
+    )
+    assert accounting["status"] == "pass"
+    expected_count = 3 if with_attempts else 1
+    expected_cost = 0.036 if with_attempts else 0.013
+    for usage in [
+        accounting["total"],
+        accounting["cases"][0],
+        accounting["cases"][0]["operations"][0],
+    ]:
+        assert usage["web_search_requests"] == expected_count
+        assert usage["estimated_usd"] == pytest.approx(expected_cost)
+    assert accounting["price_release"] == "2026-10-01"
+
+
+@pytest.mark.parametrize("count", [-1, True, 1.5, "1", None, {}])
+def test_official_web_search_rejects_invalid_counts(count):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "model": "claude-sonnet-5-5",
+                "provider": "anthropic",
+                "web_search_requests": count,
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["total"]["estimated_usd"] is None
+    assert "invalid web-search usage" in accounting["reason"]
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("openai", "gpt-5.4"),
+        ("moonshot", "kimi-k3"),
+        ("openai", "claude-sonnet-5-5"),
+        ("anthropic", "unknown"),
+    ],
+)
+def test_official_web_search_rejects_unsupported_pricing(provider, model):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "model": model,
+                "provider": provider,
+                "web_search_requests": 1,
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["usage_complete"] is False
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("aggregate", [-1, "2", True, None])
+def test_web_search_invalid_aggregate_cannot_certify_valid_attempt_cost(aggregate):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search_requests": aggregate,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert accounting["total"]["known_subtotal_usd"] == 0.01
+    assert accounting["total"]["estimated_usd"] is None
+
+
+def test_sanitized_incomplete_aggregate_keeps_known_search_subtotal():
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "usage_complete": False,
+                "web_search_requests": 0,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                        "usage_complete": True,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "incomplete"
+    assert accounting["total"]["known_subtotal_usd"] == 0.01
+    assert accounting["total"]["estimated_usd"] is None
+
+
+@pytest.mark.parametrize("aggregate", [0, 2])
+def test_web_search_aggregate_must_match_recorded_attempts(aggregate):
+    accounting = account_application_cost(
+        [{"id": "case", "thread_id": "thread"}],
+        [
+            {
+                "thread_id": "thread",
+                "web_search_requests": aggregate,
+                "attempts": [
+                    {
+                        "model": "claude-sonnet-5-5",
+                        "provider": "anthropic",
+                        "web_search_requests": 1,
+                    }
+                ],
+            }
+        ],
+    )
+    assert accounting["status"] == "infrastructure"
+    assert "inconsistent web-search usage" in accounting["reason"]
+    assert accounting["total"]["estimated_usd"] is None

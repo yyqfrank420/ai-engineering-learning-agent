@@ -1596,7 +1596,7 @@ def reviewed_calibration_files(tmp_path, monkeypatch):
     monkeypatch.setenv("SOURCE_COMMIT_SHA", "a" * 40)
     monkeypatch.setenv("CORPUS_SHA", behavior_sha)
     monkeypatch.setenv("JUDGE_PROVIDER", "anthropic")
-    monkeypatch.setenv("JUDGE_MODEL", "claude-sonnet-5")
+    monkeypatch.setenv("JUDGE_MODEL", "claude-sonnet-5-5")
     monkeypatch.setattr(
         "eval.quality_corpus.load_corpus",
         lambda **kwargs: load_corpus(path=corpus_path, **kwargs),

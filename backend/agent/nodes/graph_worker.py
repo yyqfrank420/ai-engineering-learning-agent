@@ -42,7 +42,7 @@ from graph.runtime import select_canonical_graph
 logger = logging.getLogger(__name__)
 _monotonic = time.monotonic
 
-_APPLIED_GRAPH_PATCH_PROMPT_VERSION = "applied_architecture_patch_v38"
+_APPLIED_GRAPH_PATCH_PROMPT_VERSION = "applied_architecture_patch_v39"
 _APPLIED_GRAPH_TOPOLOGY_PROMPT_VERSION = "applied_topology_v23"
 _APPLIED_GRAPH_TOPOLOGY_CORRECTION_PROMPT_VERSION = "applied_topology_correction_v2"
 _APPLIED_GRAPH_TOPOLOGY_EFFORT = "high"
@@ -2374,7 +2374,11 @@ def _validate_added_record_scope(
     allowed_new_node_ids = permissions["allowed_new_node_ids"]
     if allowed_new_node_ids is not None and added_node_ids != set(allowed_new_node_ids):
         raise ValueError("added node identities do not match the user edit scope")
-    if not permissions.get("minimum_new_node_count", permissions["allowed_new_node_count"]) <= len(added_node_ids) <= permissions["allowed_new_node_count"]:
+    if (
+        not permissions.get("minimum_new_node_count", permissions["allowed_new_node_count"])
+        <= len(added_node_ids)
+        <= permissions["allowed_new_node_count"]
+    ):
         raise ValueError("graph patch added the wrong number of nodes")
     added_edges = _patch_list(patch, "add_edges")
     edge_limit = permissions["allowed_new_edge_count"]
@@ -2429,12 +2433,19 @@ def _validate_added_record_scope(
             )
         )
     if permissions.get("connection_addition_mode") == "extension":
-        if any(not set(endpoints).intersection(added_node_ids) for endpoints in actual_added_edge_endpoints):
+        if any(
+            not set(endpoints).intersection(added_node_ids)
+            for endpoints in actual_added_edge_endpoints
+        ):
             raise ValueError("extension connections must involve a new node")
         reached = set(anchor_node_ids)
         while True:
-            following = reached | {node for endpoints in actual_added_edge_endpoints
-                                   if reached.intersection(endpoints) for node in endpoints}
+            following = reached | {
+                node
+                for endpoints in actual_added_edge_endpoints
+                if reached.intersection(endpoints)
+                for node in endpoints
+            }
             if following == reached:
                 break
             reached = following
@@ -3308,34 +3319,84 @@ def _same_graph_payload(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def staged_edit_scope(
-    query: str, graph: GraphData, *, resolved_complexity: str, add_only: bool = False,
+    query: str,
+    graph: GraphData,
+    *,
+    resolved_complexity: str,
+    add_only: bool = False,
 ) -> tuple[dict[str, Any] | None, dict[str, Any]]:
     """Compile precise edits or an explicitly chosen bounded additive layer."""
     if not add_only:
         return _user_edit_scope(query, graph, resolved_complexity=resolved_complexity)
+    try:
+        contract, permissions = _user_edit_scope(
+            query, graph, resolved_complexity=resolved_complexity
+        )
+    except ValueError:
+        # Failed exact selectors cannot authorize broader additions.
+        precision = re.search(
+            r"\b(?:nodes?|edges?|attached|linked)\b|"
+            r"\b(?:exactly|only|single|no|zero|one|two|three|four|five|six|seven|eight|nine|ten|\d+)"
+            r"\s+(?:[\w-]+\s+){0,3}(?:components?|nodes?|services?|responsibilities|edges?|connections?)\b",
+            query,
+            re.IGNORECASE,
+        )
+        named_records = _mentioned_record_ids(
+            _reference_text(query), [*graph.get("nodes", []), *graph.get("groups", [])]
+        )
+        if precision or named_records:
+            raise
+    else:
+        # Extend may keep exact addition bounds, but cannot unlock saved records.
+        if (
+            permissions["editable_node_ids"]
+            or permissions["removable_node_ids"]
+            or permissions["editable_edges"]
+            or permissions["removable_edge_ids"]
+            or not (
+                permissions["allowed_new_node_count"]
+                or permissions["allowed_new_edge_count"]
+                or any(permissions["composition_append_limits"].values())
+            )
+        ):
+            raise ValueError("extension requires additions without changing saved records")
+        return contract, permissions
     node_ids = [node["id"] for node in graph.get("nodes", [])]
     node_limit = max(0, settings.graph_safety_max_nodes - len(node_ids))
     edge_limit = max(0, settings.graph_safety_max_edges - len(graph.get("edges", [])))
     if not node_ids or not node_limit or not edge_limit:
         raise ValueError("the saved graph has no remaining extension capacity")
-    permissions = _repair_permissions(graph, {"layers": {
-        layer: _user_edit_layer(layer, failed=False)
-        for layer in ("components", "connections", "composition", "render")
-    }})
-    permissions.update({
-        "kind": "extension", "editable_composition_fields": ["groups"],
-        "allowed_new_node_ids": None, "minimum_new_node_count": 1,
-        "allowed_new_node_count": min(node_limit, edge_limit),
-        "minimum_new_edge_count": 1, "allowed_new_edge_count": edge_limit,
-        "added_edge_anchor_node_ids": node_ids, "allowed_new_group_ids": None,
-        "connection_addition_mode": "extension", "enforce_added_edge_contract_label": False,
-    })
+    permissions = _repair_permissions(
+        graph,
+        {
+            "layers": {
+                layer: _user_edit_layer(layer, failed=False)
+                for layer in ("components", "connections", "composition", "render")
+            }
+        },
+    )
+    permissions.update(
+        {
+            "kind": "extension",
+            "editable_composition_fields": ["groups"],
+            "allowed_new_node_ids": None,
+            "minimum_new_node_count": 1,
+            "allowed_new_node_count": min(node_limit, edge_limit),
+            "minimum_new_edge_count": 1,
+            "allowed_new_edge_count": edge_limit,
+            "added_edge_anchor_node_ids": node_ids,
+            "allowed_new_group_ids": None,
+            "connection_addition_mode": "extension",
+            "enforce_added_edge_contract_label": False,
+        }
+    )
     return None, permissions
 
 
-def admit_graph_extension(existing: GraphData, candidate: GraphData,
-                          permissions: dict[str, Any]) -> GraphData:
-    """Retain saved records; groups may append membership for new components."""
+def admit_graph_extension(
+    existing: GraphData, candidate: GraphData, permissions: dict[str, Any]
+) -> GraphData:
+    """Admit additions while retaining saved records and group membership."""
     if permissions.get("kind") != "extension":
         raise ValueError("extension requires explicit server-owned authority")
     old_nodes = existing.get("nodes") or []
@@ -3344,24 +3405,34 @@ def admit_graph_extension(existing: GraphData, candidate: GraphData,
     edges = candidate.get("edges") or []
     old_groups = existing.get("groups") or []
     groups = candidate.get("groups") or []
-    for field, before, after in (("nodes", old_nodes, nodes), ("edges", old_edges, edges)):
-        if len(after) < len(before) or after[:len(before)] != before:
+    for field, before, after in (
+        ("nodes", old_nodes, nodes),
+        ("edges", old_edges, edges),
+    ):
+        if len(after) < len(before) or after[: len(before)] != before:
             raise ValueError(f"extension changed saved {field}")
     for field in set(existing) - {"nodes", "edges", "groups", "version"}:
         if candidate.get(field) != existing[field]:
             raise ValueError(f"extension changed saved field: {field}")
-    added_nodes = nodes[len(old_nodes):]
-    added_edges = edges[len(old_edges):]
+    added_nodes = nodes[len(old_nodes) :]
+    added_edges = edges[len(old_edges) :]
     ids = [node.get("id") for node in nodes]
-    if any(not isinstance(node_id, str) or not node_id for node_id in ids) or len(ids) != len(set(ids)):
+    if any(not isinstance(node_id, str) or not node_id for node_id in ids) or len(
+        ids
+    ) != len(set(ids)):
         raise ValueError("extension component identities must be unique")
-    if len(nodes) > settings.graph_safety_max_nodes or len(edges) > settings.graph_safety_max_edges:
+    if (
+        len(nodes) > settings.graph_safety_max_nodes
+        or len(edges) > settings.graph_safety_max_edges
+    ):
         raise ValueError("extension exceeds graph safety caps")
     patch = {"add_nodes": added_nodes, "add_edges": added_edges}
     _validate_added_record_scope(patch, permissions)
     old_ids = {node["id"] for node in old_nodes}
     new_ids = set(ids) - old_ids
-    if len(groups) < len(old_groups):
+    if len(groups) < len(old_groups) or any(
+        not isinstance(group, dict) for group in groups
+    ):
         raise ValueError("extension changed saved groups")
     for before, after in zip(old_groups, groups):
         before_members = before.get("nodeIds") or []

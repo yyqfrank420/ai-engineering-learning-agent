@@ -1,0 +1,19 @@
+.app-viewport {
+  position: fixed;
+  top: var(--workspace-top, 0px);
+  inset-inline: 0;
+  height: 100vh;
+  height: var(--workspace-height, 100dvh);
+  overflow: hidden;
+}
+
+.app-workspace {
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-inline: env(safe-area-inset-left, 0px) env(safe-area-inset-right, 0px);
+}
+
+.app-workspace__body,
+.app-conversation {
+  min-width: 0;
+  min-height: 0;
+}

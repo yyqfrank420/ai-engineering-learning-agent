@@ -27,9 +27,11 @@ export function ContextBar({ selectedNode, onSendMessage, onClear }: ContextBarP
       gap:                 '0.4rem',
     }}>
       {/* Context pill */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', minWidth: 0 }}>
         <span style={{
           display: 'inline-flex',
+          minWidth: 0,
+          overflowWrap: 'anywhere',
           alignItems: 'center',
           gap: '4px',
           padding: '2px 10px',
@@ -40,13 +42,15 @@ export function ContextBar({ selectedNode, onSendMessage, onClear }: ContextBarP
           border: '1px solid rgba(167, 139, 250, 0.2)',
         }}>
           <span style={{ color: '#a78bfa' }}>⊙</span>
-          {selectedNode.node.label}
+          <span style={{ minWidth: 0 }}>{selectedNode.node.label}</span>
         </span>
         <button
           onClick={onClear}
+          aria-label="Clear selected node"
           style={{
             background: 'none', border: 'none', cursor: 'pointer',
-            color: '#6e7681', fontSize: '0.75rem', padding: '0 4px',
+            color: '#8b949e', fontSize: '0.75rem', padding: '0 4px',
+            minWidth: '44px', minHeight: '44px', flexShrink: 0,
           }}
         >
           ×
@@ -63,6 +67,9 @@ export function ContextBar({ selectedNode, onSendMessage, onClear }: ContextBarP
               onClick={() => onSendMessage(q)}
               style={{
                 padding:              '4px 10px',
+                minHeight:            '44px',
+                maxWidth:             '100%',
+                overflowWrap:         'anywhere',
                 borderRadius:         '999px',
                 background:           'rgba(255,255,255,0.04)',
                 backdropFilter:       'blur(8px)',

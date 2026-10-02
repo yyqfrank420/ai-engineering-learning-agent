@@ -1065,35 +1065,39 @@ describe('graph node activation', () => {
     expect(screen.queryByText('EXIT')).toBeNull();
   });
 
-  it('preserves node order for pointer selection and raises a node only when dragged', async () => {
+  it('preserves node order for clicks and zero-motion events and raises a node only when dragged', async () => {
     const onNodeClick = vi.fn();
     const { container } = render(<D3Graph graphData={cameraGraph} currentStep={-1}
       activeNodeIds={new Set<string>()} onNodeClick={onNodeClick} navigation
       initialViewState={cameraViewState} />);
     const node = container.querySelector('[data-node-id="a"]')!;
+    const card = node.querySelector('.node-card')!;
     const order = () => Array.from(container.querySelectorAll('g.node'), item => item.getAttribute('data-node-id'));
     const initialOrder = order();
     expect(initialOrder).toEqual(['a', 'b', 'c']);
-    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number) => {
-      const event = createEvent[type](target, { clientX, clientY: 200, button: 0 });
+    const mouse = (target: Element | Window, type: 'mouseDown' | 'mouseMove' | 'mouseUp', clientX: number, clientY: number) => {
+      const event = createEvent[type](target, { clientX, clientY, button: 0 });
       Object.defineProperty(event, 'view', { value: document.defaultView });
       fireEvent(target, event);
     };
 
-    mouse(node, 'mouseDown', 200);
+    mouse(card, 'mouseDown', 200, 200);
     expect(order()).toEqual(initialOrder);
-    mouse(window, 'mouseUp', 200);
-    fireEvent.click(node, { detail: 1 });
+    mouse(window, 'mouseMove', 200, 200);
+    expect(order()).toEqual(initialOrder);
+    mouse(window, 'mouseUp', 200, 200);
+    fireEvent.click(card, { detail: 1 });
     expect(order()).toEqual(initialOrder);
     expect(onNodeClick).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 'a' }));
 
-    mouse(node, 'mouseDown', 200);
+    mouse(card, 'mouseDown', 200, 200);
     expect(order()).toEqual(initialOrder);
-    mouse(window, 'mouseMove', 240);
+    mouse(window, 'mouseMove', 240, 220);
     expect(order()).toEqual(['b', 'c', 'a']);
-    mouse(window, 'mouseUp', 240);
+    mouse(window, 'mouseUp', 240, 220);
+    expect(onNodeClick).toHaveBeenCalledTimes(1);
     // D3 suppresses the click after dragging until the next event-loop turn.
-    await new Promise(resolve => window.setTimeout(resolve, 0));
+    await act(async () => { await new Promise(resolve => window.setTimeout(resolve, 0)); });
   });
 
   it('opens details once on double-click and reserves editing for F2 without zooming', () => {

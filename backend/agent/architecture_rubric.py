@@ -23,7 +23,7 @@ RUBRIC_CRITERIA = {
     ),
     "objective_fidelity": (
         "components",
-        "Depict the requested subject and make its goal and constraints visible in component responsibilities. A named educational, research, or comparison subject establishes diagram scope without an invented business use case; represent its relevant mechanisms or contrasting paths. A broad teaching request needs a map of the requested subject or lifecycle. A single assumed product cannot replace that subject; examples must remain subordinate to its breadth. For an applied system design, establish the user's business domain, goal, and workflow from the request or accepted context. Retrieved examples cannot choose the user's domain or goal. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. The diagram request is already admitted; do not ask whether a diagram is wanted. For new designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Primary membership selects components for the main walkthrough. Every primary member must be naturally reachable outward from that root using directed runtime, control, feedback, or deployment contracts, which may pass through non-primary supporting components. Walkthrough order does not establish causal execution order or satisfy required runtime and control behavior. Keep independent ingress and supporting components in the design; mark them non-primary when they do not belong in the walkthrough. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
+        "Depict the requested subject and make its goal and constraints visible in component responsibilities. A named educational, research, or comparison subject establishes diagram scope without an invented business use case; represent its relevant mechanisms or contrasting paths. A broad teaching request needs a map of the requested subject or lifecycle. For research, teaching, and comparison requests, depict the subject's mechanisms or decision process. Instructions to study, research, explain, or compare do not create a learner session, comparison or tutoring service, or evidence-retrieval architecture unless explicitly requested as product or system features. Topic, mechanism, and lifecycle maps must express actual causal, adaptation, or lifecycle relationships. Abstract topics such as Prompt engineering, Fine-tuning, and Foundation model capabilities are not runtime services that own network requests or returns. Distinguish offline fine-tuning that changes model parameters from live inference using those parameters. Name new groups for the requested domain and their members' actual responsibilities; preserve retained group names. Within the existing architecture schema, use concrete lifecycle responsibilities or domain decisions as component boundaries; topic names may organize groups. Control or decision nodes may represent planning or review steps; service nodes must own real computation. Choose a starting lifecycle responsibility or domain decision with a truthful directed progression. A single assumed product cannot replace that subject; examples must remain subordinate to its breadth. Edited or revised values must still satisfy requested constraints before persistence or release. Assign revalidation to an appropriate owner; prior draft validation does not authorize changed values. Reuse an existing validation owner where possible. For every request, preserve the requested subject, application domain, and learner audience from the request or accepted context, even when retrieved examples concern a neighboring topic. Retrieved examples cannot choose the user's domain or goal, or replace the requested subject or learner audience. For an applied system design, establish the user's business domain, goal, and workflow from the request or accepted context. Assumptions may fill implementation details but cannot invent a missing business goal or workflow. The diagram request is already admitted; do not ask whether a diagram is wanted. For applied system designs, select the initiating primary runtime actor as the root; centrality of an AI service does not determine the root. Primary membership selects components for the main walkthrough in both topic or lifecycle maps and applied system designs. Every primary member must be naturally reachable outward from that root using directed runtime, control, feedback, or deployment contracts, which may pass through non-primary supporting components. Walkthrough order does not establish causal execution order or satisfy required runtime and control behavior. Keep independent ingress and supporting components in the design; mark them non-primary when they do not belong in the walkthrough. Do not invent reverse or control edges to repair an unsuitable root or primary membership. Determine initiation from declared behavior. A component that pulls or requests data may initiate an outward request with a return response; inbound responses and independent inputs do not disqualify that root. Require contracts consistent with the declared responsibilities, without inventing requests for push-only sources. At the component stage, assess whether declared responsibilities and assumptions support a feasible directed path; connections are authored in the next stage. Missing edges or absent peer names in responsibilities are not component defects. Identify a specific incompatible responsibility when rejecting root or primary membership; do not demand connection-stage evidence here. Scoped edits preserve the accepted root and primary membership outside the authorized write set. Instructions to explain, cite or ground the response in sources, or draw its flow govern the response; include those capabilities in the designed runtime only when explicitly requested as system features.",
     ),
     "runtime_completeness": (
         "connections",
@@ -35,7 +35,7 @@ RUBRIC_CRITERIA = {
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload.",
+        "For topic, mechanism, and lifecycle maps, use truthful causal, adaptation, or lifecycle relationships without inventing requests or replies between abstract topics. Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload. Check both directions against declared data and decision ownership. Data payloads and policy or approval results must originate at their authoritative owner; pairing cannot assign that authority to a consumer.",
     ),
     "assumption_hygiene": (
         "composition",
@@ -79,7 +79,7 @@ RUBRIC_CRITERIA = {
     ),
     "gate_preserving_reuse": (
         "connections",
-        "Preserve validation, authorization, policy, and approval gates required by the request, accepted responsibilities, or applicable maturity criteria. Cache, memory, replay, retry, and shortcut paths cannot bypass those gates: store accepted post-gate artifacts or rejoin the required gate with its identity and version scope. Prototype memory or reuse alone does not require a new approval or version gate.",
+        "Preserve validation, authorization, policy, and approval gates required by the request, accepted responsibilities, or applicable maturity criteria. Cache, memory, replay, retry, human edits, revisions, and shortcut paths cannot bypass those gates: store accepted post-gate artifacts or rejoin the required gate with its identity and version scope. Changed content must rejoin applicable validation before persistence or release; prior validation covers only the validated values. Prototype memory or reuse alone does not require a new approval or version gate.",
     ),
     "topology_enforced_guarantees": (
         "connections",
@@ -195,7 +195,10 @@ TOPOLOGY_PROOF_REQUIREMENTS = {
 STAGED_PRODUCTION_REQUIREMENTS = {
     "authorization_and_compensation": (
         "For external mutations, connect authoritative observation, a typed exact-action "
-        "proposal, policy and approval, execution, and the authoritative target. Compensation must "
+        "proposal, policy and approval, execution, and the authoritative target. When "
+        "compensation is required by the request or an explicitly required recovery "
+        "guarantee, or declared "
+        "by the design, it must "
         "use the same policy, approval, execution, reconciliation, and audit controls. "
         "For each external effect executor, trace the exact approved action payload and "
         "stable operation identity from canonical proposal or operation ownership into "
@@ -204,9 +207,12 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "the executor may reserve the identity durably with canonical state. An "
         "authorization verdict or incidental reachability alone supplies neither "
         "payload nor identity. "
-        "Cover compensation explicitly in the existing validation and approval invocation "
+        "For applicable compensation, cover it explicitly in the existing validation "
+        "and approval invocation "
         "and response contracts. Shared controls suffice when those contracts cover both "
         "normal and compensation actions; duplicate control paths are unnecessary. "
+        "External effects alone do not require compensation behavior; apply the "
+        "compensation clauses only when required or declared. "
         "Review normal and compensation behavior separately even when one component "
         "produces both proposals: its normal input does not establish rollback initiation. "
         "For compensation, identify the initiating operator, incident, event, or explicit "
@@ -249,24 +255,46 @@ STAGED_PRODUCTION_REQUIREMENTS = {
         "external sources. Outcome-data reads and reuse for evaluation do not establish "
         "a factual-retrieval dependency for an unrelated creative generator. "
         "For a declared path that consumes retrieved bytes, identify those bytes and their "
-        "consumer. Treat retrieved bytes as untrusted. For the identified material factual "
-        "claims, validate material factual claim entailment "
-        "before delivery or reuse. Failed required factual retrieval must end in "
+        "consumer. "
+        "The candidate must explicitly declare that its consuming runtime treats retrieved "
+        "or recalled bytes as untrusted data. Cite a compatible owning responsibility or "
+        "input contract. Assumptions alone do not establish that runtime behavior. "
+        "Access, scope, freshness and factual-claim checks do not themselves "
+        "establish that input trust boundary. The reviewing model's treatment of supplied "
+        "source evidence does not establish a control in the candidate runtime. "
+        "Check material generated factual claims "
+        "against the retrieved evidence for entailment before delivery or reuse. "
+        "Grounded generation and citations alone do not establish this check. "
+        "Check the generated claims, without requiring proof that the source itself is true. "
+        "Do not require deterministic semantic entailment unless the user requests it; "
+        "mechanically verifiable structure and action-constraint checks retain their "
+        "deterministic requirements. Failed required factual retrieval must end in "
         "clarification, abstention, or a bounded validated retry. Discard rejected/stale "
         "artifacts on an applicable validation or reuse path. A factual RAG answer activates "
-        "claim validation and required-evidence failure handling; a private answer cache "
-        "reused across requests activates access and artifact lifecycle controls. "
+        "claim validation and required-evidence failure handling. "
         "When the candidate explicitly makes example or creative reuse optional, "
         "a missing or rejected result may lead to fresh generation through the same "
         "validation and approval controls. Do not infer optionality or allow unsupported "
         "facts to replace missing evidence. State this outcome in the owning responsibility "
         "or response contract; a separate fallback component or edge is unnecessary. "
-        "Before requiring reuse scope or lifecycle controls, identify the declared artifact "
-        "reused across requests or releases and its consuming path. A retrieval call alone "
-        "does not establish such reuse. For that reuse, scope reuse by access "
-        "identity, version, and provenance, including model/prompt/index release when "
-        "applicable; name invalidation and revalidation ownership. Shortcuts cannot bypass "
-        "these controls."
+    ),
+    "artifact_reuse_lifecycle": (
+        "Identify the declared artifact reused across requests or releases and its "
+        "consuming path before applying lifecycle controls. A retrieval call alone "
+        "does not establish such reuse; explicitly same-request-only artifacts are "
+        "outside this rule. A per-user or session scope assumption does not establish "
+        "same-request-only lifetime or executable access checking. For applicable reuse, "
+        "cite separately the executable check of access identity and scope, the artifact's "
+        "version and provenance (including model/prompt/index release when applicable), "
+        "and executable validity, "
+        "rejection, invalidation and revalidation ownership. Identify an owner that checks "
+        "applicable scope and validity before reuse and rejects stale or rejected artifacts. "
+        "Stored metadata or a capability to invalidate does not establish an invalidation "
+        "or revalidation operation. A compatible consumer may own these checks internally "
+        "without a separate service or edge. Shortcuts cannot bypass these controls. "
+        "Human edits or revisions must rejoin applicable validation before persistence "
+        "or release; prior validation does not authorize changed content. Omitted updates "
+        "do not establish immutable storage."
     ),
     "learning_and_release": (
         "Route feedback through curated versioned evidence, including hostile traces, "
@@ -277,20 +305,29 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     ),
     "audit_and_provenance": (
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
-        "it. For every producer of model-proposed actions, identify the executable owner "
-        "that deterministically validates those proposals' structure and allowed constraints "
-        "before approval or execution. A named compatible owner may perform this "
-        "deterministic validation internally. Its responsibility or a connection contract "
-        "may establish the covered producer, proposal structure and allowed constraints, "
-        "and validation before approval or execution. An explicit connection contract "
-        "does not need duplicate wording in the owner's responsibility. A shared "
-        "validator may cover multiple producers when their responsibilities or contracts "
-        "establish that coverage. A vague 'validate' label without an executable owner, "
-        "deterministic checks, and pre-execution order is insufficient. Validation of one "
-        "producer does not establish validation of another. Typed proposals and human "
-        "approval alone do not establish deterministic validation. Retain provenance and "
-        "correlated audit evidence for material inputs, decisions, actions, and terminal "
-        "outcomes."
+        "it. For every model-proposed action path, including read-only tools, internal "
+        "tools, and code execution, identify the executable owner that deterministically "
+        "validates those proposals' structure and allowed constraints before approval or "
+        "execution. A named compatible owner may perform this deterministic validation "
+        "internally as the producer, dispatcher, or executor when it declares that path's "
+        "checks before approval or execution and preserves validated dispatch to any "
+        "separate executor. Its "
+        "responsibility or a connection contract may establish the covered producer, "
+        "action path, proposal structure and allowed constraints, and validation before "
+        "approval or execution. An explicit connection contract does not need duplicate "
+        "wording in the owner's responsibility. For a separate validator, trace the actual "
+        "proposal invocation and validated result into that action path before approval "
+        "or execution. A shared validator may cover multiple producers and paths when "
+        "their responsibilities or contracts establish that coverage. A vague 'validate' "
+        "label without an executable owner, deterministic checks, and pre-execution order "
+        "is insufficient. A write-only validation invocation or broad validator "
+        "responsibility does not establish validation of another action path from the "
+        "same producer. Validation of one producer does not establish validation of "
+        "another. Typed proposals and human approval alone do not establish deterministic "
+        "validation. Retain provenance and correlated audit evidence for material inputs, "
+        "decisions, actions, and terminal outcomes. An audit producer must own the "
+        "recorded operation or receive its material input or outcome through a declared "
+        "path. Naming another owner's event in a log contract does not supply that data."
     ),
     "streaming_integrity": (
         "Apply when the request or candidate contracts declare continuous or unbounded "
@@ -330,7 +367,32 @@ def staged_review_requirements(
         for code, (owner, requirement) in RUBRIC_CRITERIA.items()
         if owner == stage and code not in excluded
     }
+    if stage == "components":
+        requirements["objective_fidelity"] += (
+            " Preserve the status, jurisdiction, timing, and scope of factual claims "
+            "drawn from supplied sources. A proposal, recommendation, or suggested "
+            "safeguard does not establish an adopted or enacted obligation. Qualify "
+            "uncertain source claims or omit them. Distinguish proposed design choices "
+            "from source-established requirements."
+        )
     if stage == "connections":
+        requirements["runtime_completeness"] += (
+            " At the selected depth, cover each material requested or declared executable "
+            "operation. Trace its trigger and required data through the owning operation "
+            "to its authoritative result. One operation's invocation or status-only reply "
+            "does not establish another operation or its required data output. For each "
+            "declared write, first cite its supplied or explicitly internally produced "
+            "change input at the writer before execution. An outgoing write contract "
+            "establishes destination, not data origin. Delivery to another consumer does "
+            "not supply this writer without an onward contract. New outcome or update "
+            "data must reach its update owner; prior stored state may support declared "
+            "metadata updates but does not supply unrelated new domain or progress data. "
+            "Direct, delegated, combined-contract, or declared same-owner internal paths "
+            "may supply these inputs and results. Explicit autonomous observation is valid "
+            "when the owner declares how it obtains the new data. Do not require a separate "
+            "edge or component per operation. Conceptual maps retain truthful one-way "
+            "causal or lifecycle relationships without invented runtime operations."
+        )
         if "branch_completion" in requirements:
             requirements["branch_completion"] = (
                 "Route each required or declared normal, denial, failure, alternate, "
@@ -342,15 +404,39 @@ def staged_review_requirements(
                 "bypasses a required control."
             )
         requirements["edge_semantics"] = (
+            "For topic, mechanism, and lifecycle maps, assess actual causal, adaptation, or "
+            "lifecycle relationships. Abstract topics do not own network requests or "
+            "returns. One-way relationships need no reverse reply; actual reads and "
+            "requests expecting returned data still require their authoritative payload. "
+            "Distinguish offline parameter adaptation from live inference. "
             "Require contracts compatible with their source, recipient, payload, and "
             "declared behavior. Block a missing required input or answer return, a "
             "contradictory direction, or a path that bypasses a required control. Follow "
             "the complete declared path: an orchestrator may invoke work directly or "
             "delegate invocation and receive the result through another component. "
             "An unrelated verdict or acknowledgment cannot replace required data. "
+            "Before pairing, identify the consumer needing each payload and the component "
+            "producing or storing it. For a lookup, the consumer requests the payload and "
+            "the owner returns it; receiving a request does not give a consumer authority "
+            "to produce owner-held records. Check both directions against declared data "
+            "and decision ownership. Trace each "
+            "payload's authoritative origin through declared incoming and outgoing contracts "
+            "and compatible responsibilities. An intermediary may forward already received "
+            "data without owning its original authority; compatible relay contracts can "
+            "establish forwarding without naming every peer in the responsibility. This does "
+            "not authorize a consumer to create a policy or approval decision, substitute "
+            "generated citations for canonical source data, or perform an incompatible "
+            "transformation. Block an absent producer or delivery path, incompatible "
+            "transformation, or required-control bypass. An authoritative owner may "
+            "deliver directly to multiple compatible consumers. Missing peer names in "
+            "high-level responsibilities alone do not establish a contradiction. Reject "
+            "only with a concrete ownership or required-control restriction; do not invent "
+            "a mandatory intermediary or relax a declared trust boundary. "
             "A redundant intermediate return or duplicate description is advisory unless "
             "it changes execution or violates a required control; identify that concrete "
-            "failure when rejecting. Feedback and deployment contracts cannot substitute "
+            "failure when rejecting. This advisory exception applies only to correctly "
+            "owned and directed contracts, including declared intermediary relays. "
+            "Feedback and deployment contracts cannot substitute "
             "for required runtime or control interactions."
         )
     if stage == "components":
@@ -361,7 +447,12 @@ def staged_review_requirements(
                 "responsibilities, including when a capability flag needs correction in "
                 "this review. Each applicable control operation needs a compatible "
                 "declared owner; storage of evidence alone does not own evaluation or "
-                "approval. Compatible operations may share an existing owner; do not "
+                "approval. For external mutations, explicitly assign policy checks and the "
+                "exact-action approval decision, plus applicable recovery ownership. "
+                "Executing approved calls consumes approval; it does not own the decision. "
+                "Structural validation alone does not establish "
+                "policy or approval ownership. Compatible operations may share an existing "
+                "owner; do not "
                 "require separate components. Assess ownership only here, not edges, "
                 "sequence, or payload proofs. Do not introduce capabilities or features "
                 "solely to satisfy conditional guidance. Report all missing or incompatible "
@@ -409,6 +500,18 @@ def staged_review_requirements(
             "concrete behavior or control harm. Mechanics used to author this response "
             "are not runtime features unless explicitly requested."
         )
+        if maturity == "production":
+            requirements["mece_scope"] += (
+                " When retrieved evidence supports material factual claims in generated "
+                "answers, require an executable component responsibility that explicitly "
+                "owns checking those claims against the evidence before delivery or reuse. "
+                "Grounded generation and citations alone do not establish claim checking. "
+                "A compatible existing owner may perform the check; do not require a "
+                "separate validation component. Assess ownership and feasibility at this "
+                "stage; invocation contracts and failure paths belong to connection review. "
+                "Do not impose factual-answer checks on optional creative examples or "
+                "evaluation-only reuse without a material factual-answer dependency."
+            )
         requirements["capability_classification"] = (
             "Classify capabilities from the candidate responsibilities and assumptions: "
             "external_effects means a component owns a declared write to state in an "
@@ -456,6 +559,10 @@ def staged_review_requirements(
             if guarantee not in TOPOLOGY_PROOF_REQUIREMENTS:
                 raise ValueError(f"unknown production guarantee: {guarantee!r}")
             requirements[guarantee] = STAGED_PRODUCTION_REQUIREMENTS[guarantee]
+            if guarantee == "retrieval_and_reuse_trust":
+                requirements["artifact_reuse_lifecycle"] = STAGED_PRODUCTION_REQUIREMENTS[
+                    "artifact_reuse_lifecycle"
+                ]
     else:
         requirements["safe_action_boundary"] = (
             "Preserve every explicitly requested approval, audit, recovery, or other "

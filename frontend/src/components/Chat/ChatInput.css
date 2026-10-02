@@ -34,3 +34,26 @@
 .chat-graph-choice button:hover:not(:disabled) { background: #332647; }
 .chat-graph-choice button:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
 .chat-graph-choice button:disabled { opacity: 0.45; cursor: default; }
+.chat-composer {
+  padding: 0.75rem 1rem calc(0.75rem + env(safe-area-inset-bottom, 0px));
+}
+
+@media (max-width: 1100px), (pointer: coarse) {
+  .chat-composer__input {
+    font-size: 1rem !important;
+    min-height: 44px !important;
+  }
+
+  .chat-composer__control {
+    min-width: 44px;
+    min-height: 44px !important;
+  }
+
+  .chat-composer__selection-row {
+    flex-wrap: wrap;
+  }
+
+  .chat-composer__selection-row > div:first-child {
+    flex: 1 1 8rem;
+  }
+}

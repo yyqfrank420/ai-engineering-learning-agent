@@ -39,14 +39,16 @@ class Settings(BaseSettings):
     moonshot_base_url: str = "https://api.moonshot.ai/v1"
 
     # General conversation roles retain their independent fallback policy.
-    orchestrator_model: str = "claude-opus-5"
+    orchestrator_model: str = "claude-opus-5-5"
     explanation_model: str = "claude-sonnet-5-5"
-    worker_model: str = "claude-opus-5"
+    worker_model: str = "claude-opus-5-5"
     # Applied-design roles are explicit so quality and cost changes cannot drift
     # behind a shared model setting.
-    architecture_model: str = "claude-opus-5"
+    architecture_model: str = "claude-opus-5-5"
     graph_builder_model: str = "kimi-k3"
-    graph_qa_model: str = "claude-sonnet-5"
+    graph_qa_model: str = "claude-sonnet-5-5"
+    staged_gate_model: str = "claude-opus-5-5"
+    research_model: str = "claude-sonnet-5-5"
     # Applied graphs use staged review; legacy remains an explicit rollback.
     graph_pipeline_mode: Literal["legacy", "staged"] = "staged"
     # Reserve one correction per staged layer. Generation and review may borrow
@@ -270,9 +272,6 @@ class Settings(BaseSettings):
     # Backpressure for the temporary HTTP/SSE compatibility transport.
     max_sse_queue_events: int = 256
 
-    # Research worker uses Brave through DDGS.
-    # Design searches use three queries; a single topic query shares that result budget.
-    research_results_per_query: int = 2
     # Domains whose results are filtered out as low-quality noise
     research_noise_domains: list[str] = [
         "pinterest.com",

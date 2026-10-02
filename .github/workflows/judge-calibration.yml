@@ -16,7 +16,7 @@ on:
       model:
         description: Calibration judge model ID
         required: true
-        default: claude-sonnet-5
+        default: claude-sonnet-5-5
         type: string
       resume_run_id:
         description: Prior failed calibration run whose valid judgments should be reused

@@ -15,6 +15,7 @@ from agent.architecture_rubric import (
     RUBRIC_CODES,
     RUBRIC_CODE_OWNERS,
     TOPOLOGY_PROOF_REQUIREMENTS,
+    STAGED_PRODUCTION_REQUIREMENTS,
 )
 from eval.cost_gate import (
     CostPolicy,
@@ -98,7 +99,8 @@ _STAGED_GATE_RULE_CODES = {
     "connections": frozenset(
         code for code in RUBRIC_CODES if RUBRIC_CODE_OWNERS[code] == "connections"
     )
-    | frozenset(TOPOLOGY_PROOF_REQUIREMENTS),
+    | frozenset(TOPOLOGY_PROOF_REQUIREMENTS)
+    | frozenset(STAGED_PRODUCTION_REQUIREMENTS),
 }
 _GRAPH_REVIEW_COUNTER_FIELDS = (
     "repair_round",

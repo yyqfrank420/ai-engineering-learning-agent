@@ -507,7 +507,7 @@ export function GraphCanvas({
           <GlossaryDrawer
             graphData={graphData}
             sourceTexts={sourceTexts}
-            bottomOffset={hasSequence ? '4.75rem' : '1rem'}
+            bottomOffset="1rem"
           />
         </div>
       </div>

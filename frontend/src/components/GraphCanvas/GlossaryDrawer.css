@@ -1,0 +1,25 @@
+.glossary-drawer {
+  max-width: calc(100% - 2rem);
+  max-height: calc(100% - max(1rem, env(safe-area-inset-bottom)) - 1rem);
+  min-height: 0;
+}
+.glossary-drawer__panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  overflow: hidden;
+}
+.glossary-drawer__header { flex-shrink: 0; min-width: 0; touch-action: none; }
+.glossary-drawer__header > div:first-child { min-width: 0; overflow-wrap: anywhere; }
+.glossary-drawer__entries { min-height: 0; overflow-wrap: anywhere; overscroll-behavior: contain; }
+.glossary-drawer__trigger { flex-shrink: 0; touch-action: none; }
+.glossary-drawer button:focus-visible { outline: 2px solid #c4b5fd; outline-offset: -2px; }
+@media (pointer: coarse) {
+  .glossary-drawer__icon, .glossary-drawer__trigger { min-width: 44px; min-height: 44px; }
+}
+
+@container graph-canvas (max-width: 559px) {
+  .glossary-drawer__summary { display: none; }
+}

@@ -617,11 +617,19 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
         assert "shared evidence and review frame" in prompt
         assert "Avoid vague group labels such as Runtime, Data, or Operations" in prompt
         assert "an internal adapter to an external API remains internal" in prompt
+        assert "Name each new group for the requested domain" in prompt
+        assert "Never rename retained groups" in prompt
     else:
         assert prompt_input["architecture_context"] is None
         assert "its reverse response edge with the same flow and sync" in prompt
         assert "Pairing is independent of sync" in prompt
         assert "edge_limit counts expanded edges" in prompt
+        assert "Each exchange represents an actual directed relationship" in prompt
+        assert "For an actual request expecting a reply" in prompt
+        assert "Use response_label=null only when no return contract is needed" in prompt
+        assert "including one-way causal, adaptation, or lifecycle relationships" in prompt
+        assert "manufacture reverse RPC edges between abstract topics" in prompt
+        assert "live inference uses them without performing training" in prompt
         assert (
             "Route each supporting branch to a rejoin or observable outcome" in prompt
         )
@@ -653,10 +661,14 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v31"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v41"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
+    assert "For both topic or lifecycle maps and applied system designs" in prompt
+    assert "primary_flow_member must be reachable outward from is_root" in prompt
+    assert "Do not invent edges or change frozen primary membership" in prompt
+    assert "including paths through non-primary supporting components" in prompt
     assert "Check each forward contract and actual reply" in prompt
     assert "accepted sender and recipient responsibilities" in prompt
     assert "including supporting and deployment exchanges" in prompt
@@ -874,7 +886,7 @@ async def test_component_generation_uses_configured_model_low_one_attempt_and_sa
     assert calls[0]["timeout_seconds"] == timeout_seconds
     assert calls[0]["telemetry"]["metadata"]["allocated_timeout_s"] == timeout_seconds
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v50"
     )
     assert "request" not in calls[0]["telemetry"]["metadata"]
 
@@ -1041,41 +1053,77 @@ async def test_connection_generation_rejects_server_invalid_edge_identity(
 
 
 @pytest.mark.asyncio
-async def test_connection_generation_requires_every_primary_member_from_root(
-    monkeypatch,
-):
-    async def fake_stream(**_kwargs):
-        return _response({"exchanges": []})
+async def test_connection_generation_requires_every_primary_member_from_root(monkeypatch):
+    from agent import staged_graph_workflow as workflow
+
+    calls = []
+    accepted = [
+        {**component, "primary_flow_member": True, "is_root": index == 0}
+        for index, component in enumerate(_accepted_components())
+    ]
+    rejected = {"edges": []}
+
+    async def fake_stream(**kwargs):
+        calls.append(kwargs)
+        payload = {"exchanges": []} if len(calls) == 1 else _connection_exchanges()
+        return _response(payload)
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
-    with pytest.raises(
-        generation.StagedGenerationError, match="connection_wire_unreachable"
-    ):
+    with pytest.raises(generation.StagedGenerationError) as caught:
         await generation.generate_connection_candidate(
-            request="Connect accepted components",
+            request="Compare the subject mechanisms",
             resolved_maturity="prototype",
             write_set=_write_set(),
             upstream_fingerprint="b" * 64,
-            accepted_components=[
-                {
-                    "index": 0,
-                    "id": "server-a",
-                    "type": 104,
-                    "responsibility": "Accepts authenticated requests.",
-                    "primary_flow_member": True,
-                    "is_root": True,
-                },
-                {
-                    "index": 1,
-                    "id": "server-b",
-                    "type": 101,
-                    "responsibility": "Processes accepted requests.",
-                    "primary_flow_member": True,
-                    "is_root": False,
-                },
-            ],
+            accepted_components=accepted,
             accepted_context=_accepted_context(),
         )
+    error = caught.value
+    assert str(error) == error.code == "connection_wire_unreachable"
+    assert (error.diagnostic_reason, error.diagnostic_path) == (
+        "primary_flow_unreachable",
+        "edges",
+    )
+    assert error.rejected_wire_fingerprint == generation._fingerprint(rejected)
+    finding = workflow._safe_finding(error, stage="connections")
+    assert finding == {
+        "code": "connection_wire_unreachable",
+        "path": "connections",
+        "rule": "contract_validation",
+        "reason": "connection_wire_unreachable",
+    }
+    result = await generation.generate_connection_candidate(
+        request="Compare the subject mechanisms",
+        resolved_maturity="prototype",
+        write_set=_write_set(),
+        upstream_fingerprint="b" * 64,
+        accepted_components=accepted,
+        accepted_context=_accepted_context(),
+        attempt=1,
+        prior_prompt_fingerprint=error.prompt_fingerprint,
+        prior_write_set_fingerprint=generation._fingerprint(_write_set()),
+        structural_findings=[finding],
+        rejected_candidate=None,
+        recovery_mode=True,
+    )
+    prompt = calls[1]["messages"][0]["content"]
+    prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert prompt_input["recovery_mode"] is True
+    assert prompt_input["rejected_candidate"] is None
+    assert prompt_input["base"] is None
+    assert prompt_input["findings"]["structural"] == [finding]
+    assert "Every accepted primary member needs a truthful outward directed path" in prompt
+    assert "from the accepted is_root" in prompt
+    assert "Preserve accepted responsibilities, root, and primary membership" in prompt
+    assert "Use non-primary transit when supported" in prompt
+    assert "do not manufacture reverse RPC edges" in prompt
+    expected_wire, expected_exchanges = generation._parse_connection_response(
+        json.dumps(_connection_exchanges()),
+        accepted_components=accepted,
+        edge_limit=_write_set()["edge_limit"],
+    )
+    assert result["wire"] == expected_wire
+    assert result["connection_exchanges"] == expected_exchanges
 
 
 @pytest.mark.asyncio
@@ -1582,6 +1630,9 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         fixture["request"], fixture["base_graph"], resolved_complexity="prototype"
     )
     assert permissions["added_edge_anchor_node_ids"] == ["n6"]
+    from agent.staged_graph_workflow import _connection_prompt_base
+
+    baseline_connections = _connection_prompt_base(base)
     calls = []
     recorded = fixture["rejected_addition"]
     addition = {
@@ -1630,6 +1681,7 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         write_set=write_set,
         upstream_fingerprint="a" * 64,
         base_components=base,
+        baseline_connections=baseline_connections,
         edit_permissions=permissions,
     )
     first = await generation.generate_component_candidate(**kwargs)
@@ -1673,11 +1725,34 @@ async def test_recorded_expansion_preserves_attachment_plan_through_both_stages_
         == expected
     )
     assert prompts[0]["base"]["components"][5]["label"] == "Metrics Monitor"
+    assert (
+        prompts[0]["baseline_connections"]
+        == prompts[1]["baseline_connections"]
+        == baseline_connections
+    )
+    for prompt in prompts:
+        for row, edge in zip(prompt["baseline_connections"], base["connections"], strict=True):
+            for endpoint in ("source", "target"):
+                index = row[f"{endpoint}_index"]
+                assert base["components"][index]["server_id"] == edge[f"{endpoint}_id"]
+                assert prompt["base"]["components"][index]["label"] == base["components"][index]["label"]
+            assert row["label"] == edge["label"]
+            assert generation.FLOW_CODES[row["flow"]] == edge["flow"]
+            assert generation.SYNC_CODES[row["sync"]] == edge["sync"]
     assert prompts[1]["rejected_candidate"]["additions"] == [addition]
     assert (
         "without requiring another data source, dependency, or extra edge"
         in calls[0]["prompt"]
     )
+    for call in calls[:2]:
+        assert "required inputs and outcomes must be achievable" in call["prompt"]
+        assert "permitted endpoints, counts, and directions" in call["prompt"]
+        assert "explicitly delegate an outcome back through its attachment anchor" in call["prompt"]
+        assert "anchor's unchanged existing contracts supplied in baseline_connections" in call["prompt"]
+        assert "Preserve their exact payload and control meaning" in call["prompt"]
+        assert "an evaluation-feedback contract does not by itself establish a rollback invocation" in call["prompt"]
+        assert "do not invent connections outside the permitted endpoints" in call["prompt"]
+        assert "A truthful one-way attachment or sink is sufficient" in call["prompt"]
     assert "n6" not in json.dumps(expected)
     assert "When false, required_contract describes intent" in calls[0]["prompt"]
     assert (
@@ -1987,7 +2062,7 @@ async def test_component_generation_receives_root_selection_before_connections(
     criteria = json.loads(prompt.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
     root_rule = criteria["objective_fidelity"]
     assert (
-        "For new designs, select the initiating primary runtime actor as the root"
+        "For applied system designs, select the initiating primary runtime actor as the root"
         in root_rule
     )
     assert "Every primary member must be naturally reachable outward" in root_rule
@@ -2714,6 +2789,9 @@ async def test_paired_recovery_preserves_request_and_uncited_event(monkeypatch):
     async def fake_stream(**kwargs):
         prompt = kwargs["messages"][0]["content"]
         assert '"original_edge_to_exchange_slot":{"0":"slot_0","1":"slot_0","2":"slot_1"}' in prompt
+        assert "A label-only edit cannot repair an incorrect sender or recipient" in prompt
+        assert "When endpoints conflict with accepted responsibilities" in prompt
+        assert "allowlisted removal and a complete replacement" in prompt
         return _response({"updates": {"slot_0": update}, "additions": [], "removals": []})
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
@@ -2756,6 +2834,62 @@ def test_paired_recovery_removal_reindexes_and_allows_explicit_rewire():
                      {"request_record_index": 1, "response_record_index": 2}]
     assert wire["edges"][1]["sync"] == wire["edges"][2]["sync"] == 501
 
+
+
+def test_rag_paired_recovery_rewires_only_cited_exchanges():
+    accepted = [
+        {**_accepted_components()[1], "index": index, "id": f"n{index + 1}",
+         "label": f"RAG owner {index + 1}", "is_root": index == 0}
+        for index in range(9)
+    ]
+    exchanges = [
+        {"source_index": source, "target_index": target, "label": label,
+         "response_label": reply, "flow": flow, "sync": sync}
+        for source, target, label, reply, flow, sync in [
+            (0, 1, "Submit question", None, 400, 500),
+            (1, 2, "Deliver question embedding", None, 400, 500),
+            (2, 3, "Request passages", "Return ranked passages", 400, 500),
+            (2, 5, "Deliver retrieved passages", None, 400, 500),
+            (5, 6, "Send augmented prompt", "Return grounded answer", 400, 500),
+            (6, 7, "Deliver answer with supporting passages", None, 400, 500),
+            (7, 0, "Present answer", None, 400, 501),
+            (4, 3, "Load chunks before runtime", None, 401, 501),
+            (8, 6, "Contrast retrieval and finetuning", None, 402, 501),
+        ]
+    ]
+    original, pairs = generation._parse_connection_response(
+        json.dumps({"exchanges": exchanges}), accepted_components=accepted, edge_limit=20,
+    )
+    snapshot = json.loads(json.dumps(original))
+    write_set = generation.create_write_set(component_limit=9, edge_limit=20)
+    delta = generation._semantic_correction_delta(
+        stage="connections", maturity="prototype", write_set=write_set, attempt=1,
+        rejected_candidate=original,
+        findings=[{"code": "edge_semantics", "path": "connections",
+                   "rule": "semantic_gate", "record_indexes": [7, 10]}],
+        schema=generation.connection_generation_schema(write_set),
+        accepted_components=accepted,
+        accepted_context=generation._accepted_context(_accepted_context()),
+        recovery_mode=True, connection_exchanges=pairs,
+    )
+    assert set(delta.schema["properties"]["updates"]["properties"]) == {"slot_5", "slot_8"}
+    replacement = {**exchanges[5], "source_index": 5}
+    with pytest.raises(generation.StagedGenerationError):
+        delta.assemble(json.dumps({"updates": {"slot_5": replacement, "slot_8": None},
+                                   "additions": [], "removals": []}))
+    repaired, _ = generation._parse_connection_response(
+        json.dumps(delta.assemble(json.dumps({
+            "updates": {"slot_5": None, "slot_8": None},
+            "additions": [replacement], "removals": [5, 8],
+        }))), accepted_components=accepted, edge_limit=20,
+    )
+    assert repaired["edges"][:-1] == [
+        edge for index, edge in enumerate(original["edges"]) if index not in {7, 10}
+    ]
+    assert repaired["edges"][-1] == {
+        key: value for key, value in replacement.items() if key != "response_label"
+    }
+    assert original == snapshot
 
 def test_paired_recovery_checks_expanded_edge_capacity():
     delta, *_ = _paired_recovery(limit=3)
@@ -3358,6 +3492,17 @@ def test_create_exchange_schema_keeps_canonical_edges_unchanged():
     assert schema["required"] == ["exchanges"]
     item = schema["properties"]["exchanges"]["items"]
     assert item["additionalProperties"] is False
+    descriptions = {
+        field: item["properties"][field]["description"]
+        for field in ("source_index", "target_index", "label", "response_label")
+    }
+    assert "sending the label contract to target_index" in descriptions["source_index"]
+    assert "receiving the label contract from source_index" in descriptions["target_index"]
+    assert "source_index to target_index" in descriptions["label"]
+    assert "originate at their authoritative owner" in descriptions["label"]
+    assert "only from target_index to source_index" in descriptions["response_label"]
+    assert "originate or relay the authoritative payload or decision" in descriptions["response_label"]
+    assert "null for one-way owner-to-consumer delivery" in descriptions["response_label"]
     assert set(item["required"]) == {
         "source_index",
         "target_index",
@@ -3602,7 +3747,7 @@ async def test_structural_connection_retry_uses_exchanges_and_returns_canonical_
     assert set(calls[0]["response_schema"]["properties"]) == {"exchanges"}
     assert (
         calls[0]["telemetry"]["metadata"]["schema_version"]
-        == "staged_connections_exchanges_v1"
+        == "staged_connections_exchanges_v2"
     )
     assert result["wire"] == {
         "edges": [
@@ -3696,9 +3841,23 @@ def test_component_prompt_preserves_subject_breadth_and_existing_ownership(has_b
         gate_findings=[],
         base=base,
         rejected_candidate=None,
-        architecture_context="Source material describes the requested subject.",
+        architecture_context="Retrieved example: AI tools assist a neighboring subject and a different audience.",
     )
     instructions, payload = prompt.split("\nINPUT\n", 1)
+    criteria = json.loads(payload)["acceptance_criteria"]
+    for contract_text in (instructions, criteria["objective_fidelity"]):
+        assert "concrete lifecycle responsibilities or domain decisions" in contract_text
+        assert "depict the subject's mechanisms or decision process" in contract_text
+        assert "do not create a learner session, comparison or tutoring service" in contract_text
+        assert "evidence-retrieval architecture unless explicitly requested as product or system features" in contract_text
+        assert "service nodes must own real computation" in contract_text
+        assert "topic names may organize groups" in contract_text
+        assert "actual causal, adaptation, or lifecycle relationships" in contract_text
+        assert "network requests or returns" in contract_text
+        assert "Distinguish offline fine-tuning that changes model parameters" in contract_text
+        assert "For every request, preserve the requested subject, application domain, and learner audience" in contract_text
+        assert "even when retrieved examples concern a neighboring topic" in contract_text
+        assert contract_text.index("For every request") < contract_text.index("For an applied system design")
     assert (
         "preserve the subject's breadth in a mechanism, lifecycle, or topic map"
         in instructions
@@ -3770,7 +3929,7 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
         rejected_candidate=original,
         gate_findings=[
             {
-                "code": "retrieval_and_reuse_trust",
+                "code": "artifact_reuse_lifecycle",
                 "path": "connections",
                 "rule": "semantic_gate",
                 "reason": "The contract lacks invalidation and revalidation ownership.",
@@ -3783,6 +3942,8 @@ async def test_scoped_connection_correction_preserves_contract_without_expanding
     assert "Within changed contracts, preserve valid existing payload" in prompt
     assert "provenance, scope, conditions, and alternate outcomes" in prompt
     assert "Repair the full applicable criterion" in prompt
+    assert generation.STAGED_PRODUCTION_REQUIREMENTS["artifact_reuse_lifecycle"] in prompt
+    assert prompt_input["findings"]["gate"][0]["code"] == "artifact_reuse_lifecycle"
     assert "do not expand the write set or supplied schema permissions" in prompt
     assert (
         prompt_input["rejected_candidate"]["updates"]["slot_0"]["label"]
@@ -3998,7 +4159,7 @@ async def test_component_semantic_correction_rejects_assembled_identity_collisio
     )
     assert "Do not re-add retained components" in prompt
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v40"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_components_v50"
     )
 
     # A fresh bounded response must fix the collision; invalid rows are never dropped.

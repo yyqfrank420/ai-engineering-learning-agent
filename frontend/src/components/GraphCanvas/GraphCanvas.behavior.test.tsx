@@ -231,10 +231,11 @@ describe('GraphCanvas behavior', () => {
   });
 
   it('passes measured unobscured space for side and bottom inspectors, then clears stale selection', async () => {
-    let notifyResize: (() => void) | undefined;
+    const resizeCallbacks: Array<() => void> = [];
+    const notifyResize = () => resizeCallbacks.forEach(callback => callback());
     class TestResizeObserver {
       constructor(callback: ResizeObserverCallback) {
-        notifyResize = () => callback([], this as ResizeObserver);
+        resizeCallbacks.push(() => callback([], this as ResizeObserver));
       }
       observe() {}
       unobserve() {}

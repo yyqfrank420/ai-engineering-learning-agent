@@ -70,11 +70,13 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
-   Web research selects Bing through DDGS with safe search and makes one Brave fallback query
-   if the primary results contain no usable snippets. Provider failures log their backend and
-   exception class without recording user queries. Ordinary research keeps
-   the original topic in one query; applied design requests also search the domain workflow and
-   failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
+   Web research uses one Anthropic server-search request through the shared provider adapter.
+   The Sonnet 5.5 research role combines the topic and domain questions into one search, with
+   `max_uses: 1`, a 45-second deadline and no retry, fallback or continuation. Its source packet
+   contains only provider citation excerpts matched to exact returned URLs; generated prose
+   and encrypted result content are excluded. Tool errors or incomplete results degrade to
+   book evidence with an explicit unavailable status. At most six source records reach
+   synthesis. Search results carry no guarantee
    of relevance or factual support; synthesis must cite supported findings or state the evidence
    limitation. Internal evaluation captures the retained URLs' query and backend provenance.
    Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
@@ -114,7 +116,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    nudge a focused node, zone, or border by one diagram unit, or ten with Shift. Fit includes expanded
    frames. These controls do not alter graph contracts.
    Its render gate emits a reversible
-   preview before one Sonnet medium component gate call. The full candidate follows the same render,
+   preview before one Opus 5.5 medium component gate call. The full candidate follows the same render,
    reversible-preview, then connection-gate order. These previews remain nonauthoritative until
    semantic acceptance and persistence. One malformed gate result ends the request. Each layer has at most
    two candidates. A connection retry cannot reopen an accepted component layer.
@@ -160,7 +162,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    The shared `learning_or_release` criterion includes owned offline training, batch updates,
    and releases requiring human approval. Live deployment and automatic feedback are not required.
    Dataset curation, passive downstream consumption, and frozen inference alone do not qualify.
-   Component generation v29 and component review v18 share this ownership rule.
+   Component generation v39 and component review v27 share this ownership rule.
    The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
    execution. Streaming transport mechanics guide authoring rather than independently blocking a
@@ -356,7 +358,8 @@ persistence, so Cloud Run scale-out neither resets the limits nor stores raw ema
 limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
-and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
+and connection wires. Opus 5.5 medium gates each candidate once. The independent `STAGED_GATE_MODEL` override
+selects staged acceptance; `GRAPH_QA_MODEL` controls legacy graph QA. The server owns graph mutation,
 validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
@@ -374,12 +377,32 @@ proposals become requirements only when the user adopts them. Graph publication 
 only to graph answers. Internal evaluation captures the exact book and research strings passed to
 synthesis, including empty context, under the prompt release identity.
 
+A broad additive extension preserves saved nodes and connections. It may append new
+node IDs to an existing group while retaining that group's metadata and prior membership
+order. Removing or moving existing members remains outside extension authority.
+
+Application routing, general workers and architecture roles default to `claude-opus-5-5`.
+Graph review defaults to `claude-sonnet-5-5`; Kimi K3 remains the graph author.
+Environment overrides remain explicit. The configured model ID is captured in call telemetry.
+
 Graph explanations use `EXPLANATION_MODEL` (default `claude-sonnet-5-5`) independently of
-`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v32` includes the user's September 28
+`ORCHESTRATOR_MODEL`. Prompt release `architecture_blocks_v41` includes the user's September 28
 writing rules against filler, stock phrasing, and decorative formatting. These rules apply to
 authored prose; exact graph labels, citations, quotations, code, and schema keys retain their
-original form. They do not add a publication gate. Routing and graph authoring models are unchanged.
-The model can be rolled back through `EXPLANATION_MODEL`; reverting the prompt change restores v30.
+original form. Word budget guidance counts headings, block content and visible citation labels
+across the entire rendered answer. Tight budgets favor one block with a short title unless the
+requested format needs multiple sections. Upper bounds target about 20% headroom; exact counts
+remain authoritative. This guidance does not add truncation, retries or a publication gate.
+Web search being enabled does not require a report of web findings. An explicit research request
+requires findings supported by the supplied web evidence and exact inline URL citations, even
+when a diagram is present. Shallow snippets cannot establish stronger comparisons or independent
+verification. Ordinary diagram explanations omit unrequested product comparisons. Explicit
+paragraph counts override default blocks and bullets. Book references use their supplied labels
+as plain text; they never become Markdown link destinations.
+Graph descriptions express intended behavior. Performance claims need supplied evidence.
+Fixed branching alone does not establish predictable cost or latency.
+When the user sets a word limit, examples are included only if requested.
+The model can be rolled back through `EXPLANATION_MODEL`; reverting this prompt change restores the current main release, v33.
 
 The September 12 simplification keeps two authoring stages because a complete graph can be a large
 output. Component review catches responsibility defects while that stage can repair them; connection

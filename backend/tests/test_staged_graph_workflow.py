@@ -42,6 +42,46 @@ def test_wire_diagnostic_fingerprints_rejected_wire_without_changing_repair_inpu
     }
 
 
+def test_unreachable_diagnostic_preserves_rejected_payload_without_changing_finding():
+    wire = {
+        "edges": [{
+            "source_index": 1,
+            "target_index": 0,
+            "label": "private output",
+            "flow": 400,
+            "sync": 500,
+        }]
+    }
+    accepted = [
+        {"index": 0, "is_root": True, "primary_flow_member": True},
+        {"index": 1, "is_root": False, "primary_flow_member": True},
+    ]
+    with pytest.raises(generation.StagedGenerationError) as caught:
+        generation._parse_connection_wire(
+            json.dumps(wire),
+            accepted_components=accepted,
+            edge_limit=5,
+        )
+    diagnostic = workflow._failure_diagnostic(
+        caught.value,
+        stage="connections",
+        attempt=1,
+        candidate={"edges": []},
+    )
+    assert diagnostic["reason"] == "primary_flow_unreachable"
+    assert diagnostic["path"] == "edges"
+    assert diagnostic["candidate_fingerprint"] == generation._fingerprint(wire)
+    assert diagnostic["candidate_fingerprint"] != workflow._fingerprint({"edges": []})
+    assert "private output" not in json.dumps(diagnostic)
+    assert "private output" not in json.dumps(vars(caught.value))
+    assert workflow._safe_finding(caught.value, stage="connections") == {
+        "code": "connection_wire_unreachable",
+        "path": "connections",
+        "rule": "contract_validation",
+        "reason": "connection_wire_unreachable",
+    }
+
+
 def test_failure_diagnostic_rejects_unsafe_optional_details():
     error = generation.StagedGenerationError(
         "connection_wire_invalid", diagnostic_reason="private output",
@@ -599,7 +639,7 @@ async def test_connection_recovery_crosses_real_generation_boundary(monkeypatch)
     assert [
         generation._generation_schema_version("connections", call["schema"])
         for call in generation_calls
-    ] == ["staged_connections_exchanges_v1", "staged_connections_exchange_correction_v1"]
+    ] == ["staged_connections_exchanges_v2", "staged_connections_exchange_correction_v1"]
     assert [call["attempt"] for call in generation_calls] == [0, 1]
     assert connection_reviews[0]["evidence_bundle"]["connection_exchanges"] == [
         {"request_record_index": 0, "response_record_index": None}
@@ -4879,3 +4919,287 @@ async def test_draft_progress_summary_bounds_names_and_omits_graph_details():
                                   "connection_count": 1, "labels": ["A" * 48, "B" * 48]}
     assert "PRIVATE_GRAPH_DETAIL" not in repr(events)
     assert "capabilities" not in repr(events)
+
+
+@pytest.mark.parametrize("changed_field", [None, "label", "kind", "color", "custom_style"])
+def test_extension_restores_saved_group_metadata_with_added_members_without_masking_changes(changed_field):
+    saved = _accepted_staged_graph()
+    saved["groups"][0].update(color="blue", custom_style={"padding": 24})
+    candidate = copy.deepcopy(saved)
+    candidate["nodes"].append({"id": "added", "label": "New store"})
+    candidate["edges"].append({"source": "n2", "target": "added", "label": "Persist"})
+    candidate["groups"][0]["nodeIds"].append("added")
+    del candidate["groups"][0]["color"]
+    del candidate["groups"][0]["custom_style"]
+    if changed_field:
+        candidate["groups"][0][changed_field] = {"padding": 99} if changed_field == "custom_style" else "changed"
+    _, permissions = workflow.staged_edit_scope(
+        "Extend this diagram", saved, resolved_complexity="prototype", add_only=True
+    )
+
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions=permissions
+    )
+    if changed_field:
+        assert preserved["groups"][0][changed_field] == candidate["groups"][0][changed_field]
+        with pytest.raises(ValueError, match="extension changed saved groups"):
+            workflow.admit_staged_graph_edit(
+                saved, preserved, resolved_complexity="prototype",
+                repair_contract=None, mutation_permissions=permissions,
+            )
+    else:
+        assert preserved["groups"][0]["color"] == "blue"
+        assert preserved["groups"][0]["custom_style"] == {"padding": 24}
+        assert preserved["groups"][0]["nodeIds"] == saved["groups"][0]["nodeIds"] + ["added"]
+        assert workflow.admit_staged_graph_edit(
+            saved, preserved, resolved_complexity="prototype",
+            repair_contract=None, mutation_permissions=permissions,
+        ) == preserved
+
+
+def test_extension_projection_can_join_saved_data_group_and_add_identity_group():
+    base_build = workflow.reconstruct_staged_graph_build(_accepted_staged_graph())
+    base_build["components"][1].update(
+        label="Approved notes store", type="datastore",
+        group_label="Data stores", group_kind="data",
+    )
+    saved = project_graph_data(base_build)
+    next(group for group in saved["groups"] if group["kind"] == "data")["color"] = "blue"
+    build = workflow.reconstruct_staged_graph_build(saved)
+    for index, label, group_label, group_kind, component_type in (
+        (2, "Learner identity service", "Identity and progress", "runtime", "service"),
+        (3, "Learner progress store", "Data stores", "data", "datastore"),
+        (4, "Progress sync service", "Identity and progress", "runtime", "service"),
+    ):
+        build["components"].append({
+            "model_index": index, "server_id": f"n{index + 1}",
+            "label": label, "type": component_type, "responsibility": label,
+            "group_label": group_label, "group_kind": group_kind,
+            "primary_flow_member": False,
+        })
+        build["connections"].append({
+            "source_id": "n2", "target_id": f"n{index + 1}",
+            "label": f"Invoke {label}", "flow": "runtime", "sync": "sync",
+        })
+    candidate = project_graph_data(build)
+    _, permissions = workflow.staged_edit_scope(
+        "Extend this diagram", saved, resolved_complexity="prototype", add_only=True
+    )
+    preserved = workflow._preserve_existing_presentation(
+        candidate, saved, edit_permissions=permissions
+    )
+
+    admitted = workflow.admit_staged_graph_edit(
+        saved, preserved, resolved_complexity="prototype",
+        repair_contract=None, mutation_permissions=permissions,
+    )
+
+    data_group = next(group for group in admitted["groups"] if group["kind"] == "data")
+    assert data_group["nodeIds"] == ["n2", "n4"]
+    assert data_group["color"] == "blue"
+    assert admitted["groups"][-1]["nodeIds"] == ["n3", "n5"]
+    assert admitted["nodes"][:2] == saved["nodes"]
+    assert admitted["edges"][:len(saved["edges"])] == saved["edges"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["sink", "delegation", "refusal"])
+async def test_attachment_component_feasibility_correction_publishes_or_preserves_baseline(
+    monkeypatch,
+    outcome,
+):
+    from agent.nodes import staged_graph_gate as gate
+    from agent.stream_utils import StructuredLLMResponse
+
+    previous = json.loads(
+        (
+            Path(__file__).with_name("fixtures")
+            / "staged_model_serving_35674588966.json"
+        ).read_text()
+    )
+    original = copy.deepcopy(previous)
+    base, previous_contract = _current_review_contract(previous)
+    request = (
+        "Expand the Serving Monitor component while preserving the original graph topic "
+        "and existing components. Add exactly one directly connected responsibility."
+    )
+    anchor_index = 3
+    addition_index = len(base["components"])
+    group = next(group for group in previous["groups"] if "n4" in group["nodeIds"])
+    generations = []
+    reviews = []
+
+    async def generate(**kwargs):
+        generations.append(copy.deepcopy(kwargs))
+        prompt = json.loads(kwargs["prompt"].split("\nINPUT\n", 1)[1])
+        if kwargs["stage"] == "components":
+            assert prompt["baseline_connections"] == workflow._connection_prompt_base(
+                base
+            )
+            for row, edge in zip(
+                prompt["baseline_connections"], base["connections"], strict=True
+            ):
+                for endpoint in ("source", "target"):
+                    index = row[f"{endpoint}_index"]
+                    assert (
+                        base["components"][index]["server_id"] == edge[f"{endpoint}_id"]
+                    )
+                    assert (
+                        prompt["base"]["components"][index]["label"]
+                        == base["components"][index]["label"]
+                    )
+            plan = prompt["connection_addition_plan"]
+            assert plan["anchor_component_indexes"] == [anchor_index]
+            assert plan["maximum_addition_count"] == 2
+            assert "required inputs and outcomes must be achievable" in kwargs["prompt"]
+            corrected = len(generations) > 1 and outcome != "refusal"
+            if len(generations) > 1:
+                assert (
+                    prompt["findings"]["structural"][0]["code"] == "objective_fidelity"
+                )
+                assert (
+                    "outside the permitted attachment"
+                    in prompt["findings"]["structural"][0]["reason"]
+                )
+            label = (
+                "Metrics Dashboard"
+                if corrected and outcome == "sink"
+                else "Metric Normalizer"
+                if corrected
+                else "Alert Triage"
+                if len(generations) == 1
+                else "Regression Triage"
+            )
+            responsibility = (
+                "Displays supplied latency and token-usage measurements for operators."
+                if corrected and outcome == "sink"
+                else "Normalizes supplied latency and token-usage measurements and returns them to Serving Monitor for its unchanged collection and metrics-storage contracts."
+                if corrected
+                else "Receives monitor alerts and directly invokes Model API rollback."
+            )
+            return json.dumps(
+                {
+                    "additions": [
+                        {
+                            "label": label,
+                            "type": 107 if corrected and outcome == "sink" else 101,
+                            "responsibility": responsibility,
+                            "group_label": group["label"],
+                            "group_kind": 602,
+                            "primary_flow_member": False,
+                        }
+                    ],
+                    "updates": {},
+                    "capabilities": base["capabilities"],
+                }
+            )
+        assert len(reviews) == 2
+        additions = [
+            {
+                "source_index": anchor_index,
+                "target_index": addition_index,
+                "label": "Deliver latency and token-usage measurements"
+                if outcome == "sink"
+                else "Request measurement normalization",
+                "flow": 400,
+                "sync": 501 if outcome == "sink" else 500,
+            }
+        ]
+        if outcome == "delegation":
+            additions.append(
+                {
+                    "source_index": addition_index,
+                    "target_index": anchor_index,
+                    "label": "Return normalized latency and token-usage measurements",
+                    "flow": 400,
+                    "sync": 500,
+                }
+            )
+        return json.dumps({"additions": additions, "updates": {}})
+
+    async def component_review_response(**kwargs):
+        prompt = kwargs["messages"][0]["content"]
+        evidence = json.loads(prompt.split("Evidence bundle: ", 1)[1].split("\n", 1)[0])
+        scope = evidence["review_scope"]
+        reviews.append(scope)
+        assert scope["edit_permissions"]["added_edge_anchor_node_ids"] == ["n4"]
+        assert scope["edit_permissions"]["allowed_new_edge_count"] == 2
+        assert scope["baseline_connections"]
+        assert "Use review_scope.edit_permissions" in prompt
+        assert "do not require authored connection-stage edges" in prompt
+        assert "does not establish an adopted or enacted obligation" in prompt
+        rules = kwargs["response_schema"]["properties"]["rule_reviews"]["items"][
+            "properties"
+        ]["rule_code"]["enum"]
+        reject = len(reviews) == 1 or outcome == "refusal"
+        rows = [
+            {
+                "rule_code": rule,
+                "satisfied": not (reject and rule == "objective_fidelity"),
+                "reason": "The new responsibility requires a direct rollback peer connection outside the permitted attachment."
+                if reject and rule == "objective_fidelity"
+                else "The responsibility fits the authorized attachment and retained contracts.",
+                "record_indexes": [addition_index]
+                if reject and rule == "objective_fidelity"
+                else [],
+            }
+            for rule in rules
+        ]
+        return StructuredLLMResponse(
+            text=json.dumps({"rule_reviews": rows}),
+            finish_reason="end_turn",
+            input_tokens=1,
+            output_tokens=1,
+            provider="test",
+            model="test",
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate)
+    monkeypatch.setattr(gate, "stream_structured_llm", component_review_response)
+    monkeypatch.setattr(workflow, "review_components", gate.review_components)
+    monkeypatch.setattr(workflow, "review_connections", _approve_gate)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "enqueue_analytics_event", lambda **_event: None)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            complexity="auto",
+            user_message=request,
+            design_query=request,
+            graph_data=previous,
+            approved_graph_data=previous,
+            approved_graph_contract=previous_contract,
+        )
+    )
+    assert previous == original
+    assert len(reviews) == 2
+    if outcome == "refusal":
+        assert [call["stage"] for call in generations] == ["components", "components"]
+        assert (
+            result["graph_operation"]["failure_code"]
+            == "staged_component_attempts_exhausted"
+        )
+        assert result["graph_data"] == original
+        assert result["graph_contract"] == previous_contract
+        assert result["graph_changed"] is False
+        assert result["graph_publication"] == "preserved"
+    else:
+        assert [call["stage"] for call in generations] == [
+            "components",
+            "components",
+            "connections",
+        ]
+        assert result["graph_publication"] == "approved"
+        assert result["graph_changed"] is True
+        graph = result["graph_data"]
+        assert graph["version"] != original["version"]
+        assert graph["nodes"][:-1] == original["nodes"]
+        assert graph["edges"][: len(original["edges"])] == original["edges"]
+        assert len(graph["nodes"]) == len(original["nodes"]) + 1
+        assert len(graph["edges"]) == len(original["edges"]) + (
+            2 if outcome == "delegation" else 1
+        )
+        assert all(
+            {edge["source"], edge["target"]} == {"n4", "n6"}
+            for edge in graph["edges"][len(original["edges"]) :]
+        )

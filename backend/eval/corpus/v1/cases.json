@@ -10,7 +10,7 @@
     "calibration": {
       "judge_release": "semantic-rubric-judge-v18",
       "judge_provider": "anthropic",
-      "judge_model": "claude-sonnet-5",
+      "judge_model": "claude-sonnet-5-5",
       "evidence_run_id": null,
       "evidence_commit_sha": null,
       "evidence_sha256": null,

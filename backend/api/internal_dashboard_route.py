@@ -86,9 +86,19 @@ def _nullable_nonnegative_int(value: Any) -> int | None:
         return None
 
 
+def _eval_web_search_requests(usage: dict[str, Any]) -> int:
+    value = usage.get("web_search_requests", 0)
+    return value if type(value) is int and value >= 0 else 0
+
+
 def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
     fields = {"input_tokens", "output_tokens"} | (
-        {"cache_creation_input_tokens", "cache_read_input_tokens"} & usage.keys()
+        {
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+            "web_search_requests",
+        }
+        & usage.keys()
     )
     if "incomplete_usage" in str(usage.get("status") or "") or any(
         type(usage.get(field)) is not int or usage[field] < 0 for field in fields
@@ -425,6 +435,7 @@ async def dashboard_eval_telemetry(
                         attempt.get("cache_read_input_tokens")
                     ),
                     "output_tokens": _nonnegative_int(attempt.get("output_tokens")),
+                    "web_search_requests": _eval_web_search_requests(attempt),
                     "queue_wait_ms": _nonnegative_int(attempt.get("queue_wait_ms")),
                     "duration_ms": _nonnegative_int(attempt.get("duration_ms")),
                     "first_reasoning_delta_ms": _nullable_nonnegative_int(
@@ -464,6 +475,10 @@ async def dashboard_eval_telemetry(
                 "fallback": row["used_fallback"],
                 "usage_complete": (
                     all(attempt["usage_complete"] is not False for attempt in attempts)
+                    and (
+                        type(metadata.get("web_search_requests", 0)) is int
+                        and metadata.get("web_search_requests", 0) >= 0
+                    )
                     if attempts
                     else _eval_usage_complete(metadata)
                 ),
@@ -475,6 +490,7 @@ async def dashboard_eval_telemetry(
                     metadata.get("cache_read_input_tokens")
                 ),
                 "output_tokens": _nonnegative_int(metadata.get("output_tokens")),
+                "web_search_requests": _eval_web_search_requests(metadata),
                 "system_chars": _nonnegative_int(metadata.get("system_chars")),
                 "message_chars": _nonnegative_int(metadata.get("message_chars")),
                 "schema_chars": _nonnegative_int(metadata.get("schema_chars")),

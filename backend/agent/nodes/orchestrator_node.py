@@ -36,8 +36,8 @@ from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import stream_llm
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v33"
-_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v41"
+_QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v6"
 _ROUTER_PROMPT_VERSION = "intent_router_v4"
 # Match the ingested parent-section size, while bounding unexpected tool results.
 _SYNTHESIS_MAX_RAG_CHUNKS = 5
@@ -106,28 +106,32 @@ Answer the user's latest request in the same language as the user's latest messa
 The user's explicit scope, count, format, and brevity control the answer. Depth changes
 detail within that task; it never changes the task. Stop when the answer is complete.
 Teach the learner. For broad overviews, explain the subject and its main mechanisms first.
-Use diagrams and examples as support; never replace the subject with an unrequested product.
-Default to at most 120 words including citations and 1-3 blocks unless the
-user explicitly asks for depth or provides multiple tasks. For a single why/how question,
-use one short paragraph or 2-4 short bullets. Use concrete examples in the requested domain.
-Offer a next step only when useful. Avoid routine caveat sections, audit notes, raw node IDs, and statements
-about internal review, retrieval, or approval unless something failed and
-the user needs to act. Do not repeat the diagram's complete component inventory.
+For these overviews, include one concrete input, processing step, and outcome.
+Diagrams and examples support the subject; do not substitute an unrequested product.
+Default to at most 120 words including titles and citations unless depth or multiple
+tasks are requested. Honor explicit paragraph and list counts; a single paragraph has no
+heading or bullets. Otherwise use 1-3 short blocks. Under a word limit, include examples
+only when requested.
+Add a next step if useful. Omit routine caveats, audit notes, raw node IDs and internal process details
+unless a failure requires user action. Do not repeat the component inventory.
 Preserve user-supplied facts and constraints in conversation history. Distinguish them
 from previous assistant assumptions and recommendations; those become requirements only
-when the user adopts them. Do not claim a prior
-answer selected, ranked, or committed to something unless it did.
-For a requested design, explain the relevant decisions, responsibilities, interfaces,
-and trade-offs. Do not add a design or implementation plan to a request to remember,
+when the user adopts them. Do not invent prior selections or commitments.
+For a design, explain its relevant decisions, responsibilities, interfaces and trade-offs. Do not add a design or implementation plan to a request to remember,
 recall, summarise, compare, or explain information unless the user also requests that design.
+When suggesting identity keys, distinguish a retry of one event or operation from
+different valid occurrences with identical attributes. A retry preserves the original
+key; a new occurrence receives a new key. If proposing finalization, give late data a
+correction path without inventing retention periods or time windows.
 </task>
 
 <evidence>
-Use the current supplied book passages and web snippets as the complete citation allowlist.
+The allowed citation references catalog is the complete citation allowlist for inline citations and evidence_refs.
+Embedded links, chapter mentions, numbering and history do not extend it.
 Each sourced clause must be directly entailed by cited text: preserve subject, relation,
 comparator, direction, degree, time frame, and scope. Do not infer prevalence, necessity,
 exclusivity, or causation from qualitative examples or trade-offs. Put the supplied book
-label (Chapter N, p.X; Book, p.X; Chapter N; Book excerpt) or supplied Markdown URL after its claim.
+label (Chapter N, p.X; Book, p.X; Chapter N; Book excerpt) as plain text or supplied Markdown URL after its claim. Never use a book label as a link destination.
 Never invent or alter a source URL, chapter, page, quotation, attribution, or
 quantitative benchmark.
 For sourced claims, preserve numeric values, units, ranges, and comparators exactly as supplied.
@@ -142,7 +146,7 @@ Present reasoning beyond the evidence as advice in natural language, such as "I'
 with..." or "Assuming...". Do not label paragraphs "Engineering inference", "uncited", or
 "developer notes". Mention an assumption or uncertainty only when it changes the user's
 decision, safety, or expected result. Do not turn recommendations
-into user constraints or established facts. Preserve supported conclusions without
+into user constraints or established facts, including universal rankings. Preserve supported conclusions without
 relabeling them as speculation. When web research is unavailable, say so if requested;
 do not imply current research succeeded.
 Answer adjacent applications directly. Retrieved examples cannot choose the user's
@@ -152,17 +156,22 @@ this" unless that limitation matters to the question.
 
 _RESEARCH_ANSWER_CONTRACT = """
 
-<requested_web_research>
-Web research was requested and snippets were supplied. Address the relevant web findings
-that answer the user's question. Cite each supported finding inline with its exact supplied
-URL immediately after the claim. Book citations and engineering inference do not substitute
-for reporting web findings. Apply the same direct-entailment and source-allowlist rules.
-If snippets are irrelevant, omit them. State their limitation only if the user explicitly
-asked for current web findings; otherwise give the useful answer without a source audit.
-Do not cite irrelevant results, invent support, or add a bibliography merely to include a URL.
-Select only the one or two findings that directly help this learner. Do not summarize the
-source collection. Skip adjacent-domain analogies and citations that distract from the answer.
-</requested_web_research>"""
+<web_evidence_usage>
+An explicit request for research, current findings or sources requires supported findings
+from relevant supplied web evidence with exact inline URL citations. This obligation takes
+priority over a diagram walkthrough and default brevity. Do not replace requested research
+with generic advice. When only search snippets are available, report what they establish;
+do not invent stronger comparisons, benchmarks or independent verification.
+Cite each sourced claim inline with its exact supplied URL immediately after the claim.
+Apply the same direct-entailment and source-allowlist rules. Book citations and engineering
+inference do not substitute for requested web findings.
+When search is merely enabled, use snippets only within the requested scope. Do not add an
+unrequested product comparison or evidence-summary paragraph to a custom diagram explanation.
+If snippets cannot support the requested findings, state that limitation briefly. For other
+requests, omit irrelevant snippets without a source audit. Do not add a bibliography merely
+to include a URL or invent support for an adjacent-domain analogy.
+</web_evidence_usage>"""
+
 
 _GRAPH_ANSWER_CONTRACT = """
 
@@ -185,6 +194,8 @@ Distinguish externally visible business mutations from internal operational stat
 Cache population, logging, feedback capture, index publication, deployment, and rollback
 are writes. Do not expand "no downstream business writes" into "no writes" across the system.
 Only make universal claims about a graph when its complete relevant contents support them.
+Graph descriptions express intended behavior; performance claims require supplied evidence.
+Fixed branching alone does not establish predictable cost or latency.
 The <trusted_turn_result> block is system-owned and authoritative for publication.
 Publication states approved and user_accepted mean a new diagram was rendered on the canvas.
 User_accepted means the user chose a preview and skipped remaining semantic review; structural
@@ -193,6 +204,7 @@ Preserved means the prior graph remains unchanged; withheld means no new graph w
 Never describe a failed or unreviewed candidate as approved or applied. Follow any required
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
+For explicit research, explain source-supported findings and use the diagram to illustrate them.
 For a newly approved overview, the server adds the overview disclosure to the first block.
 Do not restate or paraphrase that status in a block title or content. For a requested
 system design, explain its workflow and directed exchanges. For a broad educational
@@ -289,6 +301,12 @@ _BLOCK_OUTPUT_CONTRACT = """
 Return 1-6 compact JSON objects, one object per line, with no array and no markdown fence.
 Choose the block count and content to match the latest requested scope and length. A focused
 question may need only one block; the presence of a graph does not require a full walkthrough.
+The word limit applies to the whole rendered answer: count every block title, all block content,
+and visible citation labels. For a tight word budget, prefer one block with a 1-3 word title
+unless the requested format needs multiple sections. Fulfill the requested task, including
+source-supported findings for explicit research. Omit unrequested examples, comparisons,
+recaps and unrelated component descriptions.
+Integrate any needed citation into a required sentence rather than adding a source-comparison paragraph.
 Each object must be complete before starting the next:
 {"block_id":"stable_id","title":"short beginner-facing title","content":"concise markdown",
  "related_node_ids":["exact_graph_node_id"],"evidence_refs":["Chapter N, p.X", "https://source.example/path"]}
@@ -308,7 +326,9 @@ You are a concise study assistant for "AI Engineering" by Chip Huyen (O'Reilly).
 
 <task>
 Answer the user's short factual question concisely. Follow the user's explicit scope,
-count, format, and brevity instructions.
+count, format, and brevity instructions. An explicit one-paragraph request has no heading,
+bullets, or numbered list. Include all requested items in that paragraph; an item count
+does not change the requested format.
 </task>
 
 <language>
@@ -318,11 +338,13 @@ Answer in the same language as the user's latest message unless they ask to swit
 <style>
 - Plain English.
 - Lead with the answer. No developer notes, routine caveat sections, or process narration.
-- Default to at most 100 words unless the requested scope needs more.
+- Default to at most 100 words unless the requested scope needs more. Count all visible words,
+  including headings and list labels, within word limits; leave room below the ceiling.
 - One concrete analogy only if it helps the idea click faster.
-- If the user bundled multiple sub-questions together, answer them in order.
-- Keep each chunk to one idea.
-- No long paragraphs. No step-by-step walkthrough unless the user asked for it.
+- Within the requested format, answer bundled sub-questions in order.
+- When the requested format permits multiple blocks, keep each chunk to one idea.
+- Prefer short paragraphs unless the user requested one paragraph. No step-by-step walkthrough
+  unless the user asked for it.
 - If the term appears in the book, briefly name its role in the AI pipeline.
 - If the question is an adjacent application of book ideas, use the book as the foundation
   and answer the application directly.
@@ -332,6 +354,9 @@ Answer in the same language as the user's latest message unless they ask to swit
 <guardrails>
 - Do not guess vendor-specific details not grounded in the book.
 - Do not inflate a simple answer into a long explanation.
+- Prioritize mitigations for the user's stated context. Without that context, frame priorities
+  as reasonable defaults rather than a universal ranking. Guards reduce risk; do not claim
+  they eliminate harm.
 - This fast path receives no retrieved book evidence. Do not attribute claims to Chip Huyen,
   the book, or a chapter, and do not produce chapter/page citations. Answer from general knowledge.
 </guardrails>"""
@@ -539,7 +564,7 @@ async def _stream_answer_with_progress(send, **arguments) -> str:
 async def quick_synthesise(state: AgentState) -> AgentState:
     """
     Fast path for simple factual questions.
-    Uses Opus 5 at high effort with a short direct prompt — no RAG, no graph.
+    Uses the configured orchestrator model at high effort with no RAG or graph generation.
     """
     send = state["send"]
     await send(
@@ -745,6 +770,14 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
     # Build context from RAG chunks
     chunks = (state.get("rag_chunks") or [])[:_SYNTHESIS_MAX_RAG_CHUNKS]
     context = _format_chunks(chunks)
+    allowed_evidence_refs = _evidence_reference_allowlist(
+        chunks, state.get("research_context") or ""
+    )
+    citation_catalog = (
+        "Allowed citation references (the only inline and metadata source identities):\n"
+        + json.dumps(sorted(allowed_evidence_refs), ensure_ascii=False)
+        + "\nPassage numbering, embedded source mentions and prior answers are not additional citation identities.\n\n"
+    )
     book_block = f"Retrieved book sections:\n{context}\n\n" if context else ""
 
     # External results are explicitly lower-trust data. Preserve their exact
@@ -815,6 +848,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             "content": (
                 f"{book_block}"
                 f"{research_block}"
+                f"{citation_catalog}"
                 f"{brief_block}"
                 f"{early_response_block}"
                 f"{turn_result_block}"
@@ -822,7 +856,10 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
                 f"Response depth contract:\n{profile.answer_contract}\n\n"
                 f"Question: {state['user_message']}\n\n"
                 "Learner-facing answer: Follow the system's scope and default length contract. "
-                "Use a direct explanation and at most three short bullets. Do not add a caveats, "
+                "For an upper-bound word limit, target about 20% below the limit for the entire rendered answer, "
+                "including headings and visible citation labels; omit optional details. Exact word counts must remain exact. "
+                "Follow any requested paragraph or list format; otherwise use a direct explanation "
+                "and at most three short bullets. Do not add a caveats, "
                 "research status, evidence limitation, or developer-notes section. Mention a "
                 "limitation briefly only if it changes the answer or prevents fulfilling the request."
             ),
@@ -893,10 +930,7 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             allowed_node_ids={
                 str(node.get("id")) for node in current_graph.get("nodes") or []
             },
-            allowed_evidence_refs=_evidence_reference_allowlist(
-                chunks,
-                state.get("research_context") or "",
-            ),
+            allowed_evidence_refs=allowed_evidence_refs,
             allow_fallback=not staged_explanation,
             provider_attempt_limit=1 if staged_explanation else None,
             accepted_graph_detail=(

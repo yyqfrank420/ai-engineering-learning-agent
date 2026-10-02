@@ -6,7 +6,10 @@ import re
 from typing import Any, Literal
 
 
-PRICE_RELEASE = "2026-09-28"
+PRICE_RELEASE = "2026-10-01"
+# https://platform.claude.com/docs/en/agents-and-tools/tool-use/web-search-tool
+# Verified 2026-10-01: $10 per 1,000 searches, charged in addition to tokens.
+ANTHROPIC_WEB_SEARCH_PRICE_USD = 0.01
 APPLICATION_PRICES_USD_PER_MILLION = {
     # Keep prior models so saved captures remain account-able after a model change.
     "claude-sonnet-5": (2.00, 10.00),
@@ -83,11 +86,10 @@ def _usage_attempts(call: dict[str, Any]) -> list[dict[str, Any]]:
             "status": call.get("status"),
             "usage_complete": call.get("usage_complete"),
             "input_tokens": call.get("input_tokens"),
-            "cache_creation_input_tokens": call.get(
-                "cache_creation_input_tokens"
-            ),
+            "cache_creation_input_tokens": call.get("cache_creation_input_tokens"),
             "cache_read_input_tokens": call.get("cache_read_input_tokens"),
             "output_tokens": call.get("output_tokens"),
+            "web_search_requests": call.get("web_search_requests", 0),
             "queue_wait_ms": call.get("queue_wait_ms"),
         }
     ]
@@ -99,6 +101,7 @@ def _empty_usage() -> dict[str, Any]:
         "cache_creation_input_tokens": 0,
         "cache_read_input_tokens": 0,
         "output_tokens": 0,
+        "web_search_requests": 0,
         "queue_wait_ms": 0,
         "estimated_usd": 0.0,
     }
@@ -132,7 +135,9 @@ def account_application_cost(
         thread_id = str(call.get("thread_id") or "")
         case_id = case_by_thread.get(thread_id)
         if case_id is None:
-            errors.append(f"application call {call_index} has no browser-case thread attribution")
+            errors.append(
+                f"application call {call_index} has no browser-case thread attribution"
+            )
             continue
         attributed_calls[case_id] += 1
         operation = str(call.get("operation") or "unknown")
@@ -144,14 +149,46 @@ def account_application_cost(
 
         attempts = _usage_attempts(call)
         if not attempts:
-            errors.append(f"application call {call_index} has no usable provider attempts")
+            errors.append(
+                f"application call {call_index} has no usable provider attempts"
+            )
             invalid_cases.add(case_id)
             invalid_operations.add((case_id, operation))
             continue
+        aggregate_search_requests = call.get("web_search_requests", 0)
+        if type(aggregate_search_requests) is not int or aggregate_search_requests < 0:
+            errors.append(f"application call {call_index} has invalid web-search usage")
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
+        elif (
+            "web_search_requests" in call
+            and call.get("usage_complete") is not False
+            and all(
+                type(attempt.get("web_search_requests", 0)) is int
+                and attempt.get("web_search_requests", 0) >= 0
+                for attempt in attempts
+            )
+            and aggregate_search_requests
+            != sum(attempt.get("web_search_requests", 0) for attempt in attempts)
+        ):
+            errors.append(
+                f"application call {call_index} has inconsistent web-search usage"
+            )
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
+        if call.get("usage_complete") is False and all(
+            attempt.get("usage_complete") is not False
+            and "incomplete_usage" not in str(attempt.get("status") or "")
+            for attempt in attempts
+        ):
+            incomplete_attempts.append(
+                f"application call {call_index} has incomplete aggregate usage"
+            )
+            invalid_cases.add(case_id)
+            invalid_operations.add((case_id, operation))
         for attempt_index, attempt in enumerate(attempts, start=1):
-            if (
-                attempt.get("usage_complete") is False
-                or "incomplete_usage" in str(attempt.get("status") or "")
+            if attempt.get("usage_complete") is False or "incomplete_usage" in str(
+                attempt.get("status") or ""
             ):
                 # No observed acceptance event does not prove the provider did no work.
                 incomplete_attempts.append(
@@ -164,6 +201,24 @@ def account_application_cost(
             if price is None:
                 errors.append(
                     f"application call {call_index} attempt {attempt_index} uses unpriced model {model!r}"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
+                continue
+            web_search_requests = attempt.get("web_search_requests", 0)
+            if type(web_search_requests) is not int or web_search_requests < 0:
+                errors.append(
+                    f"application call {call_index} attempt {attempt_index} has invalid web-search usage"
+                )
+                invalid_cases.add(case_id)
+                invalid_operations.add((case_id, operation))
+                continue
+            if web_search_requests and (
+                attempt.get("provider") != "anthropic"
+                or not model.startswith("claude-")
+            ):
+                errors.append(
+                    f"application call {call_index} attempt {attempt_index} has unsupported web-search pricing"
                 )
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
@@ -185,13 +240,16 @@ def account_application_cost(
                 invalid_cases.add(case_id)
                 invalid_operations.add((case_id, operation))
                 continue
-            if min(
-                input_tokens,
-                cache_creation_input_tokens,
-                cache_read_input_tokens,
-                output_tokens,
-                queue_wait_ms,
-            ) < 0:
+            if (
+                min(
+                    input_tokens,
+                    cache_creation_input_tokens,
+                    cache_read_input_tokens,
+                    output_tokens,
+                    queue_wait_ms,
+                )
+                < 0
+            ):
                 errors.append(
                     f"application call {call_index} attempt {attempt_index} has negative usage"
                 )
@@ -226,11 +284,9 @@ def account_application_cost(
                 * price[0]
                 * CACHE_WRITE_5M_INPUT_PRICE_MULTIPLIER
                 / 1_000_000
-                + cache_read_input_tokens
-                * price[0]
-                * cache_read_multiplier
-                / 1_000_000
+                + cache_read_input_tokens * price[0] * cache_read_multiplier / 1_000_000
                 + output_tokens * price[1] / 1_000_000
+                + web_search_requests * ANTHROPIC_WEB_SEARCH_PRICE_USD
             )
             operation_usage["provider_attempts"] += 1
             for target in (operation_usage, per_case[case_id], total):
@@ -238,6 +294,7 @@ def account_application_cost(
                 target["cache_creation_input_tokens"] += cache_creation_input_tokens
                 target["cache_read_input_tokens"] += cache_read_input_tokens
                 target["output_tokens"] += output_tokens
+                target["web_search_requests"] += web_search_requests
                 target["queue_wait_ms"] += queue_wait_ms
                 target["estimated_usd"] += estimated_usd
 
@@ -260,9 +317,7 @@ def account_application_cost(
             )
             operations.append({"operation": operation, **operation_usage})
         usage["estimated_usd"] = (
-            None
-            if case_id in invalid_cases
-            else round(usage["estimated_usd"], 6)
+            None if case_id in invalid_cases else round(usage["estimated_usd"], 6)
         )
         cases.append({"id": case_id, **usage, "operations": operations})
     total["known_subtotal_usd"] = round(total["estimated_usd"], 6)
@@ -270,7 +325,11 @@ def account_application_cost(
         None if errors or incomplete_attempts else total["known_subtotal_usd"]
     )
     return {
-        "status": "infrastructure" if errors else "incomplete" if incomplete_attempts else "pass",
+        "status": "infrastructure"
+        if errors
+        else "incomplete"
+        if incomplete_attempts
+        else "pass",
         "reason": "; ".join(dict.fromkeys(errors + incomplete_attempts)) or None,
         "usage_complete": not errors and not incomplete_attempts,
         "incomplete_attempt_count": len(incomplete_attempts),
