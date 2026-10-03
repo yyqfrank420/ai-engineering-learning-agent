@@ -409,6 +409,48 @@ def test_production_branch_policy_keeps_required_outcomes_and_controls():
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_declared_escalation_policy_matches_authoring_and_review(maturity):
+    request = "Route declared workflow exceptions for human correction and return the decision."
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=False,
+        retrieval_or_reuse=False, learning_or_release=False,
+    )
+    authored, _ = generation._attempt_prompt(
+        stage="connections", request=request, resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0,
+        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+        structural_findings=[], gate_findings=[], base=None,
+        rejected_candidate=None, accepted_components=[], accepted_context=context,
+    )
+    reviewed = gate._prompt(
+        gate="connections", user_request=request,
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity=maturity, candidate_records=[],
+        required_production_guarantees=production_proofs_for_capabilities(
+            context.prompt_value()["capabilities"], maturity=maturity
+        ),
+    )
+    authored_rules = json.loads(authored.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    reviewed_rules = json.loads(reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert authored_rules == reviewed_rules
+    criterion = reviewed_rules["edge_semantics"]
+    shared = RUBRIC_CRITERIA["edge_semantics"][1]
+    escalation = shared[shared.index("Treat declared escalation as an invoked capability."):]
+    assert escalation in criterion
+    for obligation in (
+        "presentation of the applicable exception payload to that owner",
+        "When a declared consumer needs the resulting decision or output to continue work or answer, trace it back to that consumer",
+        "A standalone asynchronous review or alert does not require a return acknowledgment",
+        "A typed terminal exception can close reporting but cannot establish separately promised review, correction, or override",
+        "Direct delivery, explicit forwarding, authoritative persistence with declared reads, or declared same-owner handling",
+        "Do not require human escalation when the request and accepted design do not declare it",
+        "Do not require tool observations for an action that did not run",
+    ):
+        assert obligation in criterion
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
 def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturity):
     criterion = staged_review_requirements("connections", maturity)["edge_semantics"]
 

@@ -42,7 +42,7 @@ from agent.tools.service_expansion_tool import expand_application_services
 
 _EFFORT = "low"
 _COMPONENT_PROMPT_VERSION = "staged_components_v44"
-_CONNECTION_PROMPT_VERSION = "staged_connections_v38"
+_CONNECTION_PROMPT_VERSION = "staged_connections_v39"
 _COMPONENT_SCHEMA_VERSION = "staged_components_response_v3"
 _CONNECTION_SCHEMA_VERSION = "staged_connections_exchanges_v1"
 _FINGERPRINT = re.compile(r"[0-9a-f]{64}")
@@ -687,6 +687,8 @@ async def generate_connection_candidate(
 def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
     properties = schema["properties"]
     if "additions" in properties:
+        if stage == "components" and "anyOf" in properties["additions"]["items"]:
+            return "staged_components_delta_v3"
         if "response_label" in properties["additions"]["items"].get("properties", {}):
             return "staged_connections_exchange_correction_v1"
         if "removals" in properties:
@@ -700,6 +702,8 @@ def _generation_schema_version(stage: str, schema: Mapping[str, Any]) -> str:
         if "removals" in candidate_properties:
             return "staged_components_recovery_response_v1"
         if "additions" in candidate_properties:
+            if "anyOf" in candidate_properties["additions"]["items"]:
+                return "staged_components_edit_response_v1"
             return "staged_components_correction_response_v2"
         return _COMPONENT_SCHEMA_VERSION
     return _CONNECTION_SCHEMA_VERSION
@@ -2044,6 +2048,45 @@ def _component_edit_delta(
             *sorted(composition & {"title", "assumptions"}),
         ),
     )
+    additions = delta.schema["properties"]["additions"]
+    record_schema = schema["properties"]["components"]["items"]
+    non_component = deepcopy(record_schema)
+    non_component["properties"]["type"]["enum"] = [
+        code for code in NODE_TYPE_CODES if code != 109
+    ]
+    non_component["properties"]["parent_index"] = {"type": "null"}
+    branches = [non_component]
+    update_slots = delta.schema["properties"]["updates"]["properties"]
+    parent_indexes = [
+        position
+        for position, index in enumerate(delta.retained_indexes)
+        if wire["components"][index]["type"] == 101
+        or "type" in update_slots.get(f"slot_{index}", {}).get("properties", {})
+    ]
+    if additions["maxItems"] >= 2:
+        parent_indexes.extend(
+            range(
+                len(delta.retained_indexes),
+                len(delta.retained_indexes) + additions["maxItems"],
+            )
+        )
+    parent_schema = record_schema["properties"]["parent_index"]
+    parent_indexes = [
+        index
+        for index in parent_indexes
+        if parent_schema["minimum"] <= index <= parent_schema["maximum"]
+    ]
+    if parent_indexes:
+        component = deepcopy(record_schema)
+        component["properties"]["type"]["enum"] = [109]
+        component["properties"]["parent_index"] = {
+            **parent_schema,
+            "type": "integer",
+            "enum": parent_indexes,
+        }
+        component["required"] = [*component["required"], "parent_index"]
+        branches.append(component)
+    additions["items"] = {"anyOf": branches}
     if root_position not in delta.retained_indexes:
         raise StagedGenerationError("edit_delta_root_removal_forbidden")
     wire["root_index"] = root_position

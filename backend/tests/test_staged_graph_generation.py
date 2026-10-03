@@ -872,7 +872,7 @@ async def test_connection_prompt_carries_authoritative_accepted_context(
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert (
-        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v38"
+        calls[0]["telemetry"]["metadata"]["prompt_version"] == "staged_connections_v39"
     )
     assert prompt_input["accepted_context"] == _accepted_context()
     assert "streaming_integrity" not in prompt_input["acceptance_criteria"]
@@ -1724,7 +1724,7 @@ def test_component_delta_removal_reindexes_root_without_reordering_retained_reco
     assert len(base["components"]) == 2
 
 
-def test_scoped_component_edit_rejects_null_update_and_keeps_original_schema_identity():
+def test_scoped_component_edit_rejects_null_update_and_versions_additions_schema():
     delta = generation._component_edit_delta(
         _edit_base(),
         _permissions(editable_node_fields={"n1": ["label"]}),
@@ -1733,7 +1733,7 @@ def test_scoped_component_edit_rejects_null_update_and_keeps_original_schema_ide
     response = delta.extract(delta.base)
     assert response["updates"]["slot_0"] == {"label": "Request gateway"}
     assert generation._generation_schema_version("components", delta.schema) == (
-        "staged_components_delta_v1"
+        "staged_components_delta_v3"
     )
     response["updates"]["slot_0"] = None
     with pytest.raises(generation.StagedGenerationError):
@@ -4473,3 +4473,285 @@ def test_service_expansion_connection_guidance_is_scoped(stage, expansion):
         "Preserve locked parent records. Containment does not imply runtime forwarding",
     ):
         assert (guidance in prompt) == (expansion and stage == "connections")
+
+
+@pytest.mark.parametrize("maximum", [1, 2])
+def test_component_edit_additions_provider_schema_requires_owned_component_parent(
+    maximum,
+):
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    schema = generation.component_generation_schema(_write_set())
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(allowed_new_node_count=maximum),
+        schema,
+    )
+    raw_parent = delta.schema["properties"]["additions"]["items"]["anyOf"][1][
+        "properties"
+    ]["parent_index"]
+    original_parent = schema["properties"]["components"]["items"]["properties"][
+        "parent_index"
+    ]
+    assert raw_parent["minimum"] == original_parent["minimum"]
+    assert raw_parent["maximum"] == original_parent["maximum"]
+    branches = _anthropic_response_schema(delta.schema)["properties"]["additions"][
+        "items"
+    ]["anyOf"]
+    non_component, component = branches
+    assert non_component["properties"]["type"]["enum"] == [
+        code for code in generation.NODE_TYPE_CODES if code != 109
+    ]
+    assert non_component["properties"]["parent_index"] == {"type": "null"}
+    assert "parent_index" not in non_component["required"]
+    assert component["properties"]["type"]["enum"] == [109]
+    assert "parent_index" in component["required"]
+    assert component["properties"]["parent_index"] == {
+        "type": "integer",
+        "enum": [0] if maximum == 1 else [0, 2, 3],
+    }
+    assert 1 not in component["properties"]["parent_index"]["enum"]
+    assert set(component["required"]) == set(
+        schema["properties"]["components"]["items"]["required"]
+    ) | {"parent_index"}
+    assert (
+        generation._generation_schema_version("components", delta.schema)
+        == "staged_components_delta_v3"
+    )
+    assert (
+        generation._generation_schema_version(
+            "components", generation._component_create_response_schema(schema)
+        )
+        == generation._COMPONENT_SCHEMA_VERSION
+    )
+
+
+@pytest.mark.parametrize("parent", [None, True, 1, "0"])
+def test_component_edit_owned_addition_rejects_invalid_parent_without_remapping(parent):
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(allowed_new_node_count=1),
+        generation.component_generation_schema(_write_set()),
+    )
+    addition = {
+        **_component_wire()["components"][0],
+        "label": "Internal coordinator",
+        "type": 109,
+        "parent_index": parent,
+    }
+    response = {
+        "additions": [addition],
+        "updates": {},
+        "capabilities": delta.base["capabilities"],
+    }
+    assembled = delta.assemble(json.dumps(response))
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ):
+        generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    del addition["parent_index"]
+    assembled = delta.assemble(json.dumps(response))
+    with pytest.raises(
+        generation.StagedGenerationError, match="component_wire_invalid"
+    ):
+        generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+
+
+def test_component_edit_additions_omit_component_branch_without_possible_parent():
+    base = _edit_base()
+    base["components"][0]["type"] = "gateway"
+    delta = generation._component_edit_delta(
+        base,
+        _permissions(allowed_new_node_count=1),
+        generation.component_generation_schema(_write_set()),
+    )
+    branches = delta.schema["properties"]["additions"]["items"]["anyOf"]
+    assert len(branches) == 1
+    assert 109 not in branches[0]["properties"]["type"]["enum"]
+
+
+@pytest.mark.parametrize("new_parent", [False, True])
+def test_component_edit_additions_preserve_retained_or_forward_new_service_owner(
+    new_parent,
+):
+    base = _edit_base()
+    if new_parent:
+        base["components"][0]["type"] = "gateway"
+    maximum = 2 if new_parent else 1
+    delta = generation._component_edit_delta(
+        base,
+        _permissions(allowed_new_node_count=maximum),
+        generation.component_generation_schema(_write_set()),
+    )
+    child = {
+        **_component_wire()["components"][0],
+        "label": "Internal coordinator",
+        "type": 109,
+        "parent_index": 3 if new_parent else 0,
+    }
+    additions = [child]
+    if new_parent:
+        additions.append({**_component_wire()["components"][0], "label": "New service"})
+    assembled = delta.assemble(
+        json.dumps(
+            {
+                "additions": additions,
+                "updates": {},
+                "capabilities": base["capabilities"],
+            }
+        )
+    )
+    parsed = generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+    assert parsed["components"][2]["parent_index"] == (3 if new_parent else 0)
+
+
+def test_component_edit_parent_schema_uses_retained_service_position_after_removal():
+    wire = _owned_component_wire()
+    base = {
+        **wire,
+        "components": [
+            {
+                **row,
+                "type": generation.NODE_TYPE_CODES[row["type"]],
+                "group_kind": "runtime",
+                "model_index": index,
+                "server_id": f"n{index}",
+            }
+            for index, row in enumerate(wire["components"])
+        ],
+    }
+    delta = generation._component_edit_delta(
+        base,
+        _permissions(removable_node_ids=["n1"], allowed_new_node_count=1),
+        generation.component_generation_schema(_write_set()),
+    )
+    assert delta.schema["properties"]["additions"]["items"]["anyOf"][1]["properties"][
+        "parent_index"
+    ]["enum"] == [1]
+    addition = {**wire["components"][3], "label": "New internal", "parent_index": 1}
+    parsed = generation._parse_component_wire(
+        json.dumps(
+            delta.assemble(
+                json.dumps(
+                    {
+                        "additions": [addition],
+                        "updates": {},
+                        "capabilities": base["capabilities"],
+                    }
+                )
+            )
+        ),
+        component_limit=5,
+    )
+    assert (
+        parsed["components"][2]["parent_index"]
+        == parsed["components"][3]["parent_index"]
+        == 1
+    )
+
+
+def test_component_edit_parent_enum_stays_within_original_bounds_after_normalization():
+    from adapters.llm_adapter import _anthropic_response_schema
+
+    schema = generation.component_generation_schema(
+        generation.create_write_set(component_limit=3, edge_limit=4)
+    )
+    delta = generation._component_edit_delta(
+        _edit_base(),
+        _permissions(allowed_new_node_count=4),
+        schema,
+    )
+    parent = _anthropic_response_schema(delta.schema)["properties"]["additions"][
+        "items"
+    ]["anyOf"][1]["properties"]["parent_index"]
+    assert parent == {"type": "integer", "enum": [0, 2]}
+
+
+@pytest.mark.asyncio
+async def test_component_extension_telemetry_versions_actual_wrapped_edit_schema(
+    monkeypatch,
+):
+    calls = []
+    addition = {
+        **_component_wire()["components"][0],
+        "label": "Internal coordinator",
+        "type": 109,
+        "parent_index": 0,
+    }
+
+    async def stream(**kwargs):
+        calls.append(kwargs)
+        return _response(
+            {
+                "candidate": {
+                    "additions": [addition],
+                    "updates": {},
+                    "capabilities": _edit_base()["capabilities"],
+                },
+                "clarification_questions": [],
+            }
+        )
+
+    monkeypatch.setattr(generation, "stream_structured_llm", stream)
+    result = await generation.generate_component_candidate(
+        request="Expand the service.",
+        resolved_maturity="prototype",
+        architecture_context=_architecture_context(),
+        write_set=_write_set(),
+        upstream_fingerprint="a" * 64,
+        base_components=_edit_base(),
+        edit_permissions=_permissions(
+            allowed_new_node_count=1, connection_addition_mode="extension"
+        ),
+    )
+    assert result["wire"]["components"][2]["parent_index"] == 0
+    candidate_schema = calls[0]["response_schema"]["properties"]["candidate"]["anyOf"][
+        0
+    ]
+    assert "anyOf" in candidate_schema["properties"]["additions"]["items"]
+    assert (
+        calls[0]["telemetry"]["metadata"]["schema_version"]
+        == "staged_components_edit_response_v1"
+    )
+
+
+@pytest.mark.parametrize("target_index,updated_type", [(1, 101), (1, 102), (0, 102)])
+def test_component_edit_parent_eligibility_includes_authorized_type_updates(target_index, updated_type):
+    base = _edit_base()
+    delta = generation._component_edit_delta(
+        base,
+        _permissions(
+            allowed_new_node_count=1,
+            editable_node_fields={f"n{target_index + 1}": ["type"]},
+        ),
+        generation.component_generation_schema(_write_set()),
+    )
+    allowed = delta.schema["properties"]["additions"]["items"]["anyOf"][1][
+        "properties"
+    ]["parent_index"]["enum"]
+    assert allowed == ([0, 1] if target_index == 1 else [0])
+    child = {
+        **_component_wire()["components"][0],
+        "label": "Internal coordinator",
+        "type": 109,
+        "parent_index": target_index,
+    }
+    assembled = delta.assemble(
+        json.dumps(
+            {
+                "additions": [child],
+                "updates": {f"slot_{target_index}": {"type": updated_type}},
+                "capabilities": base["capabilities"],
+            }
+        )
+    )
+    if updated_type == 101:
+        parsed = generation._parse_component_wire(
+            json.dumps(assembled), component_limit=5
+        )
+        assert parsed["components"][target_index]["type"] == 101
+        assert parsed["components"][2]["parent_index"] == target_index
+    else:
+        with pytest.raises(generation.StagedGenerationError) as caught:
+            generation._parse_component_wire(json.dumps(assembled), component_limit=5)
+        assert caught.value.diagnostic_reason == "component_parent_invalid"

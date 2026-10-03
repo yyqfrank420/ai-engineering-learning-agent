@@ -4182,8 +4182,12 @@ async def test_scoped_additions_use_server_authorized_node_identity(
     async def generate_delta(**kwargs):
         provider_stages.append(kwargs["stage"])
         if kwargs["stage"] == "components":
-            fields = kwargs["schema"]["properties"]["additions"]["items"]["properties"]
-            assert "id" not in fields and "server_id" not in fields
+            branches = kwargs["schema"]["properties"]["additions"]["items"]["anyOf"]
+            assert all(
+                "id" not in branch["properties"]
+                and "server_id" not in branch["properties"]
+                for branch in branches
+            )
             return json.dumps(
                 {
                     "additions": [

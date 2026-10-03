@@ -1043,6 +1043,8 @@ async def test_final_graph_inspection_keeps_typed_failure_kind(
         add_init_script=AsyncMock(),
         new_page=AsyncMock(return_value=page),
         close=AsyncMock(),
+        on=Mock(),
+        remove_listener=Mock(),
     )
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
     inspection_error = (
@@ -3785,6 +3787,8 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
         add_init_script=AsyncMock(),
         new_page=AsyncMock(return_value=page),
         close=AsyncMock(),
+        on=Mock(),
+        remove_listener=Mock(),
     )
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
     monkeypatch.setattr(
@@ -3976,3 +3980,216 @@ async def test_browser_suite_bootstrap_uses_target_scoped_session_initializer(
         browser_runner._session_init_script(session, args.target)
     )
     browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "preflight",
+        "direct_backend",
+        "duplicate",
+        "unrelated",
+        "cleanup_error",
+        "cancel_drain",
+        "cancel_screenshot",
+    ],
+)
+async def test_browser_attempt_cleans_created_threads_before_generation_failure(
+    tmp_path, monkeypatch, scenario
+):
+    import asyncio
+
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["research"]
+    listeners = {}
+    draining = asyncio.Event()
+    screenshot_started = asyncio.Event()
+    release_body = asyncio.Event()
+    page = Mock()
+    page.get_by_role.return_value.is_visible = AsyncMock(return_value=False)
+    page.screenshot = AsyncMock()
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(return_value=page),
+        close=AsyncMock(),
+        on=lambda event, callback: listeners.update({event: callback}),
+        remove_listener=lambda event, callback: (listeners.pop(event), draining.set()),
+    )
+    browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
+    if scenario == "cancel_screenshot":
+
+        async def delayed_screenshot(**_kwargs):
+            screenshot_started.set()
+            await asyncio.Event().wait()
+
+        page.screenshot = delayed_screenshot
+    body_finished = False
+
+    async def creation_body():
+        nonlocal body_finished
+        # Response callbacks finish asynchronously after navigation reports readiness.
+        if scenario in {"cancel_drain", "cancel_screenshot"}:
+            await release_body.wait()
+        await asyncio.sleep(0)
+        body_finished = True
+        return {"thread": {"id": "created-thread"}, "messages": []}
+
+    async def navigate(*_args, **_kwargs):
+        urls = [
+            "http://backend/api/threads"
+            if scenario == "direct_backend"
+            else "http://localhost:5173/api/threads"
+        ]
+        if scenario == "unrelated":
+            urls = [
+                "http://other/api/threads",
+                "http://backend/api/threads/latest",
+                "http://backend/api/threads/old/diagram-intent",
+            ]
+        for url in urls:
+            listeners["response"](
+                SimpleNamespace(
+                    url=url,
+                    status=201,
+                    request=SimpleNamespace(method="POST"),
+                    json=AsyncMock(side_effect=creation_body),
+                )
+            )
+        if scenario == "unrelated":
+            for method, status in [("GET", 200), ("POST", 500)]:
+                listeners["response"](
+                    SimpleNamespace(
+                        url="http://backend/api/threads",
+                        status=status,
+                        request=SimpleNamespace(method=method),
+                        json=AsyncMock(side_effect=creation_body),
+                    )
+                )
+
+    page.goto = navigate
+
+    async def fail_submission(_page, _case, frames, _events, **_kwargs):
+        if scenario == "duplicate":
+            frames.append(
+                {
+                    "direction": "sent",
+                    "message": {
+                        "type": "start",
+                        "thread_id": "created-thread",
+                    },
+                }
+            )
+        raise browser_runner.BrowserQualityError(
+            "diagram_intent_timeout", "preflight failed"
+        )
+
+    deleted = []
+
+    def cleanup_request(method, url, payload, token):
+        assert body_finished
+        assert context.close.await_count == 0
+        deleted.append((method, url))
+        if scenario == "cleanup_error":
+            raise RuntimeError("delete unavailable")
+        if method == "GET":
+            from urllib.error import HTTPError
+
+            raise HTTPError(url, 404, "gone", {}, None)
+        return {}
+
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "test-token"}),
+    )
+    monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
+    monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
+    monkeypatch.setattr(browser_runner, "_send_case_steps", fail_submission)
+    monkeypatch.setattr(
+        browser_runner,
+        "_node_followup_interaction_failure_details",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
+    monkeypatch.setattr(browser_runner, "_blocking_json_request", cleanup_request)
+    attempt = asyncio.create_task(
+        browser_runner._run_browser_attempt(
+            browser,
+            SimpleNamespace(
+                target="http://localhost:5173",
+                backend_target="http://backend",
+                email="eval@example.com",
+                internal_password="test-password",
+            ),
+            case,
+            artifact_dir=tmp_path,
+            screenshot_dir=tmp_path,
+            trace_dir=tmp_path,
+            turn_timeout_seconds=10,
+            attempt_number=1,
+        )
+    )
+    if scenario in {"cancel_drain", "cancel_screenshot"}:
+        await (draining if scenario == "cancel_drain" else screenshot_started).wait()
+        attempt.cancel()
+        await draining.wait()
+        await asyncio.sleep(0)
+        # A second cancellation during cleanup must not cancel capture or deletion.
+        attempt.cancel()
+        await asyncio.sleep(0)
+        release_body.set()
+    if scenario == "cancel_screenshot":
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+        assert deleted == [
+            ("DELETE", "http://backend/api/threads/created-thread"),
+            ("GET", "http://backend/api/threads/created-thread"),
+        ]
+        context.close.assert_awaited_once()
+        return
+    result = await attempt
+    assert result["passed"] is False
+    assert result["thread_id"] == (
+        "created-thread" if scenario == "duplicate" else None
+    )
+    assert result["thread_ids"] == (
+        [] if scenario == "unrelated" else ["created-thread"]
+    )
+    assert deleted == (
+        []
+        if scenario == "unrelated"
+        else [("DELETE", "http://backend/api/threads/created-thread")]
+        + (
+            []
+            if scenario == "cleanup_error"
+            else [("GET", "http://backend/api/threads/created-thread")]
+        )
+    )
+    assert [detail["code"] for detail in result["failure_details"]] == (
+        ["diagram_intent_timeout", "cleanup_failed"]
+        if scenario == "cleanup_error"
+        else ["diagram_intent_timeout", "browser_case_cancelled"]
+        if scenario == "cancel_drain"
+        else ["diagram_intent_timeout"]
+    )
+    if scenario == "cancel_drain":
+        assert result["execution_state"] == "cancelled"
+    assert "response" not in listeners
+    context.close.assert_awaited_once()
+
+
+def test_retry_attempt_thread_ids_preserve_bootstrap_and_generation_identities():
+    from eval.browser_runner import _merge_attempt_results
+
+    result = _merge_attempt_results(
+        {"thread_id": None, "thread_ids": ["bootstrap-only"]},
+        {"thread_id": "generation", "thread_ids": ["generation", "bootstrap-only"]},
+    )
+    assert result["thread_id"] == "generation"
+    assert result["thread_ids"] == ["bootstrap-only", "generation"]

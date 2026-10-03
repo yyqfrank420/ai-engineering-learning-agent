@@ -366,5 +366,37 @@ def test_changed_approval_policy_invalidates_connection_review_identity(
 
 
 def test_approval_delivery_connection_release_versions():
-    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v38"
+    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v39"
     assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v35"
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_declared_escalation_invalidates_previous_connection_review(monkeypatch, maturity):
+    current = gate.review_identity("connections", maturity)
+    component_identity = gate.review_identity("components", maturity)
+    original = gate.staged_review_requirements
+    escalation = rubric.RUBRIC_CRITERIA["edge_semantics"][1].split(
+        "Treat declared escalation as an invoked capability.", 1
+    )[1]
+    escalation = "Treat declared escalation as an invoked capability." + escalation
+
+    def previous_requirements(stage, depth, guarantees=()):
+        requirements = original(stage, depth, guarantees)
+        if stage == "connections":
+            assert escalation in requirements["edge_semantics"]
+            requirements["edge_semantics"] = requirements["edge_semantics"].replace(escalation, "")
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    prior = gate.review_identity("connections", maturity)
+    assert prior != current
+    assert gate.review_identity("components", maturity) == component_identity
+    assert tuple(previous_requirements("connections", maturity)) == tuple(
+        original("connections", maturity)
+    )
+    monkeypatch.setattr(gate, "staged_review_requirements", original)
+    with pytest.raises(ValueError, match="policy differs"):
+        gate._previous_review_evidence(
+            {"stage": "connections", "review_identity": prior},
+            gate="connections", identity=current, rule_codes=(), records=[], evidence_bundle={},
+        )

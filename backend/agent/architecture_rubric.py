@@ -38,6 +38,20 @@ _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
     "output route during scoped edits and repairs."
 )
 
+_DECLARED_ESCALATION_DELIVERY_REQUIREMENT = (
+    "Treat declared escalation as an invoked capability. When the accepted design "
+    "promises review, correction, or override by another owner, trace presentation "
+    "of the applicable exception payload to that owner. When a declared consumer "
+    "needs the resulting decision or output to continue work or answer, trace it "
+    "back to that consumer. A standalone asynchronous review or alert does not "
+    "require a return acknowledgment. A typed terminal exception can close "
+    "reporting but cannot establish separately promised review, correction, or "
+    "override. Direct delivery, explicit forwarding, authoritative persistence "
+    "with declared reads, or declared same-owner handling can satisfy this path. "
+    "Do not require human escalation when the request and accepted design do not "
+    "declare it."
+)
+
 _APPROVAL_SCOPE_REQUIREMENT = (
     "Keep approval scope consistent with the request and accepted assumptions. "
     "Universal human review cannot narrow to an undefined 'material' or 'sensitive' "
@@ -81,7 +95,8 @@ RUBRIC_CRITERIA = {
     "edge_semantics": (
         "connections",
         "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload. "
-        + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT,
+        + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
+        + " " + _DECLARED_ESCALATION_DELIVERY_REQUIREMENT,
     ),
     "assumption_hygiene": (
         "composition",
@@ -403,6 +418,7 @@ def staged_review_requirements(
             "failure when rejecting. Feedback and deployment contracts cannot substitute "
             "for required runtime or control interactions. "
             + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
+            + " " + _DECLARED_ESCALATION_DELIVERY_REQUIREMENT
         )
     if stage == "components":
         if maturity == "production":

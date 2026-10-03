@@ -1,6 +1,9 @@
+import asyncio
+import threading
 from unittest.mock import AsyncMock
 
 import api.sse_handler as sse_handler
+import api.thread_route as thread_route
 from adapters.database_adapter import fetchone, init_db
 from adapters.supabase_auth_adapter import get_current_user
 from config import settings
@@ -50,6 +53,38 @@ def test_diagram_intent_resolves_without_starting_generation(temp_data_dir):
         assert client.post(path, json={"message": " "}).status_code == 422
         assert client.post(path, json={"message": "x" * (settings.max_message_bytes + 1)}).status_code == 413
         assert client.post("/api/threads/missing/diagram-intent", json={"message": "RAG?"}).status_code == 404
+
+
+def test_diagram_intent_database_read_runs_outside_event_loop(temp_data_dir, monkeypatch):
+    _setup_user()
+    thread_id = create_thread("user-1")["id"]
+    app = _app()
+    observed = {}
+
+    async def authenticated_user():
+        observed["event_loop_thread"] = threading.get_ident()
+        assert asyncio.get_running_loop().is_running()
+        return {"id": "user-1", "email": "friend@example.com"}
+
+    def read_thread(user_id, requested_thread_id):
+        observed["database_thread"] = threading.get_ident()
+        try:
+            observed["database_loop"] = asyncio.get_running_loop()
+        except RuntimeError:
+            observed["database_loop"] = None
+        return get_thread(user_id, requested_thread_id)
+
+    app.dependency_overrides[get_current_user] = authenticated_user
+    monkeypatch.setattr(thread_route, "get_thread", read_thread)
+    with TestClient(app) as client:
+        response = client.post(
+            f"/api/threads/{thread_id}/diagram-intent",
+            json={"message": "Explain RAG. No diagram."},
+        )
+    assert response.status_code == 200
+    assert response.json() == {"action": "answer"}
+    assert observed["database_loop"] is None
+    assert observed["database_thread"] != observed["event_loop_thread"]
 
 
 def test_thread_routes_create_list_latest_get_update_and_delete(temp_data_dir):

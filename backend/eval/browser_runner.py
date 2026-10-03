@@ -23,6 +23,7 @@ from playwright.async_api import (
     BrowserContext,
     Error as PlaywrightError,
     Page,
+    Response,
     TimeoutError as PlaywrightTimeoutError,
     WebSocket,
     async_playwright,
@@ -1780,6 +1781,28 @@ def _exception_failure_detail(exc: Exception) -> FailureDetail:
     return _failure_detail("quality", "browser_attempt_exception", message)
 
 
+async def _created_thread_id(
+    response: Response, frontend_target: str, backend_target: str
+) -> str | None:
+    """Capture only explicit thread creation in this attempt's browser context."""
+    if (
+        response.request.method != "POST"
+        or response.url
+        not in {
+            target.rstrip("/") + "/api/threads"
+            for target in (frontend_target, backend_target)
+        }
+        or not 200 <= response.status < 300
+    ):
+        return None
+    payload = await response.json()
+    thread = payload.get("thread") if isinstance(payload, dict) else None
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", thread_id):
+        raise ValueError("successful thread creation omitted a valid thread identity")
+    return thread_id
+
+
 async def _delete_thread(backend_target: str, token: str, thread_id: str) -> None:
     try:
         await asyncio.to_thread(
@@ -1876,6 +1899,18 @@ async def _run_cases_bounded(
     return [item for item in ordered if item is not None]
 
 
+def _attempt_thread_ids(attempts: list[dict[str, Any]]) -> list[str]:
+    """Retain all attempt-owned cleanup IDs alongside generation identities."""
+    return list(
+        dict.fromkeys(
+            str(thread_id)
+            for attempt in attempts
+            for thread_id in attempt.get("thread_ids") or [attempt.get("thread_id")]
+            if thread_id
+        )
+    )
+
+
 def _merge_attempt_results(
     previous: dict[str, Any], latest: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1887,13 +1922,7 @@ def _merge_attempt_results(
     result["attempts"] = attempts
     result["attempt_count"] = len(attempts)
     result["retried"] = len(attempts) > 1
-    result["thread_ids"] = list(
-        dict.fromkeys(
-            str(attempt["thread_id"])
-            for attempt in attempts
-            if attempt.get("thread_id")
-        )
-    )
+    result["thread_ids"] = _attempt_thread_ids(attempts)
     return result
 
 
@@ -2010,9 +2039,7 @@ async def _run_case_with_retries(
     result["attempts"] = attempts
     result["attempt_count"] = len(attempts)
     result["retried"] = len(attempts) > 1
-    result["thread_ids"] = [
-        attempt["thread_id"] for attempt in attempts if attempt.get("thread_id")
-    ]
+    result["thread_ids"] = _attempt_thread_ids(attempts)
     return result
 
 
@@ -2053,6 +2080,16 @@ async def _run_browser_attempt(
             "browser_context_bootstrap_failed",
             f"browser context bootstrap failed: {type(exc).__name__}: {exc}",
         ) from exc
+    creation_tasks: list[asyncio.Task[str | None]] = []
+
+    def capture_creation(response: Response) -> None:
+        creation_tasks.append(
+            asyncio.create_task(
+                _created_thread_id(response, args.target, args.backend_target)
+            )
+        )
+
+    context.on("response", capture_creation)
     page.on("websocket", lambda socket: _capture_socket(frames, socket))
     artifact_stem = f"{case.id}.attempt-{attempt_number}"
     raw_trace = artifact_dir / f".playwright-trace.{artifact_stem}.raw.zip"
@@ -2064,6 +2101,63 @@ async def _run_browser_attempt(
     turn_graphs: list[dict[str, Any]] = []
     failure_details: list[FailureDetail] = []
     execution_state = "completed"
+
+    async def finalize_threads() -> list[str]:
+        # Stop accepting callbacks and finish response bodies before closing the context.
+        # A preflight failure may have created a thread without ever starting a WS turn.
+        context.remove_listener("response", capture_creation)
+        created_ids: list[str] = []
+        if creation_tasks:
+            _, pending = await asyncio.wait(creation_tasks, timeout=30)
+            for task in pending:
+                task.cancel()
+            outcomes = await asyncio.gather(*creation_tasks, return_exceptions=True)
+        else:
+            outcomes = []
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                failure_details.append(
+                    _failure_detail(
+                        "infrastructure",
+                        "thread_creation_capture_failed",
+                        "failed to capture an eval thread creation response",
+                    )
+                )
+            elif outcome is not None:
+                created_ids.append(outcome)
+        cleanup_ids = list(
+            dict.fromkeys(
+                [
+                    *created_ids,
+                    *[
+                        frame["message"]["thread_id"]
+                        for frame in frames
+                        if frame["direction"] == "sent"
+                        and frame["message"].get("type") == "start"
+                        and frame["message"].get("thread_id")
+                    ],
+                ]
+            )
+        )
+        if case.deterministic.cleanup:
+            for cleanup_id in cleanup_ids:
+                try:
+                    await _delete_thread(
+                        args.backend_target,
+                        session["access_token"],
+                        cleanup_id,
+                    )
+                except Exception as exc:
+                    failure_details.append(
+                        _failure_detail(
+                            "infrastructure",
+                            "cleanup_failed",
+                            f"cleanup failed: {type(exc).__name__}: {exc}",
+                        )
+                    )
+
+        return cleanup_ids
+
     try:
         try:
             try:
@@ -2240,22 +2334,6 @@ async def _run_browser_attempt(
                             _failure_detail("quality", *graph_failure)
                         )
 
-        if thread_id and case.deterministic.cleanup:
-            try:
-                await _delete_thread(
-                    args.backend_target,
-                    session["access_token"],
-                    thread_id,
-                )
-            except Exception as exc:
-                failure_details.append(
-                    _failure_detail(
-                        "infrastructure",
-                        "cleanup_failed",
-                        f"cleanup failed: {type(exc).__name__}: {exc}",
-                    )
-                )
-
         answers = extract_response_turns(case_events)
         graph_evidence_by_turn = {
             int(item["turn"]): item
@@ -2295,6 +2373,7 @@ async def _run_browser_attempt(
             "rendered_node_ids": rendered_node_ids,
             "rendered_edge_identities": rendered_edge_identities,
             "thread_id": thread_id,
+            "thread_ids": [],
             "screenshot": screenshot_relative,
             "trace": str(trace.relative_to(artifact_dir)),
             "latency_ms": int((time.monotonic() - case_started) * 1000),
@@ -2305,6 +2384,32 @@ async def _run_browser_attempt(
         result["passed"] = not deterministic
         return result
     finally:
+        # Shield the entire capture/deletion operation, including cancellation that
+        # arrives after submission or while response bodies are still draining.
+        finalizer = asyncio.create_task(finalize_threads())
+        finalizer_cancelled = False
+        while not finalizer.done():
+            try:
+                await asyncio.shield(finalizer)
+            except asyncio.CancelledError:
+                finalizer_cancelled = True
+        cleanup_ids = finalizer.result()
+        if finalizer_cancelled:
+            failure_details.append(
+                _failure_detail(
+                    "infrastructure",
+                    "browser_case_cancelled",
+                    f"browser suite cancelled case {case.id} during cleanup",
+                )
+            )
+        if "result" in locals():
+            result["thread_ids"] = cleanup_ids
+            result["deterministic_failures"] = [
+                item["message"] for item in failure_details
+            ]
+            result["passed"] = not failure_details
+            if finalizer_cancelled:
+                result["execution_state"] = "cancelled"
         try:
             await context.tracing.stop(path=raw_trace)
             await asyncio.to_thread(
@@ -2341,6 +2446,9 @@ async def _run_browser_attempt(
                     result["failure_details"].append(detail)
                     result["deterministic_failures"].append(detail["message"])
                     result["passed"] = False
+
+        if finalizer_cancelled and "result" not in locals():
+            raise asyncio.CancelledError
 
 
 async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
