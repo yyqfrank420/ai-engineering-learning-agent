@@ -381,7 +381,10 @@ persistence, so Cloud Run scale-out neither resets the limits nor stores raw ema
 limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
-and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
+and connection wires. Sonnet 5 reviews components at medium effort and connections at low effort,
+with the same complete rule coverage and 16,384-token completion ceiling. Connection review v36
+reduces effort after a medium-effort repair review exhausted that ceiling before returning a verdict.
+Incomplete reviews still reject publication. The server owns graph mutation,
 validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria

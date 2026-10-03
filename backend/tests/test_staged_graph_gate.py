@@ -660,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v35"
+        == "staged_connection_gate_v36"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -1107,6 +1107,10 @@ def test_successful_review_retains_identity_and_complete_rule_audit(monkeypatch,
     )
 
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
+    assert calls[0]["effort"] == ("medium" if stage == "components" else "low")
+    assert calls[0]["model"] == gate.settings.graph_qa_model
+    assert calls[0]["max_output_tokens"] == gate.settings.graph_qa_max_completion_tokens
+    assert calls[0]["provider_attempt_limit"] == 1
     assert (
         result["checked_rules"]
         == calls[0]["response_schema"]["properties"]["rule_reviews"]["items"][
@@ -1130,7 +1134,7 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
             gate.settings, "graph_temperature", gate.settings.graph_temperature + 0.1
         )
     elif change == "effort":
-        monkeypatch.setattr(gate, "_GATE_EFFORT", "high")
+        monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, stage, "high")
     elif change == "prompt_version":
         field = (
             "_COMPONENT_GATE_PROMPT_VERSION"
@@ -2630,7 +2634,50 @@ def test_output_payload_clarification_changes_only_connection_prompt_release(
     assert (forwarding in reviewed) is (stage == "connections")
     if stage == "connections":
         assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v39"
-        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v35"
+        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v36"
     else:
         assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v45"
         assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v26"
+
+
+@pytest.mark.parametrize("changed_stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_stage_effort_changes_only_owning_review_identity(
+    monkeypatch, changed_stage, maturity
+):
+    identities = {
+        stage: gate.review_identity(stage, maturity)
+        for stage in ("components", "connections")
+    }
+    monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, changed_stage, "high")
+
+    for stage, identity in identities.items():
+        assert (gate.review_identity(stage, maturity) != identity) is (
+            stage == changed_stage
+        )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_low_effort_connection_review_rejects_old_medium_policy_approval(
+    monkeypatch, maturity
+):
+    current = gate.review_identity("connections", maturity)
+    component_identity = gate.review_identity("components", maturity)
+    with monkeypatch.context() as previous:
+        previous.setitem(gate._GATE_EFFORT_BY_STAGE, "connections", "medium")
+        previous.setattr(
+            gate, "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v35"
+        )
+        old = gate.review_identity("connections", maturity)
+        assert gate.review_identity("components", maturity) == component_identity
+
+    assert old != current
+    with pytest.raises(ValueError, match="policy differs"):
+        gate._previous_review_evidence(
+            {"stage": "connections", "approved": True, "review_identity": old},
+            gate="connections",
+            identity=current,
+            rule_codes=(),
+            records=[],
+            evidence_bundle={},
+        )

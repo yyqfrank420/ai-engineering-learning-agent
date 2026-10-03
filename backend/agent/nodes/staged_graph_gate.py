@@ -28,8 +28,9 @@ from config import settings
 
 
 _COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v35"
-_GATE_EFFORT = "medium"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v36"
+# Medium connection review exhausted the 16,384-token ceiling without review text.
+_GATE_EFFORT_BY_STAGE = {"components": "medium", "connections": "low"}
 _GATE_SYSTEM = (
     "You are a bounded architecture gate. Evaluate only supplied evidence and "
     "candidate records. Do not infer hidden implementation details. "
@@ -174,7 +175,7 @@ def review_identity(
             else _CONNECTION_GATE_PROMPT_VERSION
         ),
         "system": _GATE_SYSTEM,
-        "effort": _GATE_EFFORT,
+        "effort": _GATE_EFFORT_BY_STAGE[gate],
         "temperature": settings.graph_temperature,
         "requirements": requirements,
         "prompt_templates": [
@@ -733,7 +734,7 @@ async def _review(
             ],
             response_schema=schema,
             temperature=settings.graph_temperature,
-            effort=_GATE_EFFORT,
+            effort=_GATE_EFFORT_BY_STAGE[gate],
             telemetry=_telemetry(
                 operation=f"staged_graph_{gate}_gate",
                 prompt_version=prompt_version,
