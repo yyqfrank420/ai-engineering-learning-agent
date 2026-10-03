@@ -27,6 +27,8 @@ import logging
 import random
 import time
 
+import anyio
+
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -210,6 +212,8 @@ class EvaluationProviderAttemptLimitExceeded(RuntimeError):
 
 
 def _reserve_evaluation_provider_attempt() -> None:
+    # Async callers offload the atomic reservation and dispatch only after success.
+    # Cancelling their wait may consume a reservation; it never dispatches that call.
     run_id = settings.evaluation_run_id.strip()
     limit = settings.evaluation_provider_attempt_limit
     if not run_id and limit == 0:
@@ -759,8 +763,10 @@ async def stream_response(
     used_fallback = False
     final_provider = "anthropic"
     final_model = model
+    telemetry_started = False
 
-    def _record(status: str, *, error_type: str | None = None) -> None:
+    async def _record(status: str, *, error_type: str | None = None) -> None:
+        nonlocal telemetry_started
         from analytics.events import enqueue_analytics_event
         from observability import current_trace_context, record_llm_metrics
         from storage.telemetry_store import record_llm_telemetry
@@ -798,22 +804,39 @@ async def stream_response(
             "trace_id": trace_context.get("trace_id"),
             "span_id": trace_context.get("span_id"),
         }
-        try:
-            record_llm_telemetry(
-                operation=details.get("operation", "unknown"),
-                provider=final_provider,
-                model=final_model,
-                status=status,
-                duration_ms=duration_ms,
-                output_chars=output_chars,
-                used_fallback=used_fallback,
-                user_id=details.get("user_id"),
-                thread_id=details.get("thread_id"),
-                error_type=error_type,
-                metadata=metadata,
+        telemetry_started = True
+        with anyio.CancelScope(shield=True):
+            write_task = asyncio.create_task(
+                asyncio.to_thread(
+                    record_llm_telemetry,
+                    operation=details.get("operation", "unknown"),
+                    provider=final_provider,
+                    model=final_model,
+                    status=status,
+                    duration_ms=duration_ms,
+                    output_chars=output_chars,
+                    used_fallback=used_fallback,
+                    user_id=details.get("user_id"),
+                    thread_id=details.get("thread_id"),
+                    error_type=error_type,
+                    metadata=metadata,
+                )
             )
-        except Exception as exc:
-            logger.warning("LLM telemetry write failed: %s", type(exc).__name__)
+            cancelled = False
+            # Shield queued writes too; cancellation cannot discard a billable row.
+            while not write_task.done():
+                try:
+                    await asyncio.shield(write_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            try:
+                write_task.result()
+            except Exception as exc:
+                logger.warning("LLM telemetry write failed: %s", type(exc).__name__)
+        if cancelled:
+            raise asyncio.CancelledError
         enqueue_analytics_event(
             event_name="llm_call_completed",
             event_category="llm",
@@ -849,10 +872,13 @@ async def stream_response(
             status=status,
         )
 
-    def _record_cancellation(
+    async def _record_cancellation(
         attempt_usage: dict[str, object],
         attempt_started: float,
     ) -> None:
+        # A dispatched write can finish after cancellation. Preserve its one row.
+        if telemetry_started:
+            return
         attempt_usage["status"] = (
             "cancelled_incomplete_usage"
             if attempt_usage["accepted"]
@@ -863,7 +889,7 @@ async def stream_response(
         attempt_usage["duration_ms"] = max(
             1, int((time.perf_counter() - attempt_started) * 1000)
         )
-        _record("error", error_type="CancelledError")
+        await _record("error", error_type="CancelledError")
 
     async def _stream_chat_completions_route(
         chat_model: str,
@@ -903,7 +929,7 @@ async def stream_response(
         if provider_attempt_limit is not None:
             attempt_limit = min(attempt_limit, provider_attempt_limit)
         for route_attempt in range(1, attempt_limit + 1):
-            _reserve_evaluation_provider_attempt()
+            await asyncio.to_thread(_reserve_evaluation_provider_attempt)
             provider_attempts += 1
             attempt_started = time.perf_counter()
             attempt_usage: dict[str, object] = {
@@ -988,10 +1014,10 @@ async def stream_response(
                 attempt_usage["duration_ms"] = max(
                     1, int((time.perf_counter() - attempt_started) * 1000)
                 )
-                _record("success")
+                await _record("success")
                 return
             except asyncio.CancelledError:
-                _record_cancellation(attempt_usage, attempt_started)
+                await _record_cancellation(attempt_usage, attempt_started)
                 raise
             except Exception as exc:
                 accepted = bool(attempt_usage["accepted"])
@@ -1012,7 +1038,7 @@ async def stream_response(
                 if can_retry:
                     await asyncio.sleep(settings.llm_retry_delay_s)
                     continue
-                _record("error", error_type=type(exc).__name__)
+                await _record("error", error_type=type(exc).__name__)
                 raise
 
     if _is_openai_model(model):
@@ -1041,7 +1067,7 @@ async def stream_response(
         )
     for attempt in range(1, anthropic_attempt_limit + 1):
         finish_reason: str | None = None
-        _reserve_evaluation_provider_attempt()
+        await asyncio.to_thread(_reserve_evaluation_provider_attempt)
         provider_attempts += 1
         attempt_started = time.perf_counter()
         attempt_usage: dict[str, object] = {
@@ -1140,7 +1166,7 @@ async def stream_response(
             attempt_usage["duration_ms"] = max(
                 1, int((time.perf_counter() - attempt_started) * 1000)
             )
-            _record("success")
+            await _record("success")
             if response_schema is not None:
                 yield (
                     "response_metadata",
@@ -1156,7 +1182,7 @@ async def stream_response(
             return   # Anthropic succeeded
 
         except asyncio.CancelledError:
-            _record_cancellation(attempt_usage, attempt_started)
+            await _record_cancellation(attempt_usage, attempt_started)
             raise
         except Exception as exc:
             last_exc = exc
@@ -1187,7 +1213,7 @@ async def stream_response(
             if attempt_usage["accepted"]:
                 # `message_start` means the provider accepted the request. Never
                 # replay accepted work, even when no visible delta arrived.
-                _record("error", error_type=type(exc).__name__)
+                await _record("error", error_type=type(exc).__name__)
                 raise
             if _is_non_retryable_anthropic_error(exc):
                 break
@@ -1214,7 +1240,7 @@ async def stream_response(
         return
     else:
         if last_exc is not None:
-            _record("error", error_type=type(last_exc).__name__)
+            await _record("error", error_type=type(last_exc).__name__)
         raise last_exc  # type: ignore[misc]
 
 

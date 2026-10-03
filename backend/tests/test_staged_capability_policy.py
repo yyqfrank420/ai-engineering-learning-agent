@@ -1575,3 +1575,102 @@ def test_removed_approval_scope_or_terminal_reply_invalidates_only_owning_cached
                 records=[],
                 evidence_bundle={},
             )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    "declaration", ["request", "assumption", "automatic", "undeclared", "mixed"]
+)
+def test_component_human_review_ownership_author_and_gate_preserve_declared_scope(
+    maturity, declaration
+):
+    request = "Design a release service."
+    assumption = "Release actions use the accepted approval policy."
+    responsibility = "Applies release policy within the permitted scope."
+    if declaration == "request":
+        request += " A human reviews each release before execution."
+        responsibility = "Owns an integrated human review surface and obtains and records each release decision."
+    elif declaration == "assumption":
+        assumption = "A human reviews each release before execution."
+        responsibility = "Approves releases."
+    elif declaration == "automatic":
+        request += " Permit automatic approval for reversible release actions."
+        assumption = "Automatic approval is permitted for reversible release actions."
+    elif declaration == "mixed":
+        request += " A human must approve promotion; reversible checks may be approved automatically."
+        assumption = "Human approval is required for promotion; automatic approval is permitted only for reversible checks."
+        responsibility = "Owns an integrated human promotion review surface, obtains and records its decision, and automatically approves reversible checks."
+    components = [
+        {"id": "release", "label": "Release service", "responsibility": responsibility}
+    ]
+    authored, _ = generation._attempt_prompt(
+        stage="components",
+        request=request,
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=2, edge_limit=4),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Accepted assumption: " + assumption,
+    )
+    evidence = {"candidate_context": {"assumptions": [assumption]}}
+    reviewed = gate._prompt(
+        gate="components",
+        user_request=request,
+        evidence_bundle=evidence,
+        resolved_maturity=maturity,
+        candidate_records=components,
+        required_production_guarantees=(),
+    )
+    generated = json.loads(authored.split("\nINPUT\n", 1)[1])
+    criteria = json.loads(
+        reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert generated["acceptance_criteria"] == criteria
+    assert generated["request"] == request
+    assert generated["architecture_context"] == "Accepted assumption: " + assumption
+    brief = criteria["brief_coverage"]
+    for requirement in (
+        "When human review is declared by the request or accepted assumptions",
+        "explicitly own the human interaction or review surface and obtaining and recording the human decision",
+        "Generic 'approves', an automatic policy verdict, or passive storage does not establish this ownership",
+        "An integrated surface within an existing owner is valid",
+        "do not require a separate human or UI component",
+        "Do not require human review ownership when it is undeclared, or for responsibilities where accepted automatic approval is permitted within the request's scope",
+        "do not require connection-stage delivery proof",
+    ):
+        assert requirement in brief
+    captured, _ = json.JSONDecoder().raw_decode(
+        reviewed.split("Evidence bundle: ", 1)[1]
+    )
+    assert captured == evidence
+    records, _ = json.JSONDecoder().raw_decode(
+        reviewed.split("Immutable candidate records: ", 1)[1]
+    )
+    assert records == [{"record_index": 0, "record": components[0]}]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_human_review_ownership_changes_only_component_review_identity(
+    monkeypatch, stage, maturity
+):
+    current = gate.review_identity(stage, maturity)
+    original = gate.staged_review_requirements
+
+    def previous_requirements(selected_stage, depth, guarantees=()):
+        criteria = original(selected_stage, depth, guarantees)
+        if selected_stage == "components":
+            criteria["brief_coverage"] = criteria["brief_coverage"].replace(
+                "Generic 'approves', an automatic policy verdict, or passive storage does not establish this ownership. ",
+                "",
+            )
+        return criteria
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    assert (gate.review_identity(stage, maturity) != current) is (stage == "components")

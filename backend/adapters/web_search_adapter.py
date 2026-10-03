@@ -7,6 +7,7 @@ import logging
 import json
 import time
 
+import anyio
 import openai
 import httpx
 
@@ -49,7 +50,7 @@ async def search_sources(
     if not callable(post):
         raise TypeError("Search client POST is not callable")
     # Set up the client before reserving; the reservation counts provider POSTs.
-    _reserve_evaluation_provider_attempt()
+    await asyncio.to_thread(_reserve_evaluation_provider_attempt)
     started_at = time.perf_counter()
     billable_requests: int | None = None
     status = "error"
@@ -155,22 +156,38 @@ async def search_sources(
             "web_search_usage_complete": complete,
             "attempts": [attempt],
         }
-        try:
-            record_llm_telemetry(
-                operation="web_research",
-                provider="moonshot",
-                model="moonshot-web-search-basic",
-                status=status,
-                duration_ms=duration_ms,
-                output_chars=0,
-                used_fallback=False,
-                user_id=details.get("user_id"),
-                thread_id=details.get("thread_id"),
-                error_type=error_type,
-                metadata=metadata,
+        with anyio.CancelScope(shield=True):
+            write_task = asyncio.create_task(
+                asyncio.to_thread(
+                    record_llm_telemetry,
+                    operation="web_research",
+                    provider="moonshot",
+                    model="moonshot-web-search-basic",
+                    status=status,
+                    duration_ms=duration_ms,
+                    output_chars=0,
+                    used_fallback=False,
+                    user_id=details.get("user_id"),
+                    thread_id=details.get("thread_id"),
+                    error_type=error_type,
+                    metadata=metadata,
+                )
             )
-        except Exception as exc:
-            logger.warning("Search telemetry write failed: %s", type(exc).__name__)
+            cancelled = False
+            # Shield queued writes too; cancellation cannot discard a billable row.
+            while not write_task.done():
+                try:
+                    await asyncio.shield(write_task)
+                except asyncio.CancelledError:
+                    cancelled = True
+                except Exception:
+                    break
+            try:
+                write_task.result()
+            except Exception as exc:
+                logger.warning("Search telemetry write failed: %s", type(exc).__name__)
+        if cancelled:
+            raise asyncio.CancelledError
         enqueue_analytics_event(
             event_name="llm_call_completed",
             event_category="llm",

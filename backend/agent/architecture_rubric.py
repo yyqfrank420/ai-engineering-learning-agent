@@ -131,7 +131,14 @@ RUBRIC_CRITERIA = {
         "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities. "
         + _APPROVAL_SCOPE_REQUIREMENT
         + " At the component stage, assess responsibilities and approval scope only; "
-        "do not require connection-stage delivery proof.",
+        "do not require connection-stage delivery proof. When human review is declared "
+        "by the request or accepted assumptions, a compatible owner must explicitly own "
+        "the human interaction or review surface and obtaining and recording the human "
+        "decision. Generic 'approves', an automatic policy verdict, or passive storage "
+        "does not establish this ownership. An integrated surface within an existing "
+        "owner is valid; do not require a separate human or UI component. Do not require "
+        "human review ownership when it is undeclared, or for responsibilities where "
+        "accepted automatic approval is permitted within the request's scope.",
     ),
     "branch_completion": (
         "connections",
