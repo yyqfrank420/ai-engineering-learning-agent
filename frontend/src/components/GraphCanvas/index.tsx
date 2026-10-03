@@ -136,7 +136,7 @@ export function GraphCanvas({
       graphData.version ?? '',
       graphData.graph_type,
       graphData.title,
-      graphData.nodes.map((node) => `${node.id}:${node.label}:${node.type}:${node.tier ?? ''}:${node.lane ?? ''}`).join('|'),
+      graphData.nodes.map((node) => `${node.id}:${node.label}:${node.type}:${node.parent_service_id ?? ''}:${node.tier ?? ''}:${node.lane ?? ''}`).join('|'),
       graphData.edges.map((edge) => `${edge.source}->${edge.target}:${edge.label}:${edge.sync}:${edge.flow ?? ''}`).join('|'),
       (graphData.groups ?? []).map((group) => `${group.id}:${group.kind ?? ''}:${group.nodeIds.join(',')}`).join('|'),
       graphData.sequence.map((step) => `${step.step}:${step.nodes.join(',')}`).join('|'),

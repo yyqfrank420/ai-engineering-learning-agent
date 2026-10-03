@@ -758,6 +758,77 @@ def test_chat_blocks_prompt_injection(temp_data_dir, monkeypatch):
     assert "Message blocked by security filter" in response.text
 
 
+def test_node_selected_correlates_request_ids_and_releases_stream(
+    temp_data_dir, monkeypatch
+):
+    monkeypatch.setattr(settings, "max_active_node_streams_per_user", 1)
+    init_db()
+    upsert_profile("user-1", "friend@example.com")
+    thread = create_thread("user-1")
+    calls = []
+    closed = []
+
+    async def suggestions(title, description, history, *, telemetry):
+        try:
+            calls.append((title, description, history, telemetry))
+            yield {
+                "type": "suggested_questions",
+                "questions": [
+                    "Clarify observation vs. task input",
+                    "Expand nodes between input and Planner",
+                    "Task input vs. memory retrieval context",
+                ],
+            }
+            yield {"type": "done"}
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr("api.sse_handler.stream_suggested_questions", suggestions)
+    with TestClient(_authed_app()) as client:
+        response = client.post(
+            "/api/node-selected",
+            json={
+                "thread_id": thread["id"],
+                "node_id": "n1",
+                "title": "RAG",
+                "description": "retrieval",
+                "client_request_id": "node-selection-1",
+            },
+        )
+        assert response.status_code == 200
+        assert _parse_sse_events(response.text) == [
+            {
+                "type": "suggested_questions",
+                "questions": [
+                    "Clarify observation vs. task input",
+                    "Expand nodes between input and Planner",
+                    "Task input vs. memory retrieval context",
+                ],
+            },
+            {"type": "done"},
+        ]
+        assert len(calls) == 1
+        title, description, history, telemetry = calls[0]
+        assert (title, description, history) == ("RAG", "retrieval", [])
+        assert response.headers["x-request-id"]
+        assert telemetry == {
+            "operation": "node_selected_chips",
+            "user_id": "user-1",
+            "thread_id": thread["id"],
+            "metadata": {
+                "node_id": "n1",
+                "request_id": response.headers["x-request-id"],
+                "client_request_id": "node-selection-1",
+            },
+        }
+        assert closed == [True]
+        acquired = runtime_state_store.try_acquire_active_stream(
+            "user-1", "node-selected", limit=1, ttl_s=60
+        )
+        assert acquired is not None
+        runtime_state_store.release_active_stream(acquired)
+
+
 def test_node_selected_rejects_oversized_payload(temp_data_dir, monkeypatch):
     monkeypatch.setattr(settings, "max_node_text_bytes", 12)
     init_db()
@@ -1126,7 +1197,21 @@ def test_chat_stream_persists_messages_and_graph(temp_data_dir, monkeypatch):
 
     assert response.status_code == 200
     events = _parse_sse_events(response.text)
-    assert [event["type"] for event in events[:2]] == ["worker_status", "worker_status"]
+    assert [event["type"] for event in events[:3]] == [
+        "worker_status",
+        "activity_step",
+        "worker_status",
+    ]
+    assert events[1] == {
+        "type": "activity_step",
+        "sequence": 0,
+        "kind": "update",
+        "phase": "context",
+        "status": "active",
+        "text": "Let me check your request and any existing diagram.",
+        "elapsed_ms": events[1]["elapsed_ms"],
+    }
+    assert events[1]["elapsed_ms"] >= 0
     graph_events = [
         event["type"]
         for event in events
@@ -1400,7 +1485,27 @@ async def test_chat_releases_stream_lease_and_cancels_agent_when_stream_ends(
         request,
         {"id": "user-1", "email": "friend@example.com"},
     )
-    await anext(response.body_iterator)
+    startup_status = _parse_sse_events(await anext(response.body_iterator))
+    assert startup_status == [
+        {
+            "type": "worker_status",
+            "worker": "orchestrator",
+            "status": "Question received \u2014 preparing context\u2026",
+        }
+    ]
+    startup_activity = _parse_sse_events(await anext(response.body_iterator))
+    assert len(startup_activity) == 1
+    step = startup_activity[0]
+    assert step == {
+        "type": "activity_step",
+        "sequence": 0,
+        "kind": "update",
+        "phase": "context",
+        "status": "active",
+        "text": "Let me check your request and any existing diagram.",
+        "elapsed_ms": step["elapsed_ms"],
+    }
+    assert step["elapsed_ms"] >= 0
     await asyncio.wait_for(started.wait(), timeout=1)
     if termination == "close":
         await response.body_iterator.aclose()

@@ -235,16 +235,67 @@ def test_graph_expansion_contract_requires_a_prior_renderable_graph_turn(tmp_pat
         load_corpus(path=path)
 
 
-def test_graph_expansion_corpus_has_one_bounded_expansion():
+@pytest.mark.parametrize(
+    "labels", [[], [""], [" "], [" Serving API"], ["Serving API", "Serving API"]]
+)
+def test_service_expansion_targets_require_distinct_exact_labels(labels):
+    from eval.quality_corpus import ServiceExpansionExpectation
+
+    with pytest.raises(ValueError):
+        ServiceExpansionExpectation(target_service_labels=labels)
+
+
+def test_service_expansion_schema_defaults_to_the_medium_specialist():
+    from eval.quality_corpus import ServiceExpansionExpectation
+
+    expectation = ServiceExpansionExpectation(target_service_labels=["Serving API"])
+    assert expectation.specialist_model == "claude-opus-5-5"
+    assert expectation.specialist_effort == "medium"
+    with pytest.raises(ValueError, match="specialist_effort"):
+        ServiceExpansionExpectation(
+            target_service_labels=["Serving API"], specialist_effort="high"
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    ["first_turn", "previous_graph_off", "graph_not_renderable", "both_kinds"],
+)
+def test_service_expansion_requires_one_kind_and_consecutive_renderable_graphs(
+    tmp_path, mutation
+):
+    raw = json.loads(CORPUS_PATH.read_text(encoding="utf-8"))
+    case = next(case for case in raw["cases"] if case["id"] == "graph-expansion")
+    if mutation == "first_turn":
+        case["steps"][0]["service_expansion"] = case["steps"][2]["service_expansion"]
+    elif mutation == "previous_graph_off":
+        case["steps"][1]["ui"]["graph_mode"] = "off"
+        case["steps"][1]["graph_output_max_latency_ms"] = None
+        case["steps"][1].pop("graph_expansion")
+    elif mutation == "graph_not_renderable":
+        case["deterministic"]["graph_renderable"] = False
+    else:
+        case["steps"][2]["graph_expansion"] = case["steps"][1]["graph_expansion"]
+    path = tmp_path / "invalid-service-expansion.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="cannot expand a prior graph|consecutive graph-on|mutually exclusive",
+    ):
+        load_corpus(path=path)
+
+
+def test_graph_expansion_corpus_keeps_bounded_followup_and_adds_service_expansion():
     from agent.complexity import resolve_complexity
     from agent.nodes import graph_worker
 
     corpus = load_corpus()
     case = corpus.by_id["graph-expansion"]
-    first_turn, second_turn = case.steps
+    first_turn, second_turn, third_turn = case.steps
 
-    assert corpus.corpus_version == "2026-09-28.v1"
-    assert corpus.release_identity == "browser-rubric-v5"
+    assert corpus.corpus_version == "2026-10-01.v1"
+    assert corpus.release_identity == "browser-rubric-v6"
     assert (
         corpus.approval.status,
         corpus.approval.reviewed_by,
@@ -256,7 +307,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         calibration.judge_release,
         calibration.judge_provider,
         calibration.judge_model,
-    ) == ("semantic-rubric-judge-v18", "anthropic", "claude-sonnet-5")
+    ) == ("semantic-rubric-judge-v19", "anthropic", "claude-sonnet-5")
     assert (
         calibration.evidence_run_id,
         calibration.evidence_commit_sha,
@@ -281,7 +332,8 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         for other in corpus.cases
     )
     assert first_turn.prompt == (
-        "Design a production model-serving stack with a monitoring component named Serving Monitor."
+        "Design a production model-serving stack with two application services named "
+        "Serving API and Model release service, plus a monitoring component named Serving Monitor."
     )
     assert second_turn.prompt == (
         "Expand the Serving Monitor component while preserving the original graph topic "
@@ -298,6 +350,21 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
         second_turn.graph_expansion.new_node_connected_to_prior_label_contains
         == "serving monitor"
     )
+    assert first_turn.service_expansion is None
+    assert second_turn.service_expansion is None
+    assert third_turn.graph_expansion is None
+    assert third_turn.service_expansion is not None
+    assert third_turn.service_expansion.target_service_labels == [
+        "Serving API",
+        "Model release service",
+    ]
+    assert third_turn.service_expansion.specialist_model == "claude-opus-5-5"
+    assert third_turn.service_expansion.specialist_effort == "medium"
+    assert third_turn.graph_output_max_latency_ms == 180_000
+    assert third_turn.ui == second_turn.ui
+    assert "concurrency" in third_turn.prompt
+    assert "retries" in third_turn.prompt
+    assert "failure handling" in third_turn.prompt
     stored_maturity = resolve_complexity(
         first_turn.ui.complexity,
         first_turn.prompt,
@@ -337,7 +404,7 @@ def test_graph_expansion_corpus_has_one_bounded_expansion():
 def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
     corpus = load_corpus()
     one_turn = [corpus.by_id["rag-grounding"]]
-    two_turns = [corpus.by_id["graph-expansion"]]
+    three_turns = [corpus.by_id["graph-expansion"]]
     manifest = json.loads(
         (CORPUS_PATH.parents[4] / "ci" / "quality.json").read_text(encoding="utf-8")
     )
@@ -348,17 +415,20 @@ def test_browser_budget_scales_with_turns_and_retains_a_hard_ceiling():
     )
     assert browser_suite_timeout_seconds(one_turn) > application_turn_timeout_seconds()
     assert (
-        browser_suite_timeout_seconds(two_turns)
-        > 2 * application_turn_timeout_seconds()
+        browser_suite_timeout_seconds(three_turns)
+        > 3 * application_turn_timeout_seconds()
     )
     pr_graph_turns = sum(
         len(case.steps) for case in pr_cases if case.deterministic.graph_emitted is True
     )
     graph_lane_count = manifest["live"]["budgets"]["browser_graph_case_concurrency"]
     graph_lane_batches = (pr_graph_turns + graph_lane_count - 1) // graph_lane_count
-    assert browser_suite_timeout_seconds(pr_cases) >= (
-        manifest["live"]["budgets"]["browser_suite_base_timeout_seconds"]
-        + graph_lane_batches * application_turn_timeout_seconds()
+    assert browser_suite_timeout_seconds(pr_cases) >= min(
+        4200,
+        (
+            manifest["live"]["budgets"]["browser_suite_base_timeout_seconds"]
+            + graph_lane_batches * application_turn_timeout_seconds()
+        ),
     )
     assert browser_suite_timeout_seconds(corpus.cases * 10) == 4200
     assert browser_case_concurrency() == 4
@@ -973,6 +1043,8 @@ async def test_final_graph_inspection_keeps_typed_failure_kind(
         add_init_script=AsyncMock(),
         new_page=AsyncMock(return_value=page),
         close=AsyncMock(),
+        on=Mock(),
+        remove_listener=Mock(),
     )
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
     inspection_error = (
@@ -1027,6 +1099,11 @@ async def test_final_graph_inspection_keeps_typed_failure_kind(
         )
     ]
     assert result["passed"] is False
+    context.add_init_script.assert_awaited_once_with(
+        browser_runner._session_init_script(
+            {"access_token": "test-token"}, "http://frontend"
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -1241,6 +1318,7 @@ async def test_expected_error_case_can_continue_to_a_later_turn(monkeypatch):
                     update={
                         "graph_output_max_latency_ms": None,
                         "graph_expansion": None,
+                        "service_expansion": None,
                     }
                 )
                 for step in original.steps
@@ -1259,7 +1337,7 @@ async def test_expected_error_case_can_continue_to_a_later_turn(monkeypatch):
     monkeypatch.setattr("eval.browser_runner._send_step", fake_send_step)
     await _send_case_steps(None, case, [], [], timeout_seconds=390)
 
-    assert step_order == [0, 1]
+    assert step_order == list(range(len(case.steps)))
 
 
 @pytest.mark.asyncio
@@ -1822,7 +1900,8 @@ def test_graph_expansion_rejects_topic_component_composition_and_anchor_rewrites
 async def test_required_graph_turn_accepts_graph_data_at_its_latency_limit(monkeypatch):
     from eval.browser_runner import _send_case_steps
 
-    case = load_corpus().by_id["graph-expansion"]
+    original = load_corpus().by_id["graph-expansion"]
+    case = original.model_copy(update={"steps": original.steps[:2]})
 
     async def fake_send_step(page, sent_case, step_index, frames, *, timeout_seconds):
         del page, sent_case, timeout_seconds
@@ -3708,6 +3787,8 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
         add_init_script=AsyncMock(),
         new_page=AsyncMock(return_value=page),
         close=AsyncMock(),
+        on=Mock(),
+        remove_listener=Mock(),
     )
     browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
     monkeypatch.setattr(
@@ -3776,3 +3857,339 @@ async def test_browser_checks_and_retains_persisted_graph_from_existing_read(
     assert [(item["kind"], item["code"]) for item in result["failure_details"]] == (
         [] if expected_failure is None else [expected_failure]
     )
+
+
+@pytest.mark.parametrize(
+    "origin,existing,expected,storage_accesses",
+    [
+        ("null", None, None, 0),
+        ("https://other.example", None, None, 0),
+        ("https://frontend.example:8443", None, None, 0),
+        ("https://frontend.example", None, "seed", 2),
+        ("https://frontend.example", "existing", "existing", 1),
+    ],
+)
+def test_browser_session_initializer_seeds_only_the_target_origin(
+    origin, existing, expected, storage_accesses
+):
+    import shutil
+    import subprocess
+
+    from eval.browser_runner import (
+        EVAL_AUTH_STORAGE_KEY,
+        _session_init_script,
+        _serialized_session,
+    )
+
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required to execute the browser initializer invariant")
+    session = {"access_token": "offline-test-token", "expires_at": 12345}
+    script = _session_init_script(session, "https://frontend.example/eval?case=offline")
+    runner = """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const input = JSON.parse(fs.readFileSync(0, 'utf8'));
+        const values = new Map(input.existing === null ? [] : [[input.key, input.existing]]);
+        let accesses = 0;
+        const sandbox = { location: { origin: input.origin }, URL };
+        Object.defineProperty(sandbox, 'localStorage', {
+            get() {
+                accesses += 1;
+                if (input.origin === 'null') throw new Error('opaque storage accessed');
+                return {
+                    getItem: key => values.get(key) ?? null,
+                    setItem: (key, value) => values.set(key, value),
+                };
+            },
+        });
+        vm.runInNewContext(input.script, sandbox);
+        process.stdout.write(JSON.stringify({ accesses, value: values.get(input.key) ?? null }));
+    """
+    result = subprocess.run(
+        [node, "-e", runner],
+        input=json.dumps(
+            {
+                "origin": origin,
+                "existing": existing,
+                "key": EVAL_AUTH_STORAGE_KEY,
+                "script": script,
+            }
+        ),
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    assert json.loads(result.stdout) == {
+        "accesses": storage_accesses,
+        "value": _serialized_session(session) if expected == "seed" else expected,
+    }
+
+
+@pytest.mark.asyncio
+async def test_browser_suite_bootstrap_uses_target_scoped_session_initializer(
+    tmp_path, monkeypatch
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from eval import browser_runner
+
+    session = {"access_token": "offline-test-token"}
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(
+            return_value=SimpleNamespace(
+                on=lambda *_args: None,
+                goto=AsyncMock(side_effect=RuntimeError("stop after initializer")),
+            )
+        ),
+    )
+    browser = SimpleNamespace(
+        new_context=AsyncMock(return_value=context), close=AsyncMock()
+    )
+
+    class PlaywrightContext:
+        async def __aenter__(self):
+            return SimpleNamespace(
+                chromium=SimpleNamespace(launch=AsyncMock(return_value=browser))
+            )
+
+        async def __aexit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(browser_runner, "async_playwright", PlaywrightContext)
+    monkeypatch.setattr(
+        browser_runner, "_internal_session", AsyncMock(return_value=session)
+    )
+    monkeypatch.setattr(browser_runner, "_capture_bootstrap_failure", AsyncMock())
+    args = SimpleNamespace(
+        suite="diagnostic",
+        case=["memory"],
+        output=str(tmp_path / "results.json"),
+        headed=False,
+        target="https://frontend.example/eval",
+        backend_target="http://backend",
+        email="eval@example.com",
+        internal_password="offline-password",
+    )
+    with pytest.raises(RuntimeError, match="stop after initializer"):
+        await browser_runner._execute_browser(args)
+    context.add_init_script.assert_awaited_once_with(
+        browser_runner._session_init_script(session, args.target)
+    )
+    browser.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario",
+    [
+        "preflight",
+        "direct_backend",
+        "duplicate",
+        "unrelated",
+        "cleanup_error",
+        "cancel_drain",
+        "cancel_screenshot",
+    ],
+)
+async def test_browser_attempt_cleans_created_threads_before_generation_failure(
+    tmp_path, monkeypatch, scenario
+):
+    import asyncio
+
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    case = load_corpus().by_id["research"]
+    listeners = {}
+    draining = asyncio.Event()
+    screenshot_started = asyncio.Event()
+    release_body = asyncio.Event()
+    page = Mock()
+    page.get_by_role.return_value.is_visible = AsyncMock(return_value=False)
+    page.screenshot = AsyncMock()
+    context = SimpleNamespace(
+        tracing=SimpleNamespace(start=AsyncMock(), stop=AsyncMock()),
+        add_init_script=AsyncMock(),
+        new_page=AsyncMock(return_value=page),
+        close=AsyncMock(),
+        on=lambda event, callback: listeners.update({event: callback}),
+        remove_listener=lambda event, callback: (listeners.pop(event), draining.set()),
+    )
+    browser = SimpleNamespace(new_context=AsyncMock(return_value=context))
+    if scenario == "cancel_screenshot":
+
+        async def delayed_screenshot(**_kwargs):
+            screenshot_started.set()
+            await asyncio.Event().wait()
+
+        page.screenshot = delayed_screenshot
+    body_finished = False
+
+    async def creation_body():
+        nonlocal body_finished
+        # Response callbacks finish asynchronously after navigation reports readiness.
+        if scenario in {"cancel_drain", "cancel_screenshot"}:
+            await release_body.wait()
+        await asyncio.sleep(0)
+        body_finished = True
+        return {"thread": {"id": "created-thread"}, "messages": []}
+
+    async def navigate(*_args, **_kwargs):
+        urls = [
+            "http://backend/api/threads"
+            if scenario == "direct_backend"
+            else "http://localhost:5173/api/threads"
+        ]
+        if scenario == "unrelated":
+            urls = [
+                "http://other/api/threads",
+                "http://backend/api/threads/latest",
+                "http://backend/api/threads/old/diagram-intent",
+            ]
+        for url in urls:
+            listeners["response"](
+                SimpleNamespace(
+                    url=url,
+                    status=201,
+                    request=SimpleNamespace(method="POST"),
+                    json=AsyncMock(side_effect=creation_body),
+                )
+            )
+        if scenario == "unrelated":
+            for method, status in [("GET", 200), ("POST", 500)]:
+                listeners["response"](
+                    SimpleNamespace(
+                        url="http://backend/api/threads",
+                        status=status,
+                        request=SimpleNamespace(method=method),
+                        json=AsyncMock(side_effect=creation_body),
+                    )
+                )
+
+    page.goto = navigate
+
+    async def fail_submission(_page, _case, frames, _events, **_kwargs):
+        if scenario == "duplicate":
+            frames.append(
+                {
+                    "direction": "sent",
+                    "message": {
+                        "type": "start",
+                        "thread_id": "created-thread",
+                    },
+                }
+            )
+        raise browser_runner.BrowserQualityError(
+            "diagram_intent_timeout", "preflight failed"
+        )
+
+    deleted = []
+
+    def cleanup_request(method, url, payload, token):
+        assert body_finished
+        assert context.close.await_count == 0
+        deleted.append((method, url))
+        if scenario == "cleanup_error":
+            raise RuntimeError("delete unavailable")
+        if method == "GET":
+            from urllib.error import HTTPError
+
+            raise HTTPError(url, 404, "gone", {}, None)
+        return {}
+
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "test-token"}),
+    )
+    monkeypatch.setattr(browser_runner, "_serialized_session", lambda _session: "{}")
+    monkeypatch.setattr(browser_runner, "_wait_for_composer_ready", AsyncMock())
+    monkeypatch.setattr(browser_runner, "_send_case_steps", fail_submission)
+    monkeypatch.setattr(
+        browser_runner,
+        "_node_followup_interaction_failure_details",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(browser_runner, "_redact_trace", lambda *_args: None)
+    monkeypatch.setattr(browser_runner, "_blocking_json_request", cleanup_request)
+    attempt = asyncio.create_task(
+        browser_runner._run_browser_attempt(
+            browser,
+            SimpleNamespace(
+                target="http://localhost:5173",
+                backend_target="http://backend",
+                email="eval@example.com",
+                internal_password="test-password",
+            ),
+            case,
+            artifact_dir=tmp_path,
+            screenshot_dir=tmp_path,
+            trace_dir=tmp_path,
+            turn_timeout_seconds=10,
+            attempt_number=1,
+        )
+    )
+    if scenario in {"cancel_drain", "cancel_screenshot"}:
+        await (draining if scenario == "cancel_drain" else screenshot_started).wait()
+        attempt.cancel()
+        await draining.wait()
+        await asyncio.sleep(0)
+        # A second cancellation during cleanup must not cancel capture or deletion.
+        attempt.cancel()
+        await asyncio.sleep(0)
+        release_body.set()
+    if scenario == "cancel_screenshot":
+        with pytest.raises(asyncio.CancelledError):
+            await attempt
+        assert deleted == [
+            ("DELETE", "http://backend/api/threads/created-thread"),
+            ("GET", "http://backend/api/threads/created-thread"),
+        ]
+        context.close.assert_awaited_once()
+        return
+    result = await attempt
+    assert result["passed"] is False
+    assert result["thread_id"] == (
+        "created-thread" if scenario == "duplicate" else None
+    )
+    assert result["thread_ids"] == (
+        [] if scenario == "unrelated" else ["created-thread"]
+    )
+    assert deleted == (
+        []
+        if scenario == "unrelated"
+        else [("DELETE", "http://backend/api/threads/created-thread")]
+        + (
+            []
+            if scenario == "cleanup_error"
+            else [("GET", "http://backend/api/threads/created-thread")]
+        )
+    )
+    assert [detail["code"] for detail in result["failure_details"]] == (
+        ["diagram_intent_timeout", "cleanup_failed"]
+        if scenario == "cleanup_error"
+        else ["diagram_intent_timeout", "browser_case_cancelled"]
+        if scenario == "cancel_drain"
+        else ["diagram_intent_timeout"]
+    )
+    if scenario == "cancel_drain":
+        assert result["execution_state"] == "cancelled"
+    assert "response" not in listeners
+    context.close.assert_awaited_once()
+
+
+def test_retry_attempt_thread_ids_preserve_bootstrap_and_generation_identities():
+    from eval.browser_runner import _merge_attempt_results
+
+    result = _merge_attempt_results(
+        {"thread_id": None, "thread_ids": ["bootstrap-only"]},
+        {"thread_id": "generation", "thread_ids": ["generation", "bootstrap-only"]},
+    )
+    assert result["thread_id"] == "generation"
+    assert result["thread_ids"] == ["bootstrap-only", "generation"]

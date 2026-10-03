@@ -35,8 +35,13 @@ from agent.nodes.rag_worker import _may_emit_eval_evidence
 from agent.source_references import format_book_reference, source_urls
 from agent.state import AgentState, format_conversation_history
 from agent.stream_utils import stream_llm
+from agent.tools.service_expansion_tool import (
+    SERVICE_EXPANSION_TARGET_QUESTION,
+    plan_service_expansion,
+    service_expansion_request,
+)
 
-_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v33"
+_SYNTHESIS_PROMPT_VERSION = "architecture_blocks_v35"
 _QUICK_SYNTHESIS_PROMPT_VERSION = "quick_synthesis_v5"
 _ROUTER_PROMPT_VERSION = "intent_router_v4"
 # Match the ingested parent-section size, while bounding unexpected tool results.
@@ -155,7 +160,9 @@ _RESEARCH_ANSWER_CONTRACT = """
 <requested_web_research>
 Web research was requested and snippets were supplied. Address the relevant web findings
 that answer the user's question. Cite each supported finding inline with its exact supplied
-URL immediately after the claim. Book citations and engineering inference do not substitute
+URL immediately after the claim. Lead with the relevant source-supported finding and its
+inline citation before diagram interpretation or engineering inference. Metadata evidence_refs
+alone are not learner-facing citations. Book citations and engineering inference do not substitute
 for reporting web findings. Apply the same direct-entailment and source-allowlist rules.
 If snippets are irrelevant, omit them. State their limitation only if the user explicitly
 asked for current web findings; otherwise give the useful answer without a source audit.
@@ -193,6 +200,11 @@ Preserved means the prior graph remains unchanged; withheld means no new graph w
 Never describe a failed or unreviewed candidate as approved or applied. Follow any required
 completion sentence in the block exactly. Describe the graph for the requested scope;
 do not duplicate the canvas as ASCII art.
+When the trusted turn result identifies an add-only expansion, retained parent responsibilities
+and public or direct contracts still apply. Describe new internal paths as refinements or
+supplements at their own scope. Do not claim they replace retained contracts, disable a direct
+path, or exclusively take over the parent's responsibility. An explicitly authorized replacement
+edit may replace a contract when the resulting graph supports that change.
 For a newly approved overview, the server adds the overview disclosure to the first block.
 Do not restate or paraphrase that status in a block title or content. For a requested
 system design, explain its workflow and directed exchanges. For a broad educational
@@ -348,6 +360,41 @@ async def orchestrator_route(state: AgentState) -> AgentState:
     await send(
         {"type": "worker_status", "worker": "orchestrator", "status": "Routing…"}
     )
+
+    expansion_request = service_expansion_request(state)
+    if expansion_request is not None and state.get("graph_action") != "new":
+        try:
+            expansion = await plan_service_expansion(state, expansion_request)
+        except Exception as exc:
+            logger.warning("Service expansion planning failed (%s)", type(exc).__name__)
+            question = SERVICE_EXPANSION_TARGET_QUESTION
+            await send({"type": "response_delta", "content": question})
+            return {
+                **state,
+                "route": "memory",
+                "graph_intent": None,
+                "graph_changed": False,
+                "response_text": question,
+                "clarification_questions": [question],
+                "graph_operation": {
+                    "kind": "edit",
+                    "status": "needs_clarification",
+                    "failure_code": None,
+                },
+            }
+        if expansion is not None:
+            answer_only = (
+                state.get("graph_mode") == "off"
+                or state.get("graph_action") == "answer"
+            )
+            return {
+                **state,
+                "route": "search",
+                "service_expansion": expansion,
+                "design_query": expansion_request,
+                "graph_intent": None if answer_only else "edit",
+                **({"graph_operation": None} if answer_only else {}),
+            }
 
     graph_intent = state.get("graph_intent") or resolve_graph_operation(
         state.get("user_message", ""),
@@ -523,16 +570,37 @@ async def _emit_answer_evidence(
 
 
 async def _stream_answer_with_progress(send, **arguments) -> str:
-    await send({"type": "workflow_progress", "phase": "explain", "status": "active",
-                "title": "Writing the answer", "detail": ""})
+    await send(
+        {
+            "type": "workflow_progress",
+            "phase": "explain",
+            "status": "active",
+            "title": "Writing the answer",
+            "detail": "",
+        }
+    )
     try:
         answer = await stream_llm(send=send, **arguments)
     except Exception:
-        await send({"type": "workflow_progress", "phase": "explain", "status": "degraded",
-                    "title": "Answer interrupted", "detail": ""})
+        await send(
+            {
+                "type": "workflow_progress",
+                "phase": "explain",
+                "status": "degraded",
+                "title": "Answer interrupted",
+                "detail": "",
+            }
+        )
         raise
-    await send({"type": "workflow_progress", "phase": "explain", "status": "complete",
-                "title": "Answer ready", "detail": ""})
+    await send(
+        {
+            "type": "workflow_progress",
+            "phase": "explain",
+            "status": "complete",
+            "title": "Answer ready",
+            "detail": "",
+        }
+    )
     return answer
 
 
@@ -659,7 +727,8 @@ async def orchestrator_synthesise(state: AgentState) -> AgentState:
             "graph_preview_timeout",
         }
         render_failed = review.get("render_failure_code") in {
-            "diagram_evaluation_layout_rejected", "diagram_evaluation_capture_failed",
+            "diagram_evaluation_layout_rejected",
+            "diagram_evaluation_capture_failed",
         }
         if render_failed:
             content = "The diagram could not be rendered. Please try again."
@@ -850,6 +919,10 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
         research_context=state.get("research_context") or "",
     )
     synthesis_timeout_s = synthesis_timeout_seconds(state)
+    expansion = state.get("service_expansion") or {}
+    specialist_answer = bool(
+        expansion.get("complexity") == "high" and state.get("graph_intent") != "edit"
+    )
     if current_graph:
         explain_title, explain_detail = _explanation_start_status(
             graph_is_preserved=graph_is_preserved,
@@ -878,14 +951,18 @@ async def _synthesise_answer(state: AgentState) -> AgentState:
             await send(event)
 
         response_text = await stream_explanation_blocks(
-            model=settings.explanation_model,
+            model=(
+                settings.service_expansion_model
+                if specialist_answer
+                else settings.explanation_model
+            ),
             system=(
                 f"{synthesis_system}{_GRAPH_ANSWER_CONTRACT}"
                 f"{_EXPLANATION_WRITING_STYLE}{_BLOCK_OUTPUT_CONTRACT}"
             ),
             messages=messages,
-            effort="low",
-            max_output_tokens=4500,
+            effort="medium" if specialist_answer else "low",
+            max_output_tokens=16384 if specialist_answer else 4500,
             timeout_seconds=synthesis_timeout_s,
             telemetry=telemetry,
             send=explanation_send,
@@ -1005,7 +1082,10 @@ def _format_trusted_turn_result(state: AgentState) -> str:
             + (
                 "The user chose the rendered component preview. Those components were retained "
                 "while the connections were completed. "
-                if ((state.get("graph_contract") or {}).get("acceptance") or {}).get("stage") == "components"
+                if ((state.get("graph_contract") or {}).get("acceptance") or {}).get(
+                    "stage"
+                )
+                == "components"
                 else "The user chose the complete rendered diagram. "
             )
             + "The complete graph passed structural and browser rendering checks. "
@@ -1049,11 +1129,27 @@ def _format_trusted_turn_result(state: AgentState) -> str:
         else ""
     )
 
+    add_only_result = (
+        "Change scope: add-only expansion.\n"
+        "Existing components, parent responsibilities, and directed contracts were retained. "
+        "Added internal paths refine or supplement those contracts; they do not remove or "
+        "replace a retained public or direct path.\n"
+        if publication in {"approved", "user_accepted"}
+        and operation_kind == "edit"
+        and operation.get("status") == "applied"
+        and (
+            state.get("graph_action") == "extend"
+            or bool(state.get("service_expansion"))
+        )
+        else ""
+    )
+
     return (
         "\n<trusted_turn_result>\n"
         f"Graph operation: {operation_kind}.\n"
         f"{overview_detail}"
         f"{result_by_publication[publication]}\n"
+        f"{add_only_result}"
         "</trusted_turn_result>\n\n"
     )
 

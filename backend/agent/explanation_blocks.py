@@ -219,9 +219,8 @@ def _normalise_block(
     if len(content) > 4000:
         logger.warning("explanation_blocks reason_code=overlong_content")
         return None
-    if not (
-        source_urls(content, include_bare=True) | book_references(content)
-    ).issubset(allowed_references):
+    inline_urls = source_urls(content, include_bare=True)
+    if not (inline_urls | book_references(content)).issubset(allowed_references):
         logger.warning("explanation_blocks reason_code=unsupported_inline_references")
         return None
     title = " ".join(str(value.get("title") or "Architecture note").split())[:100]
@@ -244,6 +243,14 @@ def _normalise_block(
         for reference in raw_evidence
     ):
         logger.warning("explanation_blocks reason_code=invalid_metadata_evidence_refs")
+        return None
+    if any(
+        (url := canonical_source_url(reference)) is not None and url not in inline_urls
+        for reference in raw_evidence
+    ):
+        logger.warning(
+            "explanation_blocks reason_code=metadata_web_reference_not_inline"
+        )
         return None
     evidence = [
         canonical_source_url(reference) or reference for reference in raw_evidence[:6]

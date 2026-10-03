@@ -136,6 +136,9 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
     results = ordered_items(browser, "results", ids)
     states = ordered_items(browser, "case_states", ids)
     evaluations = ordered_items(semantic, "evaluations", ids)
+    telemetry = semantic.get("application_telemetry")
+    require(isinstance(telemetry, list) and all(isinstance(row, dict) for row in telemetry),
+            "invalid source application telemetry")
     groups: dict[str, list[str]] = {"fresh": [], "replay": [], "carried": []}
     for result, state, evaluation in zip(results, states, evaluations, strict=True):
         case_id = result["id"]
@@ -143,15 +146,22 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
         failures = result.get("deterministic_failures")
         require(type(result.get("passed")) is bool and isinstance(failures, list)
                 and result["passed"] == (not failures), "invalid browser pass state")
-        require(evaluation.get("deterministic_failures") == failures, "deterministic evidence mismatch")
+        expansion_failures = live_runner._service_expansion_failures(
+            result, corpus.by_id[case_id], telemetry,
+        )
+        deterministic_failures = [*failures, *expansion_failures]
+        require(evaluation.get("deterministic_failures") == deterministic_failures,
+                "deterministic evidence mismatch")
         decision = evaluation.get("decision")
         judgments = evaluation.get("judgments")
         require(isinstance(judgments, list), "missing judgments")
-        if not result["passed"]:
-            details = result.get("failure_details")
-            require(decision == "fail" and not judgments and isinstance(details, list)
-                    and bool(details) and all(d.get("kind") == "quality" for d in details),
-                    "unrecognized browser failure")
+        if deterministic_failures:
+            require(decision == "fail" and not judgments, "unrecognized deterministic failure")
+            if not result["passed"]:
+                details = result.get("failure_details")
+                require(isinstance(details, list) and bool(details)
+                        and all(isinstance(d, dict) and d.get("kind") == "quality" for d in details),
+                        "unrecognized browser failure")
             groups["fresh"].append(case_id)
         elif decision == "infrastructure" and not judgments:
             require(bool(re.match(
@@ -225,13 +235,19 @@ def validate_eval_code(source: str) -> None:
                 f"evaluation definition changed: {path}")
     before = command("git", "show", f"{source}:backend/eval/live_runner.py").decode()
     after = (ROOT / "backend/eval/live_runner.py").read_text()
-    parser_line = '    parser.add_argument("--judge-call-limit", type=int, help="Restrict the suite judge-call budget")\n'
+    parser_line = (
+        '    parser.add_argument(\n'
+        '        "--judge-call-limit", type=int, help="Restrict the suite judge-call budget"\n'
+        '    )\n'
+    )
     helper = after[after.index("def _restricted_judge_limit("):after.index("async def evaluate(")]
     # Authenticate the one allowed runner addition, not arbitrary code in that span.
-    require(sha256(helper.encode()) == "821fd0902c11944e5cc1a215d6e0abfece39df154d21771e425dc525ff0492db",
+    require(sha256(helper.encode()) == "ab3f5e18e5154db7369f077694b07aef1f73fc73ae24a27abc151e01c1d16284",
             "restrictive budget helper changed")
     normalized = after.replace(parser_line, "").replace(helper, "").replace(
-        'judge_calls=_restricted_judge_limit(args, limits["judge_calls"] if is_pr_budget else 40),',
+        'judge_calls=_restricted_judge_limit(\n'
+        '            args, limits["judge_calls"] if is_pr_budget else 40\n'
+        '        ),',
         'judge_calls=limits["judge_calls"] if is_pr_budget else 40,',
     )
     require(before in (after, normalized), "live runner changed beyond restrictive budget support")

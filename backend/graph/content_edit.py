@@ -12,6 +12,8 @@ from agent.staged_graph_contract import (
     CONNECTION_LABEL_MAX_CHARS,
     Flow,
     NodeType,
+    GraphContractError,
+    validate_graph_component_parents,
 )
 from config import settings
 
@@ -173,6 +175,11 @@ def apply_graph_content_edit(
         node["detail"] = None
         node["user_edited_fields"] = _edited_fields(node, fields)
         changed = True
+
+    try:
+        validate_graph_component_parents(edited_nodes)
+    except GraphContractError as exc:
+        raise GraphEditInvalid(str(exc)) from exc
 
     for update in request.edges:
         if update.index >= len(edited_edges):

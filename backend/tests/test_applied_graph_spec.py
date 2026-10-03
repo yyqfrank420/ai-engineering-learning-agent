@@ -308,10 +308,10 @@ def test_every_categorical_position_rejects_foreign_codes(
     [
         (True, "value_type"),
         (1.0, "value_type"),
-        ("109", "invalid_enum"),
+        ("110", "invalid_enum"),
         ("1" * 5000, "invalid_enum"),
         (-1, "invalid_enum"),
-        (109, "invalid_enum"),
+        (110, "invalid_enum"),
     ],
 )
 def test_wire_codes_reject_invalid_scalar_values(value, rule):
@@ -954,7 +954,10 @@ async def test_dynamic_generator_uses_schema_once(monkeypatch):
         graph_worker, "stream_structured_llm", fake_stream_structured_llm
     )
     history = [
-        {"role": "user" if index % 2 == 0 else "assistant", "content": f"turn-{index}: " + ("x" * 1500)}
+        {
+            "role": "user" if index % 2 == 0 else "assistant",
+            "content": f"turn-{index}: " + ("x" * 1500),
+        }
         for index in range(12)
     ]
     result = await graph_worker._generate_applied_architecture(
@@ -1396,3 +1399,28 @@ async def test_dynamic_generator_classifies_provider_truncation(
         )
     assert caught.value.code == code
     assert len(calls) == call_count
+
+
+def test_application_service_internal_component_preserves_owner():
+    payload = _draft(4)
+    payload["components"][0][2] = 109
+    draft = validate_applied_graph_topology(payload, applied_graph_spec("production"))
+    assert draft["nodes"][1]["parent_service_id"] == "n1"
+    graph = enrich_applied_graph_topology(
+        draft, spec=applied_graph_spec("production"), architect_plan={}
+    )
+    assert graph["nodes"][1]["type"] == "component"
+    assert graph["nodes"][1]["parent_service_id"] == "n1"
+    assert graph["nodes"][1]["technology"] == "Component"
+
+
+def test_internal_component_cannot_be_a_root_or_owned_by_another_component():
+    payload = _draft(4)
+    payload["root"][1] = 109
+    with pytest.raises(AppliedGraphSpecError):
+        validate_applied_graph_topology(payload, applied_graph_spec("production"))
+    payload = _draft(4)
+    payload["components"][0][2] = 109
+    payload["components"][1][2] = 109
+    with pytest.raises(AppliedGraphSpecError):
+        validate_applied_graph_topology(payload, applied_graph_spec("production"))

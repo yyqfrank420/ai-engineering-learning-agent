@@ -822,6 +822,7 @@ async def node_selected_endpoint(
     thread_id = body.thread_id
     request.state.thread_id = thread_id
     request.state.client_request_id = body.client_request_id
+    request_id = getattr(request.state, "request_id", None) or str(uuid.uuid4())
     node_title = body.title
     node_description = body.description
     thread = thread_store.get_thread(user_id, thread_id)
@@ -866,7 +867,11 @@ async def node_selected_endpoint(
                     "operation": "node_selected_chips",
                     "user_id": user_id,
                     "thread_id": thread_id,
-                    "metadata": {"node_id": body.node_id},
+                    "metadata": {
+                        "node_id": body.node_id,
+                        "request_id": request_id,
+                        "client_request_id": body.client_request_id,
+                    },
                 },
             ):
                 yield sse(event)

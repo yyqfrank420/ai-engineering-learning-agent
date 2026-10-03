@@ -409,6 +409,48 @@ def test_production_branch_policy_keeps_required_outcomes_and_controls():
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_declared_escalation_policy_matches_authoring_and_review(maturity):
+    request = "Route declared workflow exceptions for human correction and return the decision."
+    context = generation.AcceptedContext(
+        assumptions=(), external_effects=False,
+        retrieval_or_reuse=False, learning_or_release=False,
+    )
+    authored, _ = generation._attempt_prompt(
+        stage="connections", request=request, resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=4, edge_limit=8),
+        upstream_fingerprint="a" * 64, attempt=0,
+        prior_prompt_fingerprint=None, prior_write_set_fingerprint=None,
+        structural_findings=[], gate_findings=[], base=None,
+        rejected_candidate=None, accepted_components=[], accepted_context=context,
+    )
+    reviewed = gate._prompt(
+        gate="connections", user_request=request,
+        evidence_bundle={"candidate_context": context.prompt_value()},
+        resolved_maturity=maturity, candidate_records=[],
+        required_production_guarantees=production_proofs_for_capabilities(
+            context.prompt_value()["capabilities"], maturity=maturity
+        ),
+    )
+    authored_rules = json.loads(authored.split("\nINPUT\n", 1)[1])["acceptance_criteria"]
+    reviewed_rules = json.loads(reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0])
+    assert authored_rules == reviewed_rules
+    criterion = reviewed_rules["edge_semantics"]
+    shared = RUBRIC_CRITERIA["edge_semantics"][1]
+    escalation = shared[shared.index("Treat declared escalation as an invoked capability."):]
+    assert escalation in criterion
+    for obligation in (
+        "presentation of the applicable exception payload to that owner",
+        "When a declared consumer needs the resulting decision or output to continue work or answer, trace it back to that consumer",
+        "A standalone asynchronous review or alert does not require a return acknowledgment",
+        "A typed terminal exception can close reporting but cannot establish separately promised review, correction, or override",
+        "Direct delivery, explicit forwarding, authoritative persistence with declared reads, or declared same-owner handling",
+        "Do not require human escalation when the request and accepted design do not declare it",
+        "Do not require tool observations for an action that did not run",
+    ):
+        assert obligation in criterion
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
 def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturity):
     criterion = staged_review_requirements("connections", maturity)["edge_semantics"]
 
@@ -422,20 +464,42 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
     ):
         assert obligation in criterion
     assert (
-        "A redundant intermediate return or duplicate description is advisory unless "
-        "it changes execution or violates a required control"
+        "A redundant intermediate return or duplicate description is advisory only when "
+        "an independent declared route already delivers all required output and it "
+        "neither changes execution nor violates a required control"
     ) in criterion
     assert "identify that concrete failure when rejecting" in criterion
-    assert RUBRIC_CRITERIA["edge_semantics"] == (
-        "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate "
-        "interactions, and keep reverse or parallel contracts compatible. Classify each "
-        "interaction by its actual behavior; feedback and deployment contracts cannot "
-        "substitute for required runtime or control interactions. Each read or request "
-        "that expects returned data needs its matching payload from the authoritative "
-        "owner back to the requester. An unrelated reverse verdict or acknowledgment "
-        "does not supply that payload.",
-    )
+    owner, shared_criterion = RUBRIC_CRITERIA["edge_semantics"]
+    assert owner == "connections"
+    for obligation in (
+        "Give each directed edge one distinct necessary contract",
+        "consolidate duplicate interactions",
+        "keep reverse or parallel contracts compatible",
+        "Classify each interaction by its actual behavior",
+        "feedback and deployment contracts cannot substitute for required runtime or control interactions",
+        "Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester",
+        "An unrelated reverse verdict or acknowledgment does not supply that payload",
+    ):
+        assert obligation in shared_criterion
+    for output_requirement in (
+        "When a declared consumer needs execution output to continue work or answer",
+        "trace that output across the complete route to the consumer",
+        "Every intermediary contract on that output route must carry the actual output",
+        "Name the actual needed output data in each forwarding connection",
+        "Generic 'success', 'failure', or 'outcome' does not imply a result payload",
+        "A validation verdict, acknowledgment, or commit status alone is insufficient",
+        "Direct delivery, explicit forwarding, or declared persistence with a consumer read can satisfy output delivery",
+        "Preserve this output route during scoped edits and repairs",
+        "If execution is denied or halted while a declared consumer waits for action output",
+        "deliver the final decision, action identity, and reason to that consumer as the terminal result",
+        "Do not require tool observations for an action that did not run",
+        "A reply emitted only after execution cannot close a branch that skips execution",
+        "An audit write alone needs a declared consumer read of that result",
+        "Declared same-owner handling can also satisfy output delivery without extra edges",
+        "A commit/status-only contract is valid when its consumer needs only commit information",
+    ):
+        assert output_requirement in shared_criterion
+        assert output_requirement in criterion
 
 
 def test_prototype_action_policy_preserves_required_controls_without_extra_stages():
@@ -459,10 +523,10 @@ def test_prototype_action_policy_preserves_required_controls_without_extra_stage
 def test_production_and_legacy_action_policy_retain_exact_controls():
     criterion = "Put policy, exact-action approval, audit, and recovery controls on external mutations."
 
-    assert RUBRIC_CRITERIA["safe_action_boundary"][1] == criterion
+    assert RUBRIC_CRITERIA["safe_action_boundary"][1].startswith(criterion)
     assert (
         staged_review_requirements("connections", "production")["safe_action_boundary"]
-        == criterion
+        == RUBRIC_CRITERIA["safe_action_boundary"][1]
     )
 
 
@@ -1363,3 +1427,250 @@ def test_action_validation_policy_changes_production_identity_only(
     assert (gate.review_identity(stage, maturity, guarantees) != current) is (
         maturity == "production"
     )
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("scope", ["universal", "declared_subset"])
+def test_declared_approval_scope_is_preserved_in_shared_authoring_and_review_contract(
+    stage, maturity, scope
+):
+    if scope == "universal":
+        request = "Design ad management. Require human review before every external advertising write."
+        assumption = "Every external advertising write requires human review."
+        responsibility = "Automatically approves undefined material changes within the budget envelope."
+    else:
+        request = "Design ad management. Human review is required for above-limit budget increases; pause actions may be approved automatically."
+        assumption = "Above-limit budget increases require human review; automatic approval is permitted only for pause actions."
+        responsibility = "Routes above-limit increases to human review and approves pause actions within the declared scope."
+    context = generation.AcceptedContext(
+        assumptions=(assumption,),
+        external_effects=True,
+        retrieval_or_reuse=False,
+        learning_or_release=False,
+    )
+    guarantees = production_proofs_for_capabilities(
+        context.prompt_value()["capabilities"], maturity=maturity
+    )
+    components = [
+        {
+            "id": "approval",
+            "label": "Approval service",
+            "responsibility": responsibility,
+        }
+    ]
+    authored, _ = generation._attempt_prompt(
+        stage=stage,
+        request=request,
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=2, edge_limit=4),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        accepted_components=components if stage == "connections" else None,
+        accepted_context=context if stage == "connections" else None,
+        architecture_context=("Accepted design assumption: " + assumption)
+        if stage == "components"
+        else None,
+    )
+    evidence = {
+        "candidate_context": context.prompt_value(),
+        "candidate_components": components,
+    }
+    reviewed = gate._prompt(
+        gate=stage,
+        user_request=request,
+        evidence_bundle=evidence,
+        resolved_maturity=maturity,
+        candidate_records=components if stage == "components" else [],
+        required_production_guarantees=guarantees if stage == "connections" else (),
+    )
+    generated = json.loads(authored.split("\nINPUT\n", 1)[1])
+    reviewed_criteria = json.loads(
+        reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert generated["request"] == request
+    assert generated["acceptance_criteria"] == reviewed_criteria
+    rule = reviewed_criteria[
+        "brief_coverage" if stage == "components" else "safe_action_boundary"
+    ]
+    for obligation in (
+        "Keep approval scope consistent with the request and accepted assumptions",
+        "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset",
+        "Automatic or delegated approval needs an explicit permitted scope",
+        "do not infer it from a budget envelope or a generic 'approved' label",
+    ):
+        assert obligation in rule
+    decoder = json.JSONDecoder()
+    reviewed_evidence, _ = decoder.raw_decode(reviewed.split("Evidence bundle: ", 1)[1])
+    assert reviewed_evidence == evidence
+    if stage == "connections":
+        assert generated["accepted_context"] == context.prompt_value()
+        assert generated["accepted_components"] == components
+        assert (
+            "trace presentation of the applicable action for that review and its human decision before execution"
+            in rule
+        )
+    else:
+        assert (
+            "At the component stage, assess responsibilities and approval scope only"
+            in rule
+        )
+    # Fresh generation verifies model acceptance.
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    "owner,criterion,removed",
+    [
+        (
+            "components",
+            "brief_coverage",
+            "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset. ",
+        ),
+        (
+            "connections",
+            "safe_action_boundary",
+            "Universal human review cannot narrow to an undefined 'material' or 'sensitive' subset. ",
+        ),
+        (
+            "connections",
+            "edge_semantics",
+            "If execution is denied or halted while a declared consumer waits for action output, deliver the final decision, action identity, and reason to that consumer as the terminal result. ",
+        ),
+    ],
+)
+def test_removed_approval_scope_or_terminal_reply_invalidates_only_owning_cached_review(
+    monkeypatch, stage, maturity, owner, criterion, removed
+):
+    current = gate.review_identity(stage, maturity)
+    original = gate.staged_review_requirements
+    current_requirements = original(stage, maturity)
+
+    def previous_requirements(selected_stage, depth, guarantees=()):
+        requirements = original(selected_stage, depth, guarantees)
+        if selected_stage == owner:
+            assert removed in requirements[criterion]
+            requirements[criterion] = requirements[criterion].replace(removed, "")
+        return requirements
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    prior = gate.review_identity(stage, maturity)
+    assert tuple(previous_requirements(stage, maturity)) == tuple(current_requirements)
+    assert (prior != current) is (stage == owner)
+    monkeypatch.setattr(gate, "staged_review_requirements", original)
+    if stage == owner:
+        with pytest.raises(ValueError, match="policy differs"):
+            gate._previous_review_evidence(
+                {"stage": stage, "review_identity": prior},
+                gate=stage,
+                identity=current,
+                rule_codes=(),
+                records=[],
+                evidence_bundle={},
+            )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize(
+    "declaration", ["request", "assumption", "automatic", "undeclared", "mixed"]
+)
+def test_component_human_review_ownership_author_and_gate_preserve_declared_scope(
+    maturity, declaration
+):
+    request = "Design a release service."
+    assumption = "Release actions use the accepted approval policy."
+    responsibility = "Applies release policy within the permitted scope."
+    if declaration == "request":
+        request += " A human reviews each release before execution."
+        responsibility = "Owns an integrated human review surface and obtains and records each release decision."
+    elif declaration == "assumption":
+        assumption = "A human reviews each release before execution."
+        responsibility = "Approves releases."
+    elif declaration == "automatic":
+        request += " Permit automatic approval for reversible release actions."
+        assumption = "Automatic approval is permitted for reversible release actions."
+    elif declaration == "mixed":
+        request += " A human must approve promotion; reversible checks may be approved automatically."
+        assumption = "Human approval is required for promotion; automatic approval is permitted only for reversible checks."
+        responsibility = "Owns an integrated human promotion review surface, obtains and records its decision, and automatically approves reversible checks."
+    components = [
+        {"id": "release", "label": "Release service", "responsibility": responsibility}
+    ]
+    authored, _ = generation._attempt_prompt(
+        stage="components",
+        request=request,
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=2, edge_limit=4),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Accepted assumption: " + assumption,
+    )
+    evidence = {"candidate_context": {"assumptions": [assumption]}}
+    reviewed = gate._prompt(
+        gate="components",
+        user_request=request,
+        evidence_bundle=evidence,
+        resolved_maturity=maturity,
+        candidate_records=components,
+        required_production_guarantees=(),
+    )
+    generated = json.loads(authored.split("\nINPUT\n", 1)[1])
+    criteria = json.loads(
+        reviewed.split("Acceptance criteria: ", 1)[1].split("\n", 1)[0]
+    )
+    assert generated["acceptance_criteria"] == criteria
+    assert generated["request"] == request
+    assert generated["architecture_context"] == "Accepted assumption: " + assumption
+    brief = criteria["brief_coverage"]
+    for requirement in (
+        "When human review is declared by the request or accepted assumptions",
+        "explicitly own the human interaction or review surface and obtaining and recording the human decision",
+        "Generic 'approves', an automatic policy verdict, or passive storage does not establish this ownership",
+        "An integrated surface within an existing owner is valid",
+        "do not require a separate human or UI component",
+        "Do not require human review ownership when it is undeclared, or for responsibilities where accepted automatic approval is permitted within the request's scope",
+        "do not require connection-stage delivery proof",
+    ):
+        assert requirement in brief
+    captured, _ = json.JSONDecoder().raw_decode(
+        reviewed.split("Evidence bundle: ", 1)[1]
+    )
+    assert captured == evidence
+    records, _ = json.JSONDecoder().raw_decode(
+        reviewed.split("Immutable candidate records: ", 1)[1]
+    )
+    assert records == [{"record_index": 0, "record": components[0]}]
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_human_review_ownership_changes_only_component_review_identity(
+    monkeypatch, stage, maturity
+):
+    current = gate.review_identity(stage, maturity)
+    original = gate.staged_review_requirements
+
+    def previous_requirements(selected_stage, depth, guarantees=()):
+        criteria = original(selected_stage, depth, guarantees)
+        if selected_stage == "components":
+            criteria["brief_coverage"] = criteria["brief_coverage"].replace(
+                "Generic 'approves', an automatic policy verdict, or passive storage does not establish this ownership. ",
+                "",
+            )
+        return criteria
+
+    monkeypatch.setattr(gate, "staged_review_requirements", previous_requirements)
+    assert (gate.review_identity(stage, maturity) != current) is (stage == "components")

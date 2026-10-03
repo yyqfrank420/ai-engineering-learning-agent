@@ -32,6 +32,18 @@ _TOOL_TEXT = {
     "render": ("Checking the layout", "Layout checked"),
     "review": ("Checking the draft", "Draft checked"),
 }
+# Startup and routing predate workflow progress events. Map only known statuses;
+# arbitrary worker text is not a public activity source.
+_CONTEXT_STATUS_TEXT = {
+    "Question received \u2014 preparing context\u2026": _STAGE_TEXT["context"],
+    "Question received \u2014 preparing the steerable workflow\u2026": _STAGE_TEXT[
+        "context"
+    ],
+    "Routing\u2026": _STAGE_TEXT["context"],
+    "Steering received \u2014 rebuilding the answer around your correction\u2026": (
+        "I'll update the answer around your correction."
+    ),
+}
 _INTERNAL_TEXT = re.compile(
     r"\b[a-z][a-z0-9]*_[a-z0-9_]+\b|\b(?:capabilit(?:y|ies)|slot)[.:\[]|[{}]", re.I
 )
@@ -96,9 +108,21 @@ class ActivityRecorder:
         event_type = event.get("type")
         if not isinstance(event_type, str):
             return None
-        if event_type != "workflow_progress":
+        if event_type == "worker_status":
+            worker, worker_status = event.get("worker"), event.get("status")
+            if (
+                worker != "orchestrator"
+                or not isinstance(worker_status, str)
+                or worker_status not in _CONTEXT_STATUS_TEXT
+            ):
+                return None
+            phase, status = "context", "active"
+            context_text = _CONTEXT_STATUS_TEXT[worker_status]
+        elif event_type == "workflow_progress":
+            phase, status = event.get("phase"), event.get("status")
+            context_text = None
+        else:
             return None
-        phase, status = event.get("phase"), event.get("status")
         if (
             not isinstance(phase, str)
             or not isinstance(status, str)
@@ -110,7 +134,7 @@ class ActivityRecorder:
         text = (
             _TOOL_TEXT[phase][1 if status == "complete" else 0]
             if kind == "tool"
-            else _STAGE_TEXT[phase]
+            else context_text or _STAGE_TEXT[phase]
         )
         if status == "retry":
             if kind == "update":

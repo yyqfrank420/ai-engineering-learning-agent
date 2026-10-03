@@ -16,6 +16,64 @@ STAGED_REVIEW_STANDARD = (
     "expand the graph just to illustrate each checklist item."
 )
 
+_EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
+    "When a declared consumer needs execution output to continue work or answer, "
+    "trace that output across the complete route to the consumer. Every "
+    "intermediary contract on that output route must carry the actual output. "
+    "Name the actual needed output data in each forwarding connection. "
+    "Generic 'success', 'failure', or 'outcome' does not "
+    "imply a result payload. For performed execution in an agent loop, the planner must receive "
+    "tool observations or result content, with execution status as accompanying "
+    "data. A commit/status-only contract is valid when its consumer needs only "
+    "commit information. "
+    "A validation verdict, acknowledgment, or commit status alone is insufficient. "
+    "Direct delivery, explicit forwarding, or declared persistence with a consumer "
+    "read can satisfy output delivery. Declared same-owner handling can also satisfy "
+    "output delivery without extra edges. If execution is denied or halted while a declared consumer waits "
+    "for action output, deliver the final decision, action identity, and reason to "
+    "that consumer as the terminal result. Do not require tool observations for "
+    "an action that did not run. A reply emitted only after execution cannot close "
+    "a branch that skips execution. An audit write alone needs a declared consumer "
+    "read of that result. Preserve this "
+    "output route during scoped edits and repairs."
+)
+
+_DECLARED_ESCALATION_DELIVERY_REQUIREMENT = (
+    "Treat declared escalation as an invoked capability. When the accepted design "
+    "promises review, correction, or override by another owner, trace presentation "
+    "of the applicable exception payload to that owner. When a declared consumer "
+    "needs the resulting decision or output to continue work or answer, trace it "
+    "back to that consumer. A standalone asynchronous review or alert does not "
+    "require a return acknowledgment. A typed terminal exception can close "
+    "reporting but cannot establish separately promised review, correction, or "
+    "override. Direct delivery, explicit forwarding, authoritative persistence "
+    "with declared reads, or declared same-owner handling can satisfy this path. "
+    "Do not require human escalation when the request and accepted design do not "
+    "declare it."
+)
+
+_APPROVAL_SCOPE_REQUIREMENT = (
+    "Keep approval scope consistent with the request and accepted assumptions. "
+    "Universal human review cannot narrow to an undefined 'material' or 'sensitive' "
+    "subset. Automatic or delegated approval needs an explicit permitted scope "
+    "consistent with those declarations; do not infer it from a budget envelope "
+    "or a generic 'approved' label."
+)
+
+_ACTION_APPROVAL_DELIVERY_REQUIREMENT = (
+    "For each declared policy or approval gate, trace its final allow, reject, or "
+    "halt decision to the owner that dispatches the action or to the executor "
+    "before the effect. Every intermediary must forward that decision with its "
+    "action identity and scope. A preliminary validation verdict or an invocation "
+    "label saying 'approved' does not establish delivery of the final approval. "
+    "Rejected or halted actions must reach a bounded observable outcome without "
+    "execution. Direct delivery, explicit forwarding, authoritative persisted "
+    "decision reads, or declared same-owner enforcement can satisfy this path; "
+    "do not require duplicate gates or services. When human review is required, "
+    "trace presentation of the applicable action for that review and its human "
+    "decision before execution. " + _APPROVAL_SCOPE_REQUIREMENT
+)
+
 RUBRIC_CRITERIA = {
     "domain_specificity": (
         "components",
@@ -31,11 +89,14 @@ RUBRIC_CRITERIA = {
     ),
     "safe_action_boundary": (
         "connections",
-        "Put policy, exact-action approval, audit, and recovery controls on external mutations.",
+        "Put policy, exact-action approval, audit, and recovery controls on external mutations. "
+        + _ACTION_APPROVAL_DELIVERY_REQUIREMENT,
     ),
     "edge_semantics": (
         "connections",
-        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload.",
+        "Give each directed edge one distinct necessary contract, consolidate duplicate interactions, and keep reverse or parallel contracts compatible. Classify each interaction by its actual behavior; feedback and deployment contracts cannot substitute for required runtime or control interactions. Each read or request that expects returned data needs its matching payload from the authoritative owner back to the requester. An unrelated reverse verdict or acknowledgment does not supply that payload. "
+        + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
+        + " " + _DECLARED_ESCALATION_DELIVERY_REQUIREMENT,
     ),
     "assumption_hygiene": (
         "composition",
@@ -67,7 +128,17 @@ RUBRIC_CRITERIA = {
     ),
     "brief_coverage": (
         "components",
-        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities.",
+        "Give every requested responsibility of the subject system a component owner; response instructions do not create runtime responsibilities. "
+        + _APPROVAL_SCOPE_REQUIREMENT
+        + " At the component stage, assess responsibilities and approval scope only; "
+        "do not require connection-stage delivery proof. When human review is declared "
+        "by the request or accepted assumptions, a compatible owner must explicitly own "
+        "the human interaction or review surface and obtaining and recording the human "
+        "decision. Generic 'approves', an automatic policy verdict, or passive storage "
+        "does not establish this ownership. An integrated surface within an existing "
+        "owner is valid; do not require a separate human or UI component. Do not require "
+        "human review ownership when it is undeclared, or for responsibilities where "
+        "accepted automatic approval is permitted within the request's scope.",
     ),
     "branch_completion": (
         "connections",
@@ -348,10 +419,13 @@ def staged_review_requirements(
             "the complete declared path: an orchestrator may invoke work directly or "
             "delegate invocation and receive the result through another component. "
             "An unrelated verdict or acknowledgment cannot replace required data. "
-            "A redundant intermediate return or duplicate description is advisory unless "
-            "it changes execution or violates a required control; identify that concrete "
+            "A redundant intermediate return or duplicate description is advisory only when "
+            "an independent declared route already delivers all required output and it "
+            "neither changes execution nor violates a required control; identify that concrete "
             "failure when rejecting. Feedback and deployment contracts cannot substitute "
-            "for required runtime or control interactions."
+            "for required runtime or control interactions. "
+            + _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT
+            + " " + _DECLARED_ESCALATION_DELIVERY_REQUIREMENT
         )
     if stage == "components":
         if maturity == "production":
@@ -468,7 +542,8 @@ def staged_review_requirements(
             "alone do not require distinct approval, audit, or rollback mechanisms. "
             "Read-only tool calls and internal memory operations do not require a new "
             "approval stage unless explicitly requested. Identify the concrete mutation "
-            "or requested control when rejecting a candidate."
+            "or requested control when rejecting a candidate. "
+            + _ACTION_APPROVAL_DELIVERY_REQUIREMENT
         )
     return requirements
 

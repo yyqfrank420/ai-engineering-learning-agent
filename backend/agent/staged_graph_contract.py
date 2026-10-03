@@ -29,6 +29,7 @@ NodeType = Literal[
     "external",
     "control",
     "decision",
+    "component",
 ]
 Flow = Literal["runtime", "control", "feedback", "deployment"]
 GroupKind = Literal["runtime", "data", "operations", "delivery", "external"]
@@ -58,6 +59,8 @@ class ComponentPlan(TypedDict):
     group_kind: GroupKind
     primary_flow_member: bool
     server_id: NotRequired[str]
+    parent_index: NotRequired[int]
+    parent_service_id: NotRequired[str]
 
 
 class ConnectionPlan(TypedDict):
@@ -113,6 +116,7 @@ _PRODUCTION_PROOFS = (
 _NODE_TECHNOLOGY = {
     "client": "Client",
     "service": "Application service",
+    "component": "Component",
     "datastore": "Data store",
     "queue": "Message queue",
     "gateway": "Gateway",
@@ -238,7 +242,37 @@ def _normalise_component(value: Any, position: int) -> ComponentPlan:
         component["server_id"] = _text(
             raw["server_id"], f"components[{position}].server_id", limit=80
         )
+    if raw.get("parent_index") is not None:
+        component["parent_index"] = _integer(
+            raw["parent_index"], f"components[{position}].parent_index"
+        )
+    if raw.get("parent_service_id") is not None:
+        component["parent_service_id"] = _text(
+            raw["parent_service_id"],
+            f"components[{position}].parent_service_id",
+            limit=80,
+        )
     return component
+
+
+def validate_graph_component_parents(nodes: Iterable[Mapping[str, Any]]) -> None:
+    """Validate service ownership without changing legacy non-component records."""
+    records = list(nodes)
+    by_id = {node["id"]: node for node in records if isinstance(node.get("id"), str)}
+    for position, node in enumerate(records):
+        parent_id = node.get("parent_service_id")
+        path = f"nodes[{position}].parent_service_id"
+        if node.get("type") != "component":
+            if parent_id is not None:
+                raise GraphContractError(
+                    "only components may have a service parent", path=path
+                )
+            continue
+        if not isinstance(parent_id, str) or not parent_id.strip():
+            raise GraphContractError("component requires a service parent", path=path)
+        parent = by_id.get(parent_id)
+        if parent is None or parent.get("type") != "service":
+            raise GraphContractError("must reference an application service", path=path)
 
 
 def _normalise_connection(value: Any, position: int) -> ConnectionPlan:
@@ -303,12 +337,46 @@ def _normalise_build(build: Mapping[str, Any]) -> StagedGraphBuild:
     model_indexes = [component["model_index"] for component in components]
     if len(model_indexes) != len(set(model_indexes)):
         raise GraphContractError("must be unique", path="components.model_index")
+    by_index = {component["model_index"]: component for component in components}
+    by_id = {
+        component["server_id"]: component
+        for component in components
+        if component.get("server_id")
+    }
+    for position, component in enumerate(components):
+        parent_index = component.get("parent_index")
+        parent_id = component.get("parent_service_id")
+        path = f"components[{position}].parent_index"
+        if component["type"] != "component":
+            if parent_index is not None or parent_id is not None:
+                raise GraphContractError(
+                    "only components may have a service parent", path=path
+                )
+            continue
+        parent = (
+            by_index.get(parent_index)
+            if parent_index is not None
+            else by_id.get(parent_id)
+        )
+        if parent is None or parent["type"] != "service":
+            raise GraphContractError("must reference an application service", path=path)
+        if parent_id is not None and parent.get("server_id") != parent_id:
+            raise GraphContractError(
+                "parent references must identify the same service", path=path
+            )
+        component["parent_index"] = parent["model_index"]
     component_identities = [
-        (component["label"].casefold(), component["type"]) for component in components
+        (
+            component["label"].casefold(),
+            component["type"],
+            component.get("parent_index"),
+        )
+        for component in components
     ]
     if len(component_identities) != len(set(component_identities)):
         raise GraphContractError(
-            "label and type pairs must be unique", path="components"
+            "label and type pairs must be unique within a service parent",
+            path="components",
         )
     if root_index not in set(model_indexes):
         raise GraphContractError("must identify a component", path="root_index")
@@ -364,14 +432,16 @@ def _base_node_ids(build: Mapping[str, Any]) -> set[str]:
     }
 
 
-def _existing_component_ids(build: Mapping[str, Any]) -> dict[tuple[str, str], str]:
+def _existing_component_ids(
+    build: Mapping[str, Any],
+) -> dict[tuple[str, str, str | None], str]:
     """Find unambiguous base IDs by stable labels for a graph reconstructed without a contract."""
     base_graph = build.get("base_graph")
     if not isinstance(base_graph, Mapping) or not isinstance(
         base_graph.get("nodes"), list
     ):
         return {}
-    candidates: dict[tuple[str, str], list[str]] = {}
+    candidates: dict[tuple[str, str, str | None], list[str]] = {}
     for node in base_graph["nodes"]:
         if not isinstance(node, Mapping):
             continue
@@ -379,7 +449,9 @@ def _existing_component_ids(build: Mapping[str, Any]) -> dict[tuple[str, str], s
         if all(
             isinstance(value, str) and value for value in (label, node_type, node_id)
         ):
-            candidates.setdefault((label, node_type), []).append(node_id)
+            candidates.setdefault(
+                (label, node_type, node.get("parent_service_id")), []
+            ).append(node_id)
     return {key: values[0] for key, values in candidates.items() if len(values) == 1}
 
 
@@ -414,10 +486,19 @@ def assign_server_ids(build: Mapping[str, Any]) -> dict[str, Any]:
     components: list[ComponentPlan] = []
     ids_by_index: dict[int, str] = {}
     prior_ids: dict[str, str] = {}
-    for component in normalized["components"]:
+    # Services receive IDs first because component identity includes its service owner.
+    ordered = sorted(
+        normalized["components"], key=lambda item: item["type"] == "component"
+    )
+    for component in ordered:
+        parent_id = (
+            ids_by_index[component["parent_index"]]
+            if component["type"] == "component"
+            else None
+        )
         prior_id = component.get("server_id")
         candidate = prior_id or retained_ids.get(
-            (component["label"], component["type"])
+            (component["label"], component["type"], parent_id)
         )
         if candidate and (
             candidate not in used_ids or candidate in _base_node_ids(normalized)
@@ -427,10 +508,19 @@ def assign_server_ids(build: Mapping[str, Any]) -> dict[str, Any]:
         else:
             server_id = _unique_id(f"n{component['model_index'] + 1}", used_ids)
         updated = {**component, "server_id": server_id}
+        if parent_id is not None:
+            updated["parent_service_id"] = parent_id
         components.append(updated)
         ids_by_index[component["model_index"]] = server_id
         if prior_id:
             prior_ids[prior_id] = server_id
+    assigned_by_index = {
+        component["model_index"]: component for component in components
+    }
+    components = [
+        assigned_by_index[component["model_index"]]
+        for component in normalized["components"]
+    ]
     connections: list[ConnectionPlan] = []
     for connection in normalized["connections"]:
         source = _resolve_endpoint(
@@ -667,6 +757,11 @@ def project_graph_data(build: Mapping[str, Any]) -> dict[str, Any]:
             "id": component["server_id"],
             "label": component["label"],
             "type": component["type"],
+            **(
+                {"parent_service_id": component["parent_service_id"]}
+                if component["type"] == "component"
+                else {}
+            ),
             "technology": _NODE_TECHNOLOGY[component["type"]],
             "description": component["responsibility"],
             "tier": None,
@@ -781,6 +876,9 @@ def reconstruct_staged_graph_build(
                 "primary_flow_member": node_id in sequence_ids,
             }
         )
+    for index, raw_node in enumerate(raw_nodes):
+        if raw_node.get("parent_service_id") is not None:
+            components[index]["parent_service_id"] = raw_node["parent_service_id"]
     root_id = next(
         (node_id for node_id in sequence_values if node_id in index_by_id),
         raw_nodes[0].get("id"),
@@ -888,17 +986,17 @@ def validate_component_write_set(
             "addition or removal count does not match", path="component_write_set"
         )
     for node_id in (set(base_components) & set(revised_components)) - allowed:
-        # Model indexes address the current candidate; server IDs own identity
-        # when a deletion shifts the remaining records.
+        # Model and parent indexes address the current candidate and shift on deletion.
+        # Assigned server IDs and parent_service_id preserve identity and ownership.
         before = {
             key: value
             for key, value in base_components[node_id].items()
-            if key != "model_index"
+            if key not in {"model_index", "parent_index"}
         }
         after = {
             key: value
             for key, value in revised_components[node_id].items()
-            if key != "model_index"
+            if key not in {"model_index", "parent_index"}
         }
         if before != after:
             raise GraphContractError(

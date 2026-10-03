@@ -75,6 +75,23 @@ class GraphExpansionExpectation(BaseModel):
     new_node_connected_to_prior_label_contains: str = Field(min_length=1)
 
 
+class ServiceExpansionExpectation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_service_labels: list[str] = Field(min_length=1)
+    specialist_model: str = Field(default="claude-opus-5-5", min_length=1)
+    specialist_effort: Literal["medium"] = "medium"
+
+    @model_validator(mode="after")
+    def validate_targets(self) -> "ServiceExpansionExpectation":
+        labels = self.target_service_labels
+        if any(not label.strip() or label != label.strip() for label in labels):
+            raise ValueError("service expansion targets must be nonempty exact labels")
+        if len(labels) != len(set(labels)):
+            raise ValueError("service expansion targets must be distinct")
+        return self
+
+
 class ConversationStep(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -82,6 +99,15 @@ class ConversationStep(BaseModel):
     ui: UIMode
     graph_output_max_latency_ms: int | None = Field(default=None, gt=0)
     graph_expansion: GraphExpansionExpectation | None = None
+    service_expansion: ServiceExpansionExpectation | None = None
+
+    @model_validator(mode="after")
+    def validate_expansion_kind(self) -> "ConversationStep":
+        if self.graph_expansion is not None and self.service_expansion is not None:
+            raise ValueError(
+                "graph_expansion and service_expansion are mutually exclusive"
+            )
+        return self
 
 
 class DeterministicExpectation(BaseModel):
@@ -161,7 +187,7 @@ class EvaluationCorpus(BaseModel):
                         f"case {case.id} turn {step_index} sets a graph-output latency "
                         "limit without requiring graph output"
                     )
-                if step.graph_expansion is None:
+                if step.graph_expansion is None and step.service_expansion is None:
                     continue
                 if step_index == 1:
                     raise ValueError(

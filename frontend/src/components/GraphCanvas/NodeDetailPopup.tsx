@@ -7,11 +7,12 @@ import './NodeDetailPopup.css';
 
 const NODE_TYPES: NodeType[] = [
   'client', 'service', 'datastore', 'queue', 'gateway',
-  'network', 'external', 'control', 'decision',
+  'network', 'external', 'control', 'decision', 'component',
 ];
 const NODE_TYPE_LABELS: Record<NodeType, string> = {
   client: 'Client',
   service: 'Application service',
+  component: 'Component',
   datastore: 'Data store',
   queue: 'Queue',
   gateway: 'Gateway',
@@ -324,6 +325,9 @@ export function NodeDetailPopup({
           {shownNode.tier && shownNode.design_origin !== 'applied' && <span className="node-inspector__tier">{shownNode.tier.toUpperCase()}</span>}
         </div>
         <h2>{shownNode.label}</h2>
+        {shownNode.parent_service_id && <p className="node-inspector__subtitle">
+          Part of {nodes.find(parent => parent.id === shownNode.parent_service_id)?.label ?? shownNode.parent_service_id}
+        </p>}
         {!editing && shownNode.technology && <p className="node-inspector__subtitle">{shownNode.technology}</p>}
       </div>
       <div className="node-inspector__header-actions">
@@ -384,9 +388,10 @@ export function NodeDetailPopup({
         {invalidField?.field === 'name' && <span className="node-inspector__field-error" role="alert">Name is required.</span>}
       </label>
       <div className="node-inspector__form-row">
-        <label>Type<select value={draft.node.type} disabled={saving || editingDisabled}
+        <label>Type<select value={draft.node.type} disabled={saving || editingDisabled || shownNode.type === 'component'
+          || nodes.some(child => child.parent_service_id === shownNode.id)}
           onChange={event => updateNode('type', event.target.value as NodeType)}>
-          {NODE_TYPES.map(type => <option key={type} value={type}>{NODE_TYPE_LABELS[type]}</option>)}
+          {NODE_TYPES.filter(type => type !== 'component' || shownNode.type === 'component').map(type => <option key={type} value={type}>{NODE_TYPE_LABELS[type]}</option>)}
         </select></label>
         <label>Technology<input value={draft.node.technology} maxLength={100}
           disabled={saving || editingDisabled} onChange={event => updateNode('technology', event.target.value)} /></label>

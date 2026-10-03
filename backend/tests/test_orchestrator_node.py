@@ -71,7 +71,7 @@ def test_synthesis_contract_separates_task_depth_evidence_and_graph_publication(
         _SYNTHESIS_SYSTEM,
     )
 
-    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v33"
+    assert _SYNTHESIS_PROMPT_VERSION == "architecture_blocks_v35"
     assert _QUICK_SYNTHESIS_PROMPT_VERSION == "quick_synthesis_v5"
     assert len(_SYNTHESIS_SYSTEM) < 3500
     for boundary in (
@@ -2453,7 +2453,7 @@ async def test_synthesis_limits_prompt_and_citation_allowlist_to_five_chunks(
             "type": "answer_evidence",
             "schema_version": 1,
             "source": "synthesis_input",
-            "prompt_version": "architecture_blocks_v33",
+            "prompt_version": "architecture_blocks_v35",
             "book_context": context,
             "research_context": "",
         }
@@ -2660,3 +2660,180 @@ async def test_answer_progress_completes_or_reports_error(monkeypatch, fails):
     else:
         assert await orchestrator._stream_answer_with_progress(send) == "An answer"
     assert [e["status"] for e in events] == ["active", "degraded" if fails else "complete"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_graph", [False, True])
+async def test_automatic_irrelevant_research_can_return_useful_uncited_answer(
+    monkeypatch, with_graph
+):
+    from agent.nodes import orchestrator_node as orchestrator
+
+    calls = []
+    events = []
+    context = "[Careers](https://example.com/jobs): Browse retail job openings."
+
+    async def answer(**kwargs):
+        calls.append(kwargs)
+        return "Use a fixed workflow when the steps are known."
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(orchestrator, "stream_llm", answer)
+    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", answer)
+    result = await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "history": [],
+            "user_message": "Explain fixed workflows.",
+            "research_enabled": True,
+            "research_context": context,
+            "rag_chunks": [],
+            "graph_data": {"version": "v1", "nodes": [], "edges": []}
+            if with_graph
+            else None,
+        }
+    )
+    assert len(calls) == 1
+    system = calls[0]["system"]
+    assert context in calls[0]["messages"][-1]["content"]
+    assert "If snippets are irrelevant, omit them" in system
+    assert "otherwise give the useful answer without a source audit" in system
+    assert "before diagram interpretation or engineering inference" in system
+    assert "alone are not learner-facing citations" in system
+    assert "required_research_urls" not in calls[0]
+    assert result["response_text"] == "Use a fixed workflow when the steps are known."
+    if not with_graph:
+        assert "<streaming_output_contract>" not in system
+        progress = [event for event in events if event["type"] == "workflow_progress"]
+        assert [event["title"] for event in progress] == [
+            "Writing the answer",
+            "Answer ready",
+        ]
+
+
+@pytest.mark.parametrize("publication", ["approved", "user_accepted"])
+@pytest.mark.parametrize(
+    "scope",
+    [
+        {"graph_action": "extend"},
+        {"service_expansion": {"target_service_ids": ["n5"], "complexity": "low"}},
+    ],
+)
+def test_successful_add_only_expansion_has_authoritative_preservation_context(
+    publication, scope
+):
+    from agent.nodes.orchestrator_node import _format_trusted_turn_result
+
+    text = _format_trusted_turn_result(
+        {
+            "graph_publication": publication,
+            "graph_operation": {"kind": "edit", "status": "applied"},
+            **scope,
+        }
+    )
+    assert "Change scope: add-only expansion." in text
+    assert (
+        "Existing components, parent responsibilities, and directed contracts were retained."
+        in text
+    )
+    assert "do not remove or replace a retained public or direct path" in text
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"graph_publication": "preserved"},
+        {"graph_publication": "withheld"},
+        {"graph_publication": "unchanged"},
+        {"graph_operation": {"kind": "edit", "status": "failed"}},
+        {"graph_operation": {"kind": "create", "status": "applied"}},
+        {"graph_action": "answer"},
+        {"graph_action": None},
+    ],
+)
+def test_other_graph_operations_do_not_claim_add_only_preservation(overrides):
+    from agent.nodes.orchestrator_node import _format_trusted_turn_result
+
+    text = _format_trusted_turn_result(
+        {
+            "graph_publication": "approved",
+            "graph_operation": {"kind": "edit", "status": "applied"},
+            "graph_action": "extend",
+            **overrides,
+        }
+    )
+    assert "Change scope: add-only expansion." not in text
+
+
+@pytest.mark.asyncio
+async def test_add_only_synthesis_receives_retained_direct_and_added_internal_paths(
+    monkeypatch,
+):
+    from agent.nodes import orchestrator_node as orchestrator
+
+    captured = {}
+
+    async def stream(**kwargs):
+        captured.update(kwargs)
+        return "The dispatcher adds an internal alert-delivery responsibility."
+
+    async def send(_event):
+        pass
+
+    monkeypatch.setattr(orchestrator, "stream_explanation_blocks", stream)
+    graph = {
+        "version": "expanded",
+        "title": "Model serving",
+        "nodes": [
+            {"id": "n5", "label": "Serving Monitor", "type": "service"},
+            {"id": "n2", "label": "Model release service", "type": "service"},
+            {
+                "id": "n7",
+                "label": "Canary alert dispatcher",
+                "type": "component",
+                "parent_service_id": "n5",
+            },
+        ],
+        "edges": [
+            {"source": "n5", "target": "n2", "label": "Raise canary alert"},
+            {
+                "source": "n5",
+                "target": "n7",
+                "label": "Hand alert to internal dispatcher",
+            },
+            {"source": "n7", "target": "n2", "label": "Deliver formatted alert"},
+        ],
+    }
+    await orchestrator.orchestrator_synthesise(
+        {
+            "send": send,
+            "history": [],
+            "user_message": "Expand Serving Monitor.",
+            "graph_data": graph,
+            "graph_changed": True,
+            "graph_publication": "approved",
+            "graph_operation": {"kind": "edit", "status": "applied"},
+            "service_expansion": {"target_service_ids": ["n5"], "complexity": "low"},
+        }
+    )
+    prompt = captured["messages"][-1]["content"]
+    assert "Change scope: add-only expansion." in prompt
+    assert (
+        "Serving Monitor [n5] -> Model release service [n2]: Raise canary alert"
+        in prompt
+    )
+    assert (
+        "Serving Monitor [n5] -> Canary alert dispatcher [n7]: Hand alert to internal dispatcher"
+        in prompt
+    )
+    assert (
+        "Canary alert dispatcher [n7] -> Model release service [n2]: Deliver formatted alert"
+        in prompt
+    )
+    assert "Do not claim they replace retained contracts" in captured["system"]
+    assert "An explicitly authorized replacement" in captured["system"]
+    assert (
+        captured["telemetry"]["metadata"]["prompt_version"] == "architecture_blocks_v35"
+    )

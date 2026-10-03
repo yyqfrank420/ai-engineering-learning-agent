@@ -21,6 +21,7 @@ CONCEPT_KINDS = {
 }
 
 ARCHITECTURE_KINDS = {
+    "component",
     "actor",
     "service",
     "datastore",

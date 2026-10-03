@@ -44,7 +44,7 @@ class DiagramIntentRequest(BaseModel):
 
 
 @router.post("/{thread_id}/diagram-intent")
-async def diagram_intent_endpoint(
+def diagram_intent_endpoint(
     thread_id: str, body: DiagramIntentRequest, user=Depends(get_current_user)
 ):
     thread = get_thread(user["id"], thread_id)

@@ -32,6 +32,68 @@ def test_mapper_only_records_known_public_workflow_events_and_tool_operations():
 
 
 @pytest.mark.parametrize(
+    "startup_status",
+    [
+        "Question received \u2014 preparing context\u2026",
+        "Question received \u2014 preparing the steerable workflow\u2026",
+        "Routing\u2026",
+    ],
+)
+def test_initial_orchestrator_status_is_public_context_and_persists(startup_status):
+    recorder = ActivityRecorder()
+    event = {
+        "type": "worker_status",
+        "worker": "orchestrator",
+        "status": startup_status,
+    }
+    step = recorder.record({**event, "detail": "PRIVATE_REASONING"}, 12)
+    assert step["phase"] == "context"
+    assert step["text"] == "Let me check your request and any existing diagram."
+    assert recorder.record({**event, "status": "Routing\u2026"}, 15) is None
+    snapshot = recorder.snapshot(20)
+    assert len(snapshot["steps"]) == 1
+    assert "PRIVATE_REASONING" not in repr(snapshot)
+    MessageActivity.model_validate(snapshot)
+
+
+def test_steering_records_new_context_without_discarding_previous_work():
+    recorder = ActivityRecorder()
+    recorder.record(progress("book"), 10)
+    step = recorder.record(
+        {
+            "type": "worker_status",
+            "worker": "orchestrator",
+            "status": "Steering received \u2014 rebuilding the answer around your correction\u2026",
+        },
+        20,
+    )
+    assert step["text"] == "I'll update the answer around your correction."
+    assert [item["phase"] for item in recorder.snapshot(30)["steps"]] == [
+        "book",
+        "context",
+    ]
+
+
+@pytest.mark.parametrize(
+    "worker,status",
+    [
+        ("orchestrator", "private"),
+        ("other", "Routing\u2026"),
+        ("orchestrator", []),
+        ("orchestrator", {}),
+    ],
+)
+def test_unknown_or_malformed_worker_status_is_not_public(worker, status):
+    recorder = ActivityRecorder()
+    assert (
+        recorder.record(
+            {"type": "worker_status", "worker": worker, "status": status}, 0
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize(
     "detail", ["external_effects is false", "slot.name", '{"internal":"data"}']
 )
 def test_internal_public_findings_are_excluded(detail):

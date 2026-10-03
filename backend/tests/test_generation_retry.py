@@ -383,6 +383,7 @@ def test_retry_transport_repeats_effective_request_and_replays_duplicate(
         client_request_id="fresh",
         retry_source_request_id="source",
     )
+    done_events = []
     with TestClient(app) as client:
         for _ in range(2):
             if transport == "sse":
@@ -395,7 +396,12 @@ def test_retry_transport_repeats_effective_request_and_replays_duplicate(
                     assert socket.receive_json()["type"] == "ready"
                     socket.send_json({"type": "start", **payload})
                     events = _receive_until(socket, "done")
-            assert events[-1] == {"type": "done"}
+            saved_turn = get_completed_turn(
+                user["id"], thread["id"], payload["client_request_id"]
+            )
+            assert saved_turn["activity"] is not None
+            assert events[-1] == {"type": "done", "activity": saved_turn["activity"]}
+            done_events.append(events[-1])
         too_large = {
             **payload,
             "content": "x" * (settings.max_message_bytes + 1),
@@ -403,6 +409,7 @@ def test_retry_transport_repeats_effective_request_and_replays_duplicate(
         }
         if transport == "sse":
             assert "Message too large" in client.post("/api/chat", json=too_large).text
+    assert done_events[0] == done_events[1]
     assert calls == [effective]
     assert len(get_messages(user["id"], thread["id"])) == 4
     completed = get_completed_turn(user["id"], thread["id"], "fresh")
@@ -560,6 +567,7 @@ def test_uncertain_retry_restores_two_steers_and_replays_completed_id(
         client_request_id="uncertain",
         steering_updates=["use queues", "include retries"],
     )
+    done_events = []
     with TestClient(app) as client:
         for _ in range(2):
             if transport == "sse":
@@ -572,11 +580,17 @@ def test_uncertain_retry_restores_two_steers_and_replays_completed_id(
                     assert socket.receive_json()["type"] == "ready"
                     socket.send_json({"type": "start", **payload})
                     events = _receive_until(socket, "done")
-            assert events[-1] == {"type": "done"}
+            saved_turn = get_completed_turn(
+                user["id"], thread["id"], payload["client_request_id"]
+            )
+            assert saved_turn["activity"] is not None
+            assert events[-1] == {"type": "done", "activity": saved_turn["activity"]}
+            done_events.append(events[-1])
     effective = (
         "Original\n\nUser steering update 1:\nuse queues"
         "\n\nUser steering update 2:\ninclude retries"
     )
+    assert done_events[0] == done_events[1]
     assert calls == [effective]
     completed = get_completed_turn(user["id"], thread["id"], "uncertain")
     assert completed["user_content"] == effective

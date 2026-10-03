@@ -1609,9 +1609,13 @@ export function D3Graph({
       });
 
     nodeSel.append('title')
-      .text((d: RenderNode) => navigation
-        ? `${d.label}: ${d.description || 'Select to learn about this component.'}`
-        : d.technology ? `${d.label} — ${d.technology}` : d.label);
+      .text((d: RenderNode) => {
+        const title = navigation
+          ? `${d.label}: ${d.description || 'Select to learn about this component.'}`
+          : d.technology ? `${d.label}: ${d.technology}` : d.label;
+        const parent = d.parent_service_id ? nodeById[d.parent_service_id] : undefined;
+        return parent ? `${title}. Component of ${parent.label}` : title;
+      });
 
     // Card background
     nodeSel.append('rect')

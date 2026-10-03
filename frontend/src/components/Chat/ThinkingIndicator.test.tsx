@@ -12,6 +12,20 @@ const live: LiveActivity = { clientRequestId: 'request', startedAt: 0, activity 
 describe('ThinkingIndicator public work activity', () => {
   afterEach(() => vi.useRealTimers());
 
+  it('shows visible startup text until the first public step arrives', () => {
+    const empty = { duration_ms: 0, steps: [] };
+    const view = render(<ThinkingIndicator activity={empty} liveActivity={{ ...live, activity: empty }} />);
+    const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(true);
+    expect(screen.getByRole('region', { name: 'Work activity' }).textContent).toBe('Working on your request.');
+    view.rerender(<ThinkingIndicator activity={activity} liveActivity={live} />);
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(screen.getByRole('region', { name: 'Work activity' }).textContent).not.toContain('Working on your request.');
+    expect(details.open).toBe(true);
+    view.rerender(<ThinkingIndicator activity={activity} />);
+    expect(details.open).toBe(false);
+  });
+
   it('opens live updates with quieter tool rows and a timer outside announcements', () => {
     vi.useFakeTimers();
     vi.setSystemTime(65_000);
