@@ -88,7 +88,7 @@ describe('application chrome', () => {
     fireEvent.mouseEnter(suggestion);
     fireEvent.mouseLeave(suggestion);
     fireEvent.click(suggestion);
-    fireEvent.click(screen.getByText('×'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selected component' }));
 
     expect(onSendMessage).toHaveBeenCalledWith('How is evidence ranked?');
     expect(onClear).toHaveBeenCalledTimes(1);
