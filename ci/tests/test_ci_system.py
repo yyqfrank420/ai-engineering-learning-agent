@@ -349,6 +349,7 @@ def test_change_classification_is_fail_safe(paths, expected):
         "scripts/prepush_check.sh",
         "scripts/frontend_checks.py",
         ".github/workflows/ci.yml",
+        "frontend/src/components/Chat/ChatInput.tsx",
         "frontend/src/components/Chat/ThinkingIndicator.tsx",
         "frontend/src/components/Layout/TitleBar.tsx",
         "infra/terraform/gcp/README.md",
@@ -371,7 +372,6 @@ def test_non_generation_owners_override_broad_runtime_patterns(path):
         "backend/eval/test_cases.py",
         "backend/eval/corpus/v1/cases.json",
         "backend/eval/judge_adapter.py",
-        "frontend/src/components/Chat/ChatInput.tsx",
         "frontend/src/hooks/useAgentStream.ts",
         "frontend/src/services/agentTransport.ts",
         "frontend/src/components/GraphCanvas/D3Graph.tsx",
@@ -400,6 +400,23 @@ def test_non_generation_changes_do_not_hide_a_mixed_generation_change():
     )
     assert result["ai_impact"] is True
     assert result["ai_paths"] == [generation_path]
+
+
+@pytest.mark.parametrize(
+    "generation_path",
+    [
+        "backend/agent/nodes/staged_graph_generation.py",
+        "frontend/src/hooks/useAgentStream.ts",
+        "frontend/src/services/agentTransport.ts",
+    ],
+)
+def test_composer_changes_do_not_hide_generation_or_transport_changes(generation_path):
+    composer_path = "frontend/src/components/Chat/ChatInput.tsx"
+    result = classify_paths([composer_path, generation_path], load_manifest())
+
+    assert result["ai_impact"] is True
+    assert result["ai_paths"] == [generation_path]
+    assert result["reasons"]["explicit_non_generation"] == [composer_path]
 
 
 @pytest.mark.parametrize(

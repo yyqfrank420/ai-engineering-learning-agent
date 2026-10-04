@@ -10,7 +10,8 @@ After an ambiguous follow-up offers diagram choices, Send or Enter submits the s
 - Changed `ChatInput.tsx` coverage: 98.23% lines, 96.85% statements, 96.55% functions, 93.2% branches. Existing coverage thresholds passed. Coverage was scoped to the changed production file.
 - ESLint, TypeScript, production build, and `git diff --check`: passed.
 - Backend continuity and answer-only routing tests: 21 passed. They check exact canonical graph context through SSE and WebSocket, stale/missing version rejection, persistence publication, and suppression of prior edit intent.
-- CI policy tests: 480 passed, 5 skipped. Canonical manifest validation passed.
+- CI policy tests: 483 passed, 5 skipped. Composer-only classification and mixed
+  agent/transport changes are covered. Canonical manifest validation passed.
 - Browser composer harness: second Send, Dismiss then Enter, rejected-send draft preservation, and retry without repeated classification passed. The harness used the real composer with deterministic classification and send acceptance; it did not run a model.
 
 The frontend run used:
@@ -28,6 +29,8 @@ Backend tests used `backend/tests/test_graph_continuity_transports.py` and the t
 
 Node 26 emitted an existing localStorage experimental warning during frontend tests. The backend run emitted an existing Starlette/AnyIO deprecation warning. No product warnings were suppressed.
 
-## Evaluation exception
+## Evaluation scope
 
-The user explicitly requested offline backend CI/CD checks and context-preservation regressions, and waived paid live evaluations for this change. Local model credentials and a configured backend were unavailable. The exception covers fresh local generation and the paid GitHub live-evaluation gate. Offline GitHub CI must pass before merge. No paid model calls or changes to branch-protection settings are authorized by this record.
+This change resolves composer interactions into the existing typed answer action. It does not change agent orchestration, prompts, provider calls, or transport implementation. `ChatInput.tsx` is an explicit non-generation owner in the CI manifest. Composer-only changes use offline frontend and context-preservation checks. A mixed change that includes an agent, transport, or private-rendering owner still requires generation evaluation.
+
+The required GitHub checks must pass normally. The live-impact workflow should report no generation impact and skip model evaluation. No manual override or changes to branch-protection settings are required.

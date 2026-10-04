@@ -71,9 +71,9 @@ capture; they do not claim full production-build semantics.
 
 The live workflow uses `pull_request`, never `pull_request_target`. Paid live
 generation runs are required when changes affect generation behavior. The manifest
-identifies non-runtime documentation, offline test files, CI policy, and audited
-presentation owners whose copy or icons do not affect generation. These changes
-receive a successful no-live-calls result and require meaningful offline or UI
+identifies non-runtime documentation, offline test files, CI policy, composer
+interaction code, and audited presentation owners whose copy or icons do not
+affect generation. These changes receive a successful no-live-calls result and require meaningful offline or UI
 checks for the affected behavior. Mixed changes still require paid evaluation when
 any changed path affects generation. Unknown paths remain fail-safe AI-impacting.
 CI policy changes run affected selection, runner, and workflow contract checks.
@@ -94,15 +94,17 @@ validation. Other generation-affecting paths in the same change still require pa
 checks. These records never exempt backend runtime. Remove obsolete records when
 updating this ledger. Keep stable presentation code in separate owners
 when practical. A future runtime prompt stored in Markdown remains
-generation-impacting. Chat submission, transport, and private renderer geometry
-remain protected because they can affect generation or diagram publication.
+generation-impacting. `frontend/src/components/Chat/ChatInput.tsx` owns composer
+interaction and is verified with offline frontend and context-preservation tests.
+Backend request routing, transport, and private renderer geometry remain protected
+because they can affect generation or diagram publication.
 The existing CSS/assets classification is unchanged; GraphCanvas CSS still
 requires generation evaluation.
 
-Changes limited to non-runtime files or audited frontend presentation retain the
-approved running backend. Frontend presentation changes can deploy without paid
-generation calls. This exemption does not cover backend runtime changes, including
-copy edits inside backend runtime files.
+Changes limited to non-runtime files, composer interaction, or audited frontend
+presentation retain the approved running backend. These frontend changes can
+deploy without paid generation calls. This classification does not cover backend
+runtime changes, including copy edits inside backend runtime files.
 
 An AI-impacting fork receives no secrets and fails with instructions for a
 maintainer to copy the reviewed patch to a same-repository branch.
