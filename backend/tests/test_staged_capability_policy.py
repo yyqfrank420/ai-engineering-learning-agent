@@ -482,9 +482,9 @@ def test_staged_edge_policy_keeps_required_returns_and_controls_blocking(maturit
     ):
         assert obligation in shared_criterion
     for output_requirement in (
-        "When a declared consumer needs execution output to continue work or answer",
-        "trace that output across the complete route to the consumer",
-        "Every intermediary contract on that output route must carry the actual output",
+        "Trace required input data and execution output to each declared consumer",
+        "Every intermediary contract must name the actual required payload",
+        "Containment or generic parent lifecycle ownership alone cannot supply child output",
         "Name the actual needed output data in each forwarding connection",
         "Generic 'success', 'failure', or 'outcome' does not imply a result payload",
         "A validation verdict, acknowledgment, or commit status alone is insufficient",

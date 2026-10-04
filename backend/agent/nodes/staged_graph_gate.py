@@ -27,8 +27,8 @@ from agent.stream_utils import StructuredLLMResponse, stream_structured_llm
 from config import settings
 
 
-_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v26"
-_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v36"
+_COMPONENT_GATE_PROMPT_VERSION = "staged_component_gate_v27"
+_CONNECTION_GATE_PROMPT_VERSION = "staged_connection_gate_v37"
 # Medium connection review exhausted the 16,384-token ceiling without review text.
 _GATE_EFFORT_BY_STAGE = {"components": "medium", "connections": "low"}
 _GATE_SYSTEM = (
@@ -447,9 +447,10 @@ def _prompt(
                 "route, without concrete behavior or control harm. "
                 "A paired reply or incidental reachability cannot invoke a separate action. "
                 "For each required action, check its actual trigger or change input. "
-                "For required approval and execution-output delivery, reconstruct the "
-                "complete directed route from the decision or output producer to its "
-                "declared consumer before marking the rule satisfied. Cite the actual "
+                "For required input, approval, and execution-output delivery, identify "
+                "the declared producer, consumer, and actual required payload in the "
+                "bounded reason. Reconstruct the complete directed route between them "
+                "before marking the rule satisfied. Cite the actual "
                 "record indexes for every cross-component hop, checking each direction "
                 "and payload. Pairwise compatible exchanges do not establish that "
                 "complete route. Do not invent a hop from a component responsibility "

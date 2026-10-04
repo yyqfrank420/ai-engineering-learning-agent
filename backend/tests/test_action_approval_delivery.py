@@ -307,9 +307,10 @@ def test_contracts_and_controlled_verdict_survive_generation_and_review(
     assert [row["record_index"] for row in numbered] == list(range(len(records)))
     assert evidence["candidate_components"] == components
     assert (
-        "For required approval and execution-output delivery, reconstruct the "
-        "complete directed route from the decision or output producer to its "
-        "declared consumer before marking the rule satisfied. Cite the actual "
+        "For required input, approval, and execution-output delivery, identify "
+        "the declared producer, consumer, and actual required payload in the "
+        "bounded reason. Reconstruct the complete directed route between them "
+        "before marking the rule satisfied. Cite the actual "
         "record indexes for every cross-component hop, checking each direction "
         "and payload. Pairwise compatible exchanges do not establish that "
         "complete route. Do not invent a hop from a component responsibility "
@@ -366,8 +367,8 @@ def test_changed_approval_policy_invalidates_connection_review_identity(
 
 
 def test_approval_delivery_connection_release_versions():
-    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v39"
-    assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v36"
+    assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v40"
+    assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v37"
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])

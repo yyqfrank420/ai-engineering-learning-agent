@@ -17,9 +17,10 @@ STAGED_REVIEW_STANDARD = (
 )
 
 _EXECUTION_OUTPUT_DELIVERY_REQUIREMENT = (
-    "When a declared consumer needs execution output to continue work or answer, "
-    "trace that output across the complete route to the consumer. Every "
-    "intermediary contract on that output route must carry the actual output. "
+    "Trace required input data and execution output to each declared consumer. "
+    "Every intermediary contract must name the actual required payload. "
+    "Containment or generic parent lifecycle ownership alone cannot supply child "
+    "output. An explicit reply naming another artifact does not supply that output. "
     "Name the actual needed output data in each forwarding connection. "
     "Generic 'success', 'failure', or 'outcome' does not "
     "imply a result payload. For performed execution in an agent loop, the planner must receive "
@@ -348,7 +349,11 @@ STAGED_PRODUCTION_REQUIREMENTS = {
     ),
     "audit_and_provenance": (
         "Give lifecycle state one authoritative owner; caches and projections cannot own "
-        "it. For every producer of model-proposed actions, identify the executable owner "
+        "it. Answer-only inference with no model-proposed actions needs no per-action "
+        "proposal validator. Identify a declared model-proposed action producer before "
+        "rejecting missing proposal validation; model-selected read-only or internal "
+        "tools still require it. For every producer of model-proposed actions, identify "
+        "the executable owner "
         "that deterministically validates those proposals' structure and allowed constraints "
         "before approval or execution. A named compatible owner may perform this "
         "deterministic validation internally. Its responsibility or a connection contract "

@@ -39,10 +39,8 @@ def test_output_delivery_rule_is_shared_by_generic_and_staged_review():
     for maturity in ("prototype", "production"):
         rule = staged_review_requirements("connections", maturity)["edge_semantics"]
         assert shared in rule
-        assert (
-            "Every intermediary contract on that output route must carry the actual output"
-            in rule
-        )
+        assert "Trace required input data and execution output to each declared consumer" in rule
+        assert "Every intermediary contract must name the actual required payload" in rule
         assert (
             "validation verdict, acknowledgment, or commit status alone is insufficient"
             in rule
@@ -51,6 +49,7 @@ def test_output_delivery_rule_is_shared_by_generic_and_staged_review():
             "Direct delivery, explicit forwarding, or declared persistence with a consumer read"
             in rule
         )
+        assert "Declared same-owner handling can also satisfy output delivery without extra edges" in rule
         assert "Preserve this output route during scoped edits and repairs" in rule
         assert "independent declared route already delivers all required output" in rule
 

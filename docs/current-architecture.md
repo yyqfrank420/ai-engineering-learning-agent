@@ -185,7 +185,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    The shared `learning_or_release` criterion includes owned offline training, batch updates,
    and releases requiring human approval. Live deployment and automatic feedback are not required.
    Dataset curation, passive downstream consumption, and frozen inference alone do not qualify.
-   Component generation v29 and component review v18 share this ownership rule.
+   Component generation v46 and component review v27 share this ownership rule.
    The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
    execution. Streaming transport mechanics guide authoring rather than independently blocking a
@@ -205,6 +205,16 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    Its producer must invoke those controls directly or through a declared delegation; another
    producer's validation path does not establish that coverage.
    Review reasons quote the control contracts and cover every applicable producer or path.
+   Required inputs and execution outputs must reach each declared consumer with their actual
+   payload across every intermediary. Connection reviews identify the producer, consumer, payload,
+   and hop indexes. Matching request/reply pairs alone do not establish that route. Component
+   containment and generic parent lifecycle ownership do not supply a missing child result;
+   a reply naming a different artifact cannot carry it implicitly. Explicit same-owner handling
+   and authoritative persistence with a consumer read remain valid without extra edges.
+   Deterministic proposal validation applies only to declared model-action producers, including
+   model-selected read-only and internal tools. Answer-only inference without proposed actions
+   needs no per-action validator. Authoritative lifecycle ownership and correlated provenance
+   and audit remain required where applicable.
    Capability flags select system-level review criteria. Individual retrieval obligations apply
    to their declared artifact and consumer path. Outcome-data reads do not impose a factual
    retrieval dependency on an unrelated creative generator. Material factual claims still need
@@ -382,8 +392,10 @@ limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
 and connection wires. Sonnet 5 reviews components at medium effort and connections at low effort,
-with the same complete rule coverage and 16,384-token completion ceiling. Connection review v36
-reduces effort after a medium-effort repair review exhausted that ceiling before returning a verdict.
+with the same complete rule coverage and 16,384-token completion ceiling. Connection review uses
+low effort after a medium-effort repair review exhausted that ceiling before returning a verdict.
+Connection generation v40 and review v37 require complete payload-route witnesses and distinguish
+applicable proposal validation from answer-only inference.
 Incomplete reviews still reject publication. The server owns graph mutation,
 validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
