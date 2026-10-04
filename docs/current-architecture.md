@@ -277,9 +277,12 @@ flows and shorter connections. Component hover or keyboard focus reveals inciden
 Connections reveals every bundled pair. One effect owns live path opacity, hit targets, keyboard
 access, and walkthrough visibility. Future-step components and their connections stay hidden even
 when Connections is enabled. The live view does not create inline edge labels or step badges.
-Local orthogonal routing tries clear corridors around node cards before taking outer detours.
-Routes are cached within each render and recomputed after dragging. Overlapping manually placed
-cards can still force intersections; this router does not solve arbitrary obstacle mazes.
+Local orthogonal routing tries clear corridors around node cards and unrelated zone frames,
+including their headers and saved padding, before taking outer detours. A connection can enter
+the zones that own its endpoints. Routes use the same current bounds as the rendered frames;
+they are cached within each render and recomputed after node movement, zone movement or resizing.
+Overlapping manually placed cards or zones can still force intersections; this router does not
+solve arbitrary obstacle mazes.
 
 Declared groups use semantic tier placement with soft background regions and one heading per region.
 This keeps unrelated components outside each boundary. Learner-facing cards omit repeated
