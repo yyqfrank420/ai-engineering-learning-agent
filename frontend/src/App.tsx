@@ -383,34 +383,17 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
   const dashboardActive = appRoute === 'internal-dashboard' && !!authSession;
 
   return (
-    <div style={{ position: 'relative', height: '100vh', overflow: 'hidden' }}>
+    <div className="app-shell">
     <Suspense fallback={null}>
       <HiddenGraphEvaluator candidate={graphCandidate} />
     </Suspense>
-    {/* Auth overlay — sits above blurred app when unauthenticated */}
+    {/* Keep the workspace mounted so authentication preserves local state. */}
     {!authSession && <AuthScreen onAuthenticated={handleAuthenticated} />}
-    <div style={{
-      display: 'flex',
-      flexDirection: 'column',
-      height: '100vh',
-      // Ambient gradient backdrop — vivid enough for glass panels to refract color
-      background: `
-        radial-gradient(ellipse 80% 60% at 10% -5%, rgba(124,58,237,0.55) 0%, transparent 60%),
-        radial-gradient(ellipse 70% 50% at 90% 105%, rgba(37,99,235,0.45) 0%, transparent 60%),
-        radial-gradient(ellipse 50% 40% at 75% 25%, rgba(5,150,105,0.18) 0%, transparent 50%),
-        radial-gradient(ellipse 40% 30% at 25% 70%, rgba(124,58,237,0.12) 0%, transparent 50%),
-        #070a10
-      `,
-      color: '#e2e8f0',
-      fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
-      // Blur + dim the app when unauthenticated so it shows as a preview behind auth
-      ...(authSession ? {} : {
-        filter: 'blur(6px)',
-        opacity: 0.35,
-        pointerEvents: 'none',
-        userSelect: 'none',
-      }),
-    }}>
+    <div className="app-workspace" inert={!authSession} aria-hidden={!authSession}>
+      <a className="app-skip-link" href="#learning-workspace" onClick={event => {
+        event.preventDefault();
+        document.getElementById('learning-workspace')?.focus();
+      }}>Skip to workspace</a>
       <TitleBar
         streamStatus={streamStatus}
         providerNotice={providerNotice}
@@ -426,7 +409,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
       />
 
       {/* Main body: sidebar + split pane side-by-side */}
-      <div style={{ display: 'flex', flex: 1, overflow: 'hidden' }}>
+      <main id="learning-workspace" className="app-workspace__main" tabIndex={-1}>
         {dashboardActive && authSession ? (
           <Suspense fallback={<div style={panelFallbackStyle}>Loading dashboard…</div>}>
             <InternalDashboard authSession={authSession} />
@@ -566,7 +549,7 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
             />
           </>
         )}
-      </div>
+      </main>
     </div>
     </div>
   );

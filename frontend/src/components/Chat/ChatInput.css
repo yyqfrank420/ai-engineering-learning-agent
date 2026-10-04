@@ -1,19 +1,19 @@
 .chat-readiness-status {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.65rem;
-  color: #c9d1d9;
-  font-size: 0.72rem;
-  line-height: 1.45;
+  gap: 8px;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
 }
 
 .chat-readiness-spinner {
-  width: 0.75rem;
-  height: 0.75rem;
+  width: 12px;
+  height: 12px;
   flex-shrink: 0;
-  border: 2px solid rgba(167, 139, 250, 0.25);
-  border-top-color: #a78bfa;
+  border: 2px solid var(--accent-border);
+  border-top-color: var(--accent);
   border-radius: 50%;
   animation: chat-readiness-spin 1s linear infinite;
 }
@@ -22,15 +22,105 @@
   to { transform: rotate(360deg); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .chat-readiness-spinner {
-    animation: none;
-  }
+.chat-graph-choice {
+  margin-bottom: 12px;
+  color: var(--text-secondary);
+  font-size: 13px;
 }
 
-.chat-graph-choice { margin-bottom: 0.75rem; color: #c9d1d9; font-size: 0.8rem; }
-.chat-graph-choice > div { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.chat-graph-choice button { padding: 0.45rem 0.6rem; border: 1px solid #504667; border-radius: 6px; background: #211b30; color: #e2d8ff; cursor: pointer; }
-.chat-graph-choice button:hover:not(:disabled) { background: #332647; }
-.chat-graph-choice button:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
-.chat-graph-choice button:disabled { opacity: 0.45; cursor: default; }
+.chat-graph-choice > div { display: flex; flex-wrap: wrap; gap: 6px; }
+
+.chat-graph-choice button {
+  min-height: 36px;
+  padding: 7px 10px;
+  border: 1px solid var(--accent-border);
+  border-radius: var(--radius-sm);
+  background: var(--accent-muted);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+}
+
+.chat-graph-choice button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* The composer owns draft height and readiness inline; override appearance only. */
+.split-pane__conversation textarea {
+  background: var(--bg-overlay) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  color: var(--text-primary) !important;
+  caret-color: var(--accent);
+  font-size: 15px !important;
+  line-height: 1.6 !important;
+  padding: 10px 12px !important;
+  min-height: 44px !important;
+  border-radius: var(--radius-md) !important;
+}
+
+.split-pane__conversation textarea::placeholder { color: var(--text-secondary); }
+
+.split-pane__conversation textarea:disabled { opacity: 0.55; cursor: not-allowed; }
+
+.split-pane__conversation button[aria-label="Send message"] {
+  width: 44px !important;
+  min-height: 44px !important;
+  border-radius: var(--radius-md) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.split-pane__conversation button[aria-label="Send message"]:not(:disabled) {
+  background: var(--accent) !important;
+  border-color: transparent !important;
+  color: var(--accent-contrast) !important;
+  box-shadow: none !important;
+}
+
+.split-pane__conversation button[aria-label="Send message"]:disabled {
+  background: var(--bg-overlay) !important;
+  border-color: var(--border-subtle) !important;
+  color: var(--text-secondary) !important;
+  box-shadow: none !important;
+}
+
+.split-pane__conversation button[aria-label="Stop generation"],
+.split-pane__conversation button[aria-label="Finishing diagram"],
+.split-pane__conversation button[aria-label="Retry connection"] {
+  min-height: 44px !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.split-pane__conversation button[aria-label="Retry connection"]:not(:disabled) {
+  background: var(--accent) !important;
+  color: var(--accent-contrast) !important;
+  box-shadow: none !important;
+}
+
+.split-pane__conversation button[aria-label="Dismiss highlighted text"] {
+  min-width: 36px;
+  min-height: 36px;
+}
+
+.chat-graph-choice button:focus-visible,
+.split-pane__conversation button[aria-label="Send message"]:focus-visible,
+.split-pane__conversation button[aria-label="Stop generation"]:focus-visible,
+.split-pane__conversation button[aria-label="Finishing diagram"]:focus-visible,
+.split-pane__conversation button[aria-label="Retry connection"]:focus-visible,
+.split-pane__conversation button[aria-label="Dismiss highlighted text"]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .chat-graph-choice button:hover:not(:disabled) { border-color: var(--accent); }
+  .split-pane__conversation button[aria-label="Send message"]:hover:not(:disabled) { filter: brightness(1.1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-readiness-spinner { animation: none; }
+}
+
+@media (max-width: 520px) {
+  .split-pane__conversation textarea { font-size: 16px !important; }
+}

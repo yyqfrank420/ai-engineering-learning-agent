@@ -6,6 +6,7 @@
 
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useCallback } from 'react';
 import type { Ref } from 'react';
+import { Graph, Play } from '@phosphor-icons/react';
 import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode } from '../../types';
 import { useGraph } from '../../hooks/useGraph';
 import { graphStructureKey } from '../../utils/graphStructureKey';
@@ -15,6 +16,7 @@ import { GlossaryDrawer } from './GlossaryDrawer';
 import { NodeDetailPopup } from './NodeDetailPopup';
 import { SequenceBar } from './SequenceBar';
 import { updateThreadGraph } from '../../services/api';
+import './GraphCanvas.css';
 
 export interface GraphCanvasHandle {
   flushPendingLayout(): Promise<void>;
@@ -350,19 +352,12 @@ export function GraphCanvas({
 
   if (!graphData) {
     return (
-      <div style={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        background: '#0a0f1a',
-        color: '#8b949e',
-        fontSize: '0.8rem',
-        flexDirection: 'column',
-        gap: '1.1rem',
-        padding: '2rem',
-      }}>
-        {!isBuilding && <p role="status">No diagram is available yet.</p>}
+      <div className="graph-canvas__empty">
+        {!isBuilding && <div className="graph-canvas__empty-content">
+          <Graph size={32} weight="light" aria-hidden="true" />
+          <p className="graph-canvas__empty-title" role="status">No diagram is available yet.</p>
+          <p className="graph-canvas__empty-description">Continue in the conversation. When a diagram is available, explore its components and connections here.</p>
+        </div>}
       </div>
     );
   }
@@ -373,86 +368,43 @@ export function GraphCanvas({
     : (graphData.groups?.length ?? 0);
 
   return (
-    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden', position: 'relative' }}>
-      {/* Graph title */}
-      <div style={{
-        padding: '0.65rem 1rem',
-        fontSize: '0.75rem',
-        color: '#6e7681',
-        borderBottom: '1px solid #21262d',
-        background: 'linear-gradient(180deg, rgba(16,22,34,0.98), rgba(10,15,26,0.98))',
-        display: 'flex',
-        alignItems: 'center',
-        columnGap: '0.65rem',
-        rowGap: '0.38rem',
-        flexWrap: 'wrap',
-        minHeight: 48,
-      }}>
-        <span style={{ color: '#a78bfa', fontSize: '0.88rem' }}>◈</span>
-        <div title={graphData.title} style={{
-          flex: '1 1 300px',
-          minWidth: 0,
-          lineHeight: 1.25,
-        }}>
-          <div style={{ color: '#d8dee9', fontWeight: 680, overflowWrap: 'anywhere' }}>
-            {title}
-          </div>
-          {subtitle && (
-            <div style={{ color: '#8490a0', fontSize: '0.62rem', marginTop: 2, overflowWrap: 'anywhere' }}>
-              {subtitle}
-            </div>
-          )}
+    <div className="graph-canvas">
+      <header className="graph-canvas__header">
+        <Graph className="graph-canvas__header-icon" size={20} aria-hidden="true" />
+        <div className="graph-canvas__heading" title={graphData.title}>
+          <h2 className="graph-canvas__title">{title}</h2>
+          {subtitle && <p className="graph-canvas__subtitle">{subtitle}</p>}
           {isAcceptedGraph && graphData.detail_level === 'overview' && (
-            <div style={{ display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: '0.3rem', marginTop: 3, fontSize: '0.65rem', lineHeight: 1.35 }}>
-              <span style={{ color: '#c4b5fd', fontWeight: 700 }}>Overview</span>
-              <span style={{ color: '#aeb8c8' }}>Core workflow. Supporting detail is simplified.</span>
-            </div>
+            <p className="graph-canvas__overview">
+              <span>Overview</span>
+              <span>Core workflow. Supporting detail is simplified.</span>
+            </p>
           )}
         </div>
-        <span style={{
-          color: '#8490a0',
-          fontSize: '0.62rem',
-          padding: '0.18rem 0.45rem',
-          borderRadius: 999,
-          border: '1px solid rgba(148,163,184,0.16)',
-          background: 'rgba(148,163,184,0.06)',
-          flexShrink: 0,
-          whiteSpace: 'nowrap',
-        }}>
+        <span className="graph-canvas__counts">
           {graphData.nodes.length} components
           {zoneCount > 0 ? ` · ${zoneCount} zones` : ''}
         </span>
-
-        {/* Re-open sequence bar when dismissed */}
         {hasSequence && sequenceDismissed && (
           <button
+            type="button"
+            className="graph-canvas__walkthrough"
             onClick={() => setSequenceDismissal({ key: graphContentKey, dismissed: false })}
             title="Show walkthrough steps"
-            style={{
-              marginLeft: 'auto',
-              display: 'flex', alignItems: 'center', gap: '0.3rem',
-              background: 'rgba(167,139,250,0.08)',
-              border: '1px solid rgba(167,139,250,0.2)',
-              borderRadius: '5px',
-              color: '#a78bfa',
-              fontSize: '0.65rem',
-              cursor: 'pointer',
-              padding: '2px 7px',
-              whiteSpace: 'nowrap',
-            }}
           >
-            ▶ {totalSteps} steps
+            <Play size={14} weight="fill" aria-hidden="true" />
+            {totalSteps} steps
           </button>
         )}
-      </div>
+      </header>
 
-      {layoutError && <div role="alert" style={{ padding: '8px 16px', color: '#ffc4cb' }}>
-        {layoutError} <button type="button" onClick={() => void flushLayout().catch(() => undefined)}>Retry layout save</button>
+      {layoutError && <div role="alert" className="graph-canvas__layout-error">
+        <span>{layoutError}</span>
+        <button type="button" onClick={() => void flushLayout().catch(() => undefined)}>Retry layout save</button>
       </div>}
-      {/* D3 canvas */}
-      <div ref={canvasRef} className="graph-canvas__surface" style={{ flex: 1, position: 'relative', overflow: 'hidden' }}>
+      <div ref={canvasRef} className="graph-canvas__surface">
         <div inert={isSavingGraphContent} aria-busy={isSavingGraphContent}
-          style={{ width: '100%', height: '100%', opacity: isBuilding ? 0.56 : 1, transition: 'opacity 180ms ease' }}>
+          className={`graph-canvas__diagram${isBuilding ? ' graph-canvas__diagram--building' : ''}`}>
           <D3Graph
             key={`${graphViewKey ?? graphContentKey}:${historyPreview}`}
             layoutReadOnly={historyPreview || layoutLocked}

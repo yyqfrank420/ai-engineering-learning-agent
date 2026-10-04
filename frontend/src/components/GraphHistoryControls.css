@@ -1,14 +1,64 @@
-.graph-history { flex-shrink: 0; padding: 0.6rem 0.8rem; background: #101520; border-bottom: 1px solid #293140; color: #c9d1d9; font-size: 0.75rem; }
-.graph-history-toolbar, .graph-history-preview, .graph-history-error { display: flex; align-items: center; flex-wrap: wrap; gap: 0.4rem; }
-.graph-history button, .graph-history select, .message-diagram-link { border: 1px solid #394254; border-radius: 6px; padding: 0.4rem 0.6rem; background: #171d28; color: #d9e0eb; font: inherit; cursor: pointer; }
-.graph-history select { min-width: 0; max-width: min(100%, 12rem); }
-.graph-history button:hover:not(:disabled), .message-diagram-link:hover:not(:disabled) { background: #28223c; }
-.graph-history button:focus-visible, .graph-history select:focus-visible, .message-diagram-link:focus-visible { outline: 2px solid #a78bfa; outline-offset: 2px; }
-.graph-history button:disabled, .graph-history select:disabled, .message-diagram-link:disabled { opacity: 0.45; cursor: default; }
+.graph-history {
+  flex-shrink: 0;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.graph-history-toolbar,
+.graph-history-preview,
+.graph-history-error { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.graph-history button,
+.graph-history select,
+.message-diagram-link {
+  min-height: 36px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), transform 140ms var(--ease-out);
+}
+.graph-history-toolbar > button { display: grid; place-items: center; width: 36px; padding: 6px; }
+.graph-history select { min-width: 0; max-width: min(100%, 14rem); font-variant-numeric: tabular-nums; }
+.graph-history button:focus-visible,
+.graph-history select:focus-visible,
+.message-diagram-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.graph-history button:disabled,
+.graph-history select:disabled,
+.message-diagram-link:disabled { opacity: .45; cursor: default; }
+.graph-history button:active:not(:disabled):not(:focus-visible),
+.message-diagram-link:active:not(:disabled):not(:focus-visible) { transform: scale(.97); }
 .graph-history svg { width: 16px; height: 16px; display: block; fill: none; stroke: currentColor; stroke-width: 1.7; }
-.graph-history-preview, .graph-history-error { margin-top: 0.6rem; }
-.graph-history-preview > span, .graph-history-error > span { margin-right: auto; }
-.graph-history-error { color: #ffb4ad; }
-.message-diagram-link { display: block; margin-top: 0.6rem; color: #c6b6fa; font-size: 0.75rem; }
-
-.message-diagram-link[aria-pressed="true"] { background: #2b2141; border-color: #8e74c2; color: #e2d8ff; }
+.graph-history-preview,
+.graph-history-error { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border-subtle); }
+.graph-history-preview > span,
+.graph-history-error > span { min-width: 0; margin-right: auto; overflow-wrap: anywhere; }
+.graph-history-preview > span { color: var(--accent); font-weight: 500; }
+.graph-history-preview > button:last-child { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); }
+.graph-history-error { color: var(--status-red); }
+.message-diagram-link { display: block; margin-top: 10px; background: var(--accent-muted); border-color: var(--accent-border); color: var(--text-primary); font-size: 13px; }
+.message-diagram-link[aria-pressed="true"] { border-color: var(--accent); background: var(--accent-muted); }
+@media (hover: hover) and (pointer: fine) {
+  .graph-history button:hover:not(:disabled),
+  .message-diagram-link:hover:not(:disabled) { border-color: var(--accent-border); background: var(--bg-overlay); }
+  .graph-history-preview > button:last-child:hover:not(:disabled) { background: var(--accent); border-color: var(--accent); }
+}
+@media (max-width: 640px) { .graph-history { padding: 10px 16px; } }
+@media (pointer: coarse) {
+  .graph-history button,
+  .graph-history select,
+  .message-diagram-link { min-height: 44px; }
+  .graph-history-toolbar > button { width: 44px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .graph-history button,
+  .graph-history select,
+  .message-diagram-link { transition: none; }
+  .graph-history button:active:not(:disabled):not(:focus-visible),
+  .message-diagram-link:active:not(:disabled):not(:focus-visible) { transform: none; }
+}

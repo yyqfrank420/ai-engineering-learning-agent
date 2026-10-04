@@ -1,10 +1,6 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// File: frontend/src/components/Chat/ContextBar.tsx
-// Purpose: Shows the selected graph node as a context pill + 3 suggested
-//          follow-up chips. Clicking a chip sends it as a message.
-// ─────────────────────────────────────────────────────────────────────────────
-
+import { Crosshair, X } from '@phosphor-icons/react';
 import type { SelectedNode } from '../../types';
+import './ContextBar.css';
 
 interface ContextBarProps {
   selectedNode: SelectedNode | null;
@@ -16,76 +12,33 @@ export function ContextBar({ selectedNode, onSendMessage, onClear }: ContextBarP
   if (!selectedNode) return null;
 
   return (
-    <div style={{
-      padding:             '0.5rem 1rem',
-      borderTop:           '1px solid rgba(255,255,255,0.06)',
-      background:          'rgba(10,13,19,0.4)',
-      backdropFilter:      'blur(12px)',
-      WebkitBackdropFilter:'blur(12px)',
-      display:             'flex',
-      flexDirection:       'column',
-      gap:                 '0.4rem',
-    }}>
-      {/* Context pill */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-        <span style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          gap: '4px',
-          padding: '2px 10px',
-          borderRadius: '999px',
-          background: 'rgba(167, 139, 250, 0.08)',
-          color: '#a78bfa',
-          fontSize: '0.75rem',
-          border: '1px solid rgba(167, 139, 250, 0.2)',
-        }}>
-          <span style={{ color: '#a78bfa' }}>⊙</span>
-          {selectedNode.node.label}
+    <div className="context-bar">
+      <div className="context-bar__selection">
+        <span className="context-bar__node">
+          <Crosshair size={16} aria-hidden="true" />
+          <span>{selectedNode.node.label}</span>
         </span>
         <button
+          className="context-bar__dismiss"
+          type="button"
           onClick={onClear}
-          style={{
-            background: 'none', border: 'none', cursor: 'pointer',
-            color: '#6e7681', fontSize: '0.75rem', padding: '0 4px',
-          }}
+          aria-label="Clear selected component"
+          title="Clear selected component"
         >
-          ×
+          <X size={16} aria-hidden="true" />
         </button>
       </div>
-
-      {/* Suggestion chips */}
       {selectedNode.suggestions.length > 0 && (
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
-          {selectedNode.suggestions.map((q, i) => (
+        <div className="context-bar__suggestions">
+          {selectedNode.suggestions.map((question, index) => (
             <button
-              key={i}
+              className="context-bar__suggestion"
+              key={index}
+              type="button"
               data-testid="suggested-question"
-              onClick={() => onSendMessage(q)}
-              style={{
-                padding:              '4px 10px',
-                borderRadius:         '999px',
-                background:           'rgba(255,255,255,0.04)',
-                backdropFilter:       'blur(8px)',
-                WebkitBackdropFilter: 'blur(8px)',
-                border:               '1px solid rgba(255,255,255,0.08)',
-                boxShadow:            'inset 0 1px 0 rgba(255,255,255,0.05)',
-                color:                '#8b949e',
-                fontSize:             '0.72rem',
-                cursor:               'pointer',
-                transition:           'all 0.15s ease',
-              }}
-              onMouseEnter={e => {
-                e.currentTarget.style.background = 'rgba(167,139,250,0.1)';
-                e.currentTarget.style.borderColor = 'rgba(167,139,250,0.35)';
-                e.currentTarget.style.color = '#a78bfa';
-              }}
-              onMouseLeave={e => {
-                e.currentTarget.style.background = 'rgba(255,255,255,0.04)';
-                e.currentTarget.style.borderColor = 'rgba(255,255,255,0.08)';
-                e.currentTarget.style.color = '#8b949e';
-              }}
+              onClick={() => onSendMessage(question)}
             >
-              {q}
+              {question}
             </button>
           ))}
         </div>

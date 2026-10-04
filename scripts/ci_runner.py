@@ -16,6 +16,9 @@ from typing import Any
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST_PATH = ROOT / "ci" / "quality.json"
 ZERO_SHA = "0" * 40
+PRESENTATION_METADATA_PATHS = {
+    "frontend/package.json", "frontend/package-lock.json", "frontend/index.html",
+}
 
 TEST_ENV_DEFAULTS = {
     "ANTHROPIC_API_KEY": "test-disabled",
@@ -110,16 +113,22 @@ def _presentation_records(manifest: dict[str, Any]) -> list[dict[str, str]]:
             raise ValueError("presentation review fields must be nonempty strings")
         path = record["path"]
         if (
-            not path.startswith("frontend/src/")
+            (not path.startswith("frontend/src/") and path not in PRESENTATION_METADATA_PATHS)
             or any(part in {"", ".", ".."} for part in path.split("/"))
             or path in seen
         ):
-            raise ValueError("presentation review requires a unique frontend source path")
+            raise ValueError("presentation review requires a unique supported frontend path")
         seen.add(path)
         if any(not re.fullmatch(r"[0-9a-f]{40}", record[key]) for key in ("before_blob", "after_blob")):
             raise ValueError("presentation review requires full Git blob hashes")
-        if record["before_blob"] == ZERO_SHA or record["before_blob"] == record["after_blob"]:
-            raise ValueError("presentation review must describe a modification or deletion")
+        if record["before_blob"] == record["after_blob"]:
+            raise ValueError("presentation review must describe a content change")
+        if record["before_blob"] == ZERO_SHA and not (
+            path.startswith("frontend/src/") and path.endswith(".css")
+        ):
+            raise ValueError("presentation review additions require a frontend source CSS file")
+        if path in PRESENTATION_METADATA_PATHS and record["after_blob"] == ZERO_SHA:
+            raise ValueError("presentation review metadata must describe a modification")
     return records
 
 
@@ -158,12 +167,21 @@ def _reviewed_presentation_changes(
         record = by_path.get(path)
         if (
             record
-            and old_mode == "100644"
-            and (status, new_mode) in {("M", "100644"), ("D", "000000")}
+            and (
+                (status, old_mode, new_mode) == ("M", "100644", "100644")
+                or (
+                    (status, old_mode, new_mode) == ("D", "100644", "000000")
+                    and path.startswith("frontend/src/")
+                )
+                or (
+                    (status, old_mode, new_mode) == ("A", "000000", "100644")
+                    and path.startswith("frontend/src/") and path.endswith(".css")
+                )
+            )
             and (before, after) == (record["before_blob"], record["after_blob"])
             and (
                 checkout_blobs.get(path) == ("100644", "blob", after)
-                if status == "M"
+                if status in {"M", "A"}
                 else path not in checkout_blobs
             )
         ):

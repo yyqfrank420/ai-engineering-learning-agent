@@ -10,14 +10,14 @@ from scripts import ci_runner
 
 
 @pytest.fixture
-def reviewed_repo(tmp_path, monkeypatch):
+def reviewed_repo(tmp_path, monkeypatch, request):
     def git(*args):
         return subprocess.check_output(["git", *args], cwd=tmp_path, text=True).strip()
 
     git("init", "-q")
     git("config", "user.email", "test@example.com")
     git("config", "user.name", "Test")
-    path = "frontend/src/App.tsx"
+    path = getattr(request, "param", "frontend/src/App.tsx")
     source = tmp_path / path
     source.parent.mkdir(parents=True)
     source.write_text("original display\n")
@@ -216,3 +216,84 @@ def test_reviewed_checkout_must_preserve_regular_file_mode(reviewed_repo):
     result = ci_runner.classify_paths([path], manifest, base=base, head=pr_head)
     assert result["ai_impact"] is True
     assert result["reasons"]["reviewed_presentation_changes"] == []
+
+
+@pytest.mark.parametrize(
+    "reviewed_repo",
+    ["frontend/package.json", "frontend/package-lock.json", "frontend/index.html"],
+    indirect=True,
+)
+def test_exact_reviewed_metadata_modification_skips_paid_calls(reviewed_repo):
+    _, source, _, _, _ = reviewed_repo
+    source.write_text("reviewed metadata presentation change\n")
+    assert finish_change(reviewed_repo)["ai_impact"] is False
+
+
+@pytest.mark.parametrize(
+    "reviewed_repo",
+    ["frontend/package.json", "frontend/package-lock.json", "frontend/index.html"],
+    indirect=True,
+)
+@pytest.mark.parametrize("field", ["before_blob", "after_blob"])
+def test_metadata_additions_and_deletions_are_rejected(reviewed_repo, field):
+    _, _, path, _, manifest = reviewed_repo
+    manifest["impact"]["reviewed_presentation_changes"][0][field] = ci_runner.ZERO_SHA
+    with pytest.raises(ValueError):
+        ci_runner.classify_paths([path], manifest)
+
+
+@pytest.mark.parametrize(
+    "change",
+    ["valid", "stale", "checkout", "symlink", "mode", "checkout_symlink", "checkout_mode"],
+)
+def test_reviewed_css_addition_requires_exact_regular_content(reviewed_repo, change):
+    git, _, _, _, manifest = reviewed_repo
+    base = git("rev-parse", "HEAD")
+    path = "frontend/src/components/GraphCanvas/Presentation.css"
+    source = ci_runner.ROOT / path
+    source.parent.mkdir(parents=True)
+    source.write_text(".presentation { color: white; }\n")
+    if change == "symlink":
+        source.unlink()
+        source.symlink_to("Other.css")
+    elif change == "mode":
+        source.chmod(0o755)
+    record = manifest["impact"]["reviewed_presentation_changes"][0]
+    record.update(path=path, before_blob=ci_runner.ZERO_SHA)
+    finish_change((git, source, path, base, manifest))
+    pr_head = git("rev-parse", "HEAD")
+    if change == "stale":
+        record["after_blob"] = "f" * 40
+    elif change in {"checkout", "checkout_symlink", "checkout_mode"}:
+        if change == "checkout":
+            source.write_text(".presentation { color: red; }\n")
+        elif change == "checkout_symlink":
+            source.unlink()
+            source.symlink_to("Other.css")
+        else:
+            source.chmod(0o755)
+        git("add", "-A")
+        git("commit", "-qm", "checkout changed")
+    result = ci_runner.classify_paths([path], manifest, base=base, head=pr_head)
+    assert result["ai_impact"] is (change != "valid")
+    assert len(result["reasons"]["reviewed_presentation_changes"]) == (change == "valid")
+
+
+def test_new_tsx_is_rejected(reviewed_repo):
+    _, _, path, _, manifest = reviewed_repo
+    manifest["impact"]["reviewed_presentation_changes"][0]["before_blob"] = ci_runner.ZERO_SHA
+    with pytest.raises(ValueError):
+        ci_runner.classify_paths([path], manifest)
+
+
+@pytest.mark.parametrize(
+    "metadata_path",
+    ["frontend/package.json", "frontend/package-lock.json", "frontend/index.html"],
+)
+def test_source_review_does_not_hide_unaudited_metadata(reviewed_repo, metadata_path):
+    _, source, _, _, _ = reviewed_repo
+    source.write_text("plain display\n")
+    metadata = ci_runner.ROOT / metadata_path
+    metadata.write_text("additional generation dependency or configuration\n")
+    result = finish_change(reviewed_repo)
+    assert result["ai_paths"] == [metadata_path]

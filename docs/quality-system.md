@@ -81,11 +81,16 @@ A broader matrix requires a concrete dependency or failure justification.
 A policy-only edit does not require a paid generation run.
 
 Classification uses paths and cannot determine the meaning of individual edits
-within a shared runtime file. An audited presentation-only modification or deletion
-in a shared frontend source file can be recorded in
+within a shared runtime file. Audited presentation-only frontend source changes
+can be recorded in
 `impact.reviewed_presentation_changes`: each record contains `path`, full Git
 `before_blob` and `after_blob` hashes, a `reason`, and completed offline/UI
-`verification` evidence. Use forty zeroes for a deletion's `after_blob`. CI matches
+`verification` evidence. Source modifications and deletions are supported. Added
+source CSS uses forty zeroes for `before_blob`; other additions are rejected.
+Audited modifications to `frontend/package.json`, `frontend/package-lock.json` and
+`frontend/index.html` use the same exact-content check. These metadata paths cannot
+use addition or deletion records. Use forty zeroes for a source deletion's
+`after_blob`. CI matches
 the exact base/head content transition and the checked-out HEAD blob and mode.
 A synthetic merge that changes the reviewed content receives no exception.
 Stale records, renames, file type or mode
@@ -98,8 +103,10 @@ generation-impacting. `frontend/src/components/Chat/ChatInput.tsx` owns composer
 interaction and is verified with offline frontend and context-preservation tests.
 Backend request routing, transport, and private renderer geometry remain protected
 because they can affect generation or diagram publication.
-The existing CSS/assets classification is unchanged; GraphCanvas CSS still
-requires generation evaluation.
+The existing CSS/assets classification is unchanged. GraphCanvas CSS still
+requires generation evaluation unless its exact content transition is audited.
+An unaudited dependency or metadata change also remains generation-impacting.
+Presentation audits must verify that shared private rendering is unchanged.
 
 Changes limited to non-runtime files, composer interaction, or audited frontend
 presentation retain the approved running backend. These frontend changes can
