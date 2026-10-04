@@ -3,6 +3,14 @@ name: Live eval required
 on:
   workflow_dispatch:
     inputs:
+      application_attempt_limit:
+        description: Maximum application provider attempts (1 to 78)
+        type: string
+        default: '78'
+      judge_attempt_limit:
+        description: Maximum semantic judge attempts (1 to 16)
+        type: string
+        default: '16'
       source_run_id:
         description: Failed protected run whose saved evidence will be validated
         type: string
@@ -153,6 +161,7 @@ jobs:
     env:
       EVALUATION_RUN_ID: ${{ github.run_id }}-${{ github.run_attempt }}
       EVALUATION_PROVIDER_ATTEMPT_LIMIT: 78
+      RESUME_JUDGE_CALL_LIMIT: 16
       OTEL_ENVIRONMENT: staging
     permissions:
       contents: read
@@ -187,6 +196,23 @@ jobs:
           python -m playwright install --with-deps chromium
           npm ci --prefix frontend --prefer-offline --no-audit --no-fund
 
+      - name: Validate dispatch attempt limits
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          APPLICATION_ATTEMPT_LIMIT: ${{ inputs.application_attempt_limit }}
+          JUDGE_ATTEMPT_LIMIT: ${{ inputs.judge_attempt_limit }}
+        run: |
+          if [[ ! "$APPLICATION_ATTEMPT_LIMIT" =~ ^[1-9][0-9]?$ ]] || (( APPLICATION_ATTEMPT_LIMIT > 78 )); then
+            echo "Application attempt limit must be a positive integer no greater than 78." >&2
+            exit 1
+          fi
+          if [[ ! "$JUDGE_ATTEMPT_LIMIT" =~ ^[1-9][0-9]?$ ]] || (( JUDGE_ATTEMPT_LIMIT > 16 )); then
+            echo "Judge attempt limit must be a positive integer no greater than 16." >&2
+            exit 1
+          fi
+          echo "EVALUATION_PROVIDER_ATTEMPT_LIMIT=$APPLICATION_ATTEMPT_LIMIT" >> "$GITHUB_ENV"
+          echo "RESUME_JUDGE_CALL_LIMIT=$JUDGE_ATTEMPT_LIMIT" >> "$GITHUB_ENV"
+
       - name: Validate retained evaluation evidence
         if: github.event_name == 'workflow_dispatch' && inputs.source_run_id != ''
         env:
@@ -203,7 +229,7 @@ jobs:
           fi
           python -m eval.pr_resume prepare --source-run-id "$SOURCE_RUN_ID" "${attempt_args[@]}" \
             --reviewed-diff-sha256 "$REVIEWED_DIFF_SHA256" --reason "$RESUME_REASON" \
-            --output-dir artifacts/live-eval/resume
+            --judge-call-limit "$RESUME_JUDGE_CALL_LIMIT" --output-dir artifacts/live-eval/resume
 
       - name: Resolve staging request concurrency
         run: |
@@ -370,9 +396,9 @@ jobs:
           if [ -f artifacts/live-eval/resume/plan.json ]; then
             python -m eval.pr_resume judge --input artifacts/live-eval/browser-results.json \
               --target "$CANDIDATE_URL" --deployment artifacts/live-eval/resume/candidate-deployment.json \
-              --output-dir artifacts/live-eval/resume
+              --judge-call-limit "$RESUME_JUDGE_CALL_LIMIT" --output-dir artifacts/live-eval/resume
           else
-            ./scripts/ci live --suite pr --target "$CANDIDATE_URL" --input artifacts/live-eval/browser-results.json --output artifacts/live-eval/live-results.json --manual-review-policy report-only
+            ./scripts/ci live --suite pr --target "$CANDIDATE_URL" --input artifacts/live-eval/browser-results.json --output artifacts/live-eval/live-results.json --manual-review-policy report-only --judge-call-limit "$RESUME_JUDGE_CALL_LIMIT"
           fi
 
       - name: Record deployment identity

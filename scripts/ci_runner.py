@@ -439,6 +439,8 @@ def _dispatch_eval(kind: str, args: argparse.Namespace) -> None:
         argv.append("--require-approved-corpus")
     if hasattr(args, "manual_review_policy"):
         argv.extend(["--manual-review-policy", args.manual_review_policy])
+    if getattr(args, "judge_call_limit", None) is not None:
+        argv.extend(["--judge-call-limit", str(args.judge_call_limit)])
     if getattr(args, "capture_replay", False):
         argv.append("--capture-replay")
     if getattr(args, "resume_input", None):
@@ -540,6 +542,7 @@ def build_parser() -> argparse.ArgumentParser:
                 choices=("blocking", "report-only"),
                 default="report-only",
             )
+            evaluation.add_argument("--judge-call-limit", type=int)
             evaluation.add_argument("--capture-replay", action="store_true")
             evaluation.add_argument("--resume-input")
     override = subparsers.add_parser("override")

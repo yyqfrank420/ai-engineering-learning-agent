@@ -2224,6 +2224,34 @@ def test_live_dispatch_preserves_selected_manual_review_policy(monkeypatch, poli
     assert argv[argv.index("--manual-review-policy") + 1] == (policy or "report-only")
 
 
+@pytest.mark.parametrize("limit", [None, 8, 16, 0, 17])
+def test_live_dispatch_forwards_optional_judge_limit_without_own_budget_policy(monkeypatch, limit):
+    from scripts.ci_runner import _dispatch_eval, build_parser
+
+    cli = ["live", "--suite", "pr", "--target", "https://candidate.example",
+           "--input", "artifacts/live-eval/browser-results.json",
+           "--output", "artifacts/live-eval/live-results.json",
+           "--manual-review-policy", "report-only"]
+    if limit is not None:
+        cli += ["--judge-call-limit", str(limit)]
+    args = build_parser().parse_args(cli)
+    assert args.judge_call_limit == limit
+    commands = []
+    monkeypatch.setattr(
+        "scripts.ci_runner.subprocess.run", lambda argv, **kwargs: commands.append(argv)
+    )
+    _dispatch_eval("live", args)
+    assert len(commands) == 1
+    argv = commands[0]
+    assert argv[argv.index("--input") + 1] == "artifacts/live-eval/browser-results.json"
+    assert argv[argv.index("--output") + 1] == "artifacts/live-eval/live-results.json"
+    if limit is None:
+        assert "--judge-call-limit" not in argv
+    else:
+        assert argv.count("--judge-call-limit") == 1
+        assert argv[argv.index("--judge-call-limit") + 1] == str(limit)
+
+
 @pytest.mark.parametrize("event,suite,can_build", [
     ("workflow_dispatch", "full", True),
     ("workflow_dispatch", "diagnostic", True),

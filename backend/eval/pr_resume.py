@@ -133,6 +133,8 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
         require(report.get("corpus_sha256") == corpus_sha256()
                 and report.get("corpus_version") == corpus.corpus_version
                 and report.get("release_identity") == corpus.release_identity, "corpus identity mismatch")
+    policy = semantic.get("manual_review_policy")
+    require(policy in {"blocking", "report-only"}, "invalid source manual-review policy")
     results = ordered_items(browser, "results", ids)
     states = ordered_items(browser, "case_states", ids)
     evaluations = ordered_items(semantic, "evaluations", ids)
@@ -171,7 +173,8 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
             groups["replay"].append(case_id)
         elif decision in {"pass", "fail", "manual_review"} and judgments:
             validate_judgments(evaluation, corpus.by_id[case_id], corpus, result)
-            mode = {"pass": "carried", "fail": "fresh", "manual_review": "replay"}[decision]
+            mode = {"pass": "carried", "fail": "fresh",
+                    "manual_review": "carried" if policy == "report-only" else "replay"}[decision]
             groups[mode].append(case_id)
         else:
             raise ValueError("unvalidated or partial semantic result cannot resume")
@@ -345,6 +348,8 @@ def verify_checkout(run: dict, pr: dict, deployment: dict, repo: str, reviewed_d
 
 
 def prepare(args: argparse.Namespace) -> None:
+    require(type(getattr(args, "judge_call_limit", None)) is int, "explicit judge budget required")
+    limit = live_runner._restricted_judge_limit(args, judge_limit())
     repo = os.environ["GITHUB_REPOSITORY"]
     require(bool(re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo)), "invalid repository")
     require(len(args.reason.strip()) >= 20, "review reason must have at least 20 characters")
@@ -369,7 +374,8 @@ def prepare(args: argparse.Namespace) -> None:
         "reviewed_diff_sha256": args.reviewed_diff_sha256, "reason": args.reason,
         "actor": os.environ["GITHUB_ACTOR"], "case_ids": ids, "partition": groups,
         "source_file_sha256": {name: sha256(value) for name, value in raw.items()},
-        "old_backend_target": browser["backend_target"], "judge_call_limit": judge_limit(),
+        "old_backend_target": browser["backend_target"], "judge_call_limit": limit,
+        "manual_review_policy": semantic["manual_review_policy"],
     }
     if groups["replay"]:
         write_json(out / "replay-browser-results.json", subset_browser_capture(
@@ -411,6 +417,8 @@ def validate_fresh_capture(fresh: dict, source: dict, proof: dict, plan: dict, t
 
 
 async def judge(args: argparse.Namespace) -> int:
+    require(type(getattr(args, "judge_call_limit", None)) is int, "explicit judge budget required")
+    requested_limit = live_runner._restricted_judge_limit(args, judge_limit())
     out = Path(args.output_dir)
     plan = json.loads((out / "plan.json").read_text())
     run, pr, artifact = authenticated_inputs(
@@ -425,6 +433,11 @@ async def judge(args: argparse.Namespace) -> int:
     ids = list(canonical_pr_case_ids())
     groups = partition(browser, semantic, load_corpus(), ids)
     require(groups == plan["partition"] and ids == plan["case_ids"], "plan partition mismatch")
+    policy = semantic["manual_review_policy"]
+    require(plan.get("manual_review_policy") == policy, "plan manual-review policy mismatch")
+    limit = plan.get("judge_call_limit")
+    require(type(limit) is int and 1 <= limit <= judge_limit(), "invalid plan judge budget")
+    require(limit == requested_limit, "plan judge budget differs from explicit judge limit")
     require(plan["old_backend_target"] == browser["backend_target"]
             and plan["source_file_sha256"] == {name: sha256(value) for name, value in raw.items()},
             "source file lineage mismatch")
@@ -452,8 +465,8 @@ async def judge(args: argparse.Namespace) -> int:
             and JUDGE_PROMPT_RELEASE == calibration.judge_release, "current judge identity mismatch")
     require(not (out / "judge-reservation.json").exists(), "judging already attempted")
     with (out / "judge-reservation.json").open("x") as reservation:
-        json.dump({"run_id": os.environ["GITHUB_RUN_ID"], "judge_call_limit": judge_limit()}, reservation)
-    remaining = judge_limit()
+        json.dump({"run_id": os.environ["GITHUB_RUN_ID"], "judge_call_limit": limit}, reservation)
+    remaining = limit
     reports = {}
     for mode in ("fresh", "replay"):
         if not groups[mode]:
@@ -466,14 +479,16 @@ async def judge(args: argparse.Namespace) -> int:
                        expected_source_case_ids=ids, forbidden_operation_prefixes=()))
         argv = ["--suite", "diagnostic", "--input", str(path), "--target",
                 args.target if mode == "fresh" else plan["old_backend_target"],
-                "--manual-review-policy", "blocking", "--judge-call-limit", str(remaining)]
+                "--manual-review-policy", policy, "--judge-call-limit", str(remaining)]
         if mode == "replay":
             argv.append("--capture-replay")
         for case_id in groups[mode]:
             argv.extend(("--case", case_id))
         report, _ = await live_runner.evaluate(live_runner.build_parser().parse_args(argv))
         live_runner._write_outputs(out / f"{mode}-live-results.json", report)
-        remaining -= report["budget"]["judge_calls"]
+        calls = report["budget"]["judge_calls"]
+        require(type(calls) is int and 0 <= calls <= remaining, "phase exceeded judge budget")
+        remaining -= calls
         reports[mode] = report
     # Recheck mutable PR state before reporting a combined approval.
     final_pr = api(f"repos/{plan['repository']}/pulls/{identity['pr']}")
@@ -484,18 +499,20 @@ async def judge(args: argparse.Namespace) -> int:
     for mode, report in reports.items():
         ordered_items(report, "evaluations", groups[mode])
         for evaluation in report["evaluations"]:
-            if evaluation["decision"] == "pass":
+            if evaluation["decision"] in {"pass", "manual_review"}:
                 capture_results = fresh["results"] if mode == "fresh" else browser["results"]
                 result = next(row for row in capture_results if row["id"] == evaluation["id"])
                 validate_judgments(evaluation, corpus.by_id[evaluation["id"]], corpus, result)
         evaluations.update({row["id"]: row for row in report["evaluations"]})
     require(set(evaluations) == set(ids), "combined coverage incomplete")
-    passed = remaining >= 0 and all(row["decision"] == "pass" for row in evaluations.values())
-    passed = passed and all(report["status"] == "pass" for report in reports.values())
+    accepted = {"pass", "manual_review"} if policy == "report-only" else {"pass"}
+    passed = remaining >= 0 and all(row["decision"] in accepted for row in evaluations.values())
+    passed = passed and all(report["status"] in accepted for report in reports.values())
     passed = passed and all(row.get("passed") is True for row in fresh["results"])
     combined = {
         "format_version": 1, "kind": "combined_pr_evidence", "status": "pass" if passed else "fail",
-        "plan": plan, "new_judge_calls": judge_limit() - remaining,
+        "plan": plan, "new_judge_calls": limit - remaining,
+        "manual_review_policy": policy,
         "fresh_capture_sha256": sha256(fresh_path.read_bytes()),
         "candidate_deployment": proof, "candidate_deployment_sha256": sha256(proof_path.read_bytes()),
         "new_cost_accounting": {mode: report["estimated_cost"] for mode, report in reports.items()},
@@ -531,10 +548,14 @@ def main() -> None:
     prep.add_argument("--source-run-attempt", type=int, help="Pin a positive source run attempt")
     prep.add_argument("--reviewed-diff-sha256", required=True)
     prep.add_argument("--reason", required=True)
+    prep.add_argument("--judge-call-limit", type=int, required=True,
+                      help="Restrict the canonical PR judge-call budget")
     check = subs.add_parser("judge")
     check.add_argument("--input", required=True)
     check.add_argument("--target", required=True)
     check.add_argument("--deployment", required=True)
+    check.add_argument("--judge-call-limit", type=int, required=True,
+                       help="Must match the prepared restrictive judge-call budget")
     for sub in (prep, check):
         sub.add_argument("--output-dir", default="artifacts/live-eval/resume")
     args = parser.parse_args()

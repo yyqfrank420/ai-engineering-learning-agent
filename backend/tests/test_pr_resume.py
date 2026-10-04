@@ -20,7 +20,7 @@ def evidence():
                **identity, "target": "http://browser", "backend_target": "https://old", "started_at": "today",
                "dashboard_smoke": {"passed": True}, "case_states": [], "results": [], "application_telemetry": []}
     semantic = {"format_version": 1, "execution_mode": "staging_gate", "kind": "live_gate", "suite": "pr", "status": "fail", "target": "https://old",
-                **identity, "evaluations": []}
+                **identity, "manual_review_policy": "blocking", "evaluations": []}
     calibration = corpus.approval.calibration
     for index, case_id in enumerate(ids):
         thread = f"thread-{index}"
@@ -221,10 +221,12 @@ def test_restrictive_judge_budget_defaults_and_remainder():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_kind", ["infrastructure", "manual_review"])
-@pytest.mark.parametrize("outcome", ["pass", "exhausted", "manual_review", "attempt_tamper"])
+@pytest.mark.parametrize("source_kind", ["infrastructure", "manual_review", "report-only"])
+@pytest.mark.parametrize("outcome", ["pass", "exhausted", "manual_review", "attempt_tamper", "policy_tamper", "budget_missing", "budget_zero", "budget_expand", "budget_bool", "budget_within_9", "budget_within_16", "phase_overrun"])
 async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls(tmp_path, monkeypatch, source_kind, outcome):
-    browser, semantic, corpus, ids = manual_evidence() if source_kind == "manual_review" else evidence()
+    browser, semantic, corpus, ids = evidence() if source_kind == "infrastructure" else manual_evidence()
+    if source_kind == "report-only":
+        semantic["manual_review_policy"] = "report-only"
     run, pr, deployment, kwargs = provenance()
     identity = resume.validate_run_identity(run, pr, deployment, **kwargs)
     groups = resume.partition(browser, semantic, corpus, ids)
@@ -235,9 +237,18 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     current = {"run_id": "2", "head": kwargs["head"], "tree": kwargs["current_tree"]}
     plan = {"source": identity, "repository": "owner/repo", "artifact": artifact,
             "reviewed_diff_sha256": "0" * 64, "current": current, "partition": groups, "case_ids": ids,
-            "old_backend_target": "https://old", "source_file_sha256": {k: resume.sha256(v) for k, v in raw.items()}}
+            "old_backend_target": "https://old", "judge_call_limit": 8,
+            "manual_review_policy": semantic["manual_review_policy"], "source_file_sha256": {k: resume.sha256(v) for k, v in raw.items()}}
     if outcome == "attempt_tamper":
         plan["source"] = {**identity, "run_attempt": 2}
+    if outcome == "policy_tamper":
+        plan["manual_review_policy"] = "report-only" if semantic["manual_review_policy"] == "blocking" else "blocking"
+    elif outcome == "budget_missing":
+        plan.pop("judge_call_limit")
+    elif outcome in {"budget_zero", "budget_expand", "budget_bool"}:
+        plan["judge_call_limit"] = {"budget_zero": 0, "budget_expand": 17, "budget_bool": True}[outcome]
+    elif outcome in {"budget_within_9", "budget_within_16"}:
+        plan["judge_call_limit"] = 9 if outcome == "budget_within_9" else 16
     resume.write_json(tmp_path / "plan.json", plan)
     (tmp_path / "source.zip").write_bytes(archive)
     fresh = copy.deepcopy(browser)
@@ -283,43 +294,67 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
         evaluations = []
         for case_id in args.case:
             judgment = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
-            judgment["dimensions"] = [{"dimension": name, "grade": "borderline" if args.capture_replay and outcome == "manual_review" else "pass", "critical": corpus.rubrics[name].critical,
+            judgment["dimensions"] = [{"dimension": name, "grade": "borderline" if outcome == "manual_review" else "pass", "critical": corpus.rubrics[name].critical,
                                       "evidence": ["[turn-1-answer-1] source"], "rationale": "supported"}
                                      for name in corpus.by_id[case_id].rubric_dimensions]
-            decision = "manual_review" if args.capture_replay and outcome == "manual_review" else "pass"
+            decision = "manual_review" if outcome == "manual_review" else "pass"
             evaluations.append({"id": case_id, "decision": decision, "judgments": [judgment], "deterministic_failures": []})
-        return {"status": "fail" if args.capture_replay and outcome == "manual_review" else "pass", "budget": {"judge_calls": 16 if outcome == "exhausted" else len(args.case)}, "evaluations": evaluations,
+        return {"status": "manual_review" if outcome == "manual_review" else "pass", "budget": {"judge_calls": args.judge_call_limit + 1 if outcome == "phase_overrun" else args.judge_call_limit if outcome == "exhausted" else len(args.case)}, "evaluations": evaluations,
                 "estimated_cost": {"application_usd": 0 if args.capture_replay else 0.1},
                 "cost_accounting": {}}, 0
 
     from pathlib import Path
     monkeypatch.setattr(resume.live_runner, "evaluate", evaluate)
     monkeypatch.setattr(resume.live_runner, "_write_outputs", resume.write_json)
-    args = argparse.Namespace(input=str(fresh_path), deployment=str(proof_path), target="https://new", output_dir=str(tmp_path))
+    args = argparse.Namespace(input=str(fresh_path), deployment=str(proof_path), target="https://new", output_dir=str(tmp_path), judge_call_limit=8)
+    if outcome in {"policy_tamper", "budget_missing", "budget_zero", "budget_expand", "budget_bool", "budget_within_9", "budget_within_16"}:
+        with pytest.raises(ValueError, match="policy mismatch|invalid plan judge budget|differs from explicit judge limit"):
+            await resume.judge(args)
+        assert calls == []
+        assert not (tmp_path / "judge-reservation.json").exists()
+        return
+    if outcome == "phase_overrun":
+        with pytest.raises(ValueError, match="phase exceeded judge budget"):
+            await resume.judge(args)
+        assert len(calls) == 1
+        assert not (tmp_path / "combined-evidence.json").exists()
+        return
     if outcome == "attempt_tamper":
         with pytest.raises(ValueError, match="attempt mismatch"):
             await resume.judge(args)
         assert calls == []
         assert not (tmp_path / "judge-reservation.json").exists()
         return
-    if outcome == "exhausted":
+    if outcome == "exhausted" and groups["replay"]:
         with pytest.raises(ValueError, match="budget exhausted"):
             await resume.judge(args)
         assert len(calls) == 1
         assert (tmp_path / "fresh-live-results.json").exists()
         assert not (tmp_path / "combined-evidence.json").exists()
         return
-    assert await resume.judge(args) == (1 if outcome == "manual_review" else 0)
-    assert [c.judge_call_limit for c in calls] == [16, 16 - len(groups["fresh"])]
-    assert [c.capture_replay for c in calls] == [False, True]
+    blocked = outcome == "manual_review" and semantic["manual_review_policy"] == "blocking"
+    assert await resume.judge(args) == (1 if blocked else 0)
+    expected_limits = [8] + ([8 - len(groups["fresh"])] if groups["replay"] else [])
+    assert [c.judge_call_limit for c in calls] == expected_limits
+    assert [c.capture_replay for c in calls] == [False] + ([True] if groups["replay"] else [])
     combined = json.loads((tmp_path / "combined-evidence.json").read_text())
-    assert combined["new_judge_calls"] == (4 if source_kind == "manual_review" else 6)
-    assert combined["status"] == ("fail" if outcome == "manual_review" else "pass")
-    assert calls[0].case == groups["fresh"] and calls[1].case == groups["replay"]
-    assert all(call.manual_review_policy == "blocking" for call in calls)
-    assert combined["new_cost_accounting"]["replay"]["application_usd"] == 0
+    assert combined["new_judge_calls"] == (8 if outcome == "exhausted" else len(groups["fresh"]) + len(groups["replay"]))
+    assert combined["status"] == ("fail" if blocked else "pass")
+    assert calls[0].case == groups["fresh"]
+    assert all(call.manual_review_policy == semantic["manual_review_policy"] for call in calls)
+    if groups["replay"]:
+        assert calls[1].case == groups["replay"]
+        assert combined["new_cost_accounting"]["replay"]["application_usd"] == 0
     assert len(combined["cases"]) == 8
     assert next(c for c in combined["cases"] if c["id"] == ids[0])["application_source"] == identity
+    if source_kind == "report-only":
+        assert len(calls) == 1
+        for case_id in (ids[2], ids[4]):
+            carried = next(c for c in combined["cases"] if c["id"] == case_id)
+            assert carried["mode"] == "carried"
+            assert carried["evaluation"] == next(e for e in semantic["evaluations"] if e["id"] == case_id)
+            assert carried["evaluation"]["decision"] == "manual_review"
+            assert carried["judgment_source"] == carried["application_source"] == identity
     with pytest.raises(ValueError, match="already attempted"):
         await resume.judge(args)
 
@@ -725,3 +760,49 @@ def test_eval_code_gate_authenticates_actual_runner_and_manifest(monkeypatch, mu
     else:
         with pytest.raises(ValueError, match=expected_error):
             resume.validate_eval_code("source")
+
+
+@pytest.mark.parametrize("policy", [None, "", "pass", True])
+def test_source_review_policy_is_required_and_validated(policy):
+    browser, semantic, corpus, ids = manual_evidence()
+    if policy is None:
+        semantic.pop("manual_review_policy")
+    else:
+        semantic["manual_review_policy"] = policy
+    with pytest.raises(ValueError, match="manual-review policy"):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("limit", [None, 0, -1, 17, True, "8"])
+def test_prepare_invalid_budget_fails_before_authentication(limit, monkeypatch):
+    def forbidden(*args):
+        pytest.fail("invalid budget must not authenticate or fetch artifacts")
+    monkeypatch.setattr(resume, "authenticated_inputs", forbidden)
+    with pytest.raises(ValueError, match="judge budget|judge-call-limit"):
+        resume.prepare(argparse.Namespace(judge_call_limit=limit))
+
+
+def test_report_only_never_carries_semantic_or_deterministic_failure():
+    browser, semantic, corpus, ids = manual_evidence()
+    semantic["manual_review_policy"] = "report-only"
+    dimensions = semantic["evaluations"][0]["judgments"][0]["dimensions"]
+    next(d for d in dimensions if d["critical"])["grade"] = "fail"
+    semantic["evaluations"][0]["decision"] = "fail"
+    groups = resume.partition(browser, semantic, corpus, ids)
+    assert ids[0] in groups["fresh"]
+    assert ids[3] in groups["fresh"]
+    assert not set(groups["fresh"]) & set(groups["carried"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 0, -1, 17, True, "8"])
+async def test_judge_requires_valid_explicit_budget_before_authentication(tmp_path, monkeypatch, limit):
+    def forbidden(*args):
+        pytest.fail("invalid explicit judge budget must not authenticate or fetch artifacts")
+    monkeypatch.setattr(resume, "authenticated_inputs", forbidden)
+    args = argparse.Namespace(output_dir=str(tmp_path))
+    if limit is not None:
+        args.judge_call_limit = limit
+    with pytest.raises(ValueError, match="judge budget|judge-call-limit"):
+        await resume.judge(args)
+    assert not (tmp_path / "judge-reservation.json").exists()
