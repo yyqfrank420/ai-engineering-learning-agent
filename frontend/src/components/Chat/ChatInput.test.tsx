@@ -56,8 +56,10 @@ describe('ChatInput', () => {
     renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue(action) });
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My request' } });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
-    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action));
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+    await waitFor(() => {
+      expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action);
+      expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+    });
   });
 
   it.each(['click', 'Enter'] as const)('sends an ambiguous existing-diagram follow-up when %s is used again', async trigger => {
