@@ -319,10 +319,17 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
-        "before_blob": "a935d524899ba20cffb60813cb3e363062cf0ad6",
-        "after_blob": "af35270fb964e9306cefc92c88778fde8144a627",
-        "reason": "Open normal details on pointer selection, retain explicit F2 editing, and defer node reparenting until drag movement; capture geometry and generation protocols are unchanged.",
-        "verification": "docs/verification/2026-09-29-pane-view-default.md"
+        "before_blob": "3de0f433d1eeaa22b685cafde4e39f70d190e568",
+        "after_blob": "d886e53b34202f9e8cc2f6f47f1669983b4312d6",
+        "reason": "Route interactive navigation connections around unrelated current zone frames, including saved padding. The private renderer does not enable navigation and retains its geometry; generation, transport and publication behavior are unchanged.",
+        "verification": "docs/verification/2026-10-04-zone-routing.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/diagramConnections.ts",
+        "before_blob": "3df2c9bccc5625f9f4ac62f969fab4c1255d9d9f",
+        "after_blob": "cb03c4bcbb9aeca16eef6366d05f3beaa518ae33",
+        "reason": "Extend the interactive navigation router with optional rendered zone obstacles. Connection projection, persisted graph records and the private renderer are unchanged.",
+        "verification": "docs/verification/2026-10-04-zone-routing.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
@@ -367,13 +374,6 @@
         "verification": "docs/verification/2026-09-28-startup-status.md"
       },
       {
-        "path": "frontend/src/components/Chat/ChatInput.tsx",
-        "before_blob": "0fc23599fd98c9af8462b4dfac5940acaace1fc2",
-        "after_blob": "99c8953cc094c11deb39193d989ae47555ba4adc",
-        "reason": "Replace the startup percentage bar with an indeterminate status indicator; preserve errors, retry and submission behavior.",
-        "verification": "docs/verification/2026-09-28-startup-status.md"
-      },
-      {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
         "before_blob": "ce1d385b820f158a7ad6d11f75ae5cd1cfa27d59",
         "after_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
@@ -400,7 +400,8 @@
       "frontend/src/**/*.test.ts", "frontend/src/**/*.test.tsx",
       "ingestion/test_*.py", "ci/**", "scripts/ci", "scripts/ci_runner.py",
       "scripts/prepush_check.sh", "scripts/frontend_checks.py",
-      ".github/workflows/ci.yml", "frontend/src/components/Chat/ThinkingIndicator.tsx",
+      ".github/workflows/ci.yml", "frontend/src/components/Chat/ChatInput.tsx",
+      "frontend/src/components/Chat/ThinkingIndicator.tsx",
       "frontend/src/components/Layout/TitleBar.tsx"
     ],
     "visual_only": ["frontend/src/*.css", "frontend/src/**/*.css", "frontend/public/**"],

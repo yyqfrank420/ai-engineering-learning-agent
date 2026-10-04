@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { GraphEdge } from '../../types';
+import type { Box } from './diagramAlignment';
 import { diagramConnections, overviewConnections, routeConnection } from './diagramConnections';
 
 const edge = (source: string, target: string, label = 'Request', flow: GraphEdge['flow'] = 'runtime'): GraphEdge =>
@@ -44,6 +45,16 @@ describe('local orthogonal routes', () => {
   const target = { id: 'b', x: 500, y: 100 };
   const points = (path: string) => [...path.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g)]
     .map(match => ({ x: Number(match[1]), y: Number(match[2]) }));
+  const crossesBox = (path: string, box: Box) => {
+    const route = points(path);
+    return route.slice(1).some((b, index) => {
+      const a = route[index];
+      if (a.x === b.x && a.y === b.y) return false;
+      return a.x === b.x
+        ? a.x > box.x && a.x < box.x + box.width && Math.max(a.y, b.y) > box.y && Math.min(a.y, b.y) < box.y + box.height
+        : a.y > box.y && a.y < box.y + box.height && Math.max(a.x, b.x) > box.x && Math.min(a.x, b.x) < box.x + box.width;
+    });
+  };
 
   it('takes the direct corridor for request and response', () => {
     for (const [a, b] of [[source, target], [target, source]]) {
@@ -71,6 +82,57 @@ describe('local orthogonal routes', () => {
     }
     expect(route.some(point => point.y !== 100)).toBe(true);
     expect(routeConnection(source, target, [source, target, { ...obstacle, y: 250 }], 100, 60).path).not.toBe(path);
+  });
+
+  it('routes outside a wide unrelated zone instead of through its header', () => {
+    const a = { id: 'a', x: 100, y: 220 };
+    const b = { id: 'b', x: 1100, y: 220 };
+    const nodes = [a, b, { id: 'c', x: 350, y: 220 }, { id: 'd', x: 600, y: 220 }, { id: 'e', x: 850, y: 220 }];
+    const zone = { x: 200, y: 100, width: 800, height: 200 };
+    expect(crossesBox(routeConnection(a, b, nodes, 100, 60).path, zone)).toBe(true);
+
+    for (const [start, end] of [[a, b], [b, a]]) {
+      const route = routeConnection(start, end, nodes, 100, 60, [zone]);
+      expect(crossesBox(route.path, zone)).toBe(false);
+      for (const node of nodes) {
+        expect(crossesBox(route.path, { x: node.x - 50, y: node.y - 30, width: 100, height: 60 })).toBe(false);
+      }
+      expect(points(route.path).every((point, index, all) => index === 0
+        || point.x === all[index - 1].x || point.y === all[index - 1].y)).toBe(true);
+      expect(points(route.path).some(point => point.y <= zone.y - 20 || point.y >= zone.y + zone.height + 20)).toBe(true);
+    }
+  });
+
+  it('blocks direct corridors through empty zones in both axes and directions', () => {
+    const cases = [
+      { a: source, b: target, zone: { x: 200, y: 50, width: 200, height: 200 } },
+      { a: { id: 'a', x: 300, y: 100 }, b: { id: 'b', x: 300, y: 900 },
+        zone: { x: 200, y: 200, width: 200, height: 600 } },
+    ];
+    for (const { a, b, zone } of cases) {
+      for (const [start, end] of [[a, b], [b, a]]) {
+        const direct = routeConnection(start, end, [a, b], 100, 60);
+        expect(points(direct.path)).toHaveLength(2);
+        expect(crossesBox(direct.path, zone)).toBe(true);
+        const route = routeConnection(start, end, [a, b], 100, 60, [zone]);
+        expect(crossesBox(route.path, zone)).toBe(false);
+      }
+    }
+  });
+
+  it('preserves default routes when additional obstacles do not obstruct them', () => {
+    const unrelated = { x: 200, y: 300, width: 200, height: 200 };
+    expect(routeConnection(source, target, [source, target], 100, 60, [unrelated]))
+      .toEqual(routeConnection(source, target, [source, target], 100, 60));
+    expect(routeConnection(source, target, [source, target], 100, 60, []))
+      .toEqual(routeConnection(source, target, [source, target], 100, 60));
+  });
+
+  it('keeps the least-intersection fallback finite for overlapping obstacles', () => {
+    const route = points(routeConnection(source, target, [source, target], 100, 60,
+      [{ x: 0, y: 0, width: 600, height: 200 }]).path);
+    expect(route.length).toBeGreaterThan(1);
+    expect(route.every(point => Number.isFinite(point.x) && Number.isFinite(point.y))).toBe(true);
   });
 
   it('keeps a self-loop nonzero and finite', () => {

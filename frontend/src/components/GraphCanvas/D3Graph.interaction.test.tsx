@@ -103,6 +103,60 @@ afterAll(() => {
 });
 
 describe('graph node activation', () => {
+  it.each([0, 30])('routes cross-zone connections around the rendered header and padding (%s px)', topPadding => {
+    const zoneGraph: GraphData = {
+      ...graph,
+      nodes: ['a', 'b', 'c', 'd'].map(id => ({ ...graph.nodes[0], id, label: id })),
+      edges: [edge('a', 'd', 'crosses zones'), edge('b', 'c', 'stays within zone')],
+      groups: [
+        { id: 'start', label: 'Request intake', kind: 'runtime', nodeIds: ['a'] },
+        { id: 'middle', label: 'Learning and release', kind: 'runtime', nodeIds: ['b', 'c'] },
+        { id: 'end', label: 'Result delivery', kind: 'runtime', nodeIds: ['d'] },
+        { id: 'empty', label: 'Empty region', kind: 'runtime', nodeIds: ['missing'] },
+      ],
+    };
+    const { container } = render(<D3Graph graphData={zoneGraph} currentStep={-1}
+      activeNodeIds={new Set<string>()} onNodeClick={() => undefined} navigation
+      initialViewState={{ layoutVersion: 17, viewport: { x: 0, y: 0, k: 1 },
+        nodePositions: { a: { x: 100, y: 140 }, b: { x: 500, y: 200 },
+          c: { x: 1100, y: 200 }, d: { x: 1500, y: 140 } },
+        zonePadding: { middle: { top: topPadding, right: 80, bottom: 20, left: 80 } } }} />);
+    const frame = container.querySelector('[data-group-id="middle"] > rect')!;
+    const paths = () => ['.edge-vis', '.edge-hit'].map(selector => container.querySelectorAll(selector)[0]);
+    const assertClearance = () => {
+      const clearance = 7;
+      const left = Number(frame.getAttribute('x')) - clearance;
+      const top = Number(frame.getAttribute('y')) - clearance;
+      const right = left + Number(frame.getAttribute('width')) + clearance * 2;
+      const bottom = top + Number(frame.getAttribute('height')) + clearance * 2;
+      for (const path of paths()) {
+        const coordinates = Array.from(path.getAttribute('d')!.matchAll(/[ML](-?[\d.]+),(-?[\d.]+)/g),
+          match => ({ x: Number(match[1]), y: Number(match[2]) }));
+        expect(coordinates.length).toBeGreaterThan(2);
+        for (let index = 1; index < coordinates.length; index += 1) {
+          const a = coordinates[index - 1], b = coordinates[index];
+          expect(a.x === b.x || a.y === b.y).toBe(true);
+          const crosses = a.x === b.x
+            ? a.x > left && a.x < right && Math.max(a.y, b.y) > top && Math.min(a.y, b.y) < bottom
+            : a.y > top && a.y < bottom && Math.max(a.x, b.x) > left && Math.min(a.x, b.x) < right;
+          expect(crosses).toBe(false);
+        }
+      }
+      expect(paths()[0].getAttribute('d')).toBe(paths()[1].getAttribute('d'));
+    };
+    assertClearance();
+    expect(container.querySelectorAll('.edge-vis')[1].getAttribute('d')).toBe('M593,200 L1007,200');
+    const originalPath = paths()[0].getAttribute('d');
+    fireEvent.keyDown(frame, { key: 'ArrowUp', shiftKey: true });
+    assertClearance();
+    expect(paths()[0].getAttribute('d')).not.toBe(originalPath);
+    const movedPath = paths()[0].getAttribute('d');
+    const topBorder = container.querySelector('[data-group-id="middle"] [data-side="n"]')!;
+    fireEvent.keyDown(topBorder, { key: 'ArrowUp', shiftKey: true });
+    assertClearance();
+    expect(paths()[0].getAttribute('d')).not.toBe(movedPath);
+    expect(container.querySelectorAll('.edge-vis')[1].getAttribute('d')).toMatch(/^M593,\d+ L1007,\d+$/);
+  });
   it('shows the component subtype and identifies its owning application service', () => {
     const componentGraph: GraphData = { ...graph, nodes: [
       { ...graph.nodes[0], id: 'service', label: 'Tutoring service', type: 'service' },

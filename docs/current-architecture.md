@@ -277,9 +277,12 @@ flows and shorter connections. Component hover or keyboard focus reveals inciden
 Connections reveals every bundled pair. One effect owns live path opacity, hit targets, keyboard
 access, and walkthrough visibility. Future-step components and their connections stay hidden even
 when Connections is enabled. The live view does not create inline edge labels or step badges.
-Local orthogonal routing tries clear corridors around node cards before taking outer detours.
-Routes are cached within each render and recomputed after dragging. Overlapping manually placed
-cards can still force intersections; this router does not solve arbitrary obstacle mazes.
+Local orthogonal routing tries clear corridors around node cards and unrelated zone frames,
+including their headers and saved padding, before taking outer detours. A connection can enter
+the zones that own its endpoints. Routes use the same current bounds as the rendered frames;
+they are cached within each render and recomputed after node movement, zone movement or resizing.
+Overlapping manually placed cards or zones can still force intersections; this router does not
+solve arbitrary obstacle mazes.
 
 Declared groups use semantic tier placement with soft background regions and one heading per region.
 This keeps unrelated components outside each boundary. Learner-facing cards omit repeated
@@ -351,8 +354,11 @@ failure without a graph releases the available explanation instead of waiting fo
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
 `POST /api/threads/{thread_id}/diagram-intent` endpoint. The composer always sends automatic depth,
 graph on, and research on. A new conversation can generate immediately. With a saved diagram,
-clear additions extend it, explanations leave it unchanged, and ambiguous requests show an inline
-choice: Extend this diagram or Start a new chat. The separate option creates and opens a chat
+clear additions extend it, explanations leave it unchanged, and ambiguous requests offer an inline
+choice: Extend this diagram or Start a new chat. Sending the same draft again, including after
+dismissing the choices, uses the answer-only action without repeating the intent check. This
+answers with the current diagram as context and leaves it unchanged. Editing the draft or
+switching conversations clears that choice. The separate option creates and opens a chat
 before sending. Unavailable intent checks and failed chat creation retain the draft with feedback.
 Typed `graph_action` and expected graph version travel through both transports. Server admission
 rejects fresh creation over a saved graph and rejects stale extension requests before model calls.
