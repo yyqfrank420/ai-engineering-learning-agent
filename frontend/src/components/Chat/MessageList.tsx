@@ -7,6 +7,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ArrowClockwise, ArrowDown } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -57,110 +58,27 @@ function splitLatex(text: string): Segment[] {
   return segments;
 }
 
-// ── Shared markdown component overrides ──────────────────────────────────────
-// These inline styles keep the markdown visually consistent with the dark theme.
-
 const mdComponents = {
-  // Headings
-  h1: ({ children }: MarkdownChildrenProps) => (
-    <h1 style={{ fontSize: '1.1rem', fontWeight: 700, color: '#e6edf3', margin: '0.75rem 0 0.35rem', borderBottom: '1px solid #21262d', paddingBottom: '0.25rem' }}>{children}</h1>
-  ),
-  h2: ({ children }: MarkdownChildrenProps) => (
-    <h2 style={{ fontSize: '0.95rem', fontWeight: 600, color: '#e6edf3', margin: '0.65rem 0 0.3rem' }}>{children}</h2>
-  ),
-  h3: ({ children }: MarkdownChildrenProps) => (
-    <h3 style={{ fontSize: '0.875rem', fontWeight: 600, color: '#c9d1d9', margin: '0.5rem 0 0.25rem' }}>{children}</h3>
-  ),
-  // Paragraphs
-  p: ({ children }: MarkdownChildrenProps) => (
-    <p style={{ margin: '0.35rem 0', lineHeight: 1.65 }}>{children}</p>
-  ),
-  // Bold / italic
-  strong: ({ children }: MarkdownChildrenProps) => (
-    <strong style={{ color: '#e6edf3', fontWeight: 600 }}>{children}</strong>
-  ),
-  em: ({ children }: MarkdownChildrenProps) => (
-    <em style={{ color: '#c9d1d9', fontStyle: 'italic' }}>{children}</em>
-  ),
-  // Unordered + ordered lists
-  ul: ({ children }: MarkdownChildrenProps) => (
-    <ul style={{ margin: '0.35rem 0', paddingLeft: '1.4rem', lineHeight: 1.65 }}>{children}</ul>
-  ),
-  ol: ({ children }: MarkdownChildrenProps) => (
-    <ol style={{ margin: '0.35rem 0', paddingLeft: '1.4rem', lineHeight: 1.65 }}>{children}</ol>
-  ),
-  li: ({ children }: MarkdownChildrenProps) => (
-    <li style={{ margin: '0.15rem 0' }}>{children}</li>
-  ),
-  // react-markdown v10 no longer supplies the old `inline` prop. Fenced code
-  // retains a trailing newline (or language class); paragraphs do not. The
-  // `pre` renderer owns block layout so this component never nests a <pre>
-  // inside the paragraph or <pre> that react-markdown already created.
+  // react-markdown v10 omits the old inline prop; a language class or trailing
+  // newline identifies block code. The pre renderer owns block layout.
   code: ({ children, className }: MarkdownCodeProps) => {
     const isBlock = Boolean(className) || String(children ?? '').endsWith('\n');
     return (
-      <code className={className} style={{
-        background: isBlock ? 'transparent' : '#0d1117',
-        border: isBlock ? 'none' : '1px solid #21262d',
-        borderRadius: isBlock ? 0 : '4px',
-        padding: isBlock ? 0 : '1px 5px',
-        fontSize: '0.82rem',
-        fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", monospace',
-        color: isBlock ? '#c9d1d9' : '#a78bfa',
-      }}>
+      <code className={[className, isBlock ? 'message-code-block' : 'message-code-inline'].filter(Boolean).join(' ')}>
         {children}
       </code>
     );
   },
-  pre: ({ children }: MarkdownChildrenProps) => (
-    <pre style={{
-      background: '#0d1117',
-      border: '1px solid #21262d',
-      borderRadius: '6px',
-      padding: '0.75rem 1rem',
-      overflowX: 'auto',
-      fontSize: '0.82rem',
-      lineHeight: 1.6,
-      margin: '0.5rem 0',
-      fontFamily: '"SF Mono", "Fira Code", "Cascadia Code", monospace',
-    }}>
-      {children}
-    </pre>
-  ),
-  // Block quotes
-  blockquote: ({ children }: MarkdownChildrenProps) => (
-    <blockquote style={{
-      borderLeft: '3px solid rgba(167,139,250,0.4)',
-      paddingLeft: '0.75rem',
-      margin: '0.5rem 0',
-      color: '#8b949e',
-      fontStyle: 'italic',
-    }}>
-      {children}
-    </blockquote>
-  ),
-  // Tables (GFM)
   table: ({ children }: MarkdownChildrenProps) => (
-    <div style={{ overflowX: 'auto', margin: '0.5rem 0' }}>
-      <table style={{ borderCollapse: 'collapse', fontSize: '0.82rem', width: '100%' }}>{children}</table>
-    </div>
+    <div className="message-table-scroll"><table>{children}</table></div>
   ),
-  th: ({ children }: MarkdownChildrenProps) => (
-    <th style={{ border: '1px solid #30363d', padding: '6px 10px', background: '#161b22', color: '#e6edf3', fontWeight: 600, textAlign: 'left' }}>{children}</th>
-  ),
-  td: ({ children }: MarkdownChildrenProps) => (
-    <td style={{ border: '1px solid #21262d', padding: '6px 10px', color: '#8b949e' }}>{children}</td>
-  ),
-  // Horizontal rule
-  hr: () => <hr style={{ border: 'none', borderTop: '1px solid #21262d', margin: '0.75rem 0' }} />,
-  // Links
   a: ({ href, children }: MarkdownAnchorProps) => (
-    <a href={href} style={{ color: '#60a5fa', textDecoration: 'none' }} target="_blank" rel="noopener noreferrer">{children}</a>
+    <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
   ),
-  // Model-authored remote images can act as tracking pixels. This text-only
-  // study UI intentionally does not fetch them.
+  // Model-authored remote images can act as tracking pixels. Keep this study
+  // interface text-only so reading an answer never fetches those images.
   img: ({ alt }: MarkdownImageProps) => (
-    <span style={{ color: '#6e7681', fontStyle: 'italic' }}>[Image omitted{alt ? `: ${alt}` : ''}]</span>
+    <span className="message-image-omitted">[Image omitted{alt ? `: ${alt}` : ''}]</span>
   ),
 };
 
@@ -194,7 +112,7 @@ function remarkBookCitationLabels() {
 function MessageContent({ content, isAssistant }: { content: string; isAssistant: boolean }) {
   const segments = splitLatex(content);
   return (
-    <>
+    <div className="message-markdown">
       {segments.map((seg, i) => {
         if (seg.type === 'block-math') return <BlockMath key={i} math={seg.value} />;
         if (seg.type === 'inline-math') return <InlineMath key={i} math={seg.value} />;
@@ -204,7 +122,7 @@ function MessageContent({ content, isAssistant }: { content: string; isAssistant
           </ReactMarkdown>
         );
       })}
-    </>
+    </div>
   );
 }
 
@@ -289,13 +207,10 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
         if (nearBottom(list)) setHasNewContent(false);
       }}>
       {messages.length === 0 && !liveActivity && (
-        <div style={{
-          color: '#6e7681',
-          fontSize: '0.875rem',
-          textAlign: 'center',
-          marginTop: '2rem',
-        }}>
-          Ask a question about AI Engineering…
+        <div className="message-empty">
+          <h2>What would you like to understand?</h2>
+          <p>Ask a question about AI Engineering…</p>
+          <p>Inspect the generated architecture to see how its components work together.</p>
         </div>
       )}
 
@@ -306,12 +221,8 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
               liveActivity={msg.id === liveOwnerId ? liveActivity ?? undefined : undefined} /> : null,
         <div
           key={msg.id}
-          className="message-row"
+          className={`message-row message-row--${msg.role}`}
           data-testid={`message-${msg.role}`}
-          style={{
-            display: 'flex',
-            justifyContent: msg.role === 'user' ? 'flex-end' : 'flex-start',
-          }}
         >
           <div className={msg.role === 'user' ? 'message-user' : 'message-assistant'}>
             {msg.kind === 'explanation' && msg.title && (
@@ -324,21 +235,12 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
             {msg.role === 'assistant' && msg.retryRequest && onRetryMessage && (
               <button className="message-retry" type="button" disabled={retryDisabled || retryingMessageId === msg.id}
                 onClick={() => onRetryMessage(msg)}>
-                <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M20 11a8 8 0 1 1-2.3-5.7M20 4v6h-6" /></svg>
+                <ArrowClockwise size={17} aria-hidden="true" />
                 <span>{retryingMessageId === msg.id ? 'Retrying…' : 'Retry generation'}</span>
               </button>
             )}
             {msg.isStreaming && (
-              <span style={{
-                display: 'inline-block',
-                width: '8px',
-                height: '12px',
-                background: '#a78bfa',
-                borderRadius: '1px',
-                marginLeft: '2px',
-                verticalAlign: 'text-bottom',
-                animation: 'blink 1s step-end infinite',
-              }} />
+              <span className="message-streaming-cursor" aria-hidden="true" />
             )}
           </div>
         </div>
@@ -347,7 +249,7 @@ export function MessageList({ messages, liveActivity = null, revisionIds = [], v
             activity={liveActivity.activity} liveActivity={liveActivity} />] : [])}
     </div>
     {hasNewContent && <button className="message-jump" aria-label="Jump to latest" title="Jump to latest" onClick={jumpToLatest}>
-      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4v16m-6-6 6 6 6-6" /></svg>
+      <ArrowDown size={18} aria-hidden="true" />
     </button>}
     </div>
   );

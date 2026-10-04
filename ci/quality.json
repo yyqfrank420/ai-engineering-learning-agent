@@ -299,17 +299,10 @@
   },
   "impact": {
     "documentation": [
-      "AGENTS.md", "CLAUDE.md", "PRODUCT.md", "README.md", "plan.md",
+      "AGENTS.md", "CLAUDE.md", "PRODUCT.md", "DESIGN.md", "README.md", "plan.md",
       "docs/**", ".cursor/**", "infra/terraform/gcp/README.md"
     ],
     "reviewed_presentation_changes": [
-      {
-        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
-        "before_blob": "71f61787daf79fcc28e4bc53396c75a516f72cec",
-        "after_blob": "b1083d56fee0ac6b411ca76737d2cb4ce2aeb2d3",
-        "reason": "Style compact connection disclosures and a muted header Edit control within the interactive node inspector; graph rendering and capture styles are unchanged.",
-        "verification": "docs/verification/2026-09-29-pane-view-default.md"
-      },
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.tsx",
         "before_blob": "697686d56e3073b94a4b7ebc52dc425291ceb8c7",
@@ -330,13 +323,6 @@
         "after_blob": "cb03c4bcbb9aeca16eef6366d05f3beaa518ae33",
         "reason": "Extend the interactive navigation router with optional rendered zone obstacles. Connection projection, persisted graph records and the private renderer are unchanged.",
         "verification": "docs/verification/2026-10-04-zone-routing.md"
-      },
-      {
-        "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "dba4caa11d03dcc1e472d92403312509a4952aa2",
-        "after_blob": "8dd214987014f83406989165610bae073ff34f5e",
-        "reason": "Reset pristine node inspectors on normal selection, rebind pane measurements and pass peer labels to the detail view; preserve dirty drafts and existing save/generation protocols.",
-        "verification": "docs/verification/2026-09-29-pane-view-default.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphGenerationStatus.tsx",
@@ -360,27 +346,6 @@
         "verification": "docs/verification/2026-09-28-quiet-generation.md"
       },
       {
-        "path": "frontend/src/components/GraphCanvas/D3Graph.css",
-        "before_blob": "7a21c2ec3ea8793126f97af9962e916231825b28",
-        "after_blob": "4b92a8f81e867e6f7515b22874b48e76588cbfbd",
-        "reason": "Size connection details text buttons to their labels while preserving the fixed close button and scrollable list.",
-        "verification": "docs/editor-sizing-verification.md"
-      },
-      {
-        "path": "frontend/src/App.tsx",
-        "before_blob": "fbb4c1c7ff6d33baed69311a5fb6591611aeeb96",
-        "after_blob": "c91c5a89fc2b529278662455adf6658a8bea3931",
-        "reason": "Remove the unused startup percentage prop; generation behavior is unchanged.",
-        "verification": "docs/verification/2026-09-28-startup-status.md"
-      },
-      {
-        "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
-        "before_blob": "ce1d385b820f158a7ad6d11f75ae5cd1cfa27d59",
-        "after_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
-        "reason": "Show readiness-specific sidebar copy; history fetch and thread controls retain the same ready-state predicate.",
-        "verification": "docs/verification/2026-09-28-automatic-readiness.md"
-      },
-      {
         "path": "frontend/src/hooks/useBackendReadiness.ts",
         "before_blob": "45ea444c61ea4c9818143663acea705ca6c07505",
         "after_blob": "a47bc08f43ba5dcd84b310e5066ce5a2b10de30d",
@@ -393,6 +358,90 @@
         "after_blob": "ab6f1f67b68888dd9a79facc7f72657c7a9f9533",
         "reason": "Forward an optional AbortSignal only to GET /api/prepare so workspace cleanup can cancel startup checks; all other endpoints are unchanged.",
         "verification": "docs/verification/2026-09-28-automatic-readiness.md"
+      },
+      {
+        "path": "frontend/index.html",
+        "before_blob": "57e65ff25fff86f7145684d8a72587d223b6a78f",
+        "after_blob": "bc60b29433b743527463e158d4f074f44497b9f4",
+        "reason": "Add only the browser theme-color meta tag; scripts, entry points and request configuration are unchanged.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/package.json",
+        "before_blob": "97033ef24eb73cb3ca700ff21762d818b086c730",
+        "after_blob": "2578adff7c25d7ba8262d5fed49cbfce6ace09a0",
+        "reason": "Add only self-hosted Geist 5.3.0 and Phosphor 2.1.10 presentation dependencies. Existing versions, scripts and other fields are unchanged; full frontend coverage, production build and npm audit passed.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/package-lock.json",
+        "before_blob": "a256854f1ed8049c09aecfe8d0455eb991cb7be4",
+        "after_blob": "6be159dce5d130edb02d53fe996296b6bd0afe29",
+        "reason": "Add only the two reviewed presentation packages and their root declarations. Existing package records, integrity values and scripts are unchanged; neither addition has an install script.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/App.tsx",
+        "before_blob": "aad27e009dc89acca804bed093256177f315f110",
+        "after_blob": "cd34e6baa969cff0d600696eed69f8b80ef4131a",
+        "reason": "Scope visible workspace styling, sign-out focus isolation and a workspace skip link; preserve generation, transport, candidate evaluation and workspace callback logic.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/Auth/AuthScreen.tsx",
+        "before_blob": "fa4297afee52af44c597bf1d1664498e78f20243",
+        "after_blob": "9c82f1d1163b4c7551744f8372a34c61c873e018",
+        "reason": "Improve sign-in markup, labels, native form submission and styling while preserving guarded Google, OTP and Turnstile service operations.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/Chat/ContextBar.tsx",
+        "before_blob": "45d289053ee2efc5d332db13f4c134526de741f0",
+        "after_blob": "a6d6ed9cb4f30a86270e0f6b78e1615988111081",
+        "reason": "Replace inline appearance with scoped classes and labeled Phosphor controls; selected component suggestions and action callbacks are unchanged.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/Chat/MessageList.tsx",
+        "before_blob": "9998f054508a5525bfdce853d77d73e396ebecf3",
+        "after_blob": "72fd35e9fd9594e59fde28e4632849bd6293870f",
+        "reason": "Move Markdown appearance to scoped styles and improve the empty state and icons; preserve math, citations, image blocking, history, retries and scroll behavior.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/D3Graph.css",
+        "before_blob": "4b92a8f81e867e6f7515b22874b48e76588cbfbd",
+        "after_blob": "803349e8795d4c896aa8b4ea1e9774e74bad89d3",
+        "reason": "Style the interactive toolbar and connection details. Private SVG geometry and typography remain unchanged; fixed-candidate reports, text metrics and settled SVGs match before and after.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/GraphCanvas.css",
+        "before_blob": "0000000000000000000000000000000000000000",
+        "after_blob": "d2e9f335095ddef31bf09b138b34d1fde783cf13",
+        "reason": "Add scoped public canvas header, empty-state and wrapper presentation. The private evaluator does not use these classes; fixed-candidate output remains unchanged.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
+        "before_blob": "b1083d56fee0ac6b411ca76737d2cb4ce2aeb2d3",
+        "after_blob": "3ac419fbc571e7971e8ae2538a8ea3243a977339",
+        "reason": "Improve the public inspector typography, surfaces and controls; no private evaluation, content-edit protocol or diagram geometry changes.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/index.tsx",
+        "before_blob": "4dd45c6d085ad4e961f0f141540651fe7f94568c",
+        "after_blob": "635296df1236277017fed06aa20508e36e00d622",
+        "reason": "Style the public canvas header, empty state and layout error controls; preserve editing, persistence, history, walkthrough and private evaluation operations.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
+      },
+      {
+        "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
+        "before_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
+        "after_blob": "f4a1433776488d9396dbf6fdaa37bdbcc3b56532",
+        "reason": "Style history navigation and improve delete-dialog focus and placement; history requests, readiness predicates and thread callbacks retain their protocols.",
+        "verification": "docs/verification/2026-10-04-frontend-design.md"
       }
     ],
     "non_generation": [

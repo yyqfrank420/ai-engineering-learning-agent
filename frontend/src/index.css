@@ -1,39 +1,52 @@
-/* ── Font ─────────────────────────────────────────────────────────────────── */
+@import '@fontsource-variable/geist';
+
+/* Operating workspace: charcoal surfaces, violet controls, content-led hierarchy. */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
-/* ── Design tokens ────────────────────────────────────────────────────────── */
 :root {
-  /* Backgrounds */
-  --bg-base:    #0d1117;
-  --bg-panel:   #161b22;
-  --bg-overlay: #1c2128;
-
-  /* Borders */
-  --border-subtle:  #21262d;
-  --border-default: #30363d;
-
-  /* Text */
-  --text-primary:   #e6edf3;
-  --text-secondary: #8b949e;
-  --text-tertiary:  #6e7681;
-
-  /* Accent (violet-blue) */
-  --accent-violet: #a78bfa;
-  --accent-blue:   #60a5fa;
-  --accent-grad:   linear-gradient(135deg, #a78bfa, #60a5fa);
-
-  /* Status */
-  --status-green:  #3fb950;
-  --status-yellow: #d29922;
-  --status-red:    #f85149;
+  color-scheme: dark;
+  --bg-base: #10141b;
+  --bg-panel: #171d26;
+  --bg-overlay: #222b37;
+  --bg-inset: #12171f;
+  --border-subtle: #28313e;
+  --border-default: #3c485a;
+  --text-primary: #eef2f7;
+  --text-secondary: #b1bdcc;
+  --text-tertiary: #96a3b5;
+  --accent: #b7a2fa;
+  --accent-muted: rgba(183, 162, 250, 0.1);
+  --accent-border: rgba(183, 162, 250, 0.35);
+  --accent-contrast: #21163e;
+  --accent-violet: var(--accent);
+  --status-green: #73d39a;
+  --status-red: #ff9997;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --font-sans: 'Geist Variable', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
 }
+
+html, body, #root { height: 100%; }
+#root { height: 100dvh; }
+
 
 body {
   background: var(--bg-base);
   color: var(--text-primary);
+  /* Private diagram evaluation inherits body typography for SVG measurements. */
   font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   overflow: hidden;
 }
+
+button, input, textarea, select { font-family: inherit; }
+button, a, summary { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+button:disabled { cursor: not-allowed; }
+textarea { caret-color: var(--accent); }
+textarea::placeholder { color: var(--text-tertiary); opacity: 1; }
+h1, h2, h3 { text-wrap: balance; }
 
 /* ── Cursor blink for streaming messages ──────────────────────────────────── */
 @keyframes blink {
@@ -64,37 +77,11 @@ body {
 ::-webkit-scrollbar-thumb { background: var(--border-default); border-radius: 2px; }
 
 /* ── Text selection ───────────────────────────────────────────────────────── */
-::selection { background: rgba(167, 139, 250, 0.2); }
+::selection { background: var(--accent-muted); }
 
 /* The sidebar stays mounted while closed; keep its controls out of tab order. */
 .thread-sidebar--closed {
   visibility: hidden;
-}
-
-.thread-sidebar button[aria-label^="Delete chat"]:focus-visible {
-  opacity: 1 !important;
-}
-
-.title-bar__product,
-.title-bar__book,
-.title-bar__identity > button {
-  flex-shrink: 0;
-}
-
-.title-bar__product {
-  white-space: nowrap;
-}
-
-.title-bar__status span {
-  color: var(--text-secondary) !important;
-}
-
-/* Components use inline styles. These overrides are scoped to chat chrome. */
-.title-bar button:focus-visible,
-.thread-sidebar button:focus-visible,
-.split-pane__conversation :is(button, textarea, a, [role="radio"], [role="switch"]):focus-visible {
-  outline: 2px solid var(--accent-violet) !important;
-  outline-offset: 2px;
 }
 
 .split-pane__conversation textarea {
@@ -110,6 +97,7 @@ body {
   content: '';
   position: absolute;
   inset: 0 4px;
+  opacity: 0.7;
   background: var(--border-default);
 }
 
@@ -128,204 +116,45 @@ body {
   outline-offset: -2px;
 }
 
-.split-pane__conversation [data-testid^="message-"] {
-  width: 100%;
-  max-width: 56rem;
-  margin-inline: auto;
-}
-
-.split-pane__conversation [data-testid^="message-"] > div {
-  min-width: 0;
-  max-width: min(90%, 72ch) !important;
-  overflow-wrap: anywhere;
-  color: #c9d1d9 !important;
-}
-
-.split-pane__conversation [data-testid^="message-"] a {
-  text-decoration: underline !important;
-  text-underline-offset: 3px;
-}
-
-.split-pane__conversation [data-testid^="message-"] table {
-  overflow-wrap: normal;
-}
-
-/* Anchor the options panel inside the conversation, including narrow panes. */
-.split-pane__conversation div:has(> div > div > [role="radiogroup"][aria-label="complexity"]) {
-  right: 1rem;
-}
-
-.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) {
-  max-width: 100%;
-  background: var(--bg-panel) !important;
-}
-
-.split-pane__conversation div:has(> [role="radiogroup"]) {
-  flex-direction: column;
-  align-items: stretch !important;
-  gap: 6px !important;
-}
-
-.split-pane__conversation div:has(> [role="radiogroup"]) > span,
-.split-pane__conversation div:has(> [role="switch"]) > div > :is(span, div),
-.split-pane__conversation div:has(> div > [role="radiogroup"][aria-label="complexity"]) > div:not(:has([role])) {
-  color: #a6b0bc !important;
-  font-size: 0.7rem !important;
-}
-
-.split-pane__conversation [role="radiogroup"] > span {
-  flex: 1;
-}
-
-.split-pane__conversation [role="radio"] {
-  min-height: 32px;
-  display: grid;
-  place-items: center;
-  font-size: 0.75rem !important;
-}
-
-.split-pane__conversation [role="radio"][aria-checked="false"] {
-  color: #a6b0bc !important;
-}
-
-.split-pane__conversation [role="radio"]:focus-visible {
-  outline-offset: -2px;
-}
-
-/* AuthScreen has no class hook; the email field identifies its fixed overlay. */
-#root > div > div:has(input[autocomplete="email"]) {
-  overflow-y: auto;
-  align-items: safe center !important;
-}
-
-#root > div > div:has(input[autocomplete="email"]) > div {
-  flex-shrink: 0;
-}
-
-/* The blurred signed-out preview must not receive keyboard focus. */
-#root > div > div:has(input[autocomplete="email"]) ~ div {
-  visibility: hidden;
-}
-
-#root > div > div:has(input[autocomplete="email"]) button:disabled {
-  opacity: 0.45 !important;
-  cursor: not-allowed !important;
-}
-
-#root > div > div:has(input[autocomplete="email"]) > div > p {
-  color: var(--text-secondary) !important;
-  overflow-wrap: anywhere;
-}
-
-@media (pointer: coarse) {
-  .thread-sidebar button[aria-label^="Delete chat"] {
-    opacity: 1 !important;
-    width: 32px !important;
-    height: 32px !important;
-  }
-}
-
 /* ── Focus ring (keyboard nav) ────────────────────────────────────────────── */
 :focus-visible {
-  outline: 2px solid rgba(167, 139, 250, 0.4);
+  outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
 
-/* ── Responsive application shell ────────────────────────────────────────── */
-@media (max-width: 1023px) {
-  .title-bar {
-    padding-inline: 0.6rem !important;
-    gap: 0.5rem;
-  }
+/* The graph remains interactive in the existing stacked layout. */
+.split-pane { min-width: 0; min-height: 0; }
+.split-pane__conversation { background: var(--bg-panel); }
+.split-pane__graph { background: var(--bg-base); }
 
-  .title-bar__identity,
-  .title-bar__actions {
-    gap: 0.5rem !important;
-  }
-
-  .title-bar__book,
-  .title-bar__thread,
-  .title-bar__email {
-    display: none !important;
-  }
-
-  .title-bar__provider {
-    max-width: 9rem;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .thread-sidebar {
-    position: fixed !important;
-    top: 48px;
-    bottom: 0;
-    left: 0;
-    z-index: 30;
-    max-width: min(82vw, 300px);
-    box-shadow: 18px 0 48px rgba(0, 0, 0, 0.5) !important;
-    transition: width 0.22s ease, transform 0.22s ease !important;
-  }
-
-  .thread-sidebar--open {
-    width: min(82vw, 300px) !important;
-    transform: translateX(0);
-  }
-
-  .thread-sidebar--closed {
-    width: 0 !important;
-    transform: translateX(-100%);
-    pointer-events: none;
-  }
-
-  .thread-sidebar__inner {
-    width: min(82vw, 300px) !important;
-  }
+.app-shell { position: relative; height: 100%; overflow: hidden; }
+.app-workspace {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 15px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
-
-@media (max-width: 520px) {
-  .split-pane__conversation textarea,
-  input[autocomplete="email"] {
-    font-size: 1rem !important;
-  }
-
-  .split-pane__conversation textarea,
-  .split-pane__conversation button[aria-label="Message options"],
-  .split-pane__conversation button[aria-label="Send message"],
-  .split-pane__conversation button[aria-label="Prepare backend"],
-  .split-pane__conversation button[aria-label="Stop generation"] {
-    min-height: 44px !important;
-  }
-
-  .title-bar__product {
-    font-size: 0.82rem !important;
-  }
-
-  .title-bar__actions {
-    gap: 0.35rem !important;
-  }
-
-  .title-bar__status span,
-  .title-bar__provider,
-  .title-bar__dashboard {
-    display: none !important;
-  }
-
-  .title-bar__logout {
-    padding-inline: 0.55rem !important;
-  }
+.app-workspace[aria-hidden="true"] { visibility: hidden; }
+.app-workspace__main { display: flex; flex: 1; min-height: 0; overflow: hidden; }
+.app-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 16px;
+  z-index: 100;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  background: var(--accent);
+  color: var(--accent-contrast);
+  font-size: 13px;
+  transform: translateY(-150%);
 }
+.app-skip-link:focus { transform: translateY(0); }
 
-/* ── Auth screen entrance ─────────────────────────────────────────────────── */
-@keyframes authFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-@keyframes authSlideUp {
-  from { opacity: 0; transform: translateY(16px) scale(0.98); }
-  to   { opacity: 1; transform: translateY(0)    scale(1);    }
-}
 
 /* ── Reduced motion — disable all animations for users who request it ─────── */
 @media (prefers-reduced-motion: reduce) {

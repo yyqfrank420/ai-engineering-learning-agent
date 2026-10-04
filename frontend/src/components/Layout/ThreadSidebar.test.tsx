@@ -137,4 +137,49 @@ describe('ThreadSidebar active-work protection', () => {
     await act(async () => finishOldRequest([]));
     expect(screen.getByRole('button', { name: 'Open chat Support architecture' })).toBeTruthy();
   });
+
+  it('focuses cancellation and returns focus to the delete trigger on Escape', async () => {
+    renderSidebar(false);
+    const trigger = await screen.findByRole('button', { name: 'Delete chat Support architecture' });
+    trigger.focus();
+    fireEvent.click(trigger, { detail: 0 });
+    const popup = screen.getByRole('dialog', { name: 'Permanently delete this chat?' });
+    const cancel = screen.getByRole('button', { name: 'Cancel deletion' });
+    expect(document.activeElement).toBe(cancel);
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.keyDown(cancel, { key: 'Tab' });
+    expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Yes' }));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    expect(document.activeElement).toBe(cancel);
+    fireEvent.keyDown(popup, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(mocks.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it('returns focus to the trigger when cancellation is selected', async () => {
+    renderSidebar(false);
+    const trigger = await screen.findByRole('button', { name: 'Delete chat Support architecture' });
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel deletion' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(mocks.deleteThread).not.toHaveBeenCalled();
+  });
+
+  it('makes closed history inert and marks the selected chat', async () => {
+    const props = { authSession: session, activeThreadId: thread.id, backendReadiness: 'ready' as const,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
+    const view = render(<ThreadSidebar {...props} />);
+    const selected = await screen.findByRole('button', { name: 'Open chat Support architecture' });
+    expect(selected.getAttribute('aria-current')).toBe('page');
+    view.rerender(<ThreadSidebar {...props} isOpen={false} />);
+    const history = view.container.querySelector('#chat-history');
+    expect(history?.getAttribute('aria-hidden')).toBe('true');
+    expect(history?.hasAttribute('inert')).toBe(true);
+    expect(screen.queryByRole('button', { name: 'New chat' })).toBeNull();
+  });
+
 });

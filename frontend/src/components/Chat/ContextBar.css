@@ -1,0 +1,95 @@
+.context-bar {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--border-subtle);
+  background: var(--bg-panel);
+}
+
+.context-bar__selection {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.context-bar__node {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+}
+
+.context-bar__node svg { flex-shrink: 0; }
+.context-bar__node span { overflow-wrap: anywhere; }
+
+.context-bar__dismiss {
+  display: grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.context-bar__suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.context-bar__suggestion {
+  min-width: 0;
+  max-width: 100%;
+  min-height: 36px;
+  padding: 7px 11px;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-sm);
+  background: var(--bg-overlay);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: pointer;
+}
+
+.context-bar__dismiss,
+.context-bar__suggestion {
+  transition: background-color 140ms var(--ease-out), border-color 140ms var(--ease-out), color 140ms var(--ease-out);
+}
+
+.context-bar button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .context-bar__dismiss:hover {
+    background: var(--bg-overlay);
+    color: var(--text-primary);
+  }
+
+  .context-bar__suggestion:hover {
+    background: var(--accent-muted);
+    border-color: var(--accent-border);
+    color: var(--text-primary);
+  }
+}
+
+@media (max-width: 640px) {
+  .context-bar { padding: 10px 14px; }
+}
