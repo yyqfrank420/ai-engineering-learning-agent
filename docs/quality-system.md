@@ -191,17 +191,22 @@ The PR suite contains eight journeys: grounded RAG, memory, education, research,
 node follow-up, graph expansion, an applied domain, and prompt injection. Empty and
 oversized input stay in deterministic API tests and spend no model calls.
 
-The education journey replaces the removed graph-off control journey. The seven
-graph-bearing turns need four batches at the two-case graph concurrency limit.
-Four 970-second turn deadlines plus 180 seconds of setup require 4,060 seconds;
-the browser suite cap is 4,200 seconds. The application attempt cap stays at 78.
-The 11 PR turns each validate input at diagram-intent and chat submission, adding
-22 sanitation calls to the 42 core first-pass calls. A healthy first pass uses
-64 calls and leaves 14 provider attempts for repairs or retries. The full hypothetical
-repair envelope uses 92 logical calls and reaches 100 provider attempts with adapter
-retries and fallbacks. It exceeds the hard cap; the quota denies attempt 79 before
-dispatch, so excessive repair or retry work fails the run. Judge calls remain capped
-at 16; infrastructure retries stay disabled. These are ceilings, not target spending.
+The education journey replaces the removed graph-off control journey. The PR
+corpus contains 11 turns. Each turn checks input at diagram-intent and chat
+submission. A completed verdict can be reused for 30 seconds within the same
+process when the authenticated user, thread, exact classifier payload, model, and
+prompt match. Changed inputs, expired entries, and requests reaching another
+process require a fresh check. This reuse does not guarantee a cache hit.
+
+The application attempt cap stays at 78 and includes input classification,
+generation, paid search, repairs, retries, and fallbacks. There is no fixed
+successful-path call total or guaranteed repair allowance. In failed run
+`37240990845`, the quota recorded 78 attempts: 22 input classification calls and
+56 core/search calls. Nine paid search calls, five logical generation/gate repairs,
+and two service planning calls contributed work omitted from the old first-pass
+estimate. These counts describe that run; they are not future bounds. The quota
+rejects attempt 79 before dispatch. Judge calls remain capped at 16;
+infrastructure retries stay disabled. The browser suite cap is 4,200 seconds.
 The staging job allows 100 minutes: 70 for browser work, 20 for semantic review,
 and 10 for setup and evidence upload.
 
@@ -332,15 +337,13 @@ required check and image approval require complete validated coverage under that
 policy. A new paid attempt requires explicit operator authorization.
 
 PR evaluation limits are eight cases, 78 application provider attempts, and 16
-judge provider attempts. The current PR corpus has 64 first-pass calls, including
-22 input sanitation calls across 11 turns, and leaves 14 provider attempts for repair
-and retry work. Its full hypothetical repair envelope reaches 92 logical calls and
-100 provider attempts with retries and fallbacks. The 78-attempt cap does not allow
-that full envelope to complete. The tagged staging revision atomically reserves one
-shared quota record before each provider request and rejects attempt 79 before it
-is sent. Excessive repair, retry, or failed-turn recovery can exhaust this quota and
-fail the run. Production traffic does not set this
-evaluation-only quota. The timeout chain is deliberately nested: the backend
+judge provider attempts. Input checks and core/search work share the application
+quota. Completed input verdict reuse can reduce repeated classification, but its
+process and input scope make cache misses possible. The tagged staging revision
+atomically reserves one shared quota record before each provider request and
+rejects attempt 79 before dispatch. Repairs, retries, paid search, or failed-turn
+recovery can exhaust this quota and fail the run. Production traffic does not set
+this evaluation-only quota. The timeout chain is deliberately nested: the backend
 agent envelope is 940 seconds, with model work stopping at 910 seconds to retain persistence
 headroom. The Playwright turn waits at most 970 seconds so it can capture the typed terminal event,
 and Cloud Run accepts a request for at most 1000

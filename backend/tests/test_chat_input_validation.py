@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import json
 from unittest.mock import AsyncMock
@@ -25,6 +26,7 @@ def _response(text='{"verdict":"ACCEPT"}', finish_reason="end_turn"):
 
 @pytest.fixture
 def classify(monkeypatch):
+    monkeypatch.setattr(chat_guards, "_INPUT_VERDICT_CACHE", chat_guards.OrderedDict())
     model = AsyncMock(return_value=_response())
     monkeypatch.setattr(chat_guards, "stream_structured_llm", model)
     monkeypatch.setattr(chat_guards, "check_prompt_injection", _REAL_SCANNER)
@@ -371,3 +373,397 @@ async def test_semantic_security_rejects_attack_below_scanner_threshold(classify
         == chat_guards._INPUT_SECURITY_ERROR
     )
     classify.assert_awaited_once()
+
+
+@pytest.mark.parametrize("verdict", ["ACCEPT", "OFF_TOPIC", "UNSAFE", "refusal"])
+async def test_completed_verdict_reused_for_exact_authenticated_context(
+    classify, verdict
+):
+    classify.return_value = (
+        _response("", finish_reason="refusal")
+        if verdict == "refusal"
+        else _response(json.dumps({"verdict": verdict}))
+    )
+    expected = chat_guards._INPUT_VERDICT_ERRORS[
+        "UNSAFE" if verdict == "refusal" else verdict
+    ]
+    for request_id in ["preflight", "chat"]:
+        assert (
+            await chat_guards.chat_input_error(
+                "RAG architecture",
+                [],
+                user_id="user",
+                thread_id="thread",
+                request_id=request_id,
+            )
+            == expected
+        )
+    classify.assert_awaited_once()
+    assert len(chat_guards._INPUT_VERDICT_CACHE) == 1
+    assert all(
+        len(key) == 64 and key.isalnum() for key in chat_guards._INPUT_VERDICT_CACHE
+    )
+    assert "RAG architecture" not in repr(chat_guards._INPUT_VERDICT_CACHE)
+
+
+@pytest.mark.parametrize(
+    "user_id, thread_id", [(None, "thread"), ("user", None), (None, None)]
+)
+async def test_reuse_disabled_without_complete_authenticated_scope(
+    classify, user_id, thread_id
+):
+    for _ in range(2):
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id=user_id, thread_id=thread_id
+        )
+    assert classify.await_count == 2
+    assert not chat_guards._INPUT_VERDICT_CACHE
+
+
+@pytest.mark.parametrize(
+    "dimension",
+    ["user", "thread", "text", "history", "model", "prompt", "version", "highlight"],
+)
+async def test_cache_isolates_all_classifier_inputs(classify, monkeypatch, dimension):
+    text = _highlighted("Explain evaluation", "RAG")
+    kwargs = {"user_id": "user", "thread_id": "thread"}
+    history = []
+    await chat_guards.chat_input_error(text, history, **kwargs)
+    if dimension in {"user", "thread"}:
+        kwargs[f"{dimension}_id"] = "other"
+    elif dimension == "text":
+        text = _highlighted("Explain deployment", "RAG")
+    elif dimension == "history":
+        history = [{"role": "user", "content": "Design a different AI system"}]
+    elif dimension == "model":
+        monkeypatch.setattr(chat_guards.settings, "orchestrator_model", "other-model")
+    elif dimension == "prompt":
+        monkeypatch.setattr(chat_guards, "_INPUT_SANITATION_SHA256", "other-prompt")
+    elif dimension == "version":
+        monkeypatch.setattr(chat_guards, "_INPUT_SANITATION_VERSION", "other-version")
+    elif dimension == "highlight":
+        text = _highlighted("Explain evaluation", "LLM deployment")
+    await chat_guards.chat_input_error(text, history, **kwargs)
+    assert classify.await_count == 2
+
+
+async def test_cache_ttl_anchored_to_guard_entry_and_hits_do_not_extend_it(
+    classify, monkeypatch
+):
+    clock = [100.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+
+    async def complete(**kwargs):
+        clock[0] += 10
+        return _response()
+
+    classify.side_effect = complete
+    await chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    assert next(iter(chat_guards._INPUT_VERDICT_CACHE.values()))[0] == 130
+    clock[0] = 129.9
+    await chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    classify.assert_awaited_once()
+    clock[0] = 130
+    await chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    assert classify.await_count == 2
+
+
+@pytest.mark.parametrize("failure", ["provider", "malformed", "incomplete"])
+async def test_failures_are_never_cached(classify, failure):
+    if failure == "provider":
+        classify.side_effect = RuntimeError("unavailable")
+    else:
+        classify.return_value = _response(
+            "invalid" if failure == "malformed" else '{"verdict":"ACCEPT"}',
+            "max_tokens" if failure == "incomplete" else "end_turn",
+        )
+    for _ in range(2):
+        assert (
+            await chat_guards.chat_input_error(
+                "RAG", [], user_id="user", thread_id="thread"
+            )
+            == chat_guards._INPUT_VALIDATION_ERROR
+        )
+    assert classify.await_count == 2
+    assert not chat_guards._INPUT_VERDICT_CACHE
+
+
+async def test_scanner_runs_before_cache_lookup(classify, monkeypatch):
+    await chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    monkeypatch.setattr(chat_guards, "check_prompt_injection", lambda text: False)
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        == chat_guards._INPUT_SECURITY_ERROR
+    )
+    classify.assert_awaited_once()
+
+
+async def test_cache_capacity_and_expired_entry_eviction(classify, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+    for index in range(257):
+        await chat_guards.chat_input_error(
+            f"RAG {index}", [], user_id="user", thread_id="thread"
+        )
+    assert len(chat_guards._INPUT_VERDICT_CACHE) == 256
+    await chat_guards.chat_input_error("RAG 0", [], user_id="user", thread_id="thread")
+    assert classify.await_count == 258
+    clock[0] = 30
+    await chat_guards.chat_input_error(
+        "RAG fresh", [], user_id="user", thread_id="thread"
+    )
+    assert len(chat_guards._INPUT_VERDICT_CACHE) == 1
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [("UNSAFE", "ACCEPT"), ("OFF_TOPIC", "ACCEPT"), ("ACCEPT", "UNSAFE")],
+)
+async def test_concurrent_completed_verdicts_merge_conservatively(
+    classify, first, second
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def complete(**kwargs):
+        if classify.await_count == 1:
+            started.set()
+            await release.wait()
+            return _response(json.dumps({"verdict": second}))
+        return _response(json.dumps({"verdict": first}))
+
+    classify.side_effect = complete
+    pending = asyncio.create_task(
+        chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    )
+    await started.wait()
+    immediate = await chat_guards.chat_input_error(
+        "RAG", [], user_id="user", thread_id="thread"
+    )
+    release.set()
+    merged = await pending
+    expected = max((first, second), key=chat_guards._INPUT_VERDICT_PRIORITY.__getitem__)
+    assert immediate == chat_guards._INPUT_VERDICT_ERRORS[first]
+    assert merged == chat_guards._INPUT_VERDICT_ERRORS[expected]
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        == chat_guards._INPUT_VERDICT_ERRORS[expected]
+    )
+    assert classify.await_count == 2
+
+
+@pytest.mark.parametrize("transport", ["sse", "websocket"])
+@pytest.mark.parametrize("verdict", ["ACCEPT", "OFF_TOPIC"])
+@pytest.mark.parametrize("changed_history", [False, True])
+def test_diagram_preflight_then_chat_reuses_only_matching_context(
+    classify, temp_data_dir, monkeypatch, transport, verdict, changed_history
+):
+    from fastapi.testclient import TestClient
+    from adapters.database_adapter import init_db
+    from adapters.supabase_auth_adapter import get_current_user
+    from api import chat_websocket, sse_handler, thread_route
+    from main import create_app
+    from storage import message_store, thread_store
+    from storage.profile_store import upsert_profile
+
+    init_db()
+    user = {"id": "input-cache-user", "email": "cache@example.com"}
+    upsert_profile(user["id"], user["email"])
+    thread = thread_store.create_thread(user["id"])
+    app = create_app(load_resources=False)
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.state.vectorstore = object()
+    app.state.parent_docs = [{"page_content": "AI engineering"}]
+    monkeypatch.setattr(chat_websocket, "get_current_user", lambda authorization: user)
+    for module in (thread_route, sse_handler, chat_websocket):
+        monkeypatch.setattr(module, "chat_input_error", chat_guards.chat_input_error)
+    classify.return_value = _response(json.dumps({"verdict": verdict}))
+    core_calls = []
+
+    def tools(request):
+        if verdict != "ACCEPT":
+            raise AssertionError("Rejected preflight input reached tools")
+        return [], [], []
+
+    async def core(state, *tools):
+        core_calls.append(state["user_message"])
+        await state["send"]({"type": "response_delta", "content": "Accepted answer"})
+        await state["send"]({"type": "done"})
+        return {**state, "response_text": "Accepted answer", "graph_data": None}
+
+    for module in (sse_handler, chat_websocket):
+        monkeypatch.setattr(module, "_make_agent_tools", tools)
+        monkeypatch.setattr(module, "run_agent", core)
+    text = (
+        "Explain RAG evaluation" if verdict == "ACCEPT" else "Dinner suggestions please"
+    )
+    with TestClient(app) as client:
+        preflight = client.post(
+            f"/api/threads/{thread['id']}/diagram-intent", json={"message": text}
+        )
+        assert preflight.status_code == 200
+        if changed_history:
+            message_store.append(
+                user["id"], thread["id"], "user", "Earlier context changed"
+            )
+        payload = {
+            "thread_id": thread["id"],
+            "content": text,
+            "client_request_id": "cache-chat",
+        }
+        if transport == "sse":
+            response = client.post("/api/chat", json=payload)
+            assert response.status_code == 200
+            events = [
+                json.loads(line[6:])
+                for line in response.text.splitlines()
+                if line.startswith("data: ")
+            ]
+        else:
+            with client.websocket_connect(
+                "/api/chat/ws", headers={"origin": "http://localhost:5173"}
+            ) as socket:
+                socket.send_json({"type": "auth", "access_token": "test-token"})
+                assert socket.receive_json()["type"] == "ready"
+                socket.send_json({"type": "start", **payload})
+                events = []
+                while not events or events[-1]["type"] != "done":
+                    events.append(socket.receive_json())
+    assert classify.await_count == (2 if changed_history else 1)
+    assert len(core_calls) == (1 if verdict == "ACCEPT" else 0)
+    if verdict == "OFF_TOPIC":
+        assert events == [
+            {"type": "response_delta", "content": chat_guards._INPUT_TOPIC_ERROR},
+            {"type": "done"},
+        ]
+    assert message_store.get_history(user["id"], thread["id"])[-1]["content"] == (
+        "Accepted answer" if verdict == "ACCEPT" else chat_guards._INPUT_TOPIC_ERROR
+    )
+
+
+async def test_expired_completion_is_not_retained(classify, monkeypatch):
+    clock = [100.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+
+    async def delayed(**kwargs):
+        clock[0] = 131
+        return _response()
+
+    classify.side_effect = delayed
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        is None
+    )
+    assert not chat_guards._INPUT_VERDICT_CACHE
+
+
+async def test_publication_prunes_verdict_expired_during_concurrent_call(
+    classify, monkeypatch
+):
+    clock = [100.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def complete(**kwargs):
+        if classify.await_count == 1:
+            started.set()
+            await release.wait()
+            return _response()
+        return _response('{"verdict":"UNSAFE"}')
+
+    classify.side_effect = complete
+    pending = asyncio.create_task(
+        chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    )
+    await started.wait()
+    await chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    clock[0] = 131
+    release.set()
+    assert await pending is None
+    assert not chat_guards._INPUT_VERDICT_CACHE
+
+
+async def test_expired_candidate_preserves_newer_live_denial(classify, monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def complete(**kwargs):
+        if classify.await_count == 1:
+            started.set()
+            await release.wait()
+            return _response()
+        return _response('{"verdict":"UNSAFE"}')
+
+    classify.side_effect = complete
+    pending = asyncio.create_task(
+        chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    )
+    await started.wait()
+    clock[0] = 20
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        == chat_guards._INPUT_SECURITY_ERROR
+    )
+    clock[0] = 35
+    release.set()
+    assert await pending == chat_guards._INPUT_SECURITY_ERROR
+    assert list(chat_guards._INPUT_VERDICT_CACHE.values()) == [(50, "UNSAFE")]
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        == chat_guards._INPUT_SECURITY_ERROR
+    )
+    assert classify.await_count == 2
+
+
+async def test_expired_stronger_candidate_invalidates_live_acceptance(
+    classify, monkeypatch
+):
+    clock = [0.0]
+    monkeypatch.setattr(chat_guards.time, "monotonic", lambda: clock[0])
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def complete(**kwargs):
+        if classify.await_count == 1:
+            started.set()
+            await release.wait()
+            return _response('{"verdict":"UNSAFE"}')
+        return _response()
+
+    classify.side_effect = complete
+    pending = asyncio.create_task(
+        chat_guards.chat_input_error("RAG", [], user_id="user", thread_id="thread")
+    )
+    await started.wait()
+    clock[0] = 20
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        is None
+    )
+    assert list(chat_guards._INPUT_VERDICT_CACHE.values()) == [(50, "ACCEPT")]
+    clock[0] = 35
+    release.set()
+    assert await pending == chat_guards._INPUT_SECURITY_ERROR
+    assert not chat_guards._INPUT_VERDICT_CACHE
+    assert (
+        await chat_guards.chat_input_error(
+            "RAG", [], user_id="user", thread_id="thread"
+        )
+        is None
+    )
+    assert classify.await_count == 3

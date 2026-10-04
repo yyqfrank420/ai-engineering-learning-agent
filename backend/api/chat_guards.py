@@ -1,8 +1,10 @@
+from collections import OrderedDict
 import hashlib
 import json
 import logging
 import re
 import time
+from threading import Lock
 
 from starlette.requests import HTTPConnection
 
@@ -209,6 +211,53 @@ _INPUT_TOPIC_ERROR = (
 )
 _INPUT_VALIDATION_ERROR = "Unable to validate your message. Please try again."
 _logger = logging.getLogger(__name__)
+_INPUT_VERDICT_TTL_SECONDS = 30
+_INPUT_VERDICT_CAPACITY = 256
+_INPUT_VERDICT_PRIORITY = {"ACCEPT": 0, "OFF_TOPIC": 1, "UNSAFE": 2}
+_INPUT_VERDICT_ERRORS = {
+    "ACCEPT": None,
+    "OFF_TOPIC": _INPUT_TOPIC_ERROR,
+    "UNSAFE": _INPUT_SECURITY_ERROR,
+}
+_INPUT_VERDICT_CACHE: OrderedDict[str, tuple[float, str]] = OrderedDict()
+_INPUT_VERDICT_LOCK = Lock()
+
+
+def _input_verdict_cache_value(
+    key: str, now: float, *, completed: tuple[float, str] | None = None
+) -> str | None:
+    """Reuse exact scoped verdicts without retaining input or weakening denials."""
+    with _INPUT_VERDICT_LOCK:
+        expired = [
+            cached_key
+            for cached_key, (expires_at, _) in _INPUT_VERDICT_CACHE.items()
+            if expires_at <= now
+        ]
+        for cached_key in expired:
+            del _INPUT_VERDICT_CACHE[cached_key]
+        cached = _INPUT_VERDICT_CACHE.get(key)
+        if completed is None:
+            if cached is None:
+                return None
+            _INPUT_VERDICT_CACHE.move_to_end(key)
+            return cached[1]
+        expires_at, verdict = completed
+        if cached is not None:
+            verdict = max((verdict, cached[1]), key=_INPUT_VERDICT_PRIORITY.__getitem__)
+        if expires_at <= now:
+            # A stale denial cannot be retained, but it invalidates weaker reuse.
+            if cached is not None and (
+                _INPUT_VERDICT_PRIORITY[verdict] > _INPUT_VERDICT_PRIORITY[cached[1]]
+            ):
+                del _INPUT_VERDICT_CACHE[key]
+            return verdict
+        if cached is not None:
+            expires_at = min(expires_at, cached[0])
+        _INPUT_VERDICT_CACHE[key] = (expires_at, verdict)
+        _INPUT_VERDICT_CACHE.move_to_end(key)
+        while len(_INPUT_VERDICT_CACHE) > _INPUT_VERDICT_CAPACITY:
+            _INPUT_VERDICT_CACHE.popitem(last=False)
+        return verdict
 
 
 async def chat_input_error(
@@ -220,6 +269,7 @@ async def chat_input_error(
     request_id: str | None = None,
 ) -> str | None:
     """Reject unsafe or unrelated input before any core agent work starts."""
+    now = time.monotonic()
     if not check_prompt_injection(text):
         return _INPUT_SECURITY_ERROR
     highlighted = _HIGHLIGHTED_QUESTION.fullmatch(text)
@@ -235,14 +285,37 @@ async def chat_input_error(
     }
     if highlighted:
         payload["effective_content"] = text
+    model = settings.orchestrator_model
     try:
+        serialized_payload = json.dumps(payload, ensure_ascii=False)
+        cache_key = (
+            hashlib.sha256(
+                json.dumps(
+                    [
+                        user_id,
+                        thread_id,
+                        serialized_payload,
+                        model,
+                        _INPUT_SANITATION_SHA256,
+                        _INPUT_SANITATION_VERSION,
+                    ],
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            ).hexdigest()
+            if user_id and thread_id
+            else None
+        )
+        if cache_key is not None:
+            cached_verdict = _input_verdict_cache_value(cache_key, now)
+            if cached_verdict is not None:
+                return _INPUT_VERDICT_ERRORS[cached_verdict]
         result = await stream_structured_llm(
-            model=settings.orchestrator_model,
+            model=model,
             system=_INPUT_SANITATION_SYSTEM,
             messages=[
                 {
                     "role": "user",
-                    "content": json.dumps(payload, ensure_ascii=False),
+                    "content": serialized_payload,
                 }
             ],
             temperature=0,
@@ -267,33 +340,35 @@ async def chat_input_error(
         _logger.warning("Input sanitation failed (%s)", type(exc).__name__)
         return _INPUT_VALIDATION_ERROR
     if result.finish_reason == "refusal":
-        return _INPUT_SECURITY_ERROR
-    if result.finish_reason != "end_turn":
-        _logger.warning("Input sanitation returned an incomplete response")
-        return _INPUT_VALIDATION_ERROR
-    try:
-        # Preserve object pairs so duplicate verdict keys cannot overwrite a denial.
-        parsed = json.loads(result.text, object_pairs_hook=tuple)
-    except (ValueError, TypeError):
-        _logger.warning("Input sanitation returned an invalid verdict")
-        return _INPUT_VALIDATION_ERROR
-    if (
-        not isinstance(parsed, tuple)
-        or len(parsed) != 1
-        or parsed[0][0] != "verdict"
-        or not isinstance(parsed[0][1], str)
-    ):
-        _logger.warning("Input sanitation returned an invalid verdict")
-        return _INPUT_VALIDATION_ERROR
-    verdict = parsed[0][1]
-    if verdict == "ACCEPT":
-        return None
-    if verdict == "OFF_TOPIC":
-        return _INPUT_TOPIC_ERROR
-    if verdict == "UNSAFE":
-        return _INPUT_SECURITY_ERROR
-    _logger.warning("Input sanitation returned an invalid verdict")
-    return _INPUT_VALIDATION_ERROR
+        verdict = "UNSAFE"
+    else:
+        if result.finish_reason != "end_turn":
+            _logger.warning("Input sanitation returned an incomplete response")
+            return _INPUT_VALIDATION_ERROR
+        try:
+            # Preserve object pairs so duplicate verdict keys cannot overwrite a denial.
+            parsed = json.loads(result.text, object_pairs_hook=tuple)
+        except (ValueError, TypeError):
+            _logger.warning("Input sanitation returned an invalid verdict")
+            return _INPUT_VALIDATION_ERROR
+        if (
+            not isinstance(parsed, tuple)
+            or len(parsed) != 1
+            or parsed[0][0] != "verdict"
+            or not isinstance(parsed[0][1], str)
+            or parsed[0][1] not in _INPUT_VERDICT_ERRORS
+        ):
+            _logger.warning("Input sanitation returned an invalid verdict")
+            return _INPUT_VALIDATION_ERROR
+        verdict = parsed[0][1]
+    if cache_key is not None:
+        completed_at = time.monotonic()
+        verdict = _input_verdict_cache_value(
+            cache_key,
+            completed_at,
+            completed=(now + _INPUT_VERDICT_TTL_SECONDS, verdict),
+        )
+    return _INPUT_VERDICT_ERRORS[verdict]
 
 
 def byte_len(text: str) -> int:

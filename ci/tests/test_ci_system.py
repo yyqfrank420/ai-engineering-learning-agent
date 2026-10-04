@@ -2008,44 +2008,11 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     )
     pr_case_ids = set(manifest["live"]["suites"]["pr"])
     pr_cases = [case for case in corpus["cases"] if case["id"] in pr_case_ids]
-    # Staged creation uses four provider calls plus synthesis on its first pass.
-    # Two attempts per layer raise the complete logical bound to nine calls.
-    # stream_structured_llm and staged synthesis each allow one provider attempt;
-    # answer-only synthesis and node chips allow two Anthropic attempts and one
-    # OpenAI fallback. Web retrieval has a separate bounded search request. These bounds cover
-    # the core workflow. Each browser turn also validates input at diagram-intent
-    # and chat submission. The shared quota can deny repair attempts; the full
-    # hypothetical repair/retry envelope is not a successful-path guarantee.
-    call_bounds = {
-        "rag-grounding": (5, 9, 9),
-        "memory": (4, 4, 8),
-        "education-diagram": (5, 9, 9),
-        "research": (5, 9, 9),
-        "node-followup": (6, 10, 12),
-        "graph-expansion": (10, 18, 18),
-        "applied-domain": (5, 9, 9),
-        "prompt-injection": (2, 2, 4),
-    }
-    assert set(call_bounds) == {case["id"] for case in pr_cases}
-    pr_turn_count = sum(len(case["steps"]) for case in pr_cases)
-    sanitation_calls = 2 * pr_turn_count
-    first_pass_bound = (
-        sum(bound[0] for bound in call_bounds.values()) + sanitation_calls
-    )
-    logical_call_bound = (
-        sum(bound[1] for bound in call_bounds.values()) + sanitation_calls
-    )
-    provider_attempt_bound = (
-        sum(bound[2] for bound in call_bounds.values()) + sanitation_calls
-    )
-    assert pr_turn_count == 11
-    assert sanitation_calls == 22
-    assert first_pass_bound == 64
-    assert logical_call_bound == 92
-    assert provider_attempt_bound == 100
+    assert len(pr_cases) == 8
+    assert sum(len(case["steps"]) for case in pr_cases) == 11
+    # The shared quota includes input classification, generation, paid search,
+    # repairs, and provider retries. Runtime behavior determines consumption.
     assert budgets["application_calls"] == 78
-    assert first_pass_bound < budgets["application_calls"] < logical_call_bound
-    assert provider_attempt_bound > budgets["application_calls"]
     assert budgets["judge_calls"] == 16
     assert budgets["browser_infrastructure_retry_count"] == 0
     assert budgets["browser_suite_max_timeout_seconds"] == 4200
