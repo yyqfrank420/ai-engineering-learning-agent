@@ -70,13 +70,23 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    product UI enables web grounding by default while retaining an explicit book-only control. Their
    results become bounded source records. Staged authoring and review share these records and
    maturity-specific acceptance criteria. Legacy architecture planning retains its review checklist.
-   Web research selects Bing through DDGS with safe search and makes one Brave fallback query
-   if the primary results contain no usable snippets. Provider failures log their backend and
-   exception class without recording user queries. Ordinary research keeps
-   the original topic in one query; applied design requests also search the domain workflow and
-   failure modes. At most six source snippets reach synthesis. Search results carry no guarantee
-   of relevance or factual support; synthesis must cite supported findings or state the evidence
-   limitation. Internal evaluation captures the retained URLs' query and backend provenance.
+   Web research uses the authenticated Moonshot standalone Basic search API with
+   API contract release `web_research_v2`. It sends one normalized canonical design
+   query or original topic, without a model rewrite, retries, or fallback providers.
+   Each research turn permits one actual API call, a 20-second server search timeout,
+   and a 30-second HTTP timeout bounded by the worker's 30-second asynchronous deadline. A successful nonempty Basic search costs $0.002;
+   no additional language-model tokens are generated. The nonempty provider result
+   array incurs the fee before local filtering. Actual returned plaintext
+   snippets, titles, and source URLs become bounded evidence. At most six sources
+   reach synthesis after URL validation, noise filtering, and deduplication.
+   Errors, empty results, or unusable snippets report research unavailable and
+   continue with book evidence. Logs contain bounded provider/error codes, never
+   queries or source bodies. Internal evaluation captures retained URLs with the
+   exact submitted query and `moonshot_search` provenance. The existing
+   `MOONSHOT_API_KEY` and `MOONSHOT_BASE_URL` settings are used; no scraping
+   dependency or separate search credentials are required. API contract changes
+   receive a new code release identity. Roll back the adapter and worker release
+   together through the normal application deployment.
    Synthesis preserves sourced numbers, units, ranges, and comparators. Ambiguous source
    formatting is stated or its quantitative claim omitted, without silently repairing a number.
    The optional route classifier uses one low-effort provider attempt, at most 1,024 output
@@ -96,6 +106,21 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    composition layer. Scoped edits instead emit additions and permitted field updates in
    server-selected slots. The server assembles complete candidates from immutable prior records
    and authorized removals. Both stages receive the same applicable criteria as their reviewers.
+   Service expansion requests have a separate orchestrator planning call that selects existing
+   application services and classifies the request as low or high complexity. Clients, stores,
+   and standalone retrieval processes retain ordinary routing. High complexity selects the
+   `expand_application_services` tool with `SERVICE_EXPANSION_MODEL=claude-opus-5-5` and medium
+   effort for both draft stages and their bounded corrections. Low complexity uses the ordinary
+   builder. This complexity decision is separate from prototype or production maturity.
+   The server permits one to three internal nodes per selected service and preserves existing
+   records. Each internal node has type `component`, the displayed label `Component`, and
+   `parent_service_id` referencing its owning service. Wire `parent_index` resolves to that ID
+   at the server boundary. Ownership survives projection, reload, and unrelated removals.
+   Expansion connections stay within the parent's existing interfaces and internal components.
+   Both render and semantic gates remain required. These expansions use the staged contract
+   even when the default pipeline is legacy. Explicit answer-only requests retain the graph;
+   high complexity answers use Opus 5.5 medium with a 180-second maximum, bounded by the remaining
+   terminal deadline. A terse continuation uses the preceding user expansion request.
 7. The server owns IDs, group records, breadth-first sequence derivation, projection, graph
    versions, selected maturity, exact edit admission, validation, state transitions, and
    persistence. The component-only candidate has no edges. During edits the live UI retains the
@@ -160,7 +185,7 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    The shared `learning_or_release` criterion includes owned offline training, batch updates,
    and releases requiring human approval. Live deployment and automatic feedback are not required.
    Dataset curation, passive downstream consumption, and frozen inference alone do not qualify.
-   Component generation v29 and component review v18 share this ownership rule.
+   Component generation v46 and component review v27 share this ownership rule.
    The completed connection review checks ordering, failure outcomes, and retry controls,
    including same-key reconciliation and authorization, policy, freshness, and fencing before
    execution. Streaming transport mechanics guide authoring rather than independently blocking a
@@ -180,6 +205,16 @@ turns take the same per-user lock in Postgres and SQLite's write lock locally.
    Its producer must invoke those controls directly or through a declared delegation; another
    producer's validation path does not establish that coverage.
    Review reasons quote the control contracts and cover every applicable producer or path.
+   Required inputs and execution outputs must reach each declared consumer with their actual
+   payload across every intermediary. Connection reviews identify the producer, consumer, payload,
+   and hop indexes. Matching request/reply pairs alone do not establish that route. Component
+   containment and generic parent lifecycle ownership do not supply a missing child result;
+   a reply naming a different artifact cannot carry it implicitly. Explicit same-owner handling
+   and authoritative persistence with a consumer read remain valid without extra edges.
+   Deterministic proposal validation applies only to declared model-action producers, including
+   model-selected read-only and internal tools. Answer-only inference without proposed actions
+   needs no per-action validator. Authoritative lifecycle ownership and correlated provenance
+   and audit remain required where applicable.
    Capability flags select system-level review criteria. Individual retrieval obligations apply
    to their declared artifact and consumer path. Outcome-data reads do not impose a factual
    retrieval dependency on an unrelated creative generator. Material factual claims still need
@@ -356,7 +391,12 @@ persistence, so Cloud Run scale-out neither resets the limits nor stores raw ema
 limiter table.
 
 The staged path gives each active role one explicit owner. Kimi K3 low authors bounded component
-and connection wires. Sonnet 5 medium gates each candidate once. The server owns graph mutation,
+and connection wires. Sonnet 5 reviews components at medium effort and connections at low effort,
+with the same complete rule coverage and 16,384-token completion ceiling. Connection review uses
+low effort after a medium-effort repair review exhausted that ceiling before returning a verdict.
+Connection generation v40 and review v37 require complete payload-route witnesses and distinguish
+applicable proposal validation from answer-only inference.
+Incomplete reviews still reject publication. The server owns graph mutation,
 validation, maturity, and all state transitions. Sonnet 5.5 low writes the explanation stream and has a
 deterministic fallback. The no-retry path makes five application model calls. The bounded maximum
 is nine. Renderer infrastructure failures add no model calls. Retrieval and acceptance criteria
@@ -488,8 +528,10 @@ completed review on a later edit. The UI disables repeated Stop and steering whi
 Navigation, account changes, disconnects, and normal cancellation never imply acceptance.
 Stale request or candidate commands are rejected without cancelling the active turn.
 
-Live thinking uses provider-emitted text from the existing builder, reviewer, and explanation
-streams. It is request-scoped, bounded, and displayed as plain text in an expandable feed.
-Structured graph JSON, provider signatures, and tool results never enter that feed. Thinking
-is transient UI state; it is not saved in messages, graph history, or analytics. Provider
-reasoning can quote request context and should not be treated as a verified answer.
+Live activity is a bounded public feed derived from workflow events. Known startup, routing,
+and steering statuses produce public context steps immediately. The expanded panel shows
+"Working on your request." while no step has arrived. Book search, web search, rendering,
+and review appear as tool steps; public design updates explain the current phase. Raw provider
+reasoning, signatures, graph JSON, and retrieved tool content stay outside this feed.
+The transports persist the activity with the completed message. Reload restores its steps
+and duration without another model call. Completion collapses the feed, which can be reopened.

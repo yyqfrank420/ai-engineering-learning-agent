@@ -3,7 +3,7 @@
 # Purpose: Tests for the new mode-control features:
 #            - ChatRequest field validation (complexity, graph_mode, research_enabled)
 #            - research_worker _format_results (noise filtering, dedup, bullet format)
-#            - research_worker explicit degradation when DDG raises
+#            - research_worker authenticated search and explicit degradation
 # ─────────────────────────────────────────────────────────────────────────────
 
 import asyncio
@@ -911,6 +911,12 @@ class TestFormatResults:
             self._make_result(
                 "https://user@example.com/private", "Credentials", "body"
             ),
+            self._make_result(
+                "https://:password@example.com/private", "Empty username", "body"
+            ),
+            self._make_result(
+                "https://@example.com/private", "Empty credentials", "body"
+            ),
             self._make_result("https://example.com/public", "Public", "body"),
         ]
 
@@ -924,9 +930,9 @@ class TestFormatResults:
 
 
 class TestResearchWorkerResilience:
-    """Verifies that DDG failures don't crash the pipeline."""
+    """One search request, actual source evidence, and bounded degradation."""
 
-    def _make_state(self) -> dict:
+    def _make_state(self):
         events = []
 
         async def send(event):
@@ -934,132 +940,154 @@ class TestResearchWorkerResilience:
 
         return {
             "user_message": "RAG pipeline architecture",
-            "research_context": "",
-            "complexity": "auto",
-            "graph_mode": "auto",
-            "research_enabled": True,
             "send": send,
             "_events": events,
+            "request_id": "request-1",
+            "client_request_id": "client-1",
+            "session_id": "thread-1",
+            "user_id": "user-1",
+            "is_production": True,
         }
 
-    def test_ddg_exception_returns_empty_context(self, monkeypatch):
-        """When DDG raises, the pipeline degrades explicitly to book evidence."""
+    def _results(
+        self, url="https://example.com/report", snippet="Actual search snippet"
+    ):
+        return [{"url": url, "title": "Report", "snippet": snippet}]
+
+    def _stub(self, monkeypatch, results=(), error=None):
         import agent.nodes.research_worker as rw
 
-        def raise_on_search(queries, results_per_query):
-            raise RuntimeError("DDG unavailable")
+        calls = []
 
-        monkeypatch.setattr(rw, "_run_ddgs_searches", raise_on_search)
+        async def search(query, telemetry=None):
+            calls.append({"query": query, "telemetry": telemetry})
+            await asyncio.sleep(0)
+            if error is not None:
+                raise error
+            return list(results)
 
-        state = self._make_state()
-        result = asyncio.new_event_loop().run_until_complete(
-            rw.research_worker_node(state)
-        )
+        monkeypatch.setattr(rw, "search_sources", search)
+        return calls
 
-        assert result["research_context"] == ""
-        assert result["research_status"] == "unavailable"
-        assert any(
-            "unavailable" in event.get("status", "").lower()
-            for event in state["_events"]
-        )
-
-    def test_worker_emits_status_event(self, monkeypatch):
-        """A worker_status event is always sent, even before the search runs."""
-        import agent.nodes.research_worker as rw
-
-        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: [])
-
-        state = self._make_state()
-        asyncio.new_event_loop().run_until_complete(rw.research_worker_node(state))
-
-        events = state["_events"]
-        assert any(
-            e.get("type") == "worker_status" and e.get("worker") == "research"
-            for e in events
-        )
-
-    def test_empty_ddg_results_returns_empty_context(self, monkeypatch):
-        """Empty search results produce an empty research_context."""
-        import agent.nodes.research_worker as rw
-
-        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: [])
-
-        state = self._make_state()
-        result = asyncio.new_event_loop().run_until_complete(
-            rw.research_worker_node(state)
-        )
-
-        assert result["research_context"] == ""
-        assert result["research_status"] == "unavailable"
-
-    def test_success_status_exposes_source_provenance(self, monkeypatch):
-        import agent.nodes.research_worker as rw
-
-        monkeypatch.setattr(
-            rw,
-            "_run_ddgs_searches",
-            lambda _queries, _limit: [
-                {
-                    "href": "https://example.com/report",
-                    "title": "Report",
-                    "body": "Current evidence",
-                }
-            ],
-        )
-        state = self._make_state()
-
-        result = asyncio.run(rw.research_worker_node(state))
-
-        assert result["research_status"] == "ready"
-        status = next(event for event in state["_events"] if "sources" in event)
-        assert status["sources"] == ["https://example.com/report"]
-        assert status["status"] == "Web search results available."
-
-    def test_success_emits_bounded_research_evidence_for_allowlisted_internal_identity(
+    def test_one_api_search_uses_release_and_authoritative_correlation(
         self, monkeypatch
     ):
         import agent.nodes.research_worker as rw
 
-        monkeypatch.setattr(rw.settings, "db_schema", "public")
-        monkeypatch.setattr(
-            rw.settings,
-            "internal_test_email_allowlist_raw",
-            "eval@example.com",
+        calls = self._stub(monkeypatch, self._results())
+        state = self._make_state()
+        result = asyncio.run(rw.research_worker_node(state))
+        assert result["research_status"] == "ready"
+        assert (
+            result["research_context"]
+            == "- Report — <https://example.com/report>: Actual search snippet"
         )
-        monkeypatch.setattr(
-            rw,
-            "_run_ddgs_searches",
-            lambda _queries, _limit: [
-                {
-                    "href": "https://example.com/report",
-                    "title": "Report",
-                    "body": "Current external evidence",
-                    "query": "RAG pipeline architecture",
-                    "backend": "brave",
-                }
-            ],
+        assert calls == [
+            {
+                "query": "RAG pipeline architecture",
+                "telemetry": {
+                    "operation": "web_research",
+                    "user_id": "user-1",
+                    "thread_id": "thread-1",
+                    "is_production": True,
+                    "metadata": {
+                        "request_id": "request-1",
+                        "client_request_id": "client-1",
+                        "search_api_version": "web_research_v2",
+                    },
+                },
+            }
+        ]
+        assert next(e for e in state["_events"] if "sources" in e)["sources"] == [
+            "https://example.com/report"
+        ]
+
+    @pytest.mark.parametrize(
+        "results",
+        [
+            [],
+            [{"url": "https://example.com", "title": "Report", "snippet": ""}],
+            [{"url": "", "title": "No source", "snippet": "Text"}],
+        ],
+    )
+    def test_empty_or_unsourced_results_are_unavailable(self, monkeypatch, results):
+        import agent.nodes.research_worker as rw
+
+        self._stub(monkeypatch, results)
+        state = self._make_state()
+        result = asyncio.run(rw.research_worker_node(state))
+        assert result["research_status"] == "unavailable"
+        assert result["research_context"] == ""
+        assert any(e.get("status") == "degraded" for e in state["_events"])
+
+    def test_expected_provider_error_degrades_and_redacts_logs(
+        self, monkeypatch, caplog
+    ):
+        import agent.nodes.research_worker as rw
+
+        self._stub(
+            monkeypatch,
+            error=rw.WebSearchUnavailable("SECRET query body https://private.example"),
         )
-        state = {**self._make_state(), "user_email": "eval@example.com"}
+        result = asyncio.run(rw.research_worker_node(self._make_state()))
+        assert result["research_status"] == "unavailable"
+        assert "provider=moonshot" in caplog.text
+        assert "WebSearchUnavailable" in caplog.text
+        assert "SECRET" not in caplog.text and "private.example" not in caplog.text
 
-        asyncio.run(rw.research_worker_node(state))
+    def test_protocol_error_degrades_without_exposing_response(
+        self, monkeypatch, caplog
+    ):
+        from adapters.web_search_adapter import WebSearchProtocolError
+        import agent.nodes.research_worker as rw
 
-        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
-        assert evidence == {
-            "type": "research_evidence",
-            "query": "RAG pipeline architecture",
-            "results": [
-                "- Report — <https://example.com/report>: Current external evidence"
-            ],
-            "source_provenance": [
-                {
-                    "url": "https://example.com/report",
-                    "query": "RAG pipeline architecture",
-                    "backend": "brave",
-                }
-            ],
-        }
+        self._stub(monkeypatch, error=WebSearchProtocolError("PRIVATE RESPONSE BODY"))
+        assert (
+            asyncio.run(rw.research_worker_node(self._make_state()))["research_status"]
+            == "unavailable"
+        )
+        assert "PRIVATE RESPONSE BODY" not in caplog.text
 
-    def test_success_does_not_emit_research_evidence_for_non_allowlisted_identity(
+    def test_timeout_cancels_async_search_with_no_second_call(self, monkeypatch):
+        import agent.nodes.research_worker as rw
+
+        calls = []
+        cancelled = []
+
+        async def search(query, telemetry=None):
+            calls.append(query)
+            try:
+                await asyncio.sleep(1)
+            finally:
+                cancelled.append(True)
+            return []
+
+        monkeypatch.setattr(rw, "search_sources", search)
+        monkeypatch.setattr(rw, "_RESEARCH_TIMEOUT_S", 0.01)
+        assert (
+            asyncio.run(rw.research_worker_node(self._make_state()))["research_status"]
+            == "unavailable"
+        )
+        assert len(calls) == 1 and cancelled == [True]
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            RuntimeError("local quota"),
+            ValueError("programming error"),
+            asyncio.CancelledError(),
+        ],
+    )
+    def test_quota_programming_errors_and_external_cancellation_propagate(
+        self, monkeypatch, error
+    ):
+        import agent.nodes.research_worker as rw
+
+        self._stub(monkeypatch, error=error)
+        with pytest.raises(type(error)):
+            asyncio.run(rw.research_worker_node(self._make_state()))
+
+    def test_provenance_uses_exact_query_and_only_retained_six_sources(
         self, monkeypatch
     ):
         import agent.nodes.research_worker as rw
@@ -1067,281 +1095,98 @@ class TestResearchWorkerResilience:
         monkeypatch.setattr(
             rw.settings, "internal_test_email_allowlist_raw", "eval@example.com"
         )
-        monkeypatch.setattr(
-            rw,
-            "_run_ddgs_searches",
-            lambda _queries, _limit: [
-                {
-                    "href": "https://example.com/report",
-                    "title": "Report",
-                    "body": "Current external evidence",
-                }
-            ],
+        results = [
+            *self._results("https://reddit.com/noise"),
+            *self._results("javascript:bad"),
+        ]
+        results.extend(
+            {
+                "url": f"https://example.com/{i}",
+                "title": "Report",
+                "snippet": f"Actual snippet {i}",
+            }
+            for i in range(8)
         )
-        state = {**self._make_state(), "user_email": "customer@example.com"}
+        results.extend(self._results("https://example.com/0", "Duplicate"))
+        calls = self._stub(monkeypatch, results)
+        state = {**self._make_state(), "user_email": "eval@example.com"}
+        result = asyncio.run(rw.research_worker_node(state))
+        evidence = next(e for e in state["_events"] if e["type"] == "research_evidence")
+        assert len(result["research_context"].splitlines()) == 6
+        assert "Duplicate" not in result["research_context"]
+        assert evidence["source_provenance"] == [
+            {
+                "url": f"https://example.com/{i}",
+                "query": calls[0]["query"],
+                "backend": "moonshot_search",
+            }
+            for i in range(6)
+        ]
 
-        asyncio.run(rw.research_worker_node(state))
-
-        assert {event["type"] for event in state["_events"]} == {"worker_status", "workflow_progress"}
-
-    def test_build_queries_uses_current_year_instead_of_hard_coded_year(
-        self, monkeypatch
-    ):
-        from datetime import datetime
-
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "javascript:bad",
+            "https://user:password@example.com",
+            "https://[bad",
+            "https://reddit.com/noise",
+            "https://example.com/<bad>",
+        ],
+    )
+    def test_invalid_or_noise_urls_are_not_evidence(self, monkeypatch, url):
         import agent.nodes.research_worker as rw
 
-        class _FrozenDateTime:
-            @classmethod
-            def now(cls, tz=None):
-                return datetime(2032, 1, 1, tzinfo=tz)
-
-        monkeypatch.setattr(rw, "datetime", _FrozenDateTime)
-
-        queries = rw._build_queries("RAG pipeline")
-
-        assert queries[0] == "RAG pipeline"
-        assert queries[1] == "RAG operating model workflow decision points KPIs"
-        assert queries[2] == "RAG best practices failure modes 2032"
-
-    def test_build_queries_researches_the_domain_function_behind_a_terse_design_seed(
-        self,
-    ):
-        import agent.nodes.research_worker as rw
-
-        queries = rw._build_queries("growth marketing multi-agent system")
-
-        assert queries[0] == "growth marketing multi-agent system"
+        self._stub(monkeypatch, self._results(url))
         assert (
-            queries[1]
-            == "growth marketing operating model workflow decision points KPIs"
-        )
-        assert queries[2].startswith("growth marketing best practices failure modes ")
-
-    def test_first_query_preserves_comparison_intent_without_expanding_scope(self):
-        from agent.nodes.research_worker import _build_queries
-
-        topic = (
-            "Research current practical trade-offs between agents and fixed workflows "
-            "for production AI products."
+            asyncio.run(rw.research_worker_node(self._make_state()))["research_status"]
+            == "unavailable"
         )
 
-        queries = _build_queries(topic)
-
-        assert queries == [topic]
-
-    @pytest.mark.parametrize("limit, expected_limit", [(1, 3), (2, 6), (4, 6)])
-    def test_single_topic_search_reuses_bounded_total_result_budget(
-        self, monkeypatch, limit, expected_limit
-    ):
+    def test_eval_evidence_is_not_sent_to_ordinary_users(self, monkeypatch):
         import agent.nodes.research_worker as rw
 
-        calls = []
-        monkeypatch.setattr(rw.settings, "research_results_per_query", limit)
         monkeypatch.setattr(
-            rw,
-            "_run_ddgs_searches",
-            lambda queries, count: calls.append((queries, count)) or [],
+            rw.settings, "internal_test_email_allowlist_raw", "eval@example.com"
         )
+        self._stub(monkeypatch, self._results())
+        state = {**self._make_state(), "user_email": "customer@example.com"}
+        asyncio.run(rw.research_worker_node(state))
+        assert not any(e["type"] == "research_evidence" for e in state["_events"])
+
+    def test_restored_canonical_query_is_sent_without_model_rewrite(self, monkeypatch):
+        import agent.nodes.research_worker as rw
+
+        calls = self._stub(monkeypatch)
+        topic = "growth marketing multi-agent system expand this"
+        state = {
+            **self._make_state(),
+            "user_message": "expand this",
+            "design_query": topic,
+        }
+        asyncio.run(rw.research_worker_node(state))
+        assert calls[0]["query"] == topic
+        assert len(calls) == 1
+        shortened = rw._normalise_topic("word " * 60)
+        assert len(shortened) <= 160 and shortened.endswith("word")
+
+    def test_comparison_scope_is_preserved_as_one_query(self, monkeypatch):
+        import agent.nodes.research_worker as rw
+
+        calls = self._stub(monkeypatch)
         topic = "Compare agents and fixed workflows for production AI products."
         asyncio.run(
             rw.research_worker_node({**self._make_state(), "user_message": topic})
         )
+        assert [c["query"] for c in calls] == [topic]
 
-        assert calls == [([topic], expected_limit)]
-
-    def test_research_capture_keeps_query_provenance_only_for_retained_urls(
-        self, monkeypatch
-    ):
+    def test_plaintext_search_snippet_retains_existing_body_budget(self, monkeypatch):
         import agent.nodes.research_worker as rw
 
-        monkeypatch.setattr(
-            rw.settings, "internal_test_email_allowlist_raw", "eval@example.com"
-        )
-        monkeypatch.setattr(rw.settings, "research_noise_domains", ["noise.example"])
-        raw = [
-            {
-                "href": f"https://example.com/{index}",
-                "title": "Report",
-                "body": "Snippet",
-                "query": f"query {index}",
-                "backend": "brave",
-            }
-            for index in range(8)
-        ]
-        raw = [
-            {**raw[0], "href": "https://noise.example/report"},
-            {**raw[0], "href": "javascript:invalid"},
-            *raw,
-            raw[0],
-            {**raw[0], "query": "another query"},
-        ]
-        monkeypatch.setattr(rw, "_run_ddgs_searches", lambda *_: raw)
-        state = {**self._make_state(), "user_email": "eval@example.com"}
-
-        asyncio.run(rw.research_worker_node(state))
-
-        evidence = next(event for event in state["_events"] if event["type"] == "research_evidence")
-        assert len(evidence["results"]) == 6
-        assert evidence["source_provenance"] == [
-            {
-                "url": f"https://example.com/{index}",
-                "query": f"query {index}",
-                "backend": "brave",
-            }
-            for index in range(6)
-        ] + [
-            {
-                "url": "https://example.com/0",
-                "query": "another query",
-                "backend": "brave",
-            }
-        ]
-
-    def test_worker_researches_restored_design_query_for_terse_followup(
-        self, monkeypatch
-    ):
-        import agent.nodes.research_worker as rw
-
-        captured_queries = []
-        monkeypatch.setattr(
-            rw,
-            "_run_ddgs_searches",
-            lambda queries, _limit: captured_queries.extend(queries) or [],
-        )
-        state = {
-            **self._make_state(),
-            "user_message": "expand this",
-            "design_query": "growth marketing multi-agent system expand this",
-        }
-
-        asyncio.run(rw.research_worker_node(state))
-
-        assert captured_queries[0] == "growth marketing multi-agent system expand this"
-
-    def test_topic_truncation_preserves_word_boundaries(self):
-        from agent.nodes.research_worker import _normalise_topic
-
-        topic = _normalise_topic("word " * 60)
-
-        assert len(topic) <= 160
-        assert topic.endswith("word")
-
-    def test_run_ddgs_searches_continues_after_single_query_failure(self, monkeypatch):
-        import sys
-        import types
-        from agent.nodes.research_worker import _run_ddgs_searches
-
-        calls = []
-
-        class _DDGS:
-            def __init__(self, timeout):
-                self.timeout = timeout
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def text(self, query, max_results, *, backend, safesearch):
-                calls.append((query, max_results, backend, safesearch))
-                if query == "bad":
-                    raise RuntimeError("search failed")
-                return [
-                    {
-                        "href": f"https://example.com/{query}",
-                        "title": query,
-                        "body": "body",
-                    }
-                ]
-
-        monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
-
-        assert _run_ddgs_searches(["good", "bad", "later"], 2) == [
-            {
-                "href": "https://example.com/good",
-                "title": "good",
-                "body": "body",
-                "query": "good",
-                "backend": "brave",
-            },
-            {
-                "href": "https://example.com/later",
-                "title": "later",
-                "body": "body",
-                "query": "later",
-                "backend": "brave",
-            },
-        ]
-        assert calls == [
-            (query, 2, "brave", "on") for query in ["good", "bad", "later"]
-        ]
-
-    def test_configured_backends_select_one_enabled_ddgs_engine_without_network(self):
-        from ddgs import DDGS
-        from ddgs.engines import ENGINES
-
-        from agent.nodes.research_worker import _SEARCH_BACKEND, _SEARCH_FALLBACK
-
-        assert _SEARCH_BACKEND != _SEARCH_FALLBACK
-        for backend in (_SEARCH_BACKEND, _SEARCH_FALLBACK):
-            assert backend in ENGINES["text"]
-            # A disabled name silently selects auto, so assert exact resolution.
-            selected = DDGS(timeout=4)._get_engines("text", backend)
-            assert [engine.name for engine in selected] == [backend]
-
-    @pytest.mark.parametrize("primary", ["empty", "filtered", "failure"])
-    def test_run_ddgs_searches_falls_back_once_when_primary_is_empty(
-        self, monkeypatch, primary
-    ):
-        import sys
-        import types
-        from agent.nodes.research_worker import _run_ddgs_searches
-
-        sessions = []
-        calls = []
-
-        class _DDGS:
-            def __init__(self, timeout):
-                sessions.append(self)
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                return False
-
-            def text(self, query, max_results, *, backend, safesearch):
-                calls.append((query, max_results, backend, safesearch))
-                if len(sessions) == 1:
-                    if primary == "failure":
-                        raise TimeoutError("provider timeout")
-                    if primary == "filtered":
-                        return [{"href": "https://example.com/no-snippet", "body": ""}]
-                    return []
-                return [
-                    {
-                        "href": "https://example.com/recovered",
-                        "title": query,
-                        "body": "recovered",
-                    }
-                ]
-
-        monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=_DDGS))
-
-        results = _run_ddgs_searches(["first", "second"], 2)
-
-        assert len(sessions) == 2
-        assert results[-1]["href"] == "https://example.com/recovered"
-        assert results[-1]["query"] == "first"
-        assert results[-1]["backend"] == "duckduckgo"
-        assert calls == [
-            ("first", 2, "brave", "on"),
-            ("second", 2, "brave", "on"),
-            ("first", 2, "duckduckgo", "on"),
-        ]
-
+        snippet = "s" * 500
+        self._stub(monkeypatch, self._results(snippet=snippet))
+        result = asyncio.run(rw.research_worker_node(self._make_state()))
+        assert result["research_status"] == "ready"
+        assert snippet in result["research_context"]
 
 @pytest.mark.parametrize(
     "query",

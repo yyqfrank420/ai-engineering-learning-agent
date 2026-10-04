@@ -1,0 +1,1118 @@
+{
+  "baseline": {
+    "edges": [
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Run validated request against active model version",
+        "source": "n1",
+        "target": "n2",
+        "edge_id": "applied:n1__run_validated_request_against_active_mo_68ca38be379f784dc8578947__n2",
+        "relation": "run_validated_request_against_active_mo_68ca38be379f784dc8578947",
+        "technology": "Runtime flow",
+        "description": "Run validated request against active model version"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Return scored outputs with resource status and version metadata",
+        "source": "n2",
+        "target": "n1",
+        "edge_id": "applied:n2__return_scored_outputs_with_resource_sta_f81ba0e77dbd22a02141039f__n1",
+        "relation": "return_scored_outputs_with_resource_sta_f81ba0e77dbd22a02141039f",
+        "technology": "Runtime flow",
+        "description": "Return scored outputs with resource status and version metadata"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Read stored candidate artifact and evaluation evidence for release decisions",
+        "source": "n3",
+        "target": "n4",
+        "edge_id": "applied:n3__read_stored_candidate_artifact_and_eval_555b799b3ac10965635da4c8__n4",
+        "relation": "read_stored_candidate_artifact_and_eval_555b799b3ac10965635da4c8",
+        "technology": "Runtime flow",
+        "description": "Read stored candidate artifact and evaluation evidence for release decisions"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Return immutable versioned artifact, hostile-trace evidence, and provenance",
+        "source": "n4",
+        "target": "n3",
+        "edge_id": "applied:n4__return_immutable_versioned_artifact_hos_4c19fde57fe419c2d07dc300__n3",
+        "relation": "return_immutable_versioned_artifact_hos_4c19fde57fe419c2d07dc300",
+        "technology": "Runtime flow",
+        "description": "Return immutable versioned artifact, hostile-trace evidence, and provenance"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Store reviewed immutable release with evaluation evidence and provenance",
+        "source": "n3",
+        "target": "n4",
+        "edge_id": "applied:n3__store_reviewed_immutable_release_with_e_fabcd65d8e60f356fc07be68__n4",
+        "relation": "store_reviewed_immutable_release_with_e_fabcd65d8e60f356fc07be68",
+        "technology": "Runtime flow",
+        "description": "Store reviewed immutable release with evaluation evidence and provenance"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Committed: return durable version id; rejected: return reason without mutation",
+        "source": "n4",
+        "target": "n3",
+        "edge_id": "applied:n4__committed_return_durable_version_id_rej_d539c47aa5a1c31e7a67d8cf__n3",
+        "relation": "committed_return_durable_version_id_rej_d539c47aa5a1c31e7a67d8cf",
+        "technology": "Runtime flow",
+        "description": "Committed: return durable version id; rejected: return reason without mutation"
+      },
+      {
+        "flow": "deployment",
+        "sync": "sync",
+        "label": "Deploy canary, promotion, or rollback of approved model version",
+        "source": "n3",
+        "target": "n1",
+        "edge_id": "applied:n3__deploy_canary_promotion_or_rollback_of__ba4077112b78315ef045fdbf__n1",
+        "relation": "deploy_canary_promotion_or_rollback_of__ba4077112b78315ef045fdbf",
+        "technology": "Deployment flow",
+        "description": "Deploy canary, promotion, or rollback of approved model version"
+      },
+      {
+        "flow": "deployment",
+        "sync": "sync",
+        "label": "Loaded version confirmed, or rejection returned with reason and no load",
+        "source": "n1",
+        "target": "n3",
+        "edge_id": "applied:n1__loaded_version_confirmed_or_rejection_r_89845327d11146178b1b2c47__n3",
+        "relation": "loaded_version_confirmed_or_rejection_r_89845327d11146178b1b2c47",
+        "technology": "Deployment flow",
+        "description": "Loaded version confirmed, or rejection returned with reason and no load"
+      },
+      {
+        "flow": "feedback",
+        "sync": "async",
+        "label": "Emit correlated serving metrics, request traces, errors, and version metadata",
+        "source": "n1",
+        "target": "n5",
+        "edge_id": "applied:n1__emit_correlated_serving_metrics_request_3b13ce45083f8429b362a4f4__n5",
+        "relation": "emit_correlated_serving_metrics_request_3b13ce45083f8429b362a4f4",
+        "technology": "Feedback flow",
+        "description": "Emit correlated serving metrics, request traces, errors, and version metadata"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Pull serving latency, error rate, and per-version quality signals",
+        "source": "n6",
+        "target": "n1",
+        "edge_id": "applied:n6__pull_serving_latency_error_rate_and_per_c0f100994443fcb22d986f2b__n1",
+        "relation": "pull_serving_latency_error_rate_and_per_c0f100994443fcb22d986f2b",
+        "technology": "Feedback flow",
+        "description": "Pull serving latency, error rate, and per-version quality signals"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Return current metrics snapshot scoped by model version",
+        "source": "n1",
+        "target": "n6",
+        "edge_id": "applied:n1__return_current_metrics_snapshot_scoped__26475a97fcecb092f684b04d__n6",
+        "relation": "return_current_metrics_snapshot_scoped__26475a97fcecb092f684b04d",
+        "technology": "Feedback flow",
+        "description": "Return current metrics snapshot scoped by model version"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Report canary health and regression alerts for the served version",
+        "source": "n6",
+        "target": "n3",
+        "edge_id": "applied:n6__report_canary_health_and_regression_ale_a5d9429261b1e0961239f779__n3",
+        "relation": "report_canary_health_and_regression_ale_a5d9429261b1e0961239f779",
+        "technology": "Feedback flow",
+        "description": "Report canary health and regression alerts for the served version"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Recorded; regression may trigger rollback decision, healthy canary may promote",
+        "source": "n3",
+        "target": "n6",
+        "edge_id": "applied:n3__recorded_regression_may_trigger_rollbac_0ff3ec71516cbd19e764a605__n6",
+        "relation": "recorded_regression_may_trigger_rollbac_0ff3ec71516cbd19e764a605",
+        "technology": "Feedback flow",
+        "description": "Recorded; regression may trigger rollback decision, healthy canary may promote"
+      },
+      {
+        "flow": "feedback",
+        "sync": "async",
+        "label": "Log canary, promotion, and rollback outcomes with provenance",
+        "source": "n3",
+        "target": "n5",
+        "edge_id": "applied:n3__log_canary_promotion_and_rollback_outco_748a816ab41090f42e52cb1d__n5",
+        "relation": "log_canary_promotion_and_rollback_outco_748a816ab41090f42e52cb1d",
+        "technology": "Feedback flow",
+        "description": "Log canary, promotion, and rollback outcomes with provenance"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Forward version-scoped regression alerts with metric evidence and canary window",
+        "source": "n6",
+        "target": "n7",
+        "edge_id": "applied:n6__forward_version_scoped_regression_alert_266eaa1385fa708594b7d587__n7",
+        "relation": "forward_version_scoped_regression_alert_266eaa1385fa708594b7d587",
+        "technology": "Feedback flow",
+        "description": "Forward version-scoped regression alerts with metric evidence and canary window"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Send version-scoped rollback recommendation with supporting evidence",
+        "source": "n7",
+        "target": "n3",
+        "edge_id": "applied:n7__send_version_scoped_rollback_recommenda_e819b804eebfdfef8931c5ab__n3",
+        "relation": "send_version_scoped_rollback_recommenda_e819b804eebfdfef8931c5ab",
+        "technology": "Feedback flow",
+        "description": "Send version-scoped rollback recommendation with supporting evidence"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Rollback initiated or recommendation declined with reason",
+        "source": "n3",
+        "target": "n7",
+        "edge_id": "applied:n3__rollback_initiated_or_recommendation_de_dd7475fb76d7136050f39b8e__n7",
+        "relation": "rollback_initiated_or_recommendation_de_dd7475fb76d7136050f39b8e",
+        "technology": "Feedback flow",
+        "description": "Rollback initiated or recommendation declined with reason"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "n1",
+        "lane": "main",
+        "tier": null,
+        "type": "service",
+        "label": "Serving API",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Application service",
+        "description": "Accepts inference requests, validates request shape, loads the active model version, runs inference, and returns responses with latency and version metadata.",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n2",
+        "lane": "main",
+        "tier": null,
+        "type": "component",
+        "label": "Inference engine",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Component",
+        "description": "Executes loaded model versions against validated requests, enforcing resource limits and returning scored outputs to the Serving API.",
+        "design_origin": "applied",
+        "parent_service_id": "n1"
+      },
+      {
+        "id": "n3",
+        "lane": "main",
+        "tier": null,
+        "type": "service",
+        "label": "Model release service",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Application service",
+        "description": "Curates versioned candidate models with hostile traces, runs offline evaluation, records reviewed immutable releases, and controls canary, promotion, rollback, and recorded outcomes.",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n4",
+        "lane": "main",
+        "tier": null,
+        "type": "datastore",
+        "label": "Model artifact store",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Data store",
+        "description": "Durably stores immutable versioned model artifacts, evaluation evidence, and release records with provenance for each promoted or rolled-back version.",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n5",
+        "lane": "main",
+        "tier": null,
+        "type": "datastore",
+        "label": "Metrics and logs store",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Data store",
+        "description": "Retains correlated serving metrics, request traces, errors, and release outcome logs for audit and operational analysis.",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n6",
+        "lane": "bottom",
+        "tier": null,
+        "type": "component",
+        "label": "Serving Monitor",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Component",
+        "description": "Collects serving latency, error rates, and per-version quality signals, raises alerts on regressions, and reports canary health to operators.",
+        "design_origin": "applied",
+        "parent_service_id": "n1"
+      },
+      {
+        "id": "n7",
+        "lane": "bottom",
+        "tier": null,
+        "type": "component",
+        "label": "Regression analyzer",
+        "layer": "architecture",
+        "detail": null,
+        "technology": "Component",
+        "description": "Correlates Serving Monitor regression alerts with the active model version and canary window, then issues a version-scoped rollback recommendation with supporting evidence to the Model release service.",
+        "design_origin": "applied",
+        "parent_service_id": "n1"
+      }
+    ],
+    "title": "Production model-serving stack with release management and monitoring",
+    "groups": [
+      {
+        "id": "group_serving_services",
+        "kind": "runtime",
+        "label": "Serving services",
+        "nodeIds": [
+          "n1",
+          "n2"
+        ]
+      },
+      {
+        "id": "group_release_management",
+        "kind": "delivery",
+        "label": "Release management",
+        "nodeIds": [
+          "n3"
+        ]
+      },
+      {
+        "id": "group_data_stores",
+        "kind": "data",
+        "label": "Data stores",
+        "nodeIds": [
+          "n4",
+          "n5"
+        ]
+      },
+      {
+        "id": "group_logs_and_monitoring",
+        "kind": "operations",
+        "label": "Logs and monitoring",
+        "nodeIds": [
+          "n6",
+          "n7"
+        ]
+      }
+    ],
+    "version": "520537bd-7894-4fd2-b1b4-72532f51911e",
+    "sequence": [
+      {
+        "step": 1,
+        "nodes": [
+          "n1"
+        ],
+        "description": "Primary flow stage 1"
+      },
+      {
+        "step": 2,
+        "nodes": [
+          "n2"
+        ],
+        "description": "Primary flow stage 2"
+      }
+    ],
+    "graph_type": "architecture",
+    "view_state": {
+      "viewport": {
+        "k": 0.7161458333333334,
+        "x": 32,
+        "y": 210.08333333333331
+      },
+      "zonePadding": {},
+      "layoutVersion": 17,
+      "nodePositions": {
+        "n1": {
+          "x": 137,
+          "y": 106
+        },
+        "n2": {
+          "x": 383,
+          "y": 106
+        },
+        "n3": {
+          "x": 649,
+          "y": 106
+        },
+        "n4": {
+          "x": 1161,
+          "y": 106
+        },
+        "n5": {
+          "x": 915,
+          "y": 106
+        },
+        "n6": {
+          "x": 649,
+          "y": 258
+        }
+      }
+    },
+    "assumptions": [
+      "Models are served behind an inference API; no external writes to third-party systems are owned by this stack.",
+      "The Model release service owns offline-evaluated, human-approved model releases with canary, promotion, and rollback.",
+      "No factual retrieval or RAG path is declared; monitoring reuses only operational metrics and logs."
+    ],
+    "design_origin": "applied",
+    "resolved_complexity": "production"
+  },
+  "rejected_candidate": {
+    "graph_type": "architecture",
+    "title": "Production model-serving stack with release management and monitoring",
+    "nodes": [
+      {
+        "id": "n1",
+        "label": "Serving API",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Accepts inference requests, validates request shape, loads the active model version, runs inference, and returns responses with latency and version metadata.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n2",
+        "label": "Inference engine",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Executes loaded model versions against validated requests, enforcing resource limits and returning scored outputs to the Serving API.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n3",
+        "label": "Model release service",
+        "type": "service",
+        "technology": "Application service",
+        "description": "Curates versioned candidate models with hostile traces, runs offline evaluation, records reviewed immutable releases, and controls canary, promotion, rollback, and recorded outcomes.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n4",
+        "label": "Model artifact store",
+        "type": "datastore",
+        "technology": "Data store",
+        "description": "Durably stores immutable versioned model artifacts, evaluation evidence, and release records with provenance for each promoted or rolled-back version.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n5",
+        "label": "Metrics and logs store",
+        "type": "datastore",
+        "technology": "Data store",
+        "description": "Retains correlated serving metrics, request traces, errors, and release outcome logs for audit and operational analysis.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n6",
+        "label": "Serving Monitor",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Collects serving latency, error rates, and per-version quality signals, raises alerts on regressions, and reports canary health to operators.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n7",
+        "label": "Regression analyzer",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Correlates Serving Monitor regression alerts with the active model version and canary window, then issues a version-scoped rollback recommendation with supporting evidence to the Model release service.",
+        "tier": null,
+        "lane": "bottom",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n8",
+        "label": "Request admission and retry handler",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Caps concurrent inference per model version, sheds excess load with a busy error, retries transient engine failures within a bounded budget, and returns typed errors.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n9",
+        "label": "Version activation controller",
+        "type": "component",
+        "parent_service_id": "n1",
+        "technology": "Component",
+        "description": "Applies deploy commands as loading, active, draining, or retired transitions under a per-target fencing lock, replays duplicate operation IDs, and confirms or rejects with reason.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n10",
+        "label": "Release state machine",
+        "type": "component",
+        "parent_service_id": "n3",
+        "technology": "Component",
+        "description": "Authoritatively owns each release's lifecycle state per serving target, rejecting illegal or stale transitions through optimistic version checks on concurrent updates.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n11",
+        "label": "Deployment operation executor",
+        "type": "component",
+        "parent_service_id": "n3",
+        "technology": "Component",
+        "description": "Sends canary, promote, or rollback commands with a durable operation ID, retries with bounded backoff, reads back the loaded version when unsure, and escalates if unknown.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      },
+      {
+        "id": "n12",
+        "label": "Rollback recommendation intake",
+        "type": "component",
+        "parent_service_id": "n3",
+        "technology": "Component",
+        "description": "Deduplicates rollback recommendations by version and canary window, checks them against current release state, and accepts or declines each with a recorded reason.",
+        "tier": null,
+        "lane": "main",
+        "detail": null,
+        "layer": "architecture",
+        "design_origin": "applied"
+      }
+    ],
+    "edges": [
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Run validated request against active model version",
+        "source": "n1",
+        "target": "n2",
+        "edge_id": "applied:n1__run_validated_request_against_active_mo_68ca38be379f784dc8578947__n2",
+        "relation": "run_validated_request_against_active_mo_68ca38be379f784dc8578947",
+        "technology": "Runtime flow",
+        "description": "Run validated request against active model version"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Return scored outputs with resource status and version metadata",
+        "source": "n2",
+        "target": "n1",
+        "edge_id": "applied:n2__return_scored_outputs_with_resource_sta_f81ba0e77dbd22a02141039f__n1",
+        "relation": "return_scored_outputs_with_resource_sta_f81ba0e77dbd22a02141039f",
+        "technology": "Runtime flow",
+        "description": "Return scored outputs with resource status and version metadata"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Read stored candidate artifact and evaluation evidence for release decisions",
+        "source": "n3",
+        "target": "n4",
+        "edge_id": "applied:n3__read_stored_candidate_artifact_and_eval_555b799b3ac10965635da4c8__n4",
+        "relation": "read_stored_candidate_artifact_and_eval_555b799b3ac10965635da4c8",
+        "technology": "Runtime flow",
+        "description": "Read stored candidate artifact and evaluation evidence for release decisions"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Return immutable versioned artifact, hostile-trace evidence, and provenance",
+        "source": "n4",
+        "target": "n3",
+        "edge_id": "applied:n4__return_immutable_versioned_artifact_hos_4c19fde57fe419c2d07dc300__n3",
+        "relation": "return_immutable_versioned_artifact_hos_4c19fde57fe419c2d07dc300",
+        "technology": "Runtime flow",
+        "description": "Return immutable versioned artifact, hostile-trace evidence, and provenance"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Store reviewed immutable release with evaluation evidence and provenance",
+        "source": "n3",
+        "target": "n4",
+        "edge_id": "applied:n3__store_reviewed_immutable_release_with_e_fabcd65d8e60f356fc07be68__n4",
+        "relation": "store_reviewed_immutable_release_with_e_fabcd65d8e60f356fc07be68",
+        "technology": "Runtime flow",
+        "description": "Store reviewed immutable release with evaluation evidence and provenance"
+      },
+      {
+        "flow": "runtime",
+        "sync": "sync",
+        "label": "Committed: return durable version id; rejected: return reason without mutation",
+        "source": "n4",
+        "target": "n3",
+        "edge_id": "applied:n4__committed_return_durable_version_id_rej_d539c47aa5a1c31e7a67d8cf__n3",
+        "relation": "committed_return_durable_version_id_rej_d539c47aa5a1c31e7a67d8cf",
+        "technology": "Runtime flow",
+        "description": "Committed: return durable version id; rejected: return reason without mutation"
+      },
+      {
+        "flow": "deployment",
+        "sync": "sync",
+        "label": "Deploy canary, promotion, or rollback of approved model version",
+        "source": "n3",
+        "target": "n1",
+        "edge_id": "applied:n3__deploy_canary_promotion_or_rollback_of__ba4077112b78315ef045fdbf__n1",
+        "relation": "deploy_canary_promotion_or_rollback_of__ba4077112b78315ef045fdbf",
+        "technology": "Deployment flow",
+        "description": "Deploy canary, promotion, or rollback of approved model version"
+      },
+      {
+        "flow": "deployment",
+        "sync": "sync",
+        "label": "Loaded version confirmed, or rejection returned with reason and no load",
+        "source": "n1",
+        "target": "n3",
+        "edge_id": "applied:n1__loaded_version_confirmed_or_rejection_r_89845327d11146178b1b2c47__n3",
+        "relation": "loaded_version_confirmed_or_rejection_r_89845327d11146178b1b2c47",
+        "technology": "Deployment flow",
+        "description": "Loaded version confirmed, or rejection returned with reason and no load"
+      },
+      {
+        "flow": "feedback",
+        "sync": "async",
+        "label": "Emit correlated serving metrics, request traces, errors, and version metadata",
+        "source": "n1",
+        "target": "n5",
+        "edge_id": "applied:n1__emit_correlated_serving_metrics_request_3b13ce45083f8429b362a4f4__n5",
+        "relation": "emit_correlated_serving_metrics_request_3b13ce45083f8429b362a4f4",
+        "technology": "Feedback flow",
+        "description": "Emit correlated serving metrics, request traces, errors, and version metadata"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Pull serving latency, error rate, and per-version quality signals",
+        "source": "n6",
+        "target": "n1",
+        "edge_id": "applied:n6__pull_serving_latency_error_rate_and_per_c0f100994443fcb22d986f2b__n1",
+        "relation": "pull_serving_latency_error_rate_and_per_c0f100994443fcb22d986f2b",
+        "technology": "Feedback flow",
+        "description": "Pull serving latency, error rate, and per-version quality signals"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Return current metrics snapshot scoped by model version",
+        "source": "n1",
+        "target": "n6",
+        "edge_id": "applied:n1__return_current_metrics_snapshot_scoped__26475a97fcecb092f684b04d__n6",
+        "relation": "return_current_metrics_snapshot_scoped__26475a97fcecb092f684b04d",
+        "technology": "Feedback flow",
+        "description": "Return current metrics snapshot scoped by model version"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Report canary health and regression alerts for the served version",
+        "source": "n6",
+        "target": "n3",
+        "edge_id": "applied:n6__report_canary_health_and_regression_ale_a5d9429261b1e0961239f779__n3",
+        "relation": "report_canary_health_and_regression_ale_a5d9429261b1e0961239f779",
+        "technology": "Feedback flow",
+        "description": "Report canary health and regression alerts for the served version"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Recorded; regression may trigger rollback decision, healthy canary may promote",
+        "source": "n3",
+        "target": "n6",
+        "edge_id": "applied:n3__recorded_regression_may_trigger_rollbac_0ff3ec71516cbd19e764a605__n6",
+        "relation": "recorded_regression_may_trigger_rollbac_0ff3ec71516cbd19e764a605",
+        "technology": "Feedback flow",
+        "description": "Recorded; regression may trigger rollback decision, healthy canary may promote"
+      },
+      {
+        "flow": "feedback",
+        "sync": "async",
+        "label": "Log canary, promotion, and rollback outcomes with provenance",
+        "source": "n3",
+        "target": "n5",
+        "edge_id": "applied:n3__log_canary_promotion_and_rollback_outco_748a816ab41090f42e52cb1d__n5",
+        "relation": "log_canary_promotion_and_rollback_outco_748a816ab41090f42e52cb1d",
+        "technology": "Feedback flow",
+        "description": "Log canary, promotion, and rollback outcomes with provenance"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Forward version-scoped regression alerts with metric evidence and canary window",
+        "source": "n6",
+        "target": "n7",
+        "edge_id": "applied:n6__forward_version_scoped_regression_alert_266eaa1385fa708594b7d587__n7",
+        "relation": "forward_version_scoped_regression_alert_266eaa1385fa708594b7d587",
+        "technology": "Feedback flow",
+        "description": "Forward version-scoped regression alerts with metric evidence and canary window"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Send version-scoped rollback recommendation with supporting evidence",
+        "source": "n7",
+        "target": "n3",
+        "edge_id": "applied:n7__send_version_scoped_rollback_recommenda_e819b804eebfdfef8931c5ab__n3",
+        "relation": "send_version_scoped_rollback_recommenda_e819b804eebfdfef8931c5ab",
+        "technology": "Feedback flow",
+        "description": "Send version-scoped rollback recommendation with supporting evidence"
+      },
+      {
+        "flow": "feedback",
+        "sync": "sync",
+        "label": "Rollback initiated or recommendation declined with reason",
+        "source": "n3",
+        "target": "n7",
+        "edge_id": "applied:n3__rollback_initiated_or_recommendation_de_dd7475fb76d7136050f39b8e__n7",
+        "relation": "rollback_initiated_or_recommendation_de_dd7475fb76d7136050f39b8e",
+        "technology": "Feedback flow",
+        "description": "Rollback initiated or recommendation declined with reason"
+      },
+      {
+        "source": "n1",
+        "target": "n8",
+        "label": "Admit validated request for active model version under concurrency cap",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Admit validated request for active model version under concurrency cap",
+        "flow": "runtime",
+        "edge_id": "applied:n1__admit_validated_request_for_active_mode_302b484c512fbe78b5ba25d0__n8",
+        "relation": "admit_validated_request_for_active_mode_302b484c512fbe78b5ba25d0"
+      },
+      {
+        "source": "n8",
+        "target": "n2",
+        "label": "Run admitted request with attempt number within retry budget",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Run admitted request with attempt number within retry budget",
+        "flow": "runtime",
+        "edge_id": "applied:n8__run_admitted_request_with_attempt_numbe_a43a08bfcd39990a27abf5ea__n2",
+        "relation": "run_admitted_request_with_attempt_numbe_a43a08bfcd39990a27abf5ea"
+      },
+      {
+        "source": "n2",
+        "target": "n8",
+        "label": "Scored outputs with version metadata, or transient or fatal engine error",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Scored outputs with version metadata, or transient or fatal engine error",
+        "flow": "runtime",
+        "edge_id": "applied:n2__scored_outputs_with_version_metadata_or_86106b2fdcd6d651402a6adc__n8",
+        "relation": "scored_outputs_with_version_metadata_or_86106b2fdcd6d651402a6adc"
+      },
+      {
+        "source": "n8",
+        "target": "n1",
+        "label": "Scored outputs; or typed busy, retries-exhausted, or fatal error for caller",
+        "technology": "Runtime flow",
+        "sync": "sync",
+        "description": "Scored outputs; or typed busy, retries-exhausted, or fatal error for caller",
+        "flow": "runtime",
+        "edge_id": "applied:n8__scored_outputs_or_typed_busy_retries_ex_186cabbdaf1bf2ae949732c3__n1",
+        "relation": "scored_outputs_or_typed_busy_retries_ex_186cabbdaf1bf2ae949732c3"
+      },
+      {
+        "source": "n8",
+        "target": "n1",
+        "label": "Report shed-load, retry-attempt, and typed-error counts per model version",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Report shed-load, retry-attempt, and typed-error counts per model version",
+        "flow": "feedback",
+        "edge_id": "applied:n8__report_shed_load_retry_attempt_and_type_ec75ae5a52ce95b7d9d829bd__n1",
+        "relation": "report_shed_load_retry_attempt_and_type_ec75ae5a52ce95b7d9d829bd"
+      },
+      {
+        "source": "n1",
+        "target": "n9",
+        "label": "Apply relayed deploy command: operation ID, target, version, and action",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Apply relayed deploy command: operation ID, target, version, and action",
+        "flow": "deployment",
+        "edge_id": "applied:n1__apply_relayed_deploy_command_operation__6bd35f7e6d86e22dc21d2c04__n9",
+        "relation": "apply_relayed_deploy_command_operation__6bd35f7e6d86e22dc21d2c04"
+      },
+      {
+        "source": "n9",
+        "target": "n1",
+        "label": "Confirmed loaded version, replayed duplicate-ID result, or rejection with reason",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Confirmed loaded version, replayed duplicate-ID result, or rejection with reason",
+        "flow": "deployment",
+        "edge_id": "applied:n9__confirmed_loaded_version_replayed_dupli_c46855cde572a7a4a6e22688__n1",
+        "relation": "confirmed_loaded_version_replayed_dupli_c46855cde572a7a4a6e22688"
+      },
+      {
+        "source": "n1",
+        "target": "n9",
+        "label": "Query activation status for operation ID on release read-back",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Query activation status for operation ID on release read-back",
+        "flow": "deployment",
+        "edge_id": "applied:n1__query_activation_status_for_operation_i_d93398ebf66c55689f5ba59d__n9",
+        "relation": "query_activation_status_for_operation_i_d93398ebf66c55689f5ba59d"
+      },
+      {
+        "source": "n9",
+        "target": "n1",
+        "label": "Authoritative status for operation ID: committed with version, not found, or applying",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Authoritative status for operation ID: committed with version, not found, or applying",
+        "flow": "deployment",
+        "edge_id": "applied:n9__authoritative_status_for_operation_id_c_027757cb94aacc53e8d563f7__n1",
+        "relation": "authoritative_status_for_operation_id_c_027757cb94aacc53e8d563f7"
+      },
+      {
+        "source": "n9",
+        "target": "n2",
+        "label": "Load, activate, drain, or retire model version under target fencing lock",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Load, activate, drain, or retire model version under target fencing lock",
+        "flow": "deployment",
+        "edge_id": "applied:n9__load_activate_drain_or_retire_model_ver_09f6421c5ac78a3a6136c00e__n2",
+        "relation": "load_activate_drain_or_retire_model_ver_09f6421c5ac78a3a6136c00e"
+      },
+      {
+        "source": "n2",
+        "target": "n9",
+        "label": "Version loaded and serving, drained, or load failed with resource reason",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Version loaded and serving, drained, or load failed with resource reason",
+        "flow": "deployment",
+        "edge_id": "applied:n2__version_loaded_and_serving_drained_or_l_baf81be08408968236bc3d59__n9",
+        "relation": "version_loaded_and_serving_drained_or_l_baf81be08408968236bc3d59"
+      },
+      {
+        "source": "n9",
+        "target": "n1",
+        "label": "Report activation transitions, fencing conflicts, and replayed operation IDs",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Report activation transitions, fencing conflicts, and replayed operation IDs",
+        "flow": "feedback",
+        "edge_id": "applied:n9__report_activation_transitions_fencing_c_093d0d4578f2015baa136062__n1",
+        "relation": "report_activation_transitions_fencing_c_093d0d4578f2015baa136062"
+      },
+      {
+        "source": "n3",
+        "target": "n12",
+        "label": "Pass received rollback recommendation with version, canary window, and evidence",
+        "technology": "Feedback flow",
+        "sync": "sync",
+        "description": "Pass received rollback recommendation with version, canary window, and evidence",
+        "flow": "feedback",
+        "edge_id": "applied:n3__pass_received_rollback_recommendation_w_f4738b60d9238f986e7c1ac2__n12",
+        "relation": "pass_received_rollback_recommendation_w_f4738b60d9238f986e7c1ac2"
+      },
+      {
+        "source": "n12",
+        "target": "n10",
+        "label": "Read current lifecycle state for recommended version and target",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Read current lifecycle state for recommended version and target",
+        "flow": "control",
+        "edge_id": "applied:n12__read_current_lifecycle_state_for_recomm_04254c1ff57da3503ada969c__n10",
+        "relation": "read_current_lifecycle_state_for_recomm_04254c1ff57da3503ada969c"
+      },
+      {
+        "source": "n10",
+        "target": "n12",
+        "label": "Return lifecycle state and state version for that version and target",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Return lifecycle state and state version for that version and target",
+        "flow": "control",
+        "edge_id": "applied:n10__return_lifecycle_state_and_state_versio_744a9b3c53caa3b419cd9fed__n12",
+        "relation": "return_lifecycle_state_and_state_versio_744a9b3c53caa3b419cd9fed"
+      },
+      {
+        "source": "n12",
+        "target": "n3",
+        "label": "Accepted with evidence for rollback approval, duplicate, or declined with recorded reason",
+        "technology": "Feedback flow",
+        "sync": "sync",
+        "description": "Accepted with evidence for rollback approval, duplicate, or declined with recorded reason",
+        "flow": "feedback",
+        "edge_id": "applied:n12__accepted_with_evidence_for_rollback_app_4b38548f2f9dc3a8f598fdba__n3",
+        "relation": "accepted_with_evidence_for_rollback_app_4b38548f2f9dc3a8f598fdba"
+      },
+      {
+        "source": "n3",
+        "target": "n10",
+        "label": "Request approved canary, promote, or rollback transition with target and expected state",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Request approved canary, promote, or rollback transition with target and expected state",
+        "flow": "control",
+        "edge_id": "applied:n3__request_approved_canary_promote_or_roll_d206371e99629a8ceb152799__n10",
+        "relation": "request_approved_canary_promote_or_roll_d206371e99629a8ceb152799"
+      },
+      {
+        "source": "n10",
+        "target": "n3",
+        "label": "Transition accepted with state version and operation ID, or illegal/stale rejected with reason",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Transition accepted with state version and operation ID, or illegal/stale rejected with reason",
+        "flow": "control",
+        "edge_id": "applied:n10__transition_accepted_with_state_version__7b34b28df27f6fdd8e330b23__n3",
+        "relation": "transition_accepted_with_state_version__7b34b28df27f6fdd8e330b23"
+      },
+      {
+        "source": "n10",
+        "target": "n11",
+        "label": "Dispatch accepted transition: version, target, action, approval ref, operation ID",
+        "technology": "Control flow",
+        "sync": "async",
+        "description": "Dispatch accepted transition: version, target, action, approval ref, operation ID",
+        "flow": "control",
+        "edge_id": "applied:n10__dispatch_accepted_transition_version_ta_7bff2a8f0e3b30bb41bfbbae__n11",
+        "relation": "dispatch_accepted_transition_version_ta_7bff2a8f0e3b30bb41bfbbae"
+      },
+      {
+        "source": "n11",
+        "target": "n3",
+        "label": "Relay deploy command to Serving API with operation ID, target, version, and action",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Relay deploy command to Serving API with operation ID, target, version, and action",
+        "flow": "deployment",
+        "edge_id": "applied:n11__relay_deploy_command_to_serving_api_wit_c280aa6af6a482ac3ba2f023__n3",
+        "relation": "relay_deploy_command_to_serving_api_wit_c280aa6af6a482ac3ba2f023"
+      },
+      {
+        "source": "n3",
+        "target": "n11",
+        "label": "Relayed Serving API reply: confirmed loaded version, replayed result, or rejection",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Relayed Serving API reply: confirmed loaded version, replayed result, or rejection",
+        "flow": "deployment",
+        "edge_id": "applied:n3__relayed_serving_api_reply_confirmed_loa_22f5911a5d3232819eb5c8ea__n11",
+        "relation": "relayed_serving_api_reply_confirmed_loa_22f5911a5d3232819eb5c8ea"
+      },
+      {
+        "source": "n11",
+        "target": "n3",
+        "label": "Relay read-back of loaded version for operation ID to Serving API on uncertain outcome",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Relay read-back of loaded version for operation ID to Serving API on uncertain outcome",
+        "flow": "deployment",
+        "edge_id": "applied:n11__relay_read_back_of_loaded_version_for_o_6253643f98cd53c4104c037d__n3",
+        "relation": "relay_read_back_of_loaded_version_for_o_6253643f98cd53c4104c037d"
+      },
+      {
+        "source": "n3",
+        "target": "n11",
+        "label": "Relayed Serving API status: committed with version, not found, or still applying",
+        "technology": "Deployment flow",
+        "sync": "sync",
+        "description": "Relayed Serving API status: committed with version, not found, or still applying",
+        "flow": "deployment",
+        "edge_id": "applied:n3__relayed_serving_api_status_committed_wi_806a40e0d15b281cd59f4a6b__n11",
+        "relation": "relayed_serving_api_status_committed_wi_806a40e0d15b281cd59f4a6b"
+      },
+      {
+        "source": "n11",
+        "target": "n10",
+        "label": "Committed: advance state; rejected: mark failed; unknown after budget: hold and escalate",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Committed: advance state; rejected: mark failed; unknown after budget: hold and escalate",
+        "flow": "control",
+        "edge_id": "applied:n11__committed_advance_state_rejected_mark_f_54eeb12078928e14a385c6cc__n10",
+        "relation": "committed_advance_state_rejected_mark_f_54eeb12078928e14a385c6cc"
+      },
+      {
+        "source": "n10",
+        "target": "n11",
+        "label": "Outcome recorded with new state version, or stale outcome rejected without change",
+        "technology": "Control flow",
+        "sync": "sync",
+        "description": "Outcome recorded with new state version, or stale outcome rejected without change",
+        "flow": "control",
+        "edge_id": "applied:n10__outcome_recorded_with_new_state_version_30b7cf1cd0de517ec541426c__n11",
+        "relation": "outcome_recorded_with_new_state_version_30b7cf1cd0de517ec541426c"
+      },
+      {
+        "source": "n11",
+        "target": "n3",
+        "label": "Report deployment attempts, read-backs, and escalations with operation ID for logging",
+        "technology": "Feedback flow",
+        "sync": "async",
+        "description": "Report deployment attempts, read-backs, and escalations with operation ID for logging",
+        "flow": "feedback",
+        "edge_id": "applied:n11__report_deployment_attempts_read_backs_a_32772d6734c8655aba18b895__n3",
+        "relation": "report_deployment_attempts_read_backs_a_32772d6734c8655aba18b895"
+      }
+    ],
+    "sequence": [
+      {
+        "step": 1,
+        "nodes": [
+          "n1"
+        ],
+        "description": "Primary flow stage 1"
+      },
+      {
+        "step": 2,
+        "nodes": [
+          "n2"
+        ],
+        "description": "Primary flow stage 2"
+      }
+    ],
+    "groups": [
+      {
+        "id": "group_serving_services",
+        "label": "Serving services",
+        "kind": "runtime",
+        "nodeIds": [
+          "n1",
+          "n2",
+          "n8",
+          "n9"
+        ]
+      },
+      {
+        "id": "group_release_management",
+        "label": "Release management",
+        "kind": "delivery",
+        "nodeIds": [
+          "n3",
+          "n10",
+          "n11",
+          "n12"
+        ]
+      },
+      {
+        "id": "group_data_stores",
+        "label": "Data stores",
+        "kind": "data",
+        "nodeIds": [
+          "n4",
+          "n5"
+        ]
+      },
+      {
+        "id": "group_logs_and_monitoring",
+        "label": "Logs and monitoring",
+        "kind": "operations",
+        "nodeIds": [
+          "n6",
+          "n7"
+        ]
+      }
+    ],
+    "design_origin": "applied",
+    "resolved_complexity": "production",
+    "assumptions": [
+      "Models are served behind an inference API; no external writes to third-party systems are owned by this stack.",
+      "The Model release service owns offline-evaluated, human-approved model releases with canary, promotion, and rollback.",
+      "No factual retrieval or RAG path is declared; monitoring reuses only operational metrics and logs."
+    ],
+    "version": "92ba8254-a1a6-45fb-aabf-6464570692bb",
+    "view_state": {
+      "viewport": {
+        "k": 0.7161458333333334,
+        "x": 32,
+        "y": 210.08333333333331
+      },
+      "zonePadding": {},
+      "layoutVersion": 17,
+      "nodePositions": {
+        "n1": {
+          "x": 137,
+          "y": 106
+        },
+        "n2": {
+          "x": 383,
+          "y": 106
+        },
+        "n3": {
+          "x": 649,
+          "y": 106
+        },
+        "n4": {
+          "x": 1161,
+          "y": 106
+        },
+        "n5": {
+          "x": 915,
+          "y": 106
+        },
+        "n6": {
+          "x": 649,
+          "y": 258
+        },
+        "n7": {
+          "x": 649,
+          "y": 390
+        }
+      }
+    }
+  }
+}

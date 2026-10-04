@@ -46,6 +46,7 @@ sys.exit(int(os.environ.get('COMMAND_EXIT', '0')))
     env = {**os.environ, "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
            "CALL_LOG": str(log), "GITHUB_EVENT_NAME": "workflow_dispatch",
            "GITHUB_EVENT_PATH": "event.json", "GITHUB_OUTPUT": str(tmp_path / "output"),
+           "GITHUB_ENV": str(tmp_path / "environment"), "RESUME_JUDGE_CALL_LIMIT": "16",
            "GITHUB_RUN_ID": "2", "GITHUB_RUN_ATTEMPT": "1", "CANDIDATE_URL": "https://new",
            "IMAGE_DIGEST": "sha256:" + "c" * 64,
            "SOURCE_RUN_ID": "", "REVIEWED_DIFF_SHA256": "", "RESUME_REASON": ""}
@@ -130,3 +131,126 @@ def test_semantic_branch_propagates_validator_failure(shell, tmp_path, selective
 def test_missing_or_failed_evidence_cannot_publish(shell, browser, semantic):
     result, _ = shell("Enforce evaluation result", {"BROWSER_OUTCOME": browser, "SEMANTIC_OUTCOME": semantic})
     assert result.returncode != 0
+
+
+@pytest.mark.parametrize("application,judge", [("42", "8"), ("78", "16"), ("1", "1")])
+def test_dispatch_attempt_limits_resolve_before_prepare_and_deployment(
+    shell, tmp_path, application, judge
+):
+    result, calls = shell(
+        "Validate dispatch attempt limits",
+        {
+            "APPLICATION_ATTEMPT_LIMIT": application,
+            "JUDGE_ATTEMPT_LIMIT": judge,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == []
+    assert (tmp_path / "environment").read_text().splitlines() == [
+        f"EVALUATION_PROVIDER_ATTEMPT_LIMIT={application}",
+        f"RESUME_JUDGE_CALL_LIMIT={judge}",
+    ]
+    result, calls = shell(
+        "Validate retained evaluation evidence",
+        {
+            "SOURCE_RUN_ID": "123",
+            "SOURCE_RUN_ATTEMPT": "1",
+            "REVIEWED_DIFF_SHA256": "a" * 64,
+            "RESUME_REASON": "Reviewed repair",
+            "RESUME_JUDGE_CALL_LIMIT": judge,
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    argv = calls[0]
+    assert argv[:3] == ["-m", "eval.pr_resume", "prepare"]
+    assert argv[argv.index("--judge-call-limit") + 1] == judge
+    steps = workflow()["jobs"]["evaluate"]["steps"]
+    names = [item.get("name") for item in steps]
+    assert names.index("Validate dispatch attempt limits") < names.index(
+        "Validate retained evaluation evidence"
+    )
+    assert names.index("Validate dispatch attempt limits") < names.index(
+        "Deploy digest as a no-traffic staging revision"
+    )
+
+
+@pytest.mark.parametrize("field", ["APPLICATION_ATTEMPT_LIMIT", "JUDGE_ATTEMPT_LIMIT"])
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "0",
+        "-1",
+        "79",
+        "9999999999999999999999",
+        "1.0",
+        " 8",
+        "8\n",
+        "01",
+        "$(touch injected)",
+        "8; touch injected",
+    ],
+)
+def test_dispatch_attempt_limits_reject_invalid_values(shell, tmp_path, field, value):
+    result, calls = shell(
+        "Validate dispatch attempt limits",
+        {
+            "APPLICATION_ATTEMPT_LIMIT": "42",
+            "JUDGE_ATTEMPT_LIMIT": "8",
+            field: value,
+        },
+    )
+    assert result.returncode != 0
+    assert calls == []
+    assert not (tmp_path / "environment").exists()
+    assert not (tmp_path / "injected").exists()
+
+
+def test_dispatch_judge_attempt_limit_rejects_seventeen(shell, tmp_path):
+    result, _ = shell(
+        "Validate dispatch attempt limits",
+        {
+            "APPLICATION_ATTEMPT_LIMIT": "42",
+            "JUDGE_ATTEMPT_LIMIT": "17",
+        },
+    )
+    assert result.returncode != 0
+    assert not (tmp_path / "environment").exists()
+
+
+def test_attempt_limit_defaults_leave_ordinary_workflow_caps_unchanged():
+    config = workflow()
+    inputs = config["on" if "on" in config else True]["workflow_dispatch"]["inputs"]
+    assert inputs["application_attempt_limit"] == {
+        "description": "Maximum application provider attempts (1 to 78)",
+        "type": "string",
+        "default": "78",
+    }
+    assert inputs["judge_attempt_limit"]["default"] == "16"
+    assert inputs["judge_attempt_limit"]["type"] == "string"
+    environment = config["jobs"]["evaluate"]["env"]
+    assert environment["EVALUATION_PROVIDER_ATTEMPT_LIMIT"] == 78
+    assert environment["RESUME_JUDGE_CALL_LIMIT"] == 16
+    assert (
+        step("Validate dispatch attempt limits")["if"]
+        == "github.event_name == 'workflow_dispatch'"
+    )
+
+
+@pytest.mark.parametrize("selective", [False, True])
+@pytest.mark.parametrize("judge_limit", ["8", "16"])
+def test_semantic_branches_receive_independent_judge_attempt_limit(
+    shell, tmp_path, selective, judge_limit
+):
+    if selective:
+        directory = tmp_path / "artifacts/live-eval/resume"
+        directory.mkdir(parents=True)
+        (directory / "plan.json").write_text("{}")
+    result, calls = shell("semantic", {"RESUME_JUDGE_CALL_LIMIT": judge_limit})
+    assert result.returncode == 0, result.stderr
+    argv = calls[0]
+    assert argv[:3] == (
+        ["-m", "eval.pr_resume", "judge"] if selective else ["live", "--suite", "pr"]
+    )
+    assert argv.count("--judge-call-limit") == 1
+    assert argv[argv.index("--judge-call-limit") + 1] == judge_limit

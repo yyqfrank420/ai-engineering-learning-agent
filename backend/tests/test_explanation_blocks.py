@@ -1118,3 +1118,135 @@ def test_valid_block_logs_no_rejection(caplog):
         explanation_blocks._normalise_block(block, set(), {"Chapter 6, p.299"}) == block
     )
     assert not caplog.records
+
+
+@pytest.mark.parametrize(
+    "content,metadata,accepted",
+    [
+        ("Uncited claim.", ["https://example.com/source"], False),
+        ("Useful advice.", [], True),
+        ("Claim. [Source](https://example.com/source)", [], True),
+        (
+            "Claim. [Source](https://example.com/source)",
+            ["https://example.com/source"],
+            True,
+        ),
+        (
+            "Claim. [Source](https://example.com/source)",
+            ["https://example.com/other"],
+            False,
+        ),
+        ("Claim. `https://example.com/source`", ["https://example.com/source"], False),
+        (
+            "Claim. [Source](https://example.com/étude?q=café#résumé)",
+            ["https://example.com/%C3%A9tude?q=caf%C3%A9#r%C3%A9sum%C3%A9"],
+            True,
+        ),
+        (
+            "Claim. [Source](https://example.com/%C3%A9tude?q=caf%C3%A9#r%C3%A9sum%C3%A9)",
+            ["https://example.com/étude?q=café#résumé"],
+            True,
+        ),
+        (
+            "Claim. [Source](https://example.com/source?x=1)",
+            ["https://example.com/source"],
+            False,
+        ),
+        (
+            "Claim. [Source](https://invented.example/source)",
+            ["https://example.com/source"],
+            False,
+        ),
+        ("Advice.", ["Chapter 6, p.299"], True),
+    ],
+)
+def test_claimed_web_metadata_requires_same_visible_inline_source(
+    content, metadata, accepted
+):
+    block = {
+        "block_id": "finding",
+        "title": "Finding",
+        "content": content,
+        "related_node_ids": [],
+        "evidence_refs": metadata,
+    }
+    allowed = {
+        "https://example.com/source",
+        "https://example.com/other",
+        "https://example.com/source?x=1",
+        "https://example.com/étude?q=café#résumé",
+        "Chapter 6, p.299",
+    }
+    result = explanation_blocks._normalise_block(block, set(), allowed)
+    assert (result is not None) == accepted
+    if accepted:
+        assert result["content"] == content
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "cited,preserved", [(False, False), (False, True), (True, False)]
+)
+async def test_web_metadata_consistency_rejects_safely_with_one_attempt(
+    monkeypatch, cited, preserved
+):
+    url = "https://example.com/source"
+    calls = []
+    events = []
+    sentence = explanation_blocks._PRESERVED_EDIT_COMPLETION_SENTENCE
+
+    async def provider(**kwargs):
+        calls.append(kwargs)
+        yield (
+            "text",
+            json.dumps(
+                {
+                    "block_id": "finding",
+                    "title": "Finding",
+                    "content": f"Fixed steps bound calls. [Source]({url})"
+                    if cited
+                    else "Uncited claim.",
+                    "related_node_ids": [],
+                    "evidence_refs": [url],
+                }
+            ),
+        )
+
+    async def send(event):
+        events.append(event)
+
+    monkeypatch.setattr(explanation_blocks, "stream_response", provider)
+    response = await explanation_blocks.stream_explanation_blocks(
+        model="test",
+        system="system",
+        messages=[
+            {
+                "role": "user",
+                "content": f"<trusted_turn_result>Publication state: preserved. {sentence}</trusted_turn_result>"
+                if preserved
+                else "explain",
+            }
+        ],
+        effort="low",
+        max_output_tokens=4500,
+        timeout_seconds=10,
+        telemetry={},
+        send=send,
+        graph_version="v1",
+        allowed_node_ids=set(),
+        allowed_evidence_refs={url},
+        provider_attempt_limit=1,
+        allow_fallback=False,
+    )
+    blocks = [event for event in events if event["type"] == "explanation_block"]
+    assert len(calls) == 1
+    assert calls[0]["provider_attempt_limit"] == 1
+    assert len(blocks) == 1
+    assert response == f"## {blocks[0]['title']}\n\n{blocks[0]['content']}"
+    assert (url in response) == cited
+    if not cited:
+        assert "Uncited claim" not in response
+        assert blocks[0]["title"] == "Explanation unavailable"
+        assert any(event.get("status") == "degraded" for event in events)
+    if preserved:
+        assert response.endswith(sentence)

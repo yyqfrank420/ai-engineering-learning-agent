@@ -161,7 +161,7 @@ def test_component_gate_prompt_includes_capability_metadata_from_evidence(monkey
     }
     assert "capability_classification" in prompt
     assert calls[0]["telemetry"]["metadata"]["prompt_version"] == (
-        "staged_component_gate_v26"
+        "staged_component_gate_v27"
     )
     assert (
         "architecture_context is the same bounded evidence and review frame" in prompt
@@ -475,7 +475,7 @@ def test_initial_generation_and_gate_share_every_applicable_requirement(
         elif stage == "connections" and code == "edge_semantics":
             assert "Block a missing required input or answer return" in requirement
             assert "a path that bypasses a required control" in requirement
-            assert "duplicate description is advisory unless" in requirement
+            assert "duplicate description is advisory only when" in requirement
         elif stage == "components" and code == "mece_scope":
             assert "Block conflicting material ownership" in requirement
             assert "naming preferences are advisory" in requirement
@@ -660,7 +660,7 @@ def test_connection_gate_prompt_scopes_runtime_completeness_to_accepted_context(
     assert result["approved"] is True
     assert (
         calls[0]["telemetry"]["metadata"]["prompt_version"]
-        == "staged_connection_gate_v31"
+        == "staged_connection_gate_v37"
     )
     assert "candidate_context.capabilities" in prompt
     assert "candidate_context.assumptions" in prompt
@@ -898,6 +898,11 @@ def test_connection_review_prompt_assembles_problematic_exchange_evidence(
     assert "a write verdict is not read data" in prompt
     assert "redundant processed-artifact return is advisory" in prompt
     assert "One-way events need no reply" in prompt
+    assert (
+        "parent_service_id establishes containment, not implicit runtime forwarding"
+        in prompt
+    )
+    assert "Require explicit contracts for every cross-component hop" in prompt
 
 
 @pytest.mark.parametrize("maturity", ["prototype", "production"])
@@ -1102,6 +1107,10 @@ def test_successful_review_retains_identity_and_complete_rule_audit(monkeypatch,
     )
 
     assert result["review_identity"] == gate.review_identity(stage, "prototype")
+    assert calls[0]["effort"] == ("medium" if stage == "components" else "low")
+    assert calls[0]["model"] == gate.settings.graph_qa_model
+    assert calls[0]["max_output_tokens"] == gate.settings.graph_qa_max_completion_tokens
+    assert calls[0]["provider_attempt_limit"] == 1
     assert (
         result["checked_rules"]
         == calls[0]["response_schema"]["properties"]["rule_reviews"]["items"][
@@ -1125,7 +1134,7 @@ def test_review_identity_invalidates_changed_review_policy(monkeypatch, stage, c
             gate.settings, "graph_temperature", gate.settings.graph_temperature + 0.1
         )
     elif change == "effort":
-        monkeypatch.setattr(gate, "_GATE_EFFORT", "high")
+        monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, stage, "high")
     elif change == "prompt_version":
         field = (
             "_COMPONENT_GATE_PROMPT_VERSION"
@@ -2448,3 +2457,462 @@ def test_applicable_retrieval_findings_still_block_publication(monkeypatch, reas
     assert result["findings"][0]["rule_code"] == "retrieval_and_reuse_trust"
     assert result["findings"][0]["record_indexes"] == [0]
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("attempt", [0, 1])
+def test_connection_authoring_and_repair_receive_output_delivery_rule(
+    maturity, attempt
+):
+    write_set = {"mode": "edit", "component_ids": [], "edge_ids": ["result-edge"]}
+    findings = [
+        {
+            "code": "edge_semantics",
+            "path": "connections",
+            "rule": "edge_semantics",
+            "reason": "Commit status loses the execution output.",
+            "record_indexes": [0],
+        }
+    ]
+    prompt, _ = generation._attempt_prompt(
+        stage="connections",
+        request="Preserve the result path while editing the contract.",
+        resolved_maturity=maturity,
+        write_set=write_set,
+        upstream_fingerprint="a" * 64,
+        attempt=attempt,
+        prior_prompt_fingerprint="b" * 64 if attempt else None,
+        prior_write_set_fingerprint=generation._fingerprint(write_set)
+        if attempt
+        else None,
+        structural_findings=[],
+        gate_findings=findings if attempt else [],
+        base={"edges": []},
+        rejected_candidate={"edges": []} if attempt else None,
+        accepted_components=[],
+    )
+    payload = json.loads(prompt.split("\nINPUT\n", 1)[1])
+    assert (
+        payload["acceptance_criteria"]["edge_semantics"]
+        == staged_review_requirements("connections", maturity)["edge_semantics"]
+    )
+    assert "Preserve this output route during scoped edits and repairs" in prompt
+    assert "Name the actual needed output data in each forwarding connection" in prompt
+    assert (
+        "Generic 'success', 'failure', or 'outcome' does not imply a result payload"
+        in prompt
+    )
+    assert (
+        "tool observations or result content, with execution status as accompanying data"
+        in prompt
+    )
+    if attempt:
+        assert payload["findings"]["gate"] == findings
+
+
+@pytest.mark.parametrize("route", ["status_only", "direct", "forwarded", "persisted"])
+def test_output_route_evidence_and_controlled_verdict_reach_connection_gate(
+    monkeypatch, route
+):
+    # Controlled reviewer verdicts test evidence transport and gate enforcement.
+    # They do not establish that a model distinguishes these contracts.
+    components = [
+        {
+            "id": "consumer",
+            "responsibility": "Use execution output to answer the caller.",
+        },
+        {
+            "id": "executor",
+            "responsibility": "Execute work and produce tool observations and result content.",
+        },
+        {"id": "validator", "responsibility": "Validate and forward execution output."},
+        {
+            "id": "store",
+            "responsibility": "Persist execution output for consumer reads.",
+        },
+    ]
+    routes = {
+        "status_only": [
+            ("executor", "validator", "execution output"),
+            ("validator", "consumer", "success or failure outcome"),
+        ],
+        "direct": [("executor", "consumer", "execution output")],
+        "forwarded": [
+            ("executor", "validator", "execution output"),
+            (
+                "validator",
+                "consumer",
+                "tool observations and result content with execution status",
+            ),
+        ],
+        "persisted": [
+            ("executor", "store", "persist tool observations and result content"),
+            ("consumer", "store", "read tool observations and result content"),
+            ("store", "consumer", "stored tool observations and result content"),
+        ],
+    }
+    records = [
+        {"source": source, "target": target, "label": label}
+        for source, target, label in routes[route]
+    ]
+    findings = (
+        [
+            {
+                "rule_code": "edge_semantics",
+                "record_indexes": [1],
+                "reason": "Validator returns status alone; consumer cannot obtain execution output.",
+            }
+        ]
+        if route == "status_only"
+        else []
+    )
+    calls = _stub_response(
+        monkeypatch, {"approved": not findings, "findings": findings}
+    )
+    result = asyncio.run(
+        gate.review_connections(
+            user_request="Execute work and answer using its output.",
+            evidence_bundle={"candidate_components": components},
+            resolved_maturity="prototype",
+            candidate_records=records,
+        )
+    )
+    prompt = calls[0]["messages"][0]["content"]
+    assert json.loads(
+        prompt.split("Immutable candidate records: ", 1)[1].split("\n", 1)[0]
+    ) == [
+        {"record_index": index, "record": record}
+        for index, record in enumerate(records)
+    ]
+    assert (
+        "Every intermediary contract must name the actual required payload"
+        in prompt
+    )
+    assert (
+        "return is advisory only after the declared consumer has a complete output route"
+        in prompt
+    )
+    assert result["approved"] is (route != "status_only")
+    assert result["findings"] == findings
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_output_payload_clarification_is_connection_stage_only(
+    stage, maturity
+):
+    authored, _ = generation._attempt_prompt(
+        stage=stage,
+        request="Draw an agent loop using tool observations to answer.",
+        resolved_maturity=maturity,
+        write_set=generation.create_write_set(component_limit=4, edge_limit=6),
+        upstream_fingerprint="a" * 64,
+        attempt=0,
+        prior_prompt_fingerprint=None,
+        prior_write_set_fingerprint=None,
+        structural_findings=[],
+        gate_findings=[],
+        base=None,
+        rejected_candidate=None,
+        architecture_context="Accepted evidence frame."
+        if stage == "components"
+        else None,
+    )
+    reviewed = gate._prompt(
+        gate=stage,
+        user_request="Draw an agent loop using tool observations to answer.",
+        evidence_bundle={},
+        resolved_maturity=maturity,
+        candidate_records=[],
+        required_production_guarantees=(),
+    )
+    rule = "Generic 'success', 'failure', or 'outcome' does not imply a result payload"
+    assert (rule in authored) is (stage == "connections")
+    assert (rule in reviewed) is (stage == "connections")
+    forwarding = "Name the actual needed output data in each forwarding connection"
+    assert (forwarding in authored) is (stage == "connections")
+    assert (forwarding in reviewed) is (stage == "connections")
+    if stage == "connections":
+        assert generation._CONNECTION_PROMPT_VERSION == "staged_connections_v40"
+        assert gate._CONNECTION_GATE_PROMPT_VERSION == "staged_connection_gate_v37"
+    else:
+        assert generation._COMPONENT_PROMPT_VERSION == "staged_components_v46"
+        assert gate._COMPONENT_GATE_PROMPT_VERSION == "staged_component_gate_v27"
+
+
+@pytest.mark.parametrize("changed_stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_stage_effort_changes_only_owning_review_identity(
+    monkeypatch, changed_stage, maturity
+):
+    identities = {
+        stage: gate.review_identity(stage, maturity)
+        for stage in ("components", "connections")
+    }
+    monkeypatch.setitem(gate._GATE_EFFORT_BY_STAGE, changed_stage, "high")
+
+    for stage, identity in identities.items():
+        assert (gate.review_identity(stage, maturity) != identity) is (
+            stage == changed_stage
+        )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_low_effort_connection_review_rejects_old_medium_policy_approval(
+    monkeypatch, maturity
+):
+    current = gate.review_identity("connections", maturity)
+    component_identity = gate.review_identity("components", maturity)
+    with monkeypatch.context() as previous:
+        previous.setitem(gate._GATE_EFFORT_BY_STAGE, "connections", "medium")
+        previous.setattr(
+            gate, "_CONNECTION_GATE_PROMPT_VERSION", "staged_connection_gate_v35"
+        )
+        old = gate.review_identity("connections", maturity)
+        assert gate.review_identity("components", maturity) == component_identity
+
+    assert old != current
+    with pytest.raises(ValueError, match="policy differs"):
+        gate._previous_review_evidence(
+            {"stage": "connections", "approved": True, "review_identity": old},
+            gate="connections",
+            identity=current,
+            rule_codes=(),
+            records=[],
+            evidence_bundle={},
+        )
+
+
+def _round8_rag_route_evidence():
+    # Synthetic round8 graph only; controlled replay does not prove model compliance.
+    return json.loads(
+        (Path(__file__).parent / "fixtures" / "staged_rag_37155240613.json").read_text()
+    )
+
+
+@pytest.mark.parametrize("stage", ["components", "connections"])
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.asyncio
+async def test_round9_criteria_reach_initial_and_correction_dispatch(
+    monkeypatch, stage, maturity
+):
+    retained = _round8_rag_route_evidence()
+    evidence = retained["evidence_bundle"]
+    records = (
+        evidence["candidate_components"]
+        if stage == "components"
+        else retained["records"]
+    )
+    calls = _stub_response(monkeypatch, {"approved": True, "findings": []})
+    review = getattr(gate, f"review_{stage}")
+    previous = None
+    context = generation._accepted_context(
+        {
+            key: evidence["candidate_context"][key]
+            for key in ("assumptions", "capabilities")
+        }
+    )
+    guarantees = production_proofs_for_capabilities(
+        context.prompt_value()["capabilities"], maturity=maturity
+    )
+    requirements = staged_review_requirements(
+        stage, maturity, guarantees if stage == "connections" else ()
+    )
+    for attempt in (0, 1):
+        result = await review(
+            user_request=retained["request"],
+            evidence_bundle=evidence,
+            resolved_maturity=maturity,
+            candidate_records=records,
+            previous_review=previous,
+            required_production_guarantees=guarantees,
+        )
+        assert result["approved"] is True
+        prompt = calls[-1]["messages"][0]["content"]
+        for requirement in requirements.values():
+            assert requirement in prompt
+        assert json.dumps(
+            records, ensure_ascii=False, separators=(",", ":")
+        ) in prompt or all(
+            json.dumps(record, ensure_ascii=False, separators=(",", ":")) in prompt
+            for record in records
+        )
+        previous = {
+            "stage": stage,
+            "review_identity": result["review_identity"],
+            "candidate_records": records,
+            "evidence_bundle": evidence,
+            "rule_reviews": result["rule_reviews"],
+        }
+        write_set = generation.create_write_set(component_limit=8, edge_limit=16)
+        author_prompt, fingerprint = generation._attempt_prompt(
+            stage=stage,
+            request=retained["request"],
+            resolved_maturity=maturity,
+            write_set=write_set,
+            upstream_fingerprint="a" * 64,
+            attempt=attempt,
+            prior_prompt_fingerprint="b" * 64 if attempt else None,
+            prior_write_set_fingerprint=generation._fingerprint(write_set)
+            if attempt
+            else None,
+            structural_findings=[],
+            gate_findings=[
+                {
+                    "code": "brief_coverage"
+                    if stage == "components"
+                    else "edge_semantics",
+                    "path": "components" if stage == "components" else "connections",
+                    "rule": "brief_coverage"
+                    if stage == "components"
+                    else "edge_semantics",
+                    "reason": "Required retrieval responsibility has no owner."
+                    if stage == "components"
+                    else "Required payload is lost.",
+                }
+            ]
+            if attempt
+            else [],
+            base=None,
+            rejected_candidate={"edges": retained["records"]} if attempt else None,
+            accepted_components=evidence["candidate_components"]
+            if stage == "connections"
+            else None,
+            accepted_context=context,
+            architecture_context="Synthetic graph evidence."
+            if stage == "components"
+            else None,
+        )
+        author_calls = []
+
+        async def author_stream(**kwargs):
+            author_calls.append(kwargs)
+            return _response({})
+
+        monkeypatch.setattr(generation, "stream_structured_llm", author_stream)
+        schema = (
+            generation.component_generation_schema(write_set)
+            if stage == "components"
+            else generation.connection_generation_schema(write_set)
+        )
+        if stage == "components":
+            schema = generation._component_create_response_schema(schema)
+        await generation._run_generation(
+            stage=stage,
+            prompt=author_prompt,
+            prompt_fingerprint=fingerprint,
+            schema=schema,
+            state={},
+            attempt=attempt,
+            upstream_fingerprint="a" * 64,
+            write_set=write_set,
+            timeout_seconds=None,
+            max_output_tokens=None,
+        )
+        delivered = author_calls[0]["messages"][0]["content"]
+        payload = json.loads(delivered.split("\nINPUT\n", 1)[1])
+        assert payload["acceptance_criteria"] == requirements
+        if stage == "connections":
+            assert (
+                "Trace required input data and execution output to each declared consumer"
+                in delivered
+            )
+            assert (
+                "Containment or generic parent lifecycle ownership alone cannot supply child output"
+                in prompt
+            )
+            assert "declared producer, consumer, and actual required payload" in prompt
+            assert "record indexes for every cross-component hop" in prompt
+            if maturity == "production":
+                assert (
+                    "Answer-only inference with no model-proposed actions needs no per-action proposal validator"
+                    in delivered
+                )
+                assert (
+                    "model-selected read-only or internal tools still require it"
+                    in prompt
+                )
+
+
+@pytest.mark.parametrize(
+    "stage,version",
+    [
+        ("components", "staged_component_gate_v26"),
+        ("connections", "staged_connection_gate_v36"),
+    ],
+)
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+def test_round9_gate_release_rejects_immediately_prior_approval(
+    monkeypatch, stage, version, maturity
+):
+    current = gate.review_identity(stage, maturity)
+    field = (
+        "_COMPONENT_GATE_PROMPT_VERSION"
+        if stage == "components"
+        else "_CONNECTION_GATE_PROMPT_VERSION"
+    )
+    with monkeypatch.context() as old_policy:
+        old_policy.setattr(gate, field, version)
+        prior = gate.review_identity(stage, maturity)
+        assert gate._GATE_EFFORT_BY_STAGE[stage] == (
+            "medium" if stage == "components" else "low"
+        )
+    with pytest.raises(ValueError, match="policy differs"):
+        gate._previous_review_evidence(
+            {"stage": stage, "approved": True, "review_identity": prior},
+            gate=stage,
+            identity=current,
+            rule_codes=(),
+            records=[],
+            evidence_bundle={},
+        )
+
+
+@pytest.mark.parametrize("maturity", ["prototype", "production"])
+@pytest.mark.parametrize("missing", ["answer", "chunks"])
+def test_round8_rag_missing_payload_findings_reach_gate_without_graph_changes(
+    monkeypatch, maturity, missing
+):
+    retained = _round8_rag_route_evidence()
+    snapshot = json.dumps(retained, sort_keys=True)
+    findings = [
+        {
+            "rule_code": "edge_semantics",
+            "record_indexes": [11, 9, 1],
+            "reason": "Producer n7 returns generated answer text to n4 at hop11, but n4 returns only an augmented prompt at hop9; consumer n2 cannot receive that answer before hop1.",
+        },
+    ]
+    if missing == "chunks":
+        findings = [
+            {
+                "rule_code": "edge_semantics",
+                "record_indexes": [7, 3, 8],
+                "reason": "Producer n6 returns chunk text to n3 at hop7, but n3 returns only references and scores at hop3; consumer n4 needs retrieved chunks at hop8.",
+            }
+        ]
+    calls = _stub_response(monkeypatch, {"findings": findings})
+    result = asyncio.run(
+        gate.review_connections(
+            user_request=retained["request"],
+            evidence_bundle=retained["evidence_bundle"],
+            resolved_maturity=maturity,
+            candidate_records=retained["records"],
+        )
+    )
+    assert result["approved"] is False
+    assert result["findings"] == findings
+    prompt = calls[0]["messages"][0]["content"]
+    for index in (3, 7, 8, 9, 11):
+        assert (
+            json.dumps(
+                {"record_index": index, "record": retained["records"][index]},
+                separators=(",", ":"),
+            )
+            in prompt
+        )
+    assert "parent_service_id" in prompt
+    assert (
+        "An explicit reply naming another artifact does not supply that output"
+        in prompt
+    )
+    assert json.dumps(retained, sort_keys=True) == snapshot

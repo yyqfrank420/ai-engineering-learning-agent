@@ -1,0 +1,179 @@
+{
+  "request": "Explain retrieval-augmented generation, ground the explanation in the AI Engineering material, and draw the runtime flow.",
+  "evidence_bundle": {
+    "candidate_components": [
+      {
+        "id": "n1",
+        "label": "Learner's chat client",
+        "type": "client",
+        "responsibility": "Lets a user ask a natural-language question and displays the grounded answer with its supporting sources."
+      },
+      {
+        "id": "n2",
+        "label": "RAG conversation service",
+        "type": "service",
+        "responsibility": "Owns the RAG request lifecycle: accepts the question, retrieves relevant knowledge, augments the prompt, calls the model, and returns the answer."
+      },
+      {
+        "id": "n3",
+        "label": "Query retrieval",
+        "type": "component",
+        "responsibility": "Embeds the incoming question and searches the vector index for the most relevant knowledge chunks to supplement the prompt.",
+        "parent_service_id": "n2"
+      },
+      {
+        "id": "n4",
+        "label": "Prompt assembly",
+        "type": "component",
+        "responsibility": "Builds the retrieval-augmented prompt by combining the user's question, instructions, and retrieved chunks before sending it to the model.",
+        "parent_service_id": "n2"
+      },
+      {
+        "id": "n5",
+        "label": "Vector index of knowledge chunks",
+        "type": "datastore",
+        "responsibility": "Stores embeddings of knowledge-base chunks so retrieval can find passages semantically related to the question."
+      },
+      {
+        "id": "n6",
+        "label": "Knowledge chunk store",
+        "type": "datastore",
+        "responsibility": "Stores the source documents and chunk text that retrieved passages are drawn from and cited back to."
+      },
+      {
+        "id": "n7",
+        "label": "External foundation model API",
+        "type": "external",
+        "responsibility": "Generates the answer text from the augmented prompt using a general-purpose hosted language model."
+      }
+    ],
+    "candidate_context": {
+      "title": "Retrieval-Augmented Generation Runtime Flow",
+      "assumptions": [
+        "The diagram teaches the RAG pattern from the AI Engineering material rather than designing a specific product.",
+        "The foundation model is accessed as an external inference API; the system does not train or update it.",
+        "Knowledge content is prepared and indexed ahead of time; the runtime flow only reads it.",
+        "Responses are generated for the requesting user only and do not write to any external system."
+      ],
+      "root_index": 0,
+      "capabilities": {
+        "external_effects": false,
+        "learning_or_release": false,
+        "retrieval_or_reuse": true
+      },
+      "detail_level": "standard"
+    },
+    "connection_exchanges": [
+      {
+        "request_record_index": 0,
+        "response_record_index": 1
+      },
+      {
+        "request_record_index": 2,
+        "response_record_index": 3
+      },
+      {
+        "request_record_index": 4,
+        "response_record_index": 5
+      },
+      {
+        "request_record_index": 6,
+        "response_record_index": 7
+      },
+      {
+        "request_record_index": 8,
+        "response_record_index": 9
+      },
+      {
+        "request_record_index": 10,
+        "response_record_index": 11
+      }
+    ]
+  },
+  "records": [
+    {
+      "source": "n1",
+      "target": "n2",
+      "label": "User asks a natural-language question",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n1",
+      "label": "Grounded answer text with supporting source citations",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n3",
+      "label": "Find knowledge chunks relevant to the question",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n2",
+      "label": "Ranked relevant chunk references with similarity scores",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n5",
+      "label": "Embed question and search the vector index",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n5",
+      "target": "n3",
+      "label": "Top matching chunk identifiers from the index",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n3",
+      "target": "n6",
+      "label": "Read source chunk text for matched identifiers",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n6",
+      "target": "n3",
+      "label": "Chunk text with source references for citation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n2",
+      "target": "n4",
+      "label": "Assemble prompt from question and retrieved chunks",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n2",
+      "label": "Augmented prompt combining instructions, question, and chunks",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n4",
+      "target": "n7",
+      "label": "Send augmented prompt to the model for generation",
+      "flow": "runtime",
+      "sync": "sync"
+    },
+    {
+      "source": "n7",
+      "target": "n4",
+      "label": "Generated answer text grounded in the retrieved chunks",
+      "flow": "runtime",
+      "sync": "sync"
+    }
+  ]
+}

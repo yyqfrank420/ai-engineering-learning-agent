@@ -20,7 +20,7 @@ def evidence():
                **identity, "target": "http://browser", "backend_target": "https://old", "started_at": "today",
                "dashboard_smoke": {"passed": True}, "case_states": [], "results": [], "application_telemetry": []}
     semantic = {"format_version": 1, "execution_mode": "staging_gate", "kind": "live_gate", "suite": "pr", "status": "fail", "target": "https://old",
-                **identity, "evaluations": []}
+                **identity, "manual_review_policy": "blocking", "evaluations": []}
     calibration = corpus.approval.calibration
     for index, case_id in enumerate(ids):
         thread = f"thread-{index}"
@@ -42,6 +42,14 @@ def evidence():
         semantic["evaluations"].append({"id": case_id, "decision": "fail" if failed else "pass" if judgments else "infrastructure",
             "reason": "judge infrastructure failure: InternalServerError: 503 overloaded", "judgments": judgments,
             "deterministic_failures": failures})
+    semantic["application_telemetry"] = copy.deepcopy(browser["application_telemetry"])
+    for result, evaluation in zip(browser["results"], semantic["evaluations"], strict=True):
+        derived = resume.live_runner._service_expansion_failures(
+            result, corpus.by_id[result["id"]], semantic["application_telemetry"],
+        )
+        if derived:
+            evaluation.update(decision="fail", judgments=[],
+                              deterministic_failures=[*result["deterministic_failures"], *derived])
     return browser, semantic, corpus, ids
 
 
@@ -59,7 +67,7 @@ def test_partition_keeps_full_provenance_and_does_not_regenerate_passes():
     browser, semantic, corpus, ids = evidence()
     before = copy.deepcopy(browser)
     groups = resume.partition(browser, semantic, corpus, ids)
-    assert groups == {"fresh": [ids[3]], "replay": [ids[2], *ids[4:]], "carried": ids[:2]}
+    assert groups == {"fresh": [ids[3], ids[5]], "replay": [ids[2], ids[4], *ids[6:]], "carried": ids[:2]}
     subset = resume.subset_browser_capture(browser, selected_case_ids=groups["replay"],
                  expected_source_case_ids=ids, forbidden_operation_prefixes=())
     assert subset["results"] == [row for row in browser["results"] if row["id"] in groups["replay"]]
@@ -213,10 +221,12 @@ def test_restrictive_judge_budget_defaults_and_remainder():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("source_kind", ["infrastructure", "manual_review"])
-@pytest.mark.parametrize("outcome", ["pass", "exhausted", "manual_review", "attempt_tamper"])
+@pytest.mark.parametrize("source_kind", ["infrastructure", "manual_review", "report-only"])
+@pytest.mark.parametrize("outcome", ["pass", "exhausted", "manual_review", "attempt_tamper", "policy_tamper", "budget_missing", "budget_zero", "budget_expand", "budget_bool", "budget_within_9", "budget_within_16", "phase_overrun"])
 async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls(tmp_path, monkeypatch, source_kind, outcome):
-    browser, semantic, corpus, ids = manual_evidence() if source_kind == "manual_review" else evidence()
+    browser, semantic, corpus, ids = evidence() if source_kind == "infrastructure" else manual_evidence()
+    if source_kind == "report-only":
+        semantic["manual_review_policy"] = "report-only"
     run, pr, deployment, kwargs = provenance()
     identity = resume.validate_run_identity(run, pr, deployment, **kwargs)
     groups = resume.partition(browser, semantic, corpus, ids)
@@ -227,16 +237,32 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
     current = {"run_id": "2", "head": kwargs["head"], "tree": kwargs["current_tree"]}
     plan = {"source": identity, "repository": "owner/repo", "artifact": artifact,
             "reviewed_diff_sha256": "0" * 64, "current": current, "partition": groups, "case_ids": ids,
-            "old_backend_target": "https://old", "source_file_sha256": {k: resume.sha256(v) for k, v in raw.items()}}
+            "old_backend_target": "https://old", "judge_call_limit": 8,
+            "manual_review_policy": semantic["manual_review_policy"], "source_file_sha256": {k: resume.sha256(v) for k, v in raw.items()}}
     if outcome == "attempt_tamper":
         plan["source"] = {**identity, "run_attempt": 2}
+    if outcome == "policy_tamper":
+        plan["manual_review_policy"] = "report-only" if semantic["manual_review_policy"] == "blocking" else "blocking"
+    elif outcome == "budget_missing":
+        plan.pop("judge_call_limit")
+    elif outcome in {"budget_zero", "budget_expand", "budget_bool"}:
+        plan["judge_call_limit"] = {"budget_zero": 0, "budget_expand": 17, "budget_bool": True}[outcome]
+    elif outcome in {"budget_within_9", "budget_within_16"}:
+        plan["judge_call_limit"] = 9 if outcome == "budget_within_9" else 16
     resume.write_json(tmp_path / "plan.json", plan)
     (tmp_path / "source.zip").write_bytes(archive)
     fresh = copy.deepcopy(browser)
     fresh.update(suite="diagnostic", backend_target="https://new", started_at="2026-01-01T00:00:01Z")
-    fresh["results"] = [dict(browser["results"][3], thread_id="fresh-thread", passed=True, deterministic_failures=[], failure_details=[])]
-    fresh["application_telemetry"] = [{"thread_id": "fresh-thread", "request_id": "fresh-request", "created_at_epoch": 1767225601}]
-    fresh["case_states"] = [browser["case_states"][3]]
+    fresh["results"] = [
+        dict(row, thread_id=f"fresh-{row['id']}", passed=True,
+             deterministic_failures=[], failure_details=[])
+        for row in browser["results"] if row["id"] in groups["fresh"]
+    ]
+    fresh["application_telemetry"] = [
+        {"thread_id": row["thread_id"], "request_id": f"request-{row['id']}",
+         "created_at_epoch": 1767225601} for row in fresh["results"]
+    ]
+    fresh["case_states"] = [row for row in browser["case_states"] if row["id"] in groups["fresh"]]
     fresh_path = tmp_path / "fresh.json"
     resume.write_json(fresh_path, fresh)
     monkeypatch.setenv("GITHUB_RUN_ID", "2")
@@ -268,43 +294,67 @@ async def test_judge_phases_share_budget_and_replay_has_no_new_application_calls
         evaluations = []
         for case_id in args.case:
             judgment = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
-            judgment["dimensions"] = [{"dimension": name, "grade": "borderline" if args.capture_replay and outcome == "manual_review" else "pass", "critical": corpus.rubrics[name].critical,
+            judgment["dimensions"] = [{"dimension": name, "grade": "borderline" if outcome == "manual_review" else "pass", "critical": corpus.rubrics[name].critical,
                                       "evidence": ["[turn-1-answer-1] source"], "rationale": "supported"}
                                      for name in corpus.by_id[case_id].rubric_dimensions]
-            decision = "manual_review" if args.capture_replay and outcome == "manual_review" else "pass"
+            decision = "manual_review" if outcome == "manual_review" else "pass"
             evaluations.append({"id": case_id, "decision": decision, "judgments": [judgment], "deterministic_failures": []})
-        return {"status": "fail" if args.capture_replay and outcome == "manual_review" else "pass", "budget": {"judge_calls": 16 if outcome == "exhausted" else len(args.case)}, "evaluations": evaluations,
+        return {"status": "manual_review" if outcome == "manual_review" else "pass", "budget": {"judge_calls": args.judge_call_limit + 1 if outcome == "phase_overrun" else args.judge_call_limit if outcome == "exhausted" else len(args.case)}, "evaluations": evaluations,
                 "estimated_cost": {"application_usd": 0 if args.capture_replay else 0.1},
                 "cost_accounting": {}}, 0
 
     from pathlib import Path
     monkeypatch.setattr(resume.live_runner, "evaluate", evaluate)
     monkeypatch.setattr(resume.live_runner, "_write_outputs", resume.write_json)
-    args = argparse.Namespace(input=str(fresh_path), deployment=str(proof_path), target="https://new", output_dir=str(tmp_path))
+    args = argparse.Namespace(input=str(fresh_path), deployment=str(proof_path), target="https://new", output_dir=str(tmp_path), judge_call_limit=8)
+    if outcome in {"policy_tamper", "budget_missing", "budget_zero", "budget_expand", "budget_bool", "budget_within_9", "budget_within_16"}:
+        with pytest.raises(ValueError, match="policy mismatch|invalid plan judge budget|differs from explicit judge limit"):
+            await resume.judge(args)
+        assert calls == []
+        assert not (tmp_path / "judge-reservation.json").exists()
+        return
+    if outcome == "phase_overrun":
+        with pytest.raises(ValueError, match="phase exceeded judge budget"):
+            await resume.judge(args)
+        assert len(calls) == 1
+        assert not (tmp_path / "combined-evidence.json").exists()
+        return
     if outcome == "attempt_tamper":
         with pytest.raises(ValueError, match="attempt mismatch"):
             await resume.judge(args)
         assert calls == []
         assert not (tmp_path / "judge-reservation.json").exists()
         return
-    if outcome == "exhausted":
+    if outcome == "exhausted" and groups["replay"]:
         with pytest.raises(ValueError, match="budget exhausted"):
             await resume.judge(args)
         assert len(calls) == 1
         assert (tmp_path / "fresh-live-results.json").exists()
         assert not (tmp_path / "combined-evidence.json").exists()
         return
-    assert await resume.judge(args) == (1 if outcome == "manual_review" else 0)
-    assert [c.judge_call_limit for c in calls] == [16, 15]
-    assert [c.capture_replay for c in calls] == [False, True]
+    blocked = outcome == "manual_review" and semantic["manual_review_policy"] == "blocking"
+    assert await resume.judge(args) == (1 if blocked else 0)
+    expected_limits = [8] + ([8 - len(groups["fresh"])] if groups["replay"] else [])
+    assert [c.judge_call_limit for c in calls] == expected_limits
+    assert [c.capture_replay for c in calls] == [False] + ([True] if groups["replay"] else [])
     combined = json.loads((tmp_path / "combined-evidence.json").read_text())
-    assert combined["new_judge_calls"] == (3 if source_kind == "manual_review" else 6)
-    assert combined["status"] == ("fail" if outcome == "manual_review" else "pass")
-    assert calls[0].case == groups["fresh"] and calls[1].case == groups["replay"]
-    assert all(call.manual_review_policy == "blocking" for call in calls)
-    assert combined["new_cost_accounting"]["replay"]["application_usd"] == 0
+    assert combined["new_judge_calls"] == (8 if outcome == "exhausted" else len(groups["fresh"]) + len(groups["replay"]))
+    assert combined["status"] == ("fail" if blocked else "pass")
+    assert calls[0].case == groups["fresh"]
+    assert all(call.manual_review_policy == semantic["manual_review_policy"] for call in calls)
+    if groups["replay"]:
+        assert calls[1].case == groups["replay"]
+        assert combined["new_cost_accounting"]["replay"]["application_usd"] == 0
     assert len(combined["cases"]) == 8
     assert next(c for c in combined["cases"] if c["id"] == ids[0])["application_source"] == identity
+    if source_kind == "report-only":
+        assert len(calls) == 1
+        for case_id in (ids[2], ids[4]):
+            carried = next(c for c in combined["cases"] if c["id"] == case_id)
+            assert carried["mode"] == "carried"
+            assert carried["evaluation"] == next(e for e in semantic["evaluations"] if e["id"] == case_id)
+            assert carried["evaluation"]["decision"] == "manual_review"
+            assert carried["judgment_source"] == carried["application_source"] == identity
     with pytest.raises(ValueError, match="already attempted"):
         await resume.judge(args)
 
@@ -379,7 +429,7 @@ def manual_evidence():
     browser, semantic, corpus, ids = evidence()
     template = copy.deepcopy(semantic["evaluations"][0]["judgments"][0])
     for index, row in enumerate(semantic["evaluations"]):
-        if index == 3:
+        if row["deterministic_failures"]:
             continue
         judgment = copy.deepcopy(template)
         judgment["dimensions"] = [
@@ -395,8 +445,8 @@ def manual_evidence():
 def test_validated_manual_review_is_replayed_and_never_carried():
     browser, semantic, corpus, ids = manual_evidence()
     assert resume.partition(browser, semantic, corpus, ids) == {
-        "fresh": [ids[3]], "replay": [ids[2], ids[4]],
-        "carried": [ids[0], ids[1], *ids[5:]],
+        "fresh": [ids[3], ids[5]], "replay": [ids[2], ids[4]],
+        "carried": [ids[0], ids[1], *ids[6:]],
     }
 
 
@@ -545,3 +595,214 @@ def test_run_identity_rejects_invalid_attempt_metadata(attempt):
         run["run_attempt"] = attempt
     with pytest.raises(ValueError, match="invalid source run attempt"):
         resume.validate_run_identity(run, pr, deployment, **kwargs)
+
+
+@pytest.mark.parametrize("browser_passed", [True, False])
+@pytest.mark.parametrize("tamper", [None, "omitted", "additional", "decision", "judgments"])
+def test_browser_version_reuse_requires_fresh_service_case_with_missing_turn_graph(tamper, browser_passed):
+    browser, semantic, corpus, ids = evidence()
+    result = browser["results"][5]
+    graph = {"version": "approved-1", "nodes": [{"id": "service", "type": "service"}]}
+    result["graph"] = graph
+    result["turns"] = [
+        {"turn": 1, "graph": graph},
+        {"turn": 2, "graph": graph},
+        {"turn": 3, "request_id": "expand-3", "graph": None},
+    ]
+    browser_failures = [] if browser_passed else [
+        "case graph-expansion turn 3 reused graph version approved-1"
+    ]
+    result.update(passed=browser_passed, deterministic_failures=browser_failures,
+                  failure_details=[] if browser_passed else [{
+                      "kind": "quality", "code": "required_graph_version_reused",
+                      "message": browser_failures[0], "blocking": True, "retryable": False,
+                  }])
+    evaluation = semantic["evaluations"][5]
+    failures = [*browser_failures, "service expansion turn 3: missing prior or expanded turn graph"]
+    evaluation.update(decision="fail", judgments=[], deterministic_failures=failures.copy())
+    if tamper == "omitted":
+        evaluation["deterministic_failures"] = browser_failures.copy()
+    elif tamper == "additional":
+        evaluation["deterministic_failures"].append("invented failure")
+    elif tamper == "decision":
+        evaluation["decision"] = "infrastructure"
+    elif tamper == "judgments":
+        evaluation["judgments"] = [semantic["evaluations"][0]["judgments"][0]]
+    before = copy.deepcopy((browser, semantic))
+    if tamper is not None:
+        with pytest.raises(ValueError):
+            resume.partition(browser, semantic, corpus, ids)
+    else:
+        assert result["passed"] is browser_passed
+        assert result["deterministic_failures"] == browser_failures
+        assert evaluation["deterministic_failures"] == failures
+        assert ids[5] in resume.partition(browser, semantic, corpus, ids)["fresh"]
+    assert (browser, semantic) == before
+
+
+@pytest.mark.parametrize("telemetry", [None, {}, [None], ["invalid"]])
+def test_partition_rejects_invalid_persisted_application_telemetry(telemetry):
+    browser, semantic, corpus, ids = evidence()
+    semantic["application_telemetry"] = telemetry
+    with pytest.raises(ValueError, match="invalid source application telemetry"):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("mutation", ["missing", "model", "fallback", "correlation"])
+def test_partition_recomputes_service_provider_evidence_from_semantic_telemetry(mutation):
+    browser, semantic, corpus, ids = evidence()
+    case = corpus.by_id[ids[5]]
+    expectation = case.steps[2].service_expansion
+    parents = [{"id": f"service-{index}", "type": "service", "label": label}
+               for index, label in enumerate(expectation.target_service_labels)]
+    prior = {"nodes": parents}
+    expanded = {"nodes": [*parents, *[
+        {"id": f"internal-{index}", "type": "component", "technology": "Component",
+         "parent_service_id": node["id"]} for index, node in enumerate(parents)
+    ]]}
+    result = browser["results"][5]
+    result["turns"] = [{"turn": 2, "graph": prior},
+                       {"turn": 3, "graph": expanded, "request_id": "expand-3"}]
+    calls = [{"thread_id": result["thread_id"], "request_id": "expand-3",
+              "operation": operation, "provider_attempts": 1, "status": "success",
+              "model": expectation.specialist_model, "effort": expectation.specialist_effort,
+              "specialist_tool_version": "service-expansion-v1",
+              "service_expansion_complexity": "high",
+              "target_service_ids": [node["id"] for node in parents], "fallback": False}
+             for operation in ("staged_graph_components", "staged_graph_connections")]
+    semantic["application_telemetry"].extend(calls)
+    browser["application_telemetry"].extend(copy.deepcopy(calls))
+    evaluation = semantic["evaluations"][5]
+    evaluation.update(decision="infrastructure", judgments=[], deterministic_failures=[])
+    assert ids[5] in resume.partition(browser, semantic, corpus, ids)["replay"]
+    if mutation == "missing":
+        semantic["application_telemetry"].remove(calls[0])
+    elif mutation == "model":
+        calls[0]["model"] = "unexpected-model"
+    elif mutation == "fallback":
+        calls[0]["fallback"] = True
+    else:
+        calls[0]["request_id"] = "another-request"
+    with pytest.raises(ValueError, match="deterministic evidence mismatch"):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("mutation,expected_error", [
+    (None, None),
+    ("legacy_source", None),
+    ("raised_helper_limit", "restrictive budget helper changed"),
+    ("unrelated_runner", "live runner changed beyond restrictive budget support"),
+    ("live_policy", "live evaluation policy changed"),
+    ("eval_definition", "evaluation definition changed"),
+])
+def test_eval_code_gate_authenticates_actual_runner_and_manifest(monkeypatch, mutation, expected_error):
+    from pathlib import Path
+
+    runner_path = resume.ROOT / "backend/eval/live_runner.py"
+    manifest_path = resume.ROOT / "ci/quality.json"
+    runner = runner_path.read_text()
+    manifest = manifest_path.read_text()
+    source_manifest = json.loads(manifest)
+    current_runner = runner
+    source_runner = runner
+    if mutation == "legacy_source":
+        helper = runner[runner.index("def _restricted_judge_limit("):runner.index("async def evaluate(")]
+        parser_addition = (
+            '    parser.add_argument(\n'
+            '        "--judge-call-limit", type=int, help="Restrict the suite judge-call budget"\n'
+            '    )\n'
+        )
+        budget_call = (
+            'judge_calls=_restricted_judge_limit(\n'
+            '            args, limits["judge_calls"] if is_pr_budget else 40\n'
+            '        ),'
+        )
+        assert runner.count(parser_addition) == runner.count(budget_call) == 1
+        source_runner = runner.replace(parser_addition, "").replace(helper, "").replace(
+            budget_call, 'judge_calls=limits["judge_calls"] if is_pr_budget else 40,'
+        )
+        assert "_restricted_judge_limit" not in source_runner
+        assert "--judge-call-limit" not in source_runner
+        compile(source_runner, "legacy-live-runner.py", "exec")
+    if mutation == "raised_helper_limit":
+        current_runner = runner.replace("1 <= limit <= default", "1 <= limit <= default + 1")
+        assert current_runner != runner
+    elif mutation == "unrelated_runner":
+        current_runner = runner + "\n# Unrelated evaluation change.\n"
+    elif mutation == "live_policy":
+        source_manifest["live"]["budgets"]["judge_calls"] -= 1
+    original_read = Path.read_text
+    original_command = resume.command
+
+    def read_text(path, *args, **kwargs):
+        if path == runner_path:
+            return current_runner
+        return original_read(path, *args, **kwargs)
+
+    def source_command(*args):
+        if args == ("git", "show", "source:ci/quality.json"):
+            return json.dumps(source_manifest).encode()
+        if args == ("git", "show", "source:backend/eval/live_runner.py"):
+            return source_runner.encode()
+        if mutation == "eval_definition" and args == (
+            "git", "rev-parse", "source:backend/eval/semantic_gate.py"
+        ):
+            return b"changed-source-definition"
+        return original_command(*(
+            "HEAD" + arg[len("source"):] if arg == "source" or arg.startswith("source:") else arg
+            for arg in args
+        ))
+
+    monkeypatch.setattr(Path, "read_text", read_text)
+    monkeypatch.setattr(resume, "command", source_command)
+    if expected_error is None:
+        resume.validate_eval_code("source")
+    else:
+        with pytest.raises(ValueError, match=expected_error):
+            resume.validate_eval_code("source")
+
+
+@pytest.mark.parametrize("policy", [None, "", "pass", True])
+def test_source_review_policy_is_required_and_validated(policy):
+    browser, semantic, corpus, ids = manual_evidence()
+    if policy is None:
+        semantic.pop("manual_review_policy")
+    else:
+        semantic["manual_review_policy"] = policy
+    with pytest.raises(ValueError, match="manual-review policy"):
+        resume.partition(browser, semantic, corpus, ids)
+
+
+@pytest.mark.parametrize("limit", [None, 0, -1, 17, True, "8"])
+def test_prepare_invalid_budget_fails_before_authentication(limit, monkeypatch):
+    def forbidden(*args):
+        pytest.fail("invalid budget must not authenticate or fetch artifacts")
+    monkeypatch.setattr(resume, "authenticated_inputs", forbidden)
+    with pytest.raises(ValueError, match="judge budget|judge-call-limit"):
+        resume.prepare(argparse.Namespace(judge_call_limit=limit))
+
+
+def test_report_only_never_carries_semantic_or_deterministic_failure():
+    browser, semantic, corpus, ids = manual_evidence()
+    semantic["manual_review_policy"] = "report-only"
+    dimensions = semantic["evaluations"][0]["judgments"][0]["dimensions"]
+    next(d for d in dimensions if d["critical"])["grade"] = "fail"
+    semantic["evaluations"][0]["decision"] = "fail"
+    groups = resume.partition(browser, semantic, corpus, ids)
+    assert ids[0] in groups["fresh"]
+    assert ids[3] in groups["fresh"]
+    assert not set(groups["fresh"]) & set(groups["carried"])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("limit", [None, 0, -1, 17, True, "8"])
+async def test_judge_requires_valid_explicit_budget_before_authentication(tmp_path, monkeypatch, limit):
+    def forbidden(*args):
+        pytest.fail("invalid explicit judge budget must not authenticate or fetch artifacts")
+    monkeypatch.setattr(resume, "authenticated_inputs", forbidden)
+    args = argparse.Namespace(output_dir=str(tmp_path))
+    if limit is not None:
+        args.judge_call_limit = limit
+    with pytest.raises(ValueError, match="judge budget|judge-call-limit"):
+        await resume.judge(args)
+    assert not (tmp_path / "judge-reservation.json").exists()

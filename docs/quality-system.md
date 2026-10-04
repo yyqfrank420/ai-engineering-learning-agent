@@ -261,6 +261,29 @@ original/derived hashes, source run/head/tested commit/tree/digest, selection,
 artifact digest, replay commit/actor, reviewer, and reason. Selective replay is
 review evidence only and does not itself publish an image approval or deploy.
 
+The `Live eval required` workflow also supports failed-only PR verification through
+`workflow_dispatch`. Supply `source_run_id`, `source_run_attempt`,
+`reviewed_diff_sha256`, and a review `reason`. The diff hash is SHA256 of
+`git diff --binary SOURCE_HEAD CANDIDATE_HEAD`. Optional
+`application_attempt_limit` and `judge_attempt_limit` inputs restrict the default
+78/16 attempt caps. Both must be positive integers within those defaults.
+
+The resume lane authenticates the failed protected PR attempt, uploaded artifact,
+deployment, unchanged base, candidate tree, reviewed diff, corpus and judges.
+Quality-failed cases run again on fresh application threads. Judge infrastructure
+failures replay their saved captures. Validated passing cases retain their original
+application and judgment lineage. The authenticated source manual-review policy
+also applies to the combined result: report-only `manual_review` cases retain their
+literal decision and old lineage without new calls; blocking ones replay and remain
+blocking until resolved. Retained outcomes are not fresh verification of the repair.
+
+`eval.pr_resume prepare` saves the selection and explicit judge budget before
+deployment. `eval.pr_resume judge` revalidates that budget against the workflow
+argument, reserves it once, and shares the remainder across fresh and replay phases.
+The combined artifact records each case's original or fresh evidence. The native
+required check and image approval require complete validated coverage under that
+policy. A new paid attempt requires explicit operator authorization.
+
 PR evaluation limits are eight cases, 78 application provider attempts, and 16
 judge provider attempts. The current PR corpus has 42 first-pass calls and up to 70
 logical application calls on its complete repair paths. Allowed retries and fallbacks

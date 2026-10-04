@@ -23,13 +23,19 @@ from playwright.async_api import (
     BrowserContext,
     Error as PlaywrightError,
     Page,
+    Response,
     TimeoutError as PlaywrightTimeoutError,
     WebSocket,
     async_playwright,
 )
 
 from agent.complexity import diagram_submission_action
-from eval.quality_corpus import EvaluationCase, corpus_sha256, load_corpus
+from eval.quality_corpus import (
+    EvaluationCase,
+    ServiceExpansionExpectation,
+    corpus_sha256,
+    load_corpus,
+)
 from eval.response_capture import extract_response_text, extract_response_turns
 from eval.runtime_budget import (
     application_turn_timeout_seconds,
@@ -197,6 +203,20 @@ async def _internal_session(
 
 def _serialized_session(session: dict[str, Any]) -> str:
     return json.dumps(session, separators=(",", ":"))
+
+
+def _session_init_script(session: dict[str, Any], frontend_target: str) -> str:
+    return (
+        "if (location.origin !== 'null' && location.origin === new URL("
+        + json.dumps(frontend_target)
+        + ").origin && !localStorage.getItem("
+        + json.dumps(EVAL_AUTH_STORAGE_KEY)
+        + ")) localStorage.setItem("
+        + json.dumps(EVAL_AUTH_STORAGE_KEY)
+        + ", "
+        + json.dumps(_serialized_session(session))
+        + ");"
+    )
 
 
 async def _wait_for_composer_ready(page: Page, *, timeout_seconds: int = 30) -> None:
@@ -627,11 +647,9 @@ def _persisted_graph_failure(
     return None
 
 
-def _graph_expansion_failure(
+def _graph_preservation_failure(
     previous_graph: dict[str, Any],
     current_graph: dict[str, Any],
-    *,
-    anchor_label_contains: str,
 ) -> tuple[str, str] | None:
     if current_graph.get("title") != previous_graph.get("title"):
         return (
@@ -729,6 +747,26 @@ def _graph_expansion_failure(
             "graph_expansion_prior_assumption_missing",
             "graph expansion removed a prior assumption",
         )
+    return None
+
+
+def _graph_expansion_failure(
+    previous_graph: dict[str, Any],
+    current_graph: dict[str, Any],
+    *,
+    anchor_label_contains: str,
+) -> tuple[str, str] | None:
+    preservation_failure = _graph_preservation_failure(previous_graph, current_graph)
+    if preservation_failure is not None:
+        return preservation_failure
+    previous_nodes = {
+        str(node.get("id") or ""): node for node in previous_graph.get("nodes") or []
+    }
+    current_nodes = {
+        str(node.get("id") or ""): node for node in current_graph.get("nodes") or []
+    }
+    previous_node_ids = set(previous_nodes)
+    current_node_ids = set(current_nodes)
     added_node_ids = current_node_ids - previous_node_ids
     if len(added_node_ids) != 1:
         return (
@@ -762,6 +800,66 @@ def _graph_expansion_failure(
         return (
             "graph_expansion_new_node_not_connected",
             "graph expansion did not connect the new node to the requested prior component",
+        )
+    return None
+
+
+def _service_expansion_failure(
+    previous_graph: dict[str, Any],
+    current_graph: dict[str, Any],
+    expectation: ServiceExpansionExpectation,
+) -> tuple[str, str] | None:
+    preservation_failure = _graph_preservation_failure(previous_graph, current_graph)
+    if preservation_failure is not None:
+        return preservation_failure
+    previous_nodes = previous_graph.get("nodes") or []
+    current_nodes = current_graph.get("nodes") or []
+    current_ids = [node.get("id") for node in current_nodes]
+    if any(
+        not isinstance(node_id, str) or not node_id for node_id in current_ids
+    ) or len(current_ids) != len(set(current_ids)):
+        return (
+            "service_expansion_node_identity_invalid",
+            "service expansion requires distinct nonempty node IDs",
+        )
+    parents = {}
+    for label in expectation.target_service_labels:
+        matches = [
+            node
+            for node in previous_nodes
+            if node.get("type") == "service" and node.get("label") == label
+        ]
+        if len(matches) != 1:
+            return (
+                "service_expansion_target_missing_or_ambiguous",
+                f"prior graph must contain exactly one application service named {label!r}",
+            )
+        parents[matches[0]["id"]] = label
+    previous_ids = {node["id"] for node in previous_nodes}
+    additions = [node for node in current_nodes if node["id"] not in previous_ids]
+    counts = dict.fromkeys(parents, 0)
+    for node in additions:
+        if node.get("type") != "component":
+            return (
+                "service_expansion_new_node_type_mismatch",
+                "service expansion must add internal components only",
+            )
+        parent_id = node.get("parent_service_id")
+        if not isinstance(parent_id, str) or parent_id not in parents:
+            return (
+                "service_expansion_component_parent_invalid",
+                "new component must belong to a requested prior application service",
+            )
+        if node.get("technology") != "Component":
+            return (
+                "service_expansion_component_display_mismatch",
+                "service expansion internals must display the Component type",
+            )
+        counts[parent_id] += 1
+    if any(not 1 <= count <= 3 for count in counts.values()):
+        return (
+            "service_expansion_component_count_mismatch",
+            "each requested service must receive one to three internal components",
         )
     return None
 
@@ -1215,21 +1313,29 @@ async def _send_case_steps(
             ) from exc
         if render_failure is not None:
             raise BrowserQualityError(*render_failure)
-        if case.steps[step_index].graph_expansion is not None:
+        step = case.steps[step_index]
+        if step.graph_expansion is not None or step.service_expansion is not None:
             if previous_turn_graph is None or turn_graph is None:
                 raise BrowserQualityError(
-                    "graph_expansion_baseline_missing",
+                    (
+                        "service_expansion_baseline_missing"
+                        if step.service_expansion is not None
+                        else "graph_expansion_baseline_missing"
+                    ),
                     f"case {case.id} turn {step_index + 1} has no prior graph baseline",
                 )
-            expansion_failure = _graph_expansion_failure(
-                previous_turn_graph,
-                turn_graph,
-                anchor_label_contains=(
-                    case.steps[
-                        step_index
-                    ].graph_expansion.new_node_connected_to_prior_label_contains
-                ),
-            )
+            if step.service_expansion is not None:
+                expansion_failure = _service_expansion_failure(
+                    previous_turn_graph,
+                    turn_graph,
+                    step.service_expansion,
+                )
+            else:
+                expansion_failure = _graph_expansion_failure(
+                    previous_turn_graph,
+                    turn_graph,
+                    anchor_label_contains=step.graph_expansion.new_node_connected_to_prior_label_contains,
+                )
             if expansion_failure is not None:
                 raise BrowserQualityError(*expansion_failure)
         if turn_graph is not None:
@@ -1675,6 +1781,28 @@ def _exception_failure_detail(exc: Exception) -> FailureDetail:
     return _failure_detail("quality", "browser_attempt_exception", message)
 
 
+async def _created_thread_id(
+    response: Response, frontend_target: str, backend_target: str
+) -> str | None:
+    """Capture only explicit thread creation in this attempt's browser context."""
+    if (
+        response.request.method != "POST"
+        or response.url
+        not in {
+            target.rstrip("/") + "/api/threads"
+            for target in (frontend_target, backend_target)
+        }
+        or not 200 <= response.status < 300
+    ):
+        return None
+    payload = await response.json()
+    thread = payload.get("thread") if isinstance(payload, dict) else None
+    thread_id = thread.get("id") if isinstance(thread, dict) else None
+    if not isinstance(thread_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", thread_id):
+        raise ValueError("successful thread creation omitted a valid thread identity")
+    return thread_id
+
+
 async def _delete_thread(backend_target: str, token: str, thread_id: str) -> None:
     try:
         await asyncio.to_thread(
@@ -1771,6 +1899,18 @@ async def _run_cases_bounded(
     return [item for item in ordered if item is not None]
 
 
+def _attempt_thread_ids(attempts: list[dict[str, Any]]) -> list[str]:
+    """Retain all attempt-owned cleanup IDs alongside generation identities."""
+    return list(
+        dict.fromkeys(
+            str(thread_id)
+            for attempt in attempts
+            for thread_id in attempt.get("thread_ids") or [attempt.get("thread_id")]
+            if thread_id
+        )
+    )
+
+
 def _merge_attempt_results(
     previous: dict[str, Any], latest: dict[str, Any]
 ) -> dict[str, Any]:
@@ -1782,13 +1922,7 @@ def _merge_attempt_results(
     result["attempts"] = attempts
     result["attempt_count"] = len(attempts)
     result["retried"] = len(attempts) > 1
-    result["thread_ids"] = list(
-        dict.fromkeys(
-            str(attempt["thread_id"])
-            for attempt in attempts
-            if attempt.get("thread_id")
-        )
-    )
+    result["thread_ids"] = _attempt_thread_ids(attempts)
     return result
 
 
@@ -1905,9 +2039,7 @@ async def _run_case_with_retries(
     result["attempts"] = attempts
     result["attempt_count"] = len(attempts)
     result["retried"] = len(attempts) > 1
-    result["thread_ids"] = [
-        attempt["thread_id"] for attempt in attempts if attempt.get("thread_id")
-    ]
+    result["thread_ids"] = _attempt_thread_ids(attempts)
     return result
 
 
@@ -1939,15 +2071,7 @@ async def _run_browser_attempt(
         # trace screenshots during multi-minute model waits make captures huge
         # without adding useful timing evidence.
         await context.tracing.start(screenshots=False, snapshots=True, sources=True)
-        await context.add_init_script(
-            "if (!localStorage.getItem("
-            + json.dumps(EVAL_AUTH_STORAGE_KEY)
-            + ")) localStorage.setItem("
-            + json.dumps(EVAL_AUTH_STORAGE_KEY)
-            + ", "
-            + json.dumps(_serialized_session(session))
-            + ");"
-        )
+        await context.add_init_script(_session_init_script(session, args.target))
         page = await context.new_page()
     except PlaywrightError as exc:
         if "context" in locals():
@@ -1956,6 +2080,16 @@ async def _run_browser_attempt(
             "browser_context_bootstrap_failed",
             f"browser context bootstrap failed: {type(exc).__name__}: {exc}",
         ) from exc
+    creation_tasks: list[asyncio.Task[str | None]] = []
+
+    def capture_creation(response: Response) -> None:
+        creation_tasks.append(
+            asyncio.create_task(
+                _created_thread_id(response, args.target, args.backend_target)
+            )
+        )
+
+    context.on("response", capture_creation)
     page.on("websocket", lambda socket: _capture_socket(frames, socket))
     artifact_stem = f"{case.id}.attempt-{attempt_number}"
     raw_trace = artifact_dir / f".playwright-trace.{artifact_stem}.raw.zip"
@@ -1967,6 +2101,63 @@ async def _run_browser_attempt(
     turn_graphs: list[dict[str, Any]] = []
     failure_details: list[FailureDetail] = []
     execution_state = "completed"
+
+    async def finalize_threads() -> list[str]:
+        # Stop accepting callbacks and finish response bodies before closing the context.
+        # A preflight failure may have created a thread without ever starting a WS turn.
+        context.remove_listener("response", capture_creation)
+        created_ids: list[str] = []
+        if creation_tasks:
+            _, pending = await asyncio.wait(creation_tasks, timeout=30)
+            for task in pending:
+                task.cancel()
+            outcomes = await asyncio.gather(*creation_tasks, return_exceptions=True)
+        else:
+            outcomes = []
+        for outcome in outcomes:
+            if isinstance(outcome, BaseException):
+                failure_details.append(
+                    _failure_detail(
+                        "infrastructure",
+                        "thread_creation_capture_failed",
+                        "failed to capture an eval thread creation response",
+                    )
+                )
+            elif outcome is not None:
+                created_ids.append(outcome)
+        cleanup_ids = list(
+            dict.fromkeys(
+                [
+                    *created_ids,
+                    *[
+                        frame["message"]["thread_id"]
+                        for frame in frames
+                        if frame["direction"] == "sent"
+                        and frame["message"].get("type") == "start"
+                        and frame["message"].get("thread_id")
+                    ],
+                ]
+            )
+        )
+        if case.deterministic.cleanup:
+            for cleanup_id in cleanup_ids:
+                try:
+                    await _delete_thread(
+                        args.backend_target,
+                        session["access_token"],
+                        cleanup_id,
+                    )
+                except Exception as exc:
+                    failure_details.append(
+                        _failure_detail(
+                            "infrastructure",
+                            "cleanup_failed",
+                            f"cleanup failed: {type(exc).__name__}: {exc}",
+                        )
+                    )
+
+        return cleanup_ids
+
     try:
         try:
             try:
@@ -2143,22 +2334,6 @@ async def _run_browser_attempt(
                             _failure_detail("quality", *graph_failure)
                         )
 
-        if thread_id and case.deterministic.cleanup:
-            try:
-                await _delete_thread(
-                    args.backend_target,
-                    session["access_token"],
-                    thread_id,
-                )
-            except Exception as exc:
-                failure_details.append(
-                    _failure_detail(
-                        "infrastructure",
-                        "cleanup_failed",
-                        f"cleanup failed: {type(exc).__name__}: {exc}",
-                    )
-                )
-
         answers = extract_response_turns(case_events)
         graph_evidence_by_turn = {
             int(item["turn"]): item
@@ -2198,6 +2373,7 @@ async def _run_browser_attempt(
             "rendered_node_ids": rendered_node_ids,
             "rendered_edge_identities": rendered_edge_identities,
             "thread_id": thread_id,
+            "thread_ids": [],
             "screenshot": screenshot_relative,
             "trace": str(trace.relative_to(artifact_dir)),
             "latency_ms": int((time.monotonic() - case_started) * 1000),
@@ -2208,6 +2384,32 @@ async def _run_browser_attempt(
         result["passed"] = not deterministic
         return result
     finally:
+        # Shield the entire capture/deletion operation, including cancellation that
+        # arrives after submission or while response bodies are still draining.
+        finalizer = asyncio.create_task(finalize_threads())
+        finalizer_cancelled = False
+        while not finalizer.done():
+            try:
+                await asyncio.shield(finalizer)
+            except asyncio.CancelledError:
+                finalizer_cancelled = True
+        cleanup_ids = finalizer.result()
+        if finalizer_cancelled:
+            failure_details.append(
+                _failure_detail(
+                    "infrastructure",
+                    "browser_case_cancelled",
+                    f"browser suite cancelled case {case.id} during cleanup",
+                )
+            )
+        if "result" in locals():
+            result["thread_ids"] = cleanup_ids
+            result["deterministic_failures"] = [
+                item["message"] for item in failure_details
+            ]
+            result["passed"] = not failure_details
+            if finalizer_cancelled:
+                result["execution_state"] = "cancelled"
         try:
             await context.tracing.stop(path=raw_trace)
             await asyncio.to_thread(
@@ -2244,6 +2446,9 @@ async def _run_browser_attempt(
                     result["failure_details"].append(detail)
                     result["deterministic_failures"].append(detail["message"])
                     result["passed"] = False
+
+        if finalizer_cancelled and "result" not in locals():
+            raise asyncio.CancelledError
 
 
 async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
@@ -2293,13 +2498,7 @@ async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
                     screenshots=True, snapshots=True, sources=True
                 )
                 await context.add_init_script(
-                    "if (!localStorage.getItem("
-                    + json.dumps(EVAL_AUTH_STORAGE_KEY)
-                    + ")) localStorage.setItem("
-                    + json.dumps(EVAL_AUTH_STORAGE_KEY)
-                    + ", "
-                    + json.dumps(_serialized_session(session))
-                    + ");"
+                    _session_init_script(session, args.target)
                 )
                 page = await context.new_page()
                 browser_events: list[dict[str, str]] = []

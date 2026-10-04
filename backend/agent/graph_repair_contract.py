@@ -29,6 +29,7 @@ _NODE_TYPES = frozenset(
         "external",
         "control",
         "decision",
+        "component",
     }
 )
 _NODE_OPERATION_FIELDS = frozenset({"label", "type", "technology", "description"})

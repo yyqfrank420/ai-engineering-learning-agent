@@ -57,6 +57,30 @@ def test_failure_diagnostic_rejects_unsafe_optional_details():
     assert "private" not in json.dumps(diagnostic)
 
 
+@pytest.mark.parametrize(
+    "reason,path",
+    [
+        ("component_parent_invalid", "components.private_output.parent_index"),
+        ("private output", "components.0.parent_index"),
+        ("component_parent_forbidden", "components.0.private_output"),
+    ],
+)
+def test_parent_retry_finding_rejects_unknown_reason_and_unsafe_path(reason, path):
+    error = generation.StagedGenerationError(
+        "component_wire_invalid",
+        diagnostic_reason=reason,
+        diagnostic_path=path,
+    )
+    finding = workflow._safe_finding(error, stage="components")
+    assert finding == {
+        "code": "component_wire_invalid",
+        "path": "components",
+        "rule": "contract_validation",
+        "reason": "component_wire_invalid",
+    }
+    assert "private" not in json.dumps(finding)
+
+
 def test_captured_gate_reason_reaches_correction_without_losing_route_context():
     capture = json.loads(
         (
@@ -1122,6 +1146,67 @@ def test_scoped_renames_keep_server_identity_when_labels_match_prior_nodes(first
         ("n1", "Payment service"),
         ("n2", "Request gateway"),
     ]
+
+
+@pytest.mark.parametrize("order", [(0, 1, 2, 4, 3), (0, 2, 1, 4, 3)])
+def test_unscoped_rebuild_keeps_same_label_component_details_with_parent(order):
+    wire = _components_wire()
+    wire["components"].append(
+        {**wire["components"][1], "label": "Order service"}
+    )
+    for parent_index in (1, 2):
+        wire["components"].append({
+            "label": "Request handler", "type": 109, "parent_index": parent_index,
+            "responsibility": "Handles requests inside its application service.",
+            "group_label": "Runtime", "group_kind": 600,
+            "primary_flow_member": False,
+        })
+    original = {
+        **wire, "request_id": "approved-request", "maturity": "prototype",
+        "components": workflow._decode_components(wire),
+        "connections": [
+            {"source_id": str(source), "target_id": str(target),
+             "label": "delegates request", "flow": "runtime", "sync": "sync"}
+            for source, target in ((0, 1), (0, 2), (1, 3), (2, 4))
+        ],
+    }
+    saved = project_graph_data(assign_server_ids(original))
+    children_by_parent = {}
+    for node in saved["nodes"]:
+        if node["type"] == "component":
+            parent_id = node["parent_service_id"]
+            node["detail"] = {"summary": f"Saved internals for {parent_id}"}
+            children_by_parent[parent_id] = copy.deepcopy(node)
+    base_build = workflow.reconstruct_staged_graph_build(saved, None)
+    new_indexes = {old_index: index for index, old_index in enumerate(order)}
+    reordered_wire = copy.deepcopy(wire)
+    reordered_wire["components"] = [
+        {
+            **wire["components"][old_index],
+            **({"parent_index": new_indexes[wire["components"][old_index]["parent_index"]]}
+               if "parent_index" in wire["components"][old_index] else {}),
+        }
+        for old_index in order
+    ]
+    rebuilt_components = workflow._decode_components(reordered_wire)
+
+    workflow._retain_component_ids(rebuilt_components, base_build, permissions=None)
+    assigned = assign_server_ids({
+        **original, "request_id": "rebuild-request", "components": rebuilt_components,
+        "base_graph": saved,
+        "connections": [
+            {**edge, "source_id": str(new_indexes[int(edge["source_id"])]),
+             "target_id": str(new_indexes[int(edge["target_id"])])}
+            for edge in original["connections"]
+        ],
+    })
+    rebuilt = workflow._preserve_existing_presentation(project_graph_data(assigned), saved)
+
+    for node in rebuilt["nodes"]:
+        if node["type"] == "component":
+            prior = children_by_parent[node["parent_service_id"]]
+            assert node["id"] == prior["id"]
+            assert node["detail"] == prior["detail"]
 
 
 @pytest.mark.asyncio
@@ -4097,8 +4182,12 @@ async def test_scoped_additions_use_server_authorized_node_identity(
     async def generate_delta(**kwargs):
         provider_stages.append(kwargs["stage"])
         if kwargs["stage"] == "components":
-            fields = kwargs["schema"]["properties"]["additions"]["items"]["properties"]
-            assert "id" not in fields and "server_id" not in fields
+            branches = kwargs["schema"]["properties"]["additions"]["items"]["anyOf"]
+            assert all(
+                "id" not in branch["properties"]
+                and "server_id" not in branch["properties"]
+                for branch in branches
+            )
             return json.dumps(
                 {
                     "additions": [
@@ -4471,6 +4560,8 @@ async def test_explicit_additive_layer_preserves_whole_saved_graph_with_several_
         assert kwargs["edit_permissions"]["kind"] == "extension"
         return {"wire": wire, "prompt_fingerprint": "component-extension"}
     async def edges(**kwargs):
+        assert kwargs["saved_component_ids"] == [node["id"] for node in saved["nodes"]]
+        assert len(kwargs["accepted_components"]) == 4
         return {"wire": connections, "prompt_fingerprint": "connection-extension"}
     monkeypatch.setattr(workflow, "generate_component_candidate", components)
     monkeypatch.setattr(workflow, "generate_connection_candidate", edges)
@@ -4879,3 +4970,143 @@ async def test_draft_progress_summary_bounds_names_and_omits_graph_details():
                                   "connection_count": 1, "labels": ["A" * 48, "B" * 48]}
     assert "PRIVATE_GRAPH_DETAIL" not in repr(events)
     assert "capabilities" not in repr(events)
+
+
+@pytest.mark.parametrize("delivers_output", [False, True])
+@pytest.mark.asyncio
+async def test_scoped_output_contract_edit_obeys_connection_gate_and_preserves_baseline(
+    monkeypatch,
+    delivers_output,
+):
+    # The reviewer verdict is controlled; the real scoped edit/publication path runs.
+    previous = _accepted_staged_graph()
+    previous["nodes"][0]["description"] = (
+        "Execute work and return its execution output."
+    )
+    previous["nodes"][1]["description"] = "Use execution output to continue processing."
+    previous["edges"][0]["description"] = (
+        "Carries the execution output to its consumer."
+    )
+    _, contract = _current_review_contract(previous)
+    original = copy.deepcopy(previous)
+    description = (
+        "Carries validated execution output to the consumer."
+        if delivers_output
+        else "Carries only a validation verdict and commit status."
+    )
+    request = f"Rename edge_1 label to {description}"
+    reviews = []
+
+    async def generate_delta(**kwargs):
+        if kwargs["stage"] == "components":
+            return json.dumps(
+                {
+                    "additions": [],
+                    "updates": {},
+                    "capabilities": _components_wire()["capabilities"],
+                }
+            )
+        assert set(
+            kwargs["schema"]["properties"]["updates"]["properties"]["slot_0"][
+                "properties"
+            ]
+        ) == {"label"}
+        return json.dumps(
+            {"additions": [], "updates": {"slot_0": {"label": description}}}
+        )
+
+    async def review_connections(**kwargs):
+        reviews.append(copy.deepcopy(kwargs))
+        assert kwargs["candidate_records"][0]["label"] == description
+        assert kwargs["evidence_bundle"]["review_scope"]["trusted_baseline"] is True
+        if delivers_output:
+            return _approved_gate()
+        return _rejected_gate_with_findings(
+            [
+                {
+                    "rule_code": "edge_semantics",
+                    "record_indexes": [0],
+                    "reason": "Commit status alone cannot supply the consumer's required execution output.",
+                }
+            ],
+            terminal=True,
+        )
+
+    monkeypatch.setattr(generation, "_run_generation", generate_delta)
+    monkeypatch.setattr(workflow, "_render", _render_ok)
+    monkeypatch.setattr(workflow, "review_components", _approve_gate)
+    monkeypatch.setattr(workflow, "review_connections", review_connections)
+    result = await workflow.run_staged_graph_pipeline(
+        _state(
+            graph_intent="edit",
+            user_message=request,
+            design_query=request,
+            approved_graph_data=previous,
+            graph_data=previous,
+            approved_graph_contract=contract,
+        )
+    )
+    assert len(reviews) == 1
+    assert previous == original
+    if delivers_output:
+        assert result["graph_publication"] == "approved", result.get(
+            "graph_review_diagnostics"
+        )
+        assert result["graph_data"]["edges"][0]["label"] == description
+        for key in ("nodes", "groups", "sequence", "title", "assumptions"):
+            assert result["graph_data"][key] == original[key]
+    else:
+        assert result["graph_publication"] == "preserved"
+        assert result["graph_data"] == original
+        assert (
+            result["graph_review"]["staged_gate"]["findings"][0]["rule_code"]
+            == "edge_semantics"
+        )
+
+
+@pytest.mark.asyncio
+async def test_connection_review_evidence_preserves_validated_component_owner(
+    monkeypatch,
+):
+    _install_success_boundaries(monkeypatch)
+    reviews = []
+
+    async def components(**_kwargs):
+        wire = _components_wire()
+        wire["components"].append(
+            {
+                **wire["components"][1],
+                "label": "Release reconciliation",
+                "type": 109,
+                "parent_index": 1,
+                "primary_flow_member": False,
+            }
+        )
+        return {"wire": wire, "prompt_fingerprint": "components"}
+
+    async def connections(**_kwargs):
+        wire = _connections_wire()
+        wire["edges"].append(
+            {
+                **wire["edges"][0],
+                "source_index": 1,
+                "target_index": 2,
+                "label": "Reconcile release state",
+            }
+        )
+        return {"wire": wire, "prompt_fingerprint": "connections"}
+
+    async def connection_gate(**kwargs):
+        reviews.append(kwargs)
+        return _approved_gate()
+
+    monkeypatch.setattr(workflow, "generate_component_candidate", components)
+    monkeypatch.setattr(workflow, "generate_connection_candidate", connections)
+    monkeypatch.setattr(workflow, "review_connections", connection_gate)
+    result = await workflow.run_staged_graph_pipeline(_state())
+    assert result["graph_publication"] == "approved"
+    rows = reviews[0]["evidence_bundle"]["candidate_components"]
+    assert rows[2]["type"] == "component"
+    assert rows[2]["parent_service_id"] == rows[1]["id"]
+    assert all("parent_service_id" not in row for row in rows[:2])
+    assert result["graph_data"]["nodes"][2]["parent_service_id"] == rows[1]["id"]

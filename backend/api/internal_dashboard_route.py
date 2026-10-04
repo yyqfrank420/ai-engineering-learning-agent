@@ -99,6 +99,16 @@ def _eval_usage_complete(usage: dict[str, Any]) -> bool | None:
     return complete if isinstance(complete, bool) else None
 
 
+def _eval_web_search_usage(usage: dict[str, Any]) -> dict[str, Any]:
+    count = usage.get("web_search_requests")
+    valid_count = type(count) is int and count in (0, 1)
+    return {
+        "web_search_requests": count if valid_count else None,
+        "web_search_usage_complete": valid_count
+        and usage.get("web_search_usage_complete") is True,
+    }
+
+
 @router.get("/overview")
 async def dashboard_overview(_user=Depends(get_internal_dashboard_user)):
     now = time.time()
@@ -394,12 +404,23 @@ async def dashboard_eval_telemetry(
         if row.get("thread_id") not in wanted:
             continue
         metadata = row.get("metadata") or {}
+        native_search = metadata.get("web_search") is True or any(
+            key in metadata
+            for key in ("web_search_requests", "web_search_usage_complete")
+        )
         attempts = []
         for attempt in metadata.get("attempts") or []:
             if not isinstance(attempt, dict):
                 continue
             attempts.append(
                 {
+                    **(
+                        _eval_web_search_usage(attempt)
+                        if native_search
+                        or "web_search_requests" in attempt
+                        or "web_search_usage_complete" in attempt
+                        else {}
+                    ),
                     "attempt": max(
                         1, _nonnegative_int(attempt.get("attempt"), default=1)
                     ),
@@ -436,8 +457,27 @@ async def dashboard_eval_telemetry(
                 }
             )
         allocated_timeout_s = metadata.get("allocated_timeout_s")
+        specialist_version = metadata.get("specialist_tool_version")
+        expansion_complexity = metadata.get("service_expansion_complexity")
+        target_service_ids = metadata.get("target_service_ids")
+        safe_target_ids = (
+            target_service_ids
+            if isinstance(target_service_ids, list)
+            and 1 <= len(target_service_ids) <= 64
+            and all(
+                isinstance(target, str) and _safe_eval_identifier(target) is not None
+                for target in target_service_ids
+            )
+            and len(set(target_service_ids)) == len(target_service_ids)
+            else None
+        )
         calls.append(
             {
+                **(
+                    {"web_search": True, **_eval_web_search_usage(metadata)}
+                    if native_search
+                    else {}
+                ),
                 "thread_id": row.get("thread_id"),
                 "operation": row["operation"],
                 "provider": row["provider"],
@@ -488,6 +528,14 @@ async def dashboard_eval_telemetry(
                 "client_request_id": _safe_eval_identifier(
                     metadata.get("client_request_id")
                 ),
+                "specialist_tool_version": _safe_eval_identifier(specialist_version)
+                if isinstance(specialist_version, str)
+                else None,
+                "service_expansion_complexity": expansion_complexity
+                if isinstance(expansion_complexity, str)
+                and expansion_complexity in {"low", "high"}
+                else None,
+                "target_service_ids": safe_target_ids,
                 "created_at_epoch": row["created_at_epoch"],
             }
         )

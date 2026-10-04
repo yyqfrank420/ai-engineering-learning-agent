@@ -18,6 +18,8 @@ import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.background import BackgroundTasks
+from starlette.concurrency import run_in_threadpool
 
 from analytics.events import enqueue_analytics_event, start_analytics_worker, stop_analytics_worker
 from adapters.database_adapter import init_db
@@ -133,6 +135,13 @@ async def _buffer_request_body(request: Request, max_bytes: int) -> tuple[int, b
     return total, False
 
 
+def _record_http_request_log_safely(**fields) -> None:
+    try:
+        record_http_request_log(**fields)
+    except Exception as exc:
+        logger.warning("HTTP request telemetry write failed: %s", type(exc).__name__)
+
+
 def create_app(*, load_resources: bool = True) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -246,7 +255,7 @@ def create_app(*, load_resources: bool = True) -> FastAPI:
                 user_id = "00000000-0000-0000-0000-000000000dev"
             else:
                 try:
-                    payload = verify_access_token(token)
+                    payload = await run_in_threadpool(verify_access_token, token)
                     user_id = payload.get("sub")
                 except Exception:
                     user_id = None
@@ -356,17 +365,24 @@ def create_app(*, load_resources: bool = True) -> FastAPI:
                     status_code=status_code,
                     latency_ms=latency_ms,
                 )
-                try:
-                    record_http_request_log(
-                        method=request.method,
-                        path=request.url.path,
-                        status_code=status_code,
-                        latency_ms=latency_ms,
-                        user_id=user_id,
-                        metadata=metadata,
+                log_fields = {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "latency_ms": latency_ms,
+                    "user_id": user_id,
+                    "metadata": metadata,
+                }
+                if response is None:
+                    await run_in_threadpool(
+                        _record_http_request_log_safely, **log_fields
                     )
-                except Exception as exc:
-                    logger.warning("HTTP request telemetry write failed: %s", type(exc).__name__)
+                else:
+                    background = BackgroundTasks()
+                    if response.background is not None:
+                        background.add_task(response.background)
+                    background.add_task(_record_http_request_log_safely, **log_fields)
+                    response.background = background
                 enqueue_analytics_event(
                     event_name="request_completed",
                     event_category="request",

@@ -29,7 +29,7 @@ from eval.judge_adapter import (
     estimated_judge_cost_usd,
     judge_with_transport_retry,
 )
-from eval.quality_corpus import corpus_sha256, load_corpus
+from eval.quality_corpus import EvaluationCase, corpus_sha256, load_corpus
 from eval.response_capture import extract_response_turns
 from eval.runtime_budget import semantic_suite_timeout_seconds
 from eval.semantic_gate import EvaluationBudget, GateDecision, decide_semantic_gate
@@ -362,7 +362,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--input", help="Browser capture JSON from eval.browser_runner")
     parser.add_argument("--output", default="artifacts/live-eval/live-results.json")
     parser.add_argument("--require-approved-corpus", action="store_true")
-    parser.add_argument("--judge-call-limit", type=int, help="Restrict the suite judge-call budget")
+    parser.add_argument(
+        "--judge-call-limit", type=int, help="Restrict the suite judge-call budget"
+    )
     parser.add_argument(
         "--manual-review-policy",
         choices=("blocking", "report-only"),
@@ -524,6 +526,7 @@ def _compact_judge_graph(graph: Any) -> dict[str, Any] | None:
                     "lane",
                     "primary_flow_member",
                     "is_root",
+                    "parent_service_id",
                 )
                 if node.get(key) is not None
             }
@@ -756,6 +759,158 @@ def _result_to_json(result) -> dict[str, Any]:
     }
 
 
+def _service_expansion_failures(
+    result: dict[str, Any],
+    case: EvaluationCase,
+    telemetry: list[dict[str, Any]],
+) -> list[str]:
+    """Require same-turn graph ownership and successful specialist stage evidence."""
+    from eval.browser_runner import _service_expansion_failure
+
+    failures: list[str] = []
+    turns = result.get("turns")
+    turns = turns if isinstance(turns, list) else []
+    for turn_number, step in enumerate(case.steps, 1):
+        expectation = step.service_expansion
+        if expectation is None:
+            continue
+        prefix = f"service expansion turn {turn_number}: "
+        current = [
+            row
+            for row in turns
+            if isinstance(row, dict)
+            and type(row.get("turn")) is int
+            and row["turn"] == turn_number
+        ]
+        previous = [
+            row
+            for row in turns
+            if isinstance(row, dict)
+            and type(row.get("turn")) is int
+            and row["turn"] == turn_number - 1
+        ]
+        if len(current) != 1 or len(previous) != 1:
+            failures.append(
+                prefix + "missing or ambiguous turn and prior graph evidence"
+            )
+            continue
+        current_turn, previous_turn = current[0], previous[0]
+        identifiers = {
+            key: current_turn[key]
+            for key in ("request_id", "client_request_id")
+            if isinstance(current_turn.get(key), str) and current_turn[key].strip()
+        }
+        thread_id = result.get("thread_id")
+        if not isinstance(thread_id, str) or not thread_id.strip() or not identifiers:
+            failures.append(prefix + "missing thread or request correlation")
+            continue
+        if any(
+            isinstance(row, dict)
+            and row is not current_turn
+            and any(row.get(key) == value for key, value in identifiers.items())
+            for row in turns
+        ):
+            failures.append(prefix + "ambiguous request correlation across turns")
+            continue
+        prior_graph, current_graph = (
+            previous_turn.get("graph"),
+            current_turn.get("graph"),
+        )
+        if not isinstance(prior_graph, dict) or not isinstance(current_graph, dict):
+            failures.append(prefix + "missing prior or expanded turn graph")
+            continue
+        if any(
+            not isinstance(graph.get("nodes"), list)
+            or not graph["nodes"]
+            or any(not isinstance(node, dict) for node in graph["nodes"])
+            for graph in (prior_graph, current_graph)
+        ):
+            failures.append(prefix + "invalid prior or expanded graph node evidence")
+            continue
+        target_ids = []
+        nodes = prior_graph.get("nodes")
+        for label in expectation.target_service_labels:
+            matches = [
+                node
+                for node in nodes or []
+                if isinstance(node, dict)
+                and node.get("label") == label
+                and node.get("type") == "service"
+            ]
+            if (
+                len(matches) != 1
+                or not isinstance(matches[0].get("id"), str)
+                or not matches[0]["id"]
+            ):
+                failures.append(
+                    prefix + "missing or ambiguous selected service in prior graph"
+                )
+                break
+            target_ids.append(matches[0]["id"])
+        if len(target_ids) != len(expectation.target_service_labels):
+            continue
+        if len(set(target_ids)) != len(target_ids):
+            failures.append(prefix + "selected prior services have duplicate node IDs")
+            continue
+        graph_failure = _service_expansion_failure(
+            prior_graph, current_graph, expectation
+        )
+        if graph_failure is not None:
+            failures.append(prefix + graph_failure[1])
+        for operation in ("staged_graph_components", "staged_graph_connections"):
+            stage_calls = []
+            for call in telemetry:
+                if (
+                    not isinstance(call, dict)
+                    or call.get("thread_id") != thread_id
+                    or call.get("operation") != operation
+                ):
+                    continue
+                if not any(
+                    call.get(key) == value for key, value in identifiers.items()
+                ):
+                    continue
+                if any(
+                    call.get(key) is not None and call.get(key) != value
+                    for key, value in identifiers.items()
+                ):
+                    failures.append(
+                        prefix + operation + " has conflicting request correlation"
+                    )
+                    continue
+                if call.get("status") == "success":
+                    stage_calls.append(call)
+            if not stage_calls:
+                failures.append(
+                    prefix
+                    + operation
+                    + " has no successful same-turn specialist evidence"
+                )
+                continue
+            for call in stage_calls:
+                targets = call.get("target_service_ids")
+                version = call.get("specialist_tool_version")
+                if (
+                    call.get("model") != expectation.specialist_model
+                    or call.get("effort") != expectation.specialist_effort
+                    or not isinstance(version, str)
+                    or not version.strip()
+                    or call.get("service_expansion_complexity") != "high"
+                    or not isinstance(targets, list)
+                    or any(not isinstance(target, str) for target in targets)
+                    or len(targets) != len(target_ids)
+                    or set(targets) != set(target_ids)
+                    or call.get("fallback") is not False
+                ):
+                    failures.append(
+                        prefix
+                        + operation
+                        + " specialist model, effort, targets, tool, or fallback evidence mismatched"
+                    )
+                    break
+    return failures
+
+
 def _classify_deterministic(
     failures: list[str],
     failure_details: object = None,
@@ -803,7 +958,9 @@ def _restricted_judge_limit(args: argparse.Namespace, default: int) -> int:
     if limit is None:
         return default
     if type(limit) is not int or not 1 <= limit <= default:
-        raise ValueError("judge-call-limit must be positive and cannot increase the suite budget")
+        raise ValueError(
+            "judge-call-limit must be positive and cannot increase the suite budget"
+        )
     return limit
 
 
@@ -858,7 +1015,9 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             if is_pr_budget
             else limits["application_full_calls"]
         ),
-        judge_calls=_restricted_judge_limit(args, limits["judge_calls"] if is_pr_budget else 40),
+        judge_calls=_restricted_judge_limit(
+            args, limits["judge_calls"] if is_pr_budget else 40
+        ),
     )
     app_telemetry = capture.get("application_telemetry") or []
     telemetry_failure = (
@@ -899,6 +1058,12 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
     # when the historical provider omitted usage for a cancelled attempt.
     if args.capture_replay:
         cost_policy = {**cost_policy, "scope": "source_capture"}
+    expansion_failures_by_case = {
+        result["id"]: _service_expansion_failures(
+            result, corpus.by_id[result["id"]], app_telemetry
+        )
+        for result in capture["results"]
+    }
     judge = None
     resume_evaluations = {}
     if args.resume_input:
@@ -911,7 +1076,10 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             judge,
             actual_ids,
             deterministic_failures_by_case={
-                item["id"]: item.get("deterministic_failures") or []
+                item["id"]: [
+                    *(item.get("deterministic_failures") or []),
+                    *expansion_failures_by_case[item["id"]],
+                ]
                 for item in capture["results"]
             },
         )
@@ -922,13 +1090,21 @@ async def evaluate(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         graph_review_diagnostics = _graph_review_diagnostics_from_events(
             browser_result.get("events")
         )
+        expansion_failures = expansion_failures_by_case[case.id]
         deterministic_failures = tuple(
-            browser_result.get("deterministic_failures") or []
+            [
+                *(browser_result.get("deterministic_failures") or []),
+                *expansion_failures,
+            ]
         )
-        if deterministic_failures and not calibration_replay:
-            classification = _classify_deterministic(
-                list(deterministic_failures),
-                browser_result.get("failure_details"),
+        if deterministic_failures and (not calibration_replay or expansion_failures):
+            classification = (
+                "quality"
+                if expansion_failures
+                else _classify_deterministic(
+                    list(deterministic_failures),
+                    browser_result.get("failure_details"),
+                )
             )
             decision = GateDecision(
                 "infrastructure" if classification == "infrastructure" else "fail",

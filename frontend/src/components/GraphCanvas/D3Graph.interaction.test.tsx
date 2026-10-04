@@ -103,6 +103,19 @@ afterAll(() => {
 });
 
 describe('graph node activation', () => {
+  it('shows the component subtype and identifies its owning application service', () => {
+    const componentGraph: GraphData = { ...graph, nodes: [
+      { ...graph.nodes[0], id: 'service', label: 'Tutoring service', type: 'service' },
+      { ...graph.nodes[0], id: 'validator', label: 'Answer validator', type: 'component',
+        technology: 'Component', parent_service_id: 'service' },
+    ] };
+    const { container } = render(<D3Graph graphData={componentGraph} currentStep={-1}
+      activeNodeIds={new Set()} onNodeClick={vi.fn()} />);
+    expect([...container.querySelectorAll('.node-technology')].some(node => node.textContent === 'Component')).toBe(true);
+    expect([...container.querySelectorAll('g.node title')].some(node =>
+      node.textContent?.includes('Component of Tutoring service'))).toBe(true);
+  });
+
   it.each(['node', 'zone', 'border'])('cleans up an active %s drag when the canvas unmounts', targetType => {
     const save = vi.fn();
     const props = { graphData: { ...graph, groups: [{ id: 'zone', label: 'Processing', kind: 'runtime' as const, nodeIds: ['sensor_gateway'] }] },

@@ -10,6 +10,11 @@
 import json
 import re
 
+from agent.staged_graph_contract import (
+    GraphContractError,
+    validate_graph_component_parents,
+)
+
 
 _VALID_NODE_TYPES = {
     "client",
@@ -21,6 +26,7 @@ _VALID_NODE_TYPES = {
     "external",
     "control",
     "decision",
+    "component",
 }
 _VALID_SYNC_VALUES = {"sync", "async"}
 _NODE_REQUIRED = ("id", "label", "type", "technology", "description")
@@ -92,6 +98,10 @@ def score_schema(graph_data: dict, expected: dict) -> dict[str, object]:
         for n in nodes
         if n.get("type") not in _VALID_NODE_TYPES
     ]
+    try:
+        validate_graph_component_parents(nodes)
+    except GraphContractError as exc:
+        node_type_errors.append(f"{exc.path}: {exc}")
     node_field_errors = [
         f"node:{n.get('id', '?')} missing '{f}'"
         for n in nodes

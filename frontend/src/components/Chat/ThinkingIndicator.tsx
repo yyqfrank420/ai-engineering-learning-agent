@@ -36,6 +36,7 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
         <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3" /></svg>
       </summary>
       <div className="thinking-steps" role="region" aria-label="Work activity">
+        {liveActivity && !visibleSteps.length && <p className="thinking-update">Working on your request.</p>}
         {visibleSteps.map(step => step.kind === 'update'
           ? <p key={step.sequence} className="thinking-update">{step.text}</p>
           : <div key={step.sequence} className="thinking-tool" data-status={step.status}>

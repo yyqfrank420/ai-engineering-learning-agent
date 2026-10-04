@@ -33,6 +33,7 @@ export function graphStructureKey(graph: GraphData | null): string {
       id: node.id,
       label: node.label,
       type: node.type,
+      parent_service_id: node.parent_service_id ?? null,
       technology: node.technology,
       description: node.description,
       tier: node.tier ?? null,

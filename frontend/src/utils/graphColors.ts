@@ -19,6 +19,7 @@ export interface TypeStyle {
 export const TYPE_STYLE: Record<string, TypeStyle> = {
   client:    { fill: 'rgba(59,130,246,0.12)',  stroke: 'rgba(59,130,246,0.85)',  badge: '#60a5fa'  },
   service:   { fill: 'rgba(139,92,246,0.12)',  stroke: 'rgba(139,92,246,0.85)',  badge: '#a78bfa'  },
+  component: { fill: 'rgba(139,92,246,0.08)',  stroke: 'rgba(139,92,246,0.65)',  badge: '#c4b5fd' },
   datastore: { fill: 'rgba(16,185,129,0.12)',  stroke: 'rgba(16,185,129,0.85)',  badge: '#34d399'  },
   queue:     { fill: 'rgba(6,182,212,0.11)',   stroke: 'rgba(6,182,212,0.82)',   badge: '#22d3ee'  },
   gateway:   { fill: 'rgba(217,119,6,0.12)',   stroke: 'rgba(217,119,6,0.85)',   badge: '#fbbf24'  },

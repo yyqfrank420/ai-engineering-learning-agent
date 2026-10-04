@@ -23,6 +23,7 @@ from agent.nodes.graph_worker import (
     admit_staged_graph_edit,
     sequence_after_node_removal,
     staged_edit_scope,
+    validate_service_expansion_components,
 )
 from agent.nodes.staged_graph_gate import (
     COMPONENT_RULE_CODES,
@@ -73,9 +74,14 @@ logger = logging.getLogger(__name__)
 
 def should_use_staged_graph_pipeline(state: Mapping[str, Any]) -> bool:
     return bool(
-        settings.graph_pipeline_mode == "staged"
+        # Service containment requires the reviewed staged contract in legacy deployments too.
+        (
+            settings.graph_pipeline_mode == "staged"
+            or bool(state.get("service_expansion"))
+        )
         and state.get("is_applied_design")
         and state.get("graph_intent") in {"create", "edit"}
+        and state.get("graph_action") != "answer"
         and state.get("graph_mode", "auto") != "off"
     )
 
@@ -114,6 +120,14 @@ def _safe_finding(exc: Exception, *, stage: str) -> dict[str, str]:
     safe_path = _safe_path(path, fallback=stage)
     code = exc.code if isinstance(exc, StagedGenerationError) else "invalid_contract"
     reason = " ".join(str(exc).split())[:280]
+    if isinstance(exc, StagedGenerationError):
+        diagnostic = _failure_diagnostic(exc, stage=stage, attempt=0, candidate=None)
+        if diagnostic.get("reason") in {
+            "component_parent_invalid",
+            "component_parent_forbidden",
+        } and re.fullmatch(r"components\.[0-9]+\.parent_index", diagnostic["path"]):
+            safe_path = diagnostic["path"]
+            reason = diagnostic["reason"]
     return {
         "code": code,
         "path": safe_path[:96],
@@ -149,11 +163,12 @@ def _failure_diagnostic(
             "responsibility_type", "responsibility_length", "group_label_type",
             "group_label_length", "component_type_enum", "group_kind_enum",
             "primary_flow_type", "duplicate_component", "root_not_primary",
+            "component_parent_invalid", "component_parent_forbidden",
         }:
             diagnostic_reason = exc.diagnostic_reason
         if isinstance(exc.diagnostic_path, str) and re.fullmatch(
             r"(?:edges(?:\.[0-9]+(?:\.(?:source_index|target_index|label|flow|sync))?)?"
-            r"|components(?:\.[0-9]+(?:\.(?:label|type|responsibility|group_label|group_kind|primary_flow_member))?)?"
+            r"|components(?:\.[0-9]+(?:\.(?:label|type|responsibility|group_label|group_kind|primary_flow_member|parent_index))?)?"
             r"|title|root_index|assumptions(?:\.[0-9]+)?"
             r"|capabilities(?:\.(?:external_effects|retrieval_or_reuse|learning_or_release))?)",
             exc.diagnostic_path,
@@ -288,6 +303,11 @@ def _decode_components(wire: Mapping[str, Any]) -> list[dict[str, Any]]:
                 "group_label": raw["group_label"],
                 "group_kind": GROUP_KIND_CODES.get(raw["group_kind"], ""),
                 "primary_flow_member": raw["primary_flow_member"],
+                **(
+                    {"parent_index": raw["parent_index"]}
+                    if "parent_index" in raw
+                    else {}
+                ),
             }
         )
     return components
@@ -460,80 +480,61 @@ def _retain_component_ids(
     base_build: Mapping[str, Any] | None,
     permissions: Mapping[str, Any] | None,
 ) -> None:
-    if not base_build:
+    # Unscoped rebuilds retain identity through parent-aware assign_server_ids.
+    if not base_build or permissions is None:
         return
     base_components = list(base_build.get("components") or [])
-    removable = set((permissions or {}).get("removable_node_ids") or [])
-    if permissions is not None:
-        # Scoped generation assembles retained base rows before authorized additions.
-        retained = [
-            component
-            for component in base_components
-            if component["server_id"] not in removable
-        ]
-        for component, prior in zip(components, retained):
-            component["server_id"] = prior["server_id"]
-        named_ids = permissions.get("allowed_new_node_ids")
-        if named_ids is not None:
-            if not isinstance(named_ids, list) or any(
-                not isinstance(node_id, str)
-                or not node_id
-                or node_id != node_id.strip()
-                or len(node_id) > 80
-                for node_id in named_ids
-            ):
-                raise GraphContractError(
-                    "named additions require exact bounded IDs",
-                    path="components.server_id",
-                )
-            additions = components[len(retained) :]
-            count = permissions.get("allowed_new_node_count", 0)
-            if (
-                isinstance(count, bool)
-                or not isinstance(count, int)
-                or count < 0
-                or len(named_ids) != count
-                or len(additions) != count
-            ):
-                raise GraphContractError(
-                    "named addition count does not match authority",
-                    path="components.server_id",
-                )
-            if len(named_ids) != len(set(named_ids)) or set(named_ids).intersection(
-                component["server_id"] for component in base_components
-            ):
-                raise GraphContractError(
-                    "named addition IDs must be unique and new",
-                    path="components.server_id",
-                )
-            # The scope compiler authorizes one named addition. Multiple names
-            # need an explicit row-to-ID contract before they can be assigned.
-            if len(named_ids) > 1:
-                raise GraphContractError(
-                    "multiple named additions have no identity mapping",
-                    path="components.server_id",
-                )
-            if named_ids:
-                additions[0]["server_id"] = named_ids[0]
-        return
-    available = {
-        str(component.get("server_id")): component
+    removable = set(permissions.get("removable_node_ids") or [])
+    # Scoped generation assembles retained base rows before authorized additions.
+    retained = [
+        component
         for component in base_components
-        if component.get("server_id") and component.get("server_id") not in removable
-    }
-    for component in components:
-        exact = next(
-            (
-                node_id
-                for node_id, prior in available.items()
-                if prior.get("label") == component.get("label")
-                and prior.get("type") == component.get("type")
-            ),
-            None,
-        )
-        if exact:
-            component["server_id"] = exact
-            available.pop(exact)
+        if component["server_id"] not in removable
+    ]
+    for component, prior in zip(components, retained):
+        component["server_id"] = prior["server_id"]
+    named_ids = permissions.get("allowed_new_node_ids")
+    if named_ids is not None:
+        if not isinstance(named_ids, list) or any(
+            not isinstance(node_id, str)
+            or not node_id
+            or node_id != node_id.strip()
+            or len(node_id) > 80
+            for node_id in named_ids
+        ):
+            raise GraphContractError(
+                "named additions require exact bounded IDs",
+                path="components.server_id",
+            )
+        additions = components[len(retained) :]
+        count = permissions.get("allowed_new_node_count", 0)
+        if (
+            isinstance(count, bool)
+            or not isinstance(count, int)
+            or count < 0
+            or len(named_ids) != count
+            or len(additions) != count
+        ):
+            raise GraphContractError(
+                "named addition count does not match authority",
+                path="components.server_id",
+            )
+        if len(named_ids) != len(set(named_ids)) or set(named_ids).intersection(
+            component["server_id"] for component in base_components
+        ):
+            raise GraphContractError(
+                "named addition IDs must be unique and new",
+                path="components.server_id",
+            )
+        # The scope compiler authorizes one named addition. Multiple names
+        # need an explicit row-to-ID contract before they can be assigned.
+        if len(named_ids) > 1:
+            raise GraphContractError(
+                "multiple named additions have no identity mapping",
+                path="components.server_id",
+            )
+        if named_ids:
+            additions[0]["server_id"] = named_ids[0]
 
 
 def _apply_scoped_addition_defaults(
@@ -613,7 +614,14 @@ def _component_preview(build: Mapping[str, Any]) -> GraphData:
                 "id": node_id,
                 "label": component["label"],
                 "type": component["type"],
-                "technology": "Pending connection contract",
+                **(
+                    {"parent_service_id": component["parent_service_id"]}
+                    if "parent_service_id" in component
+                    else {}
+                ),
+                "technology": "Component"
+                if component["type"] == "component"
+                else "Pending connection contract",
                 "description": component["responsibility"],
                 "tier": None,
                 "lane": "bottom" if component["group_kind"] == "operations" else "main",
@@ -1254,7 +1262,17 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
             )
     maturity, maturity_changed = _maturity(state)
     request = str(state.get("design_query") or state.get("user_message") or "")
+    service_expansion = state.get("service_expansion")
     raw_request = str(state.get("user_message") or "")
+    if (
+        service_expansion
+        and state.get("graph_action") != "answer"
+        and state.get("graph_mode") != "off"
+    ):
+        request = str(service_expansion.get("request") or request)
+        raw_request = request
+    else:
+        service_expansion = None
     approved_graph = state.get("approved_graph_data") or state.get("graph_data")
     approved_contract = state.get("approved_graph_contract") or state.get(
         "graph_contract"
@@ -1297,9 +1315,10 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                 approved_graph,
                 resolved_complexity=maturity,
                 add_only=state.get("graph_action") == "extend",
+                service_expansion=service_expansion,
             )
         except ValueError:
-            if state.get("graph_action") == "extend":
+            if state.get("graph_action") == "extend" or service_expansion:
                 return await _failed(
                     state,
                     "staged_extension_scope_unavailable",
@@ -1546,6 +1565,14 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     },
                 )
             preview = _component_preview(assigned)
+            if service_expansion and base_build is not None and permissions is not None:
+                base_ids = {
+                    component["server_id"] for component in base_build["components"]
+                }
+                validate_service_expansion_components(
+                    [node for node in preview["nodes"] if node["id"] not in base_ids],
+                    permissions,
+                )
             await _stage_progress(working_state, "components", "complete", "Components ready", draft=preview)
             rendered = await _render(
                 working_state, preview, preview_count=preview_count, stage="components"
@@ -1728,12 +1755,22 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                             if value == component["type"]
                         ),
                         "responsibility": component["responsibility"],
+                        **(
+                            {"parent_index": component["parent_index"]}
+                            if "parent_index" in component
+                            else {}
+                        ),
                         "primary_flow_member": component["primary_flow_member"],
                         "is_root": component["model_index"]
                         == component_build["root_index"],
                     }
                     for component in component_build["components"]
                 ],
+                saved_component_ids=(
+                    [component["server_id"] for component in base_build["components"]]
+                    if base_build is not None
+                    else None
+                ),
                 accepted_context={
                     "assumptions": copy.deepcopy(component_build["assumptions"]),
                     "capabilities": copy.deepcopy(component_build["capabilities"]),
@@ -1860,6 +1897,11 @@ async def run_staged_graph_pipeline(state: AgentState) -> AgentState:
                     "label": component["label"],
                     "type": component["type"],
                     "responsibility": component["responsibility"],
+                    **(
+                        {"parent_service_id": component["parent_service_id"]}
+                        if component["type"] == "component"
+                        else {}
+                    ),
                 }
                 for component in candidate_build["components"]
             ]

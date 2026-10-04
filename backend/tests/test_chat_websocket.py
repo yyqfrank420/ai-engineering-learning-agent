@@ -1238,7 +1238,22 @@ def test_websocket_rejects_commands_then_stops_matching_work(
                     "client_request_id": "client-command",
                 }
             )
-            _receive_until(socket, "worker_status")
+            assert socket.receive_json() == {
+                "type": "worker_status",
+                "worker": "orchestrator",
+                "status": "Question received \u2014 preparing the steerable workflow\u2026",
+            }
+            startup_activity = socket.receive_json()
+            assert startup_activity == {
+                "type": "activity_step",
+                "sequence": 0,
+                "kind": "update",
+                "phase": "context",
+                "status": "active",
+                "text": "Let me check your request and any existing diagram.",
+                "elapsed_ms": startup_activity["elapsed_ms"],
+            }
+            assert startup_activity["elapsed_ms"] >= 0
 
             socket.send_json({"type": "unknown"})
             assert socket.receive_json() == {
@@ -1881,3 +1896,509 @@ def test_websocket_replayed_steering_accepts_maximum_json_escaped_content(
     )
     assert calls == [expected]
     assert get_history(user["id"], thread["id"])[0]["content"] == expected
+
+
+@pytest.fixture
+def isolated_websocket_storage(monkeypatch):
+    """Exercise transport lifecycle with synchronous storage and no provider."""
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    ws = chat_websocket
+    monkeypatch.setattr(ws, "get_current_user", lambda **kw: {"id": "user"})
+    monkeypatch.setattr(ws, "upsert_profile", lambda *a: None)
+    monkeypatch.setattr(ws.thread_store, "get_thread", lambda *a: {"title": "New chat"})
+    monkeypatch.setattr(ws.thread_store, "get_completed_turn", lambda *a: None)
+    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None))
+    monkeypatch.setattr(ws.thread_store, "get_graph", lambda *a: None)
+    monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
+    monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
+    monkeypatch.setattr(ws, "_make_agent_tools", lambda *a: (None, None, None))
+    monkeypatch.setattr(ws, "enqueue_analytics_event", lambda **kw: None)
+    monkeypatch.setattr(
+        ws.runtime_state_store,
+        "try_acquire_active_stream",
+        lambda _user, kind, **kw: kind,
+    )
+    monkeypatch.setattr(
+        ws.runtime_state_store, "release_active_stream", lambda *a: None
+    )
+    incoming = iter(
+        [
+            {"type": "auth", "access_token": "test"},
+            {
+                "type": "start",
+                "thread_id": "thread",
+                "content": "hello",
+                "client_request_id": "request",
+            },
+        ]
+    )
+
+    async def receive(*_args):
+        try:
+            return next(incoming)
+        except StopIteration:
+            await asyncio.Future()
+
+    monkeypatch.setattr(ws, "_receive_object", receive)
+    return SimpleNamespace(
+        headers={}, accept=AsyncMock(), close=AsyncMock(), send_json=AsyncMock()
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_kind", ["chat", "chat-thread"])
+async def test_cancelled_lease_acquisition_finishes_and_releases_lease(
+    monkeypatch, isolated_websocket_storage, lease_kind
+):
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    released = []
+
+    def acquire(_user, kind, **_kwargs):
+        if kind == lease_kind:
+            entered.set()
+            assert finish.wait(2)
+        return kind
+
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store,
+        "release_active_stream",
+        lambda lease: released.append(lease) if lease else None,
+    )
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+        assert released == []
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert released == (["chat"] if lease_kind == "chat" else ["chat-thread", "chat"])
+    isolated_websocket_storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_commit", [False, True])
+async def test_persistence_finishes_before_done_and_lease_release(
+    monkeypatch, isolated_websocket_storage, cancel_commit
+):
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    lifecycle = []
+
+    async def agent(state, *_args):
+        return {**state, "response_text": "durable answer"}
+
+    def persist(*_args, **_kwargs):
+        lifecycle.append("commit-start")
+        entered.set()
+        assert finish.wait(2)
+        lifecycle.append("commit-finish")
+        return True
+
+    def release(lease):
+        if lease:
+            assert "commit-finish" in lifecycle
+            lifecycle.append(f"release-{lease}")
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(chat_websocket.thread_store, "persist_turn", persist)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "release_active_stream", release
+    )
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        assert not any(
+            call.args[0].get("type") == "done"
+            for call in isolated_websocket_storage.send_json.await_args_list
+        )
+        if cancel_commit:
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done()
+        assert lifecycle == ["commit-start"]
+    finally:
+        finish.set()
+    if cancel_commit:
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        await task
+    assert lifecycle == [
+        "commit-start",
+        "commit-finish",
+        "release-chat-thread",
+        "release-chat",
+    ]
+    assert any(
+        call.args[0].get("type") == "done"
+        for call in isolated_websocket_storage.send_json.await_args_list
+    ) is (not cancel_commit)
+
+
+@pytest.mark.asyncio
+async def test_both_lease_releases_finish_after_repeated_cleanup_cancellation(
+    monkeypatch, isolated_websocket_storage
+):
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    released = []
+
+    async def agent(*_args):
+        return {"response_text": ""}
+
+    def release(lease):
+        if lease == "chat-thread":
+            entered.set()
+            assert finish.wait(2)
+        if lease:
+            released.append(lease)
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "release_active_stream", release
+    )
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert released == ["chat-thread", "chat"]
+    isolated_websocket_storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_second_lease_release_runs_when_first_release_fails(
+    monkeypatch, isolated_websocket_storage
+):
+    released = []
+
+    async def agent(*_args):
+        return {"response_text": ""}
+
+    def release(lease):
+        released.append(lease)
+        if lease == "chat-thread":
+            raise RuntimeError("release failed")
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "release_active_stream", release
+    )
+    with pytest.raises(RuntimeError, match="release failed"):
+        await chat_websocket.chat_websocket(isolated_websocket_storage)
+    assert released == ["chat-thread", "chat"]
+    isolated_websocket_storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_diagram_intent_http_progresses_while_websocket_startup_storage_stalls(
+    temp_data_dir, monkeypatch
+):
+    import json
+    import threading
+    import httpx
+
+    from adapters.supabase_auth_adapter import get_current_user
+
+    app, user, thread = _ready_app(temp_data_dir, monkeypatch)
+    app.dependency_overrides[get_current_user] = lambda: user
+    entered, finish = threading.Event(), threading.Event()
+
+    def delayed_profile(*_args):
+        entered.set()
+        assert finish.wait(2)
+
+    monkeypatch.setattr(chat_websocket, "upsert_profile", delayed_profile)
+    incoming = asyncio.Queue()
+    await incoming.put({"type": "websocket.connect"})
+    for payload in [
+        {"type": "auth", "access_token": "test"},
+        {"type": "start", "thread_id": thread["id"], "content": "hello"},
+    ]:
+        await incoming.put({"type": "websocket.receive", "text": json.dumps(payload)})
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0"},
+        "path": "/api/chat/ws",
+        "raw_path": b"/api/chat/ws",
+        "scheme": "ws",
+        "query_string": b"",
+        "headers": [],
+        "client": ("test", 1),
+        "server": ("test", 80),
+        "subprotocols": [],
+    }
+
+    async def send(_message):
+        pass
+
+    task = asyncio.create_task(app(scope, incoming.get, send))
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await asyncio.wait_for(
+                client.post(
+                    f"/api/threads/{thread['id']}/diagram-intent",
+                    json={"message": "hello"},
+                ),
+                timeout=0.5,
+            )
+        assert response.status_code == 200
+        assert response.json() == {"action": "send"}
+        assert not finish.is_set()
+        task.cancel()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_cancelled_search_request_creation_finishes_before_row_and_lease_cleanup(
+    monkeypatch, isolated_websocket_storage
+):
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    lifecycle = []
+
+    def create(*_args, **_kwargs):
+        entered.set()
+        assert finish.wait(2)
+        lifecycle.append("created")
+
+    def delete(search_id):
+        assert search_id == "search"
+        assert lifecycle == ["created"]
+        lifecycle.append("deleted")
+
+    async def agent(state, *_args):
+        await state["await_search_tool_request"]("search", 60)
+        raise AssertionError("cancelled search must not resume the model")
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store,
+        "prune_search_tool_requests",
+        lambda **kw: None,
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "create_search_tool_request", create
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "delete_search_tool_request", delete
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store,
+        "release_active_stream",
+        lambda lease: lifecycle.append(lease) if lease else None,
+    )
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert lifecycle == ["created", "deleted", "chat-thread", "chat"]
+
+
+@pytest.mark.asyncio
+async def test_anyio_scope_shutdown_releases_lease_acquired_by_shielded_worker(
+    monkeypatch, isolated_websocket_storage
+):
+    import threading
+    import anyio
+
+    entered, finish = threading.Event(), threading.Event()
+    released = []
+
+    def acquire(_user, kind, **_kwargs):
+        if kind == "chat-thread":
+            entered.set()
+            assert finish.wait(2)
+        return kind
+
+    async def agent(*_args):
+        await asyncio.Future()
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store,
+        "release_active_stream",
+        lambda lease: released.append(lease) if lease else None,
+    )
+    async with anyio.create_task_group() as group:
+        group.start_soon(chat_websocket.chat_websocket, isolated_websocket_storage)
+        try:
+            assert await asyncio.to_thread(entered.wait, 1)
+            group.cancel_scope.cancel()
+        finally:
+            finish.set()
+    assert released == ["chat-thread", "chat"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_failed_commit_preserves_cancellation_without_terminal_send(
+    monkeypatch, isolated_websocket_storage, caplog
+):
+    import logging
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    lifecycle = []
+
+    async def agent(state, *_args):
+        return {**state, "response_text": "private draft"}
+
+    def persist(*_args, **_kwargs):
+        entered.set()
+        assert finish.wait(2)
+        lifecycle.append("commit-failed")
+        raise RuntimeError("private storage failure details")
+
+    def release(lease):
+        assert lifecycle[0] == "commit-failed"
+        lifecycle.append(lease)
+
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr(chat_websocket.thread_store, "persist_turn", persist)
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "release_active_stream", release
+    )
+    caplog.set_level(logging.WARNING, logger=chat_websocket.__name__)
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        sent_before_cancel = isolated_websocket_storage.send_json.await_count
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert isolated_websocket_storage.send_json.await_count == sent_before_cancel
+    assert lifecycle == ["commit-failed", "chat-thread", "chat"]
+    assert "Cancelled WebSocket worker failed (persist: RuntimeError)" in caplog.text
+    assert "private storage failure details" not in caplog.text
+    assert "private draft" not in caplog.text
+    isolated_websocket_storage.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "failure", [HTTPException(status_code=401), RuntimeError("storage unavailable")]
+)
+async def test_uncancelled_worker_error_preserves_original_exception(failure, caplog):
+    def rejected_operation():
+        raise failure
+
+    with pytest.raises(type(failure)) as raised:
+        await chat_websocket._run_blocking(rejected_operation)
+    assert raised.value is failure
+    assert "Cancelled WebSocket worker failed" not in caplog.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("lease_kind", ["chat", "chat-thread"])
+async def test_cancelled_acquisition_cleanup_failure_preserves_pending_cancellation(
+    monkeypatch, isolated_websocket_storage, lease_kind, caplog
+):
+    import logging
+    import threading
+
+    entered, finish = threading.Event(), threading.Event()
+    attempted, released = [], []
+
+    def acquire(_user, kind, **_kwargs):
+        if kind == lease_kind:
+            entered.set()
+            assert finish.wait(2)
+        return kind
+
+    def release(lease):
+        attempted.append(lease)
+        if lease == lease_kind:
+            raise RuntimeError("private cleanup failure")
+        released.append(lease)
+
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+    )
+    monkeypatch.setattr(
+        chat_websocket.runtime_state_store, "release_active_stream", release
+    )
+    caplog.set_level(logging.WARNING, logger=chat_websocket.__name__)
+    task = asyncio.create_task(
+        chat_websocket.chat_websocket(isolated_websocket_storage)
+    )
+    try:
+        assert await asyncio.to_thread(entered.wait, 1)
+        sent_before_cancel = isolated_websocket_storage.send_json.await_count
+        task.cancel()
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.sleep(0)
+        assert not task.done()
+    finally:
+        finish.set()
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    assert isinstance(raised.value.__cause__, RuntimeError)
+    assert attempted == (["chat"] if lease_kind == "chat" else ["chat-thread", "chat"])
+    assert released == ([] if lease_kind == "chat" else ["chat"])
+    assert isolated_websocket_storage.send_json.await_count == sent_before_cancel
+    assert (
+        "Cancelled WebSocket lease cleanup failed (release_active_stream: RuntimeError)"
+        in caplog.text
+    )
+    assert "private cleanup failure" not in caplog.text
+    isolated_websocket_storage.close.assert_awaited_once()

@@ -21,6 +21,7 @@ _NODE_TYPES = (
     "external",
     "control",
     "decision",
+    "component",
 )
 _FLOWS = ("runtime", "control", "feedback", "deployment")
 _SYNC_MODES = ("sync", "async")
@@ -502,6 +503,8 @@ def _validate_components(
             group_sources=group_sources,
         )
     ]
+    if components[0]["type"] == "component":
+        _raise_topology("root[1]")
     tree_edges: list[dict[str, str]] = []
     component_rows = [
         _required_tuple(
@@ -536,6 +539,10 @@ def _validate_components(
                 group_sources=group_sources,
             )
         )
+        if components[-1]["type"] == "component":
+            if components[parent_index]["type"] != "service":
+                _raise_topology(f"{path}[0]")
+            components[-1]["parent_service_id"] = components[parent_index]["id"]
         tree_edges.append(
             {
                 "source": f"n{parent_index + 1}",
@@ -761,6 +768,7 @@ def validate_applied_graph_topology(
 _NODE_TECHNOLOGY = {
     "client": "Authenticated client",
     "service": "Bounded application service",
+    "component": "Component",
     "datastore": "Versioned durable store",
     "queue": "Durable message queue",
     "gateway": "Policy-enforcing gateway",
@@ -800,6 +808,11 @@ def enrich_applied_graph_topology(
             "id": node["id"],
             "label": node["label"],
             "type": node["type"],
+            **(
+                {"parent_service_id": node["parent_service_id"]}
+                if node["type"] == "component"
+                else {}
+            ),
             "technology": applied_graph_node_technology(node["type"]),
             "description": node["responsibility"],
             "tier": node["tier"],

@@ -875,7 +875,7 @@ async def test_stream_response_does_not_fallback_after_message_start(monkeypatch
         kwargs["_queue_wait_observer"](7)
         yield SimpleNamespace(
             type="message_start",
-            message=SimpleNamespace(usage=SimpleNamespace(input_tokens=120)),
+            message=SimpleNamespace(usage=SimpleNamespace(input_tokens=120, output_tokens=3)),
         )
         raise RuntimeError("anthropic down after accepting request")
 
@@ -898,11 +898,13 @@ async def test_stream_response_does_not_fallback_after_message_start(monkeypatch
     metadata = telemetry_records[0]["metadata"]
     assert openai_calls == 0
     assert metadata["input_tokens"] == 120
-    assert metadata["output_tokens"] == 0
+    assert metadata["output_tokens"] == 3
     assert metadata["provider_attempts"] == 1
     assert metadata["attempts"][0]["model"] == "claude-opus-5"
     assert metadata["attempts"][0]["input_tokens"] == 120
 
+    assert metadata["attempts"][0]["output_tokens"] == 3
+    assert metadata["attempts"][0]["usage_complete"] is False
 
 @pytest.mark.asyncio
 async def test_stream_response_raises_last_exception_when_no_fallback(monkeypatch):
@@ -1713,3 +1715,82 @@ async def test_opus_55_uses_always_on_adaptive_request_without_legacy_sampling(
     assert not {"thinking", "temperature", "top_p", "top_k", "tool_choice"} & requests[0].keys()
     assert ("text", "answer") in events
     assert events[-1] == ("done", "")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "final_inputs,expected",
+    [
+        (
+            {
+                "input_tokens": 10682,
+                "cache_creation_input_tokens": 100,
+                "cache_read_input_tokens": 200,
+            },
+            (10682, 100, 200),
+        ),
+        ({}, (2679, 10, 20)),
+        (
+            {
+                "input_tokens": None,
+                "cache_creation_input_tokens": None,
+                "cache_read_input_tokens": None,
+            },
+            (2679, 10, 20),
+        ),
+        (
+            {
+                "input_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+            },
+            (0, 0, 0),
+        ),
+    ],
+)
+async def test_anthropic_final_usage_supersedes_supplied_input_counters(
+    monkeypatch,
+    final_inputs,
+    expected,
+):
+    from anthropic.types import MessageDeltaUsage
+    import adapters.llm_adapter as llm
+
+    records, _ = _patch_llm_telemetry(monkeypatch)
+
+    async def provider(_kwargs):
+        yield SimpleNamespace(
+            type="message_start",
+            message=SimpleNamespace(
+                usage=SimpleNamespace(
+                    input_tokens=2679,
+                    output_tokens=3,
+                    cache_creation_input_tokens=10,
+                    cache_read_input_tokens=20,
+                    server_tool_use=SimpleNamespace(web_search_requests=0),
+                )
+            ),
+        )
+        yield SimpleNamespace(
+            type="message_delta",
+            usage=MessageDeltaUsage.model_validate(
+                {
+                    "output_tokens": 510,
+                    "server_tool_use": {
+                        "web_search_requests": 1,
+                        "web_fetch_requests": 0,
+                    },
+                    **final_inputs,
+                }
+            ),
+            delta=SimpleNamespace(stop_reason="end_turn"),
+        )
+
+    monkeypatch.setattr(llm, "_anthropic_stream_once", provider)
+    await _collect(llm.stream_response("claude-haiku-4-5", "system", []))
+    metadata = records[0]["metadata"]
+    fields = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    assert tuple(metadata[field] for field in fields) == expected
+    assert tuple(metadata["attempts"][0][field] for field in fields) == expected
+    assert metadata["output_tokens"] == metadata["attempts"][0]["output_tokens"] == 510
+    assert metadata["attempts"][0]["usage_complete"] is True

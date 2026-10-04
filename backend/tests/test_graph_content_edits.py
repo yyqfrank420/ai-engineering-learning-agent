@@ -12,7 +12,12 @@ from adapters.database_adapter import init_db
 from adapters.supabase_auth_adapter import get_current_user
 from agent.graph_identity import applied_edge_metadata
 from config import settings
-from graph.content_edit import GraphContentEditRequest, GraphEditConflict
+from graph.content_edit import (
+    GraphContentEditRequest,
+    GraphEditConflict,
+    GraphEditInvalid,
+    apply_graph_content_edit,
+)
 from main import create_app
 from storage import runtime_state_store, thread_store
 from storage.profile_store import upsert_profile
@@ -721,3 +726,49 @@ def test_oversized_result_rejects_without_partial_write(temp_data_dir, monkeypat
         )
     assert response.status_code == 413
     assert get_graph("user-1", thread_id) == before
+
+
+def test_content_edits_preserve_component_owner_and_reject_retyping_parent():
+    graph = _graph()
+    graph["nodes"][0]["type"] = "service"
+    graph["nodes"].append(
+        {
+            "id": "validator",
+            "label": "Request validator",
+            "type": "component",
+            "parent_service_id": "gateway",
+            "technology": "Component",
+            "description": "Validates incoming payments.",
+            "detail": None,
+        }
+    )
+    updated, changed = apply_graph_content_edit(
+        graph,
+        GraphContentEditRequest(
+            expected_version="graph-v1",
+            nodes=[{"id": "validator", "label": "Payment validator"}],
+        ),
+    )
+    assert changed
+    assert updated["nodes"][2]["parent_service_id"] == "gateway"
+    for update in (
+        {"id": "gateway", "type": "gateway"},
+        {"id": "validator", "type": "service"},
+    ):
+        with pytest.raises(GraphEditInvalid):
+            apply_graph_content_edit(
+                graph,
+                GraphContentEditRequest(expected_version="graph-v1", nodes=[update]),
+            )
+    assert graph["nodes"][0]["type"] == "service"
+
+
+def test_content_edit_cannot_create_component_without_owner():
+    with pytest.raises(GraphEditInvalid):
+        apply_graph_content_edit(
+            _graph(),
+            GraphContentEditRequest(
+                expected_version="graph-v1",
+                nodes=[{"id": "gateway", "type": "component"}],
+            ),
+        )
