@@ -120,7 +120,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
     backendReadiness,
     sendDisabled,
   }: {
-    onSend: (content: string, action?: 'ask' | 'new_chat') => Promise<void>;
+    onSend: (content: string, action?: 'ask' | 'answer' | 'new_chat') => Promise<void>;
     onStop: () => void;
     onRetryReadiness: () => void;
     onUseSelection: () => void;
@@ -131,6 +131,7 @@ vi.mock('./components/Chat/ChatInput', () => ({
   }) => (
     <div>
       <button disabled={sendDisabled} onClick={() => { void onSend('User question').catch(() => {}); }}>Send message</button>
+      <button disabled={sendDisabled} onClick={() => { void onSend('How do I read this diagram?', 'answer').catch(() => {}); }}>Send diagram answer</button>
       <button disabled={sendDisabled} onClick={() => { void onSend('AI trading bot?', 'ask').catch(() => {}); }}>Send broad request</button>
       <button disabled={sendDisabled} onClick={() => { void onSend('Separate topic', 'new_chat').catch(() => {}); }}>Send in new chat</button>
       <button onClick={onStop}>Stop generation</button>
@@ -585,6 +586,55 @@ describe('App coordination', () => {
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
     expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
+  });
+
+  it('sends answer mode in the current thread and retains its diagram and conversation', async () => {
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send diagram answer') as HTMLButtonElement).disabled).toBe(false));
+
+    await act(async () => { fireEvent.click(screen.getByText('Send diagram answer')); });
+
+    expect(flushPendingLayout).toHaveBeenCalledOnce();
+    expect(agentState.sendMessage).toHaveBeenCalledExactlyOnceWith(
+      'How do I read this diagram?',
+      expect.objectContaining({ graphAction: 'answer', displayContent: 'How do I read this diagram?' }),
+    );
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+    expect(agentState.startThreadAndSend).not.toHaveBeenCalled();
+    expect(useAgentStream).toHaveBeenLastCalledWith(session, 'thread-1');
+    expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
+    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
+    expect(screen.getByTestId('message-list').textContent).toBe('2 messages');
+    expect(screen.getByText('Architecture thread')).toBeTruthy();
+  });
+
+  it('preserves highlighted text in an answer-mode request before clearing selection', async () => {
+    vi.mocked(useSelectionSuggestion).mockReturnValue({
+      ...selectionState,
+      selectionSuggestion: 'A selected architecture passage',
+      selectionReferenceActive: true,
+    });
+    render(<App />);
+    await screen.findByTestId('graph-canvas');
+    await waitFor(() => expect((screen.getByText('Send diagram answer') as HTMLButtonElement).disabled).toBe(false));
+
+    await act(async () => { fireEvent.click(screen.getByText('Send diagram answer')); });
+
+    expect(agentState.sendMessage).toHaveBeenCalledExactlyOnceWith(
+      ['Explain this highlighted part in beginner-friendly terms and relate it to the diagram.', '',
+        'Highlighted text: "A selected architecture passage"', '',
+        'User question: How do I read this diagram?'].join('\n'),
+      expect.objectContaining({
+        graphAction: 'answer',
+        displayContent: 'How do I read this diagram?',
+        hasSelectedTextContext: true,
+      }),
+    );
+    expect(selectionState.clearSelection).toHaveBeenCalledOnce();
+    expect(agentState.sendMessage.mock.invocationCallOrder[0]).toBeLessThan(selectionState.clearSelection.mock.invocationCallOrder[0]);
+    expect(threadState.handleNewChat).not.toHaveBeenCalled();
+    expect(agentState.startThreadAndSend).not.toHaveBeenCalled();
   });
 
   it('grounds a selected-text request with fixed generation settings', async () => {
