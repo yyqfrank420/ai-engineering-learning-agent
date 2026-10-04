@@ -11,9 +11,11 @@ navigation, conversation, canvas, and overlays. Violet identifies actions and fo
 Graph component colors retain their architectural meaning. Error and connection
 status colors communicate state.
 
-Geist Variable is self-hosted through Fontsource, with a system fallback. Use 15px
-conversation text, 14px inspector body text, and 13px secondary content where space
-allows. Use monospace for code and measurements. Keep explanation measure at 72ch.
+Geist Variable is self-hosted through Fontsource, with a system fallback. Apply the
+new typography only to the visible workspace and sign-in surface. Keep body
+typography unchanged because private diagram evaluation inherits it for SVG
+measurements. Use 15px conversation text, 14px inspector body text, and 13px
+secondary content where space allows. Use monospace for code and measurements. Keep explanation measure at 72ch.
 
 Controls use 6px corners, fields and grouped surfaces use 10px, and larger message
 surfaces use 14px. Circular jump controls are the small-control exception. Keep
