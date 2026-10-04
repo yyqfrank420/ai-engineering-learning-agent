@@ -43,7 +43,7 @@ export function ChatInput({
 }: ChatInputProps) {
   const [value, setValue]         = useState('');
   const [checkingIntent, setCheckingIntent] = useState(false);
-  const [needsGraphChoice, setNeedsGraphChoice] = useState(false);
+  const [graphChoiceStatus, setGraphChoiceStatus] = useState<'visible' | 'dismissed' | null>(null);
   const submittingRef = useRef(false);
   const sendingRef = useRef(false);
   const startingChatRef = useRef(false);
@@ -89,10 +89,13 @@ export function ChatInput({
     const requestId = ++intentRequestRef.current;
     setCheckingIntent(true);
     try {
-      const action = chosenAction ?? (checkSubmission && !isGenerating ? await checkSubmission(trimmed) : undefined);
+      // Sending again after choices appear means continuing the current conversation.
+      const action = chosenAction ?? (graphChoiceStatus && !isGenerating
+        ? 'answer'
+        : (checkSubmission && !isGenerating ? await checkSubmission(trimmed) : undefined));
       if (requestId !== intentRequestRef.current) return;
       if (action === 'ask' && hasGraph) {
-        setNeedsGraphChoice(true);
+        setGraphChoiceStatus('visible');
         return;
       }
       sendingRef.current = true;
@@ -100,7 +103,7 @@ export function ChatInput({
       const sent = action === undefined ? onSend(trimmed) : onSend(trimmed, action);
       if (sent) await sent;
       if (requestId !== intentRequestRef.current) return;
-      setNeedsGraphChoice(false);
+      setGraphChoiceStatus(null);
       clearDraft(setValue, textareaRef.current);
     } catch (error) {
       if (requestId === intentRequestRef.current) {
@@ -125,7 +128,7 @@ export function ChatInput({
     if (selectionSuggestion && !selectionReferenceActive && e.target.value.trim() !== '') {
       onUseSelection?.();
     }
-    setNeedsGraphChoice(false);
+    setGraphChoiceStatus(null);
     setValue(e.target.value);
   };
 
@@ -145,7 +148,7 @@ export function ChatInput({
       intentRequestRef.current += 1;
       setCheckingIntent(false);
       setSubmissionError(null);
-      setNeedsGraphChoice(false);
+      setGraphChoiceStatus(null);
       clearDraft(setValue, textareaRef.current);
     }
 
@@ -178,12 +181,12 @@ export function ChatInput({
     >
       {checkingIntent && <div role="status" style={prepareNoticeStyle}>Preparing your request…</div>}
       {submissionError && <div role="alert" style={prepareNoticeStyle}>{submissionError}</div>}
-      {needsGraphChoice && (
+      {graphChoiceStatus === 'visible' && (
         <div className="chat-graph-choice" role="group" aria-label="Where to continue">
           <div>
             <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('extend')}>Extend this diagram</button>
             <button disabled={checkingIntent || disabled || sendDisabled} onClick={() => void submit('new_chat')}>Start a new chat</button>
-            <button disabled={checkingIntent} onClick={() => setNeedsGraphChoice(false)}>Dismiss</button>
+            <button disabled={checkingIntent} onClick={() => setGraphChoiceStatus('dismissed')}>Dismiss</button>
           </div>
         </div>
       )}

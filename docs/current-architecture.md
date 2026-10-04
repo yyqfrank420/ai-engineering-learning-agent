@@ -351,8 +351,11 @@ failure without a graph releases the available explanation instead of waiting fo
 Before an idle diagram-enabled submission, the composer calls the authenticated, read-only
 `POST /api/threads/{thread_id}/diagram-intent` endpoint. The composer always sends automatic depth,
 graph on, and research on. A new conversation can generate immediately. With a saved diagram,
-clear additions extend it, explanations leave it unchanged, and ambiguous requests show an inline
-choice: Extend this diagram or Start a new chat. The separate option creates and opens a chat
+clear additions extend it, explanations leave it unchanged, and ambiguous requests offer an inline
+choice: Extend this diagram or Start a new chat. Sending the same draft again, including after
+dismissing the choices, uses the answer-only action without repeating the intent check. This
+answers with the current diagram as context and leaves it unchanged. Editing the draft or
+switching conversations clears that choice. The separate option creates and opens a chat
 before sending. Unavailable intent checks and failed chat creation retain the draft with feedback.
 Typed `graph_action` and expected graph version travel through both transports. Server admission
 rejects fresh creation over a saved graph and rejects stale extension requests before model calls.
