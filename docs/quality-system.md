@@ -60,6 +60,41 @@ Run `scripts/configure_main_branch_protection.sh owner/repo` to inspect the curr
 and proposed branch protection without writing. Add `--apply` only after reviewing
 the payload.
 
+## Focused input-gate evaluations
+
+`backend/eval/input_gate_cases.py` owns the input sanitation regression set.
+It covers dinner requests, assistant-suggested architecture, unrelated topic
+switches, AI filler, direct and disguised injection, highlighted text, valid AI
+architecture, contextual follow-ups, and quoted attacks used for security education.
+
+Run the local contracts without provider credentials:
+
+```bash
+python -m pytest -q backend/tests/test_input_gate_evals.py \
+  backend/tests/test_input_gate_runner.py
+```
+
+Those tests use the real scanner and mocked classifier verdicts. They verify
+admission behavior and that SSE and WebSocket rejections bypass core processing,
+activity, and diagram changes. They do not measure classifier accuracy.
+
+Run fresh classifier evaluations with the configured provider credential:
+
+```bash
+mkdir -p artifacts
+PYTHONPATH=backend python -m eval.input_gate_runner \
+  --output artifacts/input-gate-live.json
+```
+
+Repeat `--case <id>` to select cases. The runner uses the configured orchestrator
+model and production sanitation prompt. A fresh evaluation ID and isolated local
+SQLite database enforce at most one provider attempt per selected case, with no
+fallback or automatic retry. Explicit provider refusals count as security rejections.
+Unexpected verdicts and provider errors fail the run.
+The report records case results, model, corpus and prompt fingerprints, and latency.
+These checks exercise the input gate only. Browser, transport, diagram, and semantic
+journey verification remain separate. Existing PR and full-suite budgets are unchanged.
+
 ## Trust and staging isolation
 
 Live, scheduled, and production-smoke browser workflows build the frontend and

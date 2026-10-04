@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -41,11 +42,25 @@ def block_live_llm_credentials(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def skip_prompt_injection_model(monkeypatch):
-    # Most chat tests do not exercise the prompt guard; dedicated tests reload
-    # the module when they need real scanner behavior.
+    from agent.stream_utils import StructuredLLMResponse
+
+    # Dedicated guard tests restore real scanning and provide explicit model responses.
     monkeypatch.setattr("api.chat_guards.check_prompt_injection", lambda _text: True)
     monkeypatch.setattr("api.sse_handler.check_prompt_injection", lambda _text: True)
-    monkeypatch.setattr("api.chat_guards.stream_llm", AsyncMock(return_value="ACCEPT"))
+
+    monkeypatch.setattr(
+        "api.chat_guards.stream_structured_llm",
+        AsyncMock(
+            return_value=StructuredLLMResponse(
+                text=json.dumps({"verdict": "ACCEPT"}),
+                finish_reason="end_turn",
+                input_tokens=1,
+                output_tokens=1,
+                provider="anthropic",
+                model="claude-opus-5",
+            )
+        ),
+    )
 
 
 @pytest.fixture(autouse=True)

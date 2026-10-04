@@ -533,7 +533,9 @@ rate limits, and idempotent replay. The shared chat input gate runs prompt injec
 and a tool-free topic classifier before constructing agent tools, checking diagram actions,
 or starting the core workflow. It also checks diagram-intent preflight, retries, and each
 steering update. Unrelated requests receive a short redirect to AI engineering or AI system
-architecture. Unsafe input and classifier failure block core work. A rejected steering
+architecture. Verdicts use a schema-constrained response. A provider refusal is a
+security rejection; incomplete or malformed output fails validation. Unsafe input and
+classifier failure block core work. A rejected steering
 update leaves the active request running. The classifier treats history and selected text
 as untrusted context; assistant suggestions cannot establish user design intent.
 The prompt has a version and SHA256 telemetry identity. Deployment rollback restores
