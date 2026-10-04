@@ -187,11 +187,14 @@ oversized input stay in deterministic API tests and spend no model calls.
 The education journey replaces the removed graph-off control journey. The seven
 graph-bearing turns need four batches at the two-case graph concurrency limit.
 Four 970-second turn deadlines plus 180 seconds of setup require 4,060 seconds;
-the browser suite cap is 4,200 seconds. The application attempt cap is 78, covering
-70 logical calls plus the allowed adapter retries on complete successful paths.
-The first-pass path uses 42 calls. Additional failure recovery can exhaust the cap
-and must fail the run. Judge calls remain capped at 16; infrastructure retries stay
-disabled. These are ceilings, not target spending.
+the browser suite cap is 4,200 seconds. The application attempt cap stays at 78.
+The 11 PR turns each validate input at diagram-intent and chat submission, adding
+22 sanitation calls to the 42 core first-pass calls. A healthy first pass uses
+64 calls and leaves 14 provider attempts for repairs or retries. The full hypothetical
+repair envelope uses 92 logical calls and reaches 100 provider attempts with adapter
+retries and fallbacks. It exceeds the hard cap; the quota denies attempt 79 before
+dispatch, so excessive repair or retry work fails the run. Judge calls remain capped
+at 16; infrastructure retries stay disabled. These are ceilings, not target spending.
 The staging job allows 100 minutes: 70 for browser work, 20 for semantic review,
 and 10 for setup and evidence upload.
 
@@ -322,12 +325,14 @@ required check and image approval require complete validated coverage under that
 policy. A new paid attempt requires explicit operator authorization.
 
 PR evaluation limits are eight cases, 78 application provider attempts, and 16
-judge provider attempts. The current PR corpus has 42 first-pass calls and up to 70
-logical application calls on its complete repair paths. Allowed retries and fallbacks
-raise the successful-path allowance to 78 provider attempts. The tagged staging
-revision atomically reserves one shared quota record before each provider request
-and rejects attempt 79 before it is sent. Failed-turn recovery can exhaust this
-quota. Production traffic does not set this
+judge provider attempts. The current PR corpus has 64 first-pass calls, including
+22 input sanitation calls across 11 turns, and leaves 14 provider attempts for repair
+and retry work. Its full hypothetical repair envelope reaches 92 logical calls and
+100 provider attempts with retries and fallbacks. The 78-attempt cap does not allow
+that full envelope to complete. The tagged staging revision atomically reserves one
+shared quota record before each provider request and rejects attempt 79 before it
+is sent. Excessive repair, retry, or failed-turn recovery can exhaust this quota and
+fail the run. Production traffic does not set this
 evaluation-only quota. The timeout chain is deliberately nested: the backend
 agent envelope is 940 seconds, with model work stopping at 910 seconds to retain persistence
 headroom. The Playwright turn waits at most 970 seconds so it can capture the typed terminal event,

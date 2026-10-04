@@ -2012,9 +2012,10 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
     # Two attempts per layer raise the complete logical bound to nine calls.
     # stream_structured_llm and staged synthesis each allow one provider attempt;
     # answer-only synthesis and node chips allow two Anthropic attempts and one
-    # OpenAI fallback. Research uses DDGS, without an LLM call. These bounds cover
-    # successful completion. Extra failed-turn recovery may exhaust the shared
-    # quota, which denies attempt 79 before dispatch.
+    # OpenAI fallback. Web retrieval has a separate bounded search request. These bounds cover
+    # the core workflow. Each browser turn also validates input at diagram-intent
+    # and chat submission. The shared quota can deny repair attempts; the full
+    # hypothetical repair/retry envelope is not a successful-path guarantee.
     call_bounds = {
         "rag-grounding": (5, 9, 9),
         "memory": (4, 4, 8),
@@ -2026,13 +2027,25 @@ def test_live_eval_job_allows_setup_around_the_bounded_browser_suite():
         "prompt-injection": (2, 2, 4),
     }
     assert set(call_bounds) == {case["id"] for case in pr_cases}
-    first_pass_bound = sum(bound[0] for bound in call_bounds.values())
-    logical_call_bound = sum(bound[1] for bound in call_bounds.values())
-    provider_attempt_bound = sum(bound[2] for bound in call_bounds.values())
-    assert first_pass_bound == 42
-    assert logical_call_bound == 70
-    assert provider_attempt_bound == budgets["application_calls"] == 78
-    assert first_pass_bound <= logical_call_bound <= budgets["application_calls"]
+    pr_turn_count = sum(len(case["steps"]) for case in pr_cases)
+    sanitation_calls = 2 * pr_turn_count
+    first_pass_bound = (
+        sum(bound[0] for bound in call_bounds.values()) + sanitation_calls
+    )
+    logical_call_bound = (
+        sum(bound[1] for bound in call_bounds.values()) + sanitation_calls
+    )
+    provider_attempt_bound = (
+        sum(bound[2] for bound in call_bounds.values()) + sanitation_calls
+    )
+    assert pr_turn_count == 11
+    assert sanitation_calls == 22
+    assert first_pass_bound == 64
+    assert logical_call_bound == 92
+    assert provider_attempt_bound == 100
+    assert budgets["application_calls"] == 78
+    assert first_pass_bound < budgets["application_calls"] < logical_call_bound
+    assert provider_attempt_bound > budgets["application_calls"]
     assert budgets["judge_calls"] == 16
     assert budgets["browser_infrastructure_retry_count"] == 0
     assert budgets["browser_suite_max_timeout_seconds"] == 4200
