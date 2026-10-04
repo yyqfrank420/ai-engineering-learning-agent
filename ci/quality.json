@@ -10,6 +10,8 @@
           "argv": [
             "python", "-m", "pytest", "--tb=short", "-q",
             "backend/tests/test_api_security.py",
+            "backend/tests/test_chat_input_validation.py",
+            "backend/tests/test_input_validation_transports.py",
             "backend/tests/test_http_middleware_concurrency.py",
             "backend/tests/test_chat_websocket.py",
             "backend/tests/test_graph_continuity_transports.py",

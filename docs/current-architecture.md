@@ -528,10 +528,21 @@ completed review on a later edit. The UI disables repeated Stop and steering whi
 Navigation, account changes, disconnects, and normal cancellation never imply acceptance.
 Stale request or candidate commands are rejected without cancelling the active turn.
 
-Live activity is a bounded public feed derived from workflow events. Known startup, routing,
-and steering statuses produce public context steps immediately. The expanded panel shows
-"Working on your request." while no step has arrived. Book search, web search, rendering,
-and review appear as tool steps; public design updates explain the current phase. Raw provider
+Input sanitation is the first domain step after authentication, ownership, payload limits,
+rate limits, and idempotent replay. The shared chat input gate runs prompt injection checks
+and a tool-free topic classifier before constructing agent tools, checking diagram actions,
+or starting the core workflow. It also checks diagram-intent preflight, retries, and each
+steering update. Unrelated requests receive a short redirect to AI engineering or AI system
+architecture. Unsafe input and classifier failure block core work. A rejected steering
+update leaves the active request running. The classifier treats history and selected text
+as untrusted context; assistant suggestions cannot establish user design intent.
+The prompt has a version and SHA256 telemetry identity. Deployment rollback restores
+the prior gate and prompt. No database migration is required.
+
+Live activity is a bounded public feed derived from actual workflow events after validation.
+Startup and routing statuses do not create public activity, and empty activity is hidden.
+Book search, web search, rendering, and review appear as tool steps; public design updates
+state the current phase. Raw provider
 reasoning, signatures, graph JSON, and retrieved tool content stay outside this feed.
 The transports persist the activity with the completed message. Reload restores its steps
 and duration without another model call. Completion collapses the feed, which can be reopened.

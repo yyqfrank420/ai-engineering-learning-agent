@@ -15,33 +15,27 @@ _STATUSES = {"active", "complete", "retry", "rejected", "degraded"}
 # Twenty digits cover real collection lengths and leave room for complete public sentences.
 _MAX_DRAFT_COUNT = 10**20 - 1
 _STAGE_TEXT = {
-    "context": "Let me check your request and any existing diagram.",
-    "evidence": "I'm looking for sources that fit this design.",
-    "architect": "I'll work out the responsibilities and boundaries before drafting the diagram.",
-    "challenger": "I'm checking where the design could break down.",
-    "components": "I'll start with the main parts. Once the draft has been checked, I'll add the connections.",
-    "connections": "Now I'll map how the parts work together.",
-    "integrate": "I'm bringing the draft and review findings together.",
-    "revise": "The checks found something to adjust. I'll revise the draft and run them again.",
-    "explain": "I'm putting the answer together with the design choices that matter for your request.",
-    "synthesis": "I'm putting the answer together with the design choices that matter for your request.",
+    "context": "Preparing diagram context",
+    "evidence": "Collecting design evidence",
+    "architect": "Analyzing architecture",
+    "challenger": "Reviewing architecture risks",
+    "components": "Generating diagram components",
+    "connections": "Generating diagram connections",
+    "integrate": "Integrating review findings",
+    "revise": "Revising the diagram",
+    "explain": "Generating the explanation",
+    "synthesis": "Generating the explanation",
 }
 _TOOL_TEXT = {
-    "book": ("Searching the book", "Book search finished"),
+    "book": ("Retrieving book passages", "Book retrieval finished"),
     "web": ("Searching the web", "Web search finished"),
     "render": ("Checking the layout", "Layout checked"),
     "review": ("Checking the draft", "Draft checked"),
 }
-# Startup and routing predate workflow progress events. Map only known statuses;
-# arbitrary worker text is not a public activity source.
+# Startup and routing are transport notifications, not evidence of workflow work.
 _CONTEXT_STATUS_TEXT = {
-    "Question received \u2014 preparing context\u2026": _STAGE_TEXT["context"],
-    "Question received \u2014 preparing the steerable workflow\u2026": _STAGE_TEXT[
-        "context"
-    ],
-    "Routing\u2026": _STAGE_TEXT["context"],
     "Steering received \u2014 rebuilding the answer around your correction\u2026": (
-        "I'll update the answer around your correction."
+        "Updating request context"
     ),
 }
 _INTERNAL_TEXT = re.compile(
@@ -91,11 +85,11 @@ def _draft_text(phase: str, summary: object) -> str:
     if phase == "components":
         names = f", including {' and '.join(public_labels)}" if public_labels else ""
         subject = f"The draft for {title}" if title else "The draft"
-        return f"{subject} has {components}{names}. I'll check it before adding the connections."
+        return f"{subject} has {components}{names}."
     connections = (
         f"{edges} connection{'s' if edges != 1 else ''}" if edges else "no connections"
     )
-    return f"The draft now has {connections} across {components}. I'll check how they fit together before presenting the diagram."
+    return f"The draft now has {connections} across {components}."
 
 
 class ActivityRecorder:
@@ -147,13 +141,13 @@ class ActivityRecorder:
             if kind == "update":
                 if phase in {"components", "connections"}:
                     text = (
-                        "I couldn't finish this draft. You can retry the request."
+                        "Diagram draft could not be completed"
                         if status == "rejected"
-                        else "I need a little more detail before I can build this part of the diagram."
+                        else "Clarification required"
                     )
                 else:
                     text = (
-                        "I couldn't complete this diagram check."
+                        "Diagram check could not be completed"
                         if status == "rejected"
                         else "This step returned limited results."
                     )

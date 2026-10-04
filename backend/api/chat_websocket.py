@@ -29,7 +29,7 @@ from agent.state import AgentState
 from analytics.events import enqueue_analytics_event
 from api.chat_guards import (
     byte_len,
-    check_prompt_injection,
+    chat_input_error,
     check_rate_limit,
     internal_test_stream_scope,
     graph_continuity_error,
@@ -322,13 +322,30 @@ async def chat_websocket(websocket: WebSocket) -> None:
         if await replay_completed_turn():
             return
 
-        rag_tools, graph_tools, node_detail_tools = _make_agent_tools(websocket)
         history = await _run_blocking(
             message_store.get_history,
             user_id,
             body.thread_id,
             limit=settings.max_messages_per_thread,
         )
+        input_error = await body.input_error(
+            history, user_id=user_id, request_id=request_id
+        )
+        if input_error:
+            await _run_blocking(
+                thread_store.persist_turn, user_id, body.thread_id,
+                title=thread["title"], user_content=body.content,
+                assistant_content=input_error, graph_data=None,
+                client_request_id=body.client_request_id,
+            )
+            await websocket.send_json({"type": "response_delta", "content": input_error})
+            await websocket.send_json({"type": "done"})
+            return
+        if not knowledge_base_ready(websocket):
+            await _send_error(websocket, "Knowledge base is still loading. Please try again in a moment.")
+            await websocket.send_json({"type": "done"})
+            return
+        rag_tools, graph_tools, node_detail_tools = _make_agent_tools(websocket)
         base_graph, base_graph_contract = await _run_blocking(
             thread_store.get_graph_artifact, user_id, body.thread_id
         )
@@ -355,6 +372,8 @@ async def chat_websocket(websocket: WebSocket) -> None:
             max_screenshot_bytes=settings.max_diagram_screenshot_bytes,
         )
         steer_count = len(body.steering_updates)
+        # Rejected updates also consume the bounded external-model validation budget.
+        sanitation_attempt_count = len(body.steering_updates)
         graph_review_budget = GraphReviewBudget()
         graph_review_control = GraphReviewControl()
         started_at = session_started_at
@@ -645,8 +664,8 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         not steering
                         or byte_len(steering) > settings.max_message_bytes
                         or byte_len(steered_content) > max_effective_message_bytes()
-                        or not check_prompt_injection(steering)
                         or steer_count >= _MAX_STEERS_PER_RUN
+                        or sanitation_attempt_count >= _MAX_STEERS_PER_RUN
                     ):
                         await send(
                             {
@@ -657,6 +676,19 @@ async def chat_websocket(websocket: WebSocket) -> None:
                         # Invalid commands do not disturb the active model call.
                         continue
 
+                    sanitation_attempt_count += 1
+                    input_error = await chat_input_error(
+                        steering, [*history, {"role": "user", "content": content}],
+                        user_id=user_id, thread_id=body.thread_id, request_id=request_id,
+                    )
+                    if input_error is None:
+                        input_error = await chat_input_error(
+                            steered_content, history, user_id=user_id,
+                            thread_id=body.thread_id, request_id=request_id,
+                        )
+                    if input_error:
+                        await send({"type": "command_rejected", "reason": input_error})
+                        continue
                     agent_task.cancel()
                     with suppress(asyncio.CancelledError):
                         await agent_task
@@ -872,10 +904,6 @@ def _new_turn_preflight_error(
     limit_error = check_rate_limit(user_id)
     if limit_error:
         return limit_error
-    if not knowledge_base_ready(websocket):
-        return "Knowledge base is still loading. Please try again in a moment."
-    if not check_prompt_injection(body.content):
-        return "Message blocked by security filter"
     return None
 
 

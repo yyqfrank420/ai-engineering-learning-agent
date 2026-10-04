@@ -32,6 +32,7 @@ from agent.activity import ActivityRecorder
 from agent.state import AgentState
 from api.chat_guards import (
     byte_len,
+    chat_input_error,
     check_prompt_injection,
     check_rate_limit,
     internal_test_stream_scope,
@@ -156,6 +157,30 @@ class ChatRequest(BaseModel):
         # Owned canonical content and validated steering may exceed the ordinary input cap.
         return self.model_copy(update={**original, "content": effective_content}), original
 
+    async def input_error(
+        self, history: list[dict], *, user_id: str, request_id: str
+    ) -> str | None:
+        telemetry = {"user_id": user_id, "thread_id": self.thread_id, "request_id": request_id}
+        update_suffix = "".join(
+            f"\n\nUser steering update {number}:\n{update}"
+            for number, update in enumerate(self.steering_updates, start=1)
+        )
+        accepted_content = self.content.removesuffix(update_suffix)
+        error = await chat_input_error(accepted_content, history, **telemetry)
+        if error:
+            return error
+        # A later update can use accepted context without borrowing its relevance.
+        for number, update in enumerate(self.steering_updates, start=1):
+            error = await chat_input_error(
+                update, [*history, {"role": "user", "content": accepted_content}], **telemetry
+            )
+            if error:
+                return error
+            accepted_content += f"\n\nUser steering update {number}:\n{update}"
+        if self.steering_updates:
+            return await chat_input_error(self.content, history, **telemetry)
+        return None
+
     def failed_generation_retry_request(
         self, final_state: AgentState, original_request: dict | None = None
     ) -> dict | None:
@@ -200,7 +225,7 @@ async def chat_endpoint(
 ):
     """
     Run the agent pipeline and stream events back as SSE.
-    Pre-flight security gates run synchronously before opening the stream.
+    Input sanitation runs before tool construction and the core workflow.
     """
     user_id = user["id"]
     upsert_profile(user_id, user["email"] or f"{user_id}@unknown.local")
@@ -302,16 +327,6 @@ async def chat_endpoint(
         record_chat_rejected("rate_limited")
         return sse_error(limit_error)
 
-    if not knowledge_base_ready(request):
-        record_chat_rejected("knowledge_base_not_ready")
-        return sse_error(
-            "Knowledge base is still loading. Please try again in a moment."
-        )
-
-    if not check_prompt_injection(content):
-        record_chat_rejected("security_filter")
-        return sse_error("Message blocked by security filter")
-
     async def stream():
         stream_id = None
         thread_stream_id = None
@@ -374,6 +389,37 @@ async def chat_endpoint(
                 async for event in replay_completed_turn(completed_turn):
                     yield event
                 return
+            history = message_store.get_history(
+                user_id, thread_id, limit=settings.max_messages_per_thread
+            )
+            input_error = await body.input_error(
+                history, user_id=user_id, request_id=request_id
+            )
+            if input_error:
+                record_chat_rejected("input_validation")
+                try:
+                    thread_store.persist_turn(
+                        user_id, thread_id, title=thread["title"],
+                        user_content=content, assistant_content=input_error,
+                        graph_data=None, client_request_id=body.client_request_id,
+                    )
+                except ThreadMessageLimitExceeded:
+                    yield sse({"type": "error", "content": "Thread message limit reached. Start a new chat to continue."})
+                    yield sse({"type": "done"})
+                    return
+                except Exception:
+                    logger.exception("Input rejection persistence failed")
+                    yield sse({"type": "error", "content": "Response could not be saved. Please try again."})
+                    yield sse({"type": "done"})
+                    return
+                yield sse({"type": "response_delta", "content": input_error})
+                yield sse({"type": "done"})
+                return
+            if not knowledge_base_ready(request):
+                record_chat_rejected("knowledge_base_not_ready")
+                yield sse({"type": "error", "content": "Knowledge base is still loading. Please try again in a moment."})
+                yield sse({"type": "done"})
+                return
             rag_tools, graph_tools, node_detail_tools = _make_agent_tools(request)
             from observability import (
                 change_active_chat_streams,
@@ -387,14 +433,10 @@ async def chat_endpoint(
             queue: asyncio.Queue[dict] = asyncio.Queue(
                 maxsize=max(1, settings.max_sse_queue_events),
             )
-            request_id = getattr(request.state, "request_id", str(uuid.uuid4()))
             started_at = time.perf_counter()
             first_token_latency_ms: int | None = None
             response_delta_count = 0
             graph_event_count = 0
-            history = message_store.get_history(
-                user_id, thread_id, limit=settings.max_messages_per_thread
-            )
             existing_graph, existing_graph_contract = thread_store.get_graph_artifact(
                 user_id, thread_id
             )

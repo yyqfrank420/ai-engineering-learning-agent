@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -35,6 +36,7 @@ def block_live_llm_credentials(monkeypatch):
     # shell with real API keys from leaking paid credentials into pytest.
     monkeypatch.setattr(settings, "anthropic_api_key", "test-disabled")
     monkeypatch.setattr(settings, "openai_api_key", "")
+    monkeypatch.setattr(settings, "moonshot_api_key", "")
 
 
 @pytest.fixture(autouse=True)
@@ -43,6 +45,7 @@ def skip_prompt_injection_model(monkeypatch):
     # the module when they need real scanner behavior.
     monkeypatch.setattr("api.chat_guards.check_prompt_injection", lambda _text: True)
     monkeypatch.setattr("api.sse_handler.check_prompt_injection", lambda _text: True)
+    monkeypatch.setattr("api.chat_guards.stream_llm", AsyncMock(return_value="ACCEPT"))
 
 
 @pytest.fixture(autouse=True)

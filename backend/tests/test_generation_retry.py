@@ -399,8 +399,8 @@ def test_retry_transport_repeats_effective_request_and_replays_duplicate(
             saved_turn = get_completed_turn(
                 user["id"], thread["id"], payload["client_request_id"]
             )
-            assert saved_turn["activity"] is not None
-            assert events[-1] == {"type": "done", "activity": saved_turn["activity"]}
+            assert saved_turn.get("activity") is None
+            assert events[-1] == {"type": "done"}
             done_events.append(events[-1])
         too_large = {
             **payload,
@@ -583,8 +583,8 @@ def test_uncertain_retry_restores_two_steers_and_replays_completed_id(
             saved_turn = get_completed_turn(
                 user["id"], thread["id"], payload["client_request_id"]
             )
-            assert saved_turn["activity"] is not None
-            assert events[-1] == {"type": "done", "activity": saved_turn["activity"]}
+            assert saved_turn.get("activity") is None
+            assert events[-1] == {"type": "done"}
             done_events.append(events[-1])
     effective = (
         "Original\n\nUser steering update 1:\nuse queues"
