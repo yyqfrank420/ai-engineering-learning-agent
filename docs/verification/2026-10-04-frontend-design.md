@@ -48,3 +48,17 @@ index.html adds only the theme-color meta tag.
 D3Graph.tsx, HiddenGraphEvaluator.tsx, diagram geometry, transport, prompts, model
 settings, backend source and schemas are unchanged by this PR. GraphCanvas CSS
 changes affect the public header, inspector, toolbar and connection details.
+
+## Audited CI classification
+
+The exact reviewed content transitions are recorded in the CI audit ledger. The
+existing checker now supports modifications to the three frontend metadata files
+and additions of source CSS. Exact Git blobs, statuses, regular-file modes and
+checked-out content must match. Metadata additions/deletions, new TSX files,
+renames, symlinks, executable modes and stale or altered content receive no audit
+exception. Unreviewed backend, transport and dependency changes remain protected.
+
+All 42 targeted presentation audit tests and targeted Ruff passed. The complete
+offline policy suite passed with 503 tests and 5 local Bash capability skips.
+Manifest validation passed. Revision-based classification matched all 12 reviewed
+transitions, with no AI-impacting paths. Required GitHub checks still govern merge.
