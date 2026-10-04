@@ -27,7 +27,8 @@ def test_recruiter_demo_happy_path_system_workflow(temp_data_dir, monkeypatch):
     _configure_internal_auth(monkeypatch)
 
     async def fake_run_agent(state, rag_tools, graph_tools, node_detail_tools):
-        await state["send"]({"type": "worker_status", "worker": "rag", "status": "Searching book…"})
+        await state["send"]({"type": "workflow_progress", "phase": "book", "status": "active"})
+        await state["send"]({"type": "workflow_progress", "phase": "book", "status": "complete"})
         await state["send"]({"type": "response_delta", "content": "Agents can plan and use tools."})
         await state["send"]({
             "type": "graph_data",
@@ -127,6 +128,15 @@ def test_recruiter_demo_happy_path_system_workflow(temp_data_dir, monkeypatch):
         assert payload["thread"]["graph_data"]["title"] == "Agent Workflow"
         saved_activity = payload["messages"][-1]["activity"]
         assert saved_activity is not None
+        assert [(step["phase"], step["status"]) for step in saved_activity["steps"]] == [
+            ("book", "active"),
+            ("book", "complete"),
+        ]
+        live_steps = [event for event in chat_events if event["type"] == "activity_step"]
+        assert saved_activity["steps"] == [
+            {key: value for key, value in step.items() if key != "type"}
+            for step in live_steps
+        ]
         assert chat_events[-1] == {"type": "done", "activity": saved_activity}
 
         node = client.post(
