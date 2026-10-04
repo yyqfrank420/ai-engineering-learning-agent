@@ -215,7 +215,8 @@ Before opening or updating a pull request, or triggering cloud CI/CD evaluations
 
 The CI manifest classifies paths conservatively. Copy inside a mixed runtime module
 can still trigger generation checks because path classification cannot identify the
-edit's semantics. Only established non-runtime files and audited presentation owners
-are exempt. Backend runtime files, request routing, prompts, transport, and private
-rendering remain protected. An exemption from paid evaluation does not authorize
-skipping relevant offline checks or changing backend deployment guarantees.
+edit's semantics. Established non-runtime files, frontend composer interaction,
+and audited presentation owners do not require paid generation checks. Backend
+runtime files, backend request routing, prompts, transport, and private rendering
+remain protected. Skipping paid evaluation does not authorize skipping relevant
+offline checks or changing backend deployment guarantees.

@@ -64,8 +64,9 @@ authorize a read-only replacement for the core diagram workflow.
   bounded terminal wait if the browser cannot acknowledge it.
 - Editing should preserve the surrounding system and existing learner work.
 - Extending a diagram retains saved components, connections, and positions. Uncertain
-  follow-ups ask whether to extend or start in a new chat. Separate designs open a
-  new conversation.
+  follow-ups offer Extend this diagram or Start a new chat. Sending the draft again
+  uses the current diagram as context and leaves it unchanged, including after
+  dismissing the choices. Separate designs open a new conversation.
 - Diagram history follows the conversation: each answer links to its diagram.
   Undo/Redo and a compact numbered version picker keep every saved revision accessible.
   Browsing history is read-only until Restore; scrolling the chat

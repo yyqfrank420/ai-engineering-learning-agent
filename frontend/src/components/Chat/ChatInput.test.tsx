@@ -51,34 +51,145 @@ describe('ChatInput', () => {
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
-  it('asks where to continue for ambiguous existing diagrams and preserves a dismissed draft', async () => {
+  it.each(['send', 'answer', 'extend', 'new_chat'] as const)('preserves the classified %s action for an existing diagram', async action => {
     const onSend = vi.fn();
-    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'What about measuring results?' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    await screen.findByRole('button', { name: 'Extend this diagram' });
-    expect(screen.queryByText(/Keep building on this diagram/)).toBeNull();
-    expect(screen.queryByText(/A new chat keeps this conversation/)).toBeNull();
-    expect(onSend).not.toHaveBeenCalled();
-    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('What about measuring results?');
-    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    fireEvent.click(await screen.findByRole('button', { name: 'Extend this diagram' }));
-    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('What about measuring results?', 'extend'));
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue(action) });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'My request' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action));
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
   });
 
-  it('keeps the draft when new chat creation fails and blocks duplicate choice submission', async () => {
+  it.each(['click', 'Enter'] as const)('sends an ambiguous existing-diagram follow-up when %s is used again', async trigger => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: '  How should I read this diagram?  ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByRole('group', { name: 'Where to continue' });
+    expect(onSend).not.toHaveBeenCalled();
+    if (trigger === 'click') fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    else fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('How should I read this diagram?', 'answer'));
+    expect(checkSubmission).toHaveBeenCalledExactlyOnceWith('How should I read this diagram?');
+    expect(input.value).toBe('');
+    expect(screen.queryByRole('group', { name: 'Where to continue' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Extend this diagram' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Start a new chat' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull();
+  });
+
+  it('sends after dismissing choices without reopening them or repeating intent classification', async () => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Explain this diagram' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    expect(input.value).toBe('Explain this diagram');
+    expect(screen.queryByRole('group', { name: 'Where to continue' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('Explain this diagram', 'answer'));
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    expect(input.value).toBe('');
+    expect(screen.queryByRole('group', { name: 'Where to continue' })).toBeNull();
+  });
+
+  it.each(['visible', 'dismissed'] as const)('keeps steering unclassified when generation starts with %s choices', async status => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    const view = renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Focus on the arrows' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByRole('group', { name: 'Where to continue' });
+    if (status === 'dismissed') fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+    view.rerender(<ChatInput {...defaultProps} threadId="thread-1" hasGraph isGenerating onSend={onSend} checkSubmission={checkSubmission} />);
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledExactlyOnceWith('Focus on the arrows');
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('');
+  });
+
+  it.each(['draft', 'thread'] as const)('checks intent again after %s changes following dismissal', async change => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    const view = renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Old question' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss' }));
+    if (change === 'thread') {
+      view.rerender(<ChatInput {...defaultProps} threadId="thread-2" hasGraph onSend={onSend} checkSubmission={checkSubmission} />);
+    }
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'New question' } });
+    fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
+    await screen.findByRole('group', { name: 'Where to continue' });
+    expect(checkSubmission).toHaveBeenCalledTimes(2);
+    expect(checkSubmission).toHaveBeenLastCalledWith('New question');
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['Extend this diagram', 'extend'],
+    ['Start a new chat', 'new_chat'],
+  ] as const)('retains the explicit %s action', async (label, action) => {
+    const onSend = vi.fn();
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'My request' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.click(await screen.findByRole('button', { name: label }));
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('My request', action));
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    expect(input.value).toBe('');
+  });
+
+  it('blocks duplicate unresolved sends and retains an ambiguous follow-up for retry after rejection', async () => {
+    let reject!: (error: Error) => void;
+    const onSend = vi.fn()
+      .mockImplementationOnce(() => new Promise<void>((_, fail) => { reject = fail; }))
+      .mockResolvedValueOnce(undefined);
+    const checkSubmission = vi.fn().mockResolvedValue('ask');
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Explain the arrows' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    await screen.findByRole('group', { name: 'Where to continue' });
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('Explain the arrows', 'answer'));
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(input.value).toBe('Explain the arrows');
+    await act(async () => reject(new Error('Send was not accepted.')));
+    expect(screen.getByRole('alert').textContent).toBe('Send was not accepted.');
+    expect(input.value).toBe('Explain the arrows');
+    fireEvent.keyDown(input, { key: 'Enter' });
+    await waitFor(() => expect(onSend).toHaveBeenCalledTimes(2));
+    expect(onSend).toHaveBeenLastCalledWith('Explain the arrows', 'answer');
+    expect(checkSubmission).toHaveBeenCalledOnce();
+    expect(input.value).toBe('');
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('keeps the draft when classified new-chat creation fails and blocks duplicate submission', async () => {
     let reject!: (error: Error) => void;
     const onSend = vi.fn(() => new Promise<void>((_, fail) => { reject = fail; }));
-    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission: vi.fn().mockResolvedValue('ask') });
-    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Separate topic' } });
+    const checkSubmission = vi.fn().mockResolvedValue('new_chat');
+    renderInput('thread-1', { hasGraph: true, onSend, checkSubmission });
+    const input = screen.getByRole('textbox') as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: 'Separate topic' } });
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }));
-    const choice = await screen.findByRole('button', { name: 'Start a new chat' });
-    fireEvent.click(choice); fireEvent.click(choice);
-    expect(onSend).toHaveBeenCalledExactlyOnceWith('Separate topic', 'new_chat');
+    await waitFor(() => expect(onSend).toHaveBeenCalledExactlyOnceWith('Separate topic', 'new_chat'));
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onSend).toHaveBeenCalledOnce();
+    expect(checkSubmission).toHaveBeenCalledOnce();
     await act(async () => reject(new Error('Could not create a new chat.')));
     expect(screen.getByRole('alert').textContent).toContain('Could not create');
-    expect((screen.getByRole('textbox') as HTMLTextAreaElement).value).toBe('Separate topic');
+    expect(input.value).toBe('Separate topic');
   });
 
   it('retains a new-chat draft through its own thread handoff until send is accepted', async () => {
