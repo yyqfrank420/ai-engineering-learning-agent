@@ -1,4 +1,5 @@
 import type { GraphEdge } from '../../types';
+import type { Box } from './diagramAlignment';
 
 export interface DiagramConnection {
   id: string;
@@ -62,17 +63,19 @@ export function overviewConnections(connections: DiagramConnection[], nodes: Con
 
 interface Point { x: number; y: number }
 
-// Try short orthogonal corridors beside cards before taking an outer detour.
+// Try short orthogonal corridors beside cards and zones before taking an outer detour.
 // The same router handles requests and returns, so replies do not get a
 // second, diagram-wide route. Overlapping user-placed cards use the route
 // with the fewest intersections until the cards are moved apart.
 export function routeConnection(source: ConnectionPoint, target: ConnectionPoint,
-  nodes: ConnectionPoint[], width: number, height: number): { path: string; anchorX: number; anchorY: number } {
-  const intersects = (a: Point, b: Point, node: Point) => a.x === b.x
-    ? a.x > node.x - width / 2 && a.x < node.x + width / 2
-      && Math.max(a.y, b.y) > node.y - height / 2 && Math.min(a.y, b.y) < node.y + height / 2
-    : a.y > node.y - height / 2 && a.y < node.y + height / 2
-      && Math.max(a.x, b.x) > node.x - width / 2 && Math.min(a.x, b.x) < node.x + width / 2;
+  nodes: ConnectionPoint[], width: number, height: number,
+  obstacles: Box[] = []): { path: string; anchorX: number; anchorY: number } {
+  const boxes = [...nodes.map(node => ({ x: node.x - width / 2, y: node.y - height / 2, width, height })), ...obstacles];
+  const intersects = (a: Point, b: Point, box: Box) => a.x === b.x
+    ? a.x > box.x && a.x < box.x + box.width
+      && Math.max(a.y, b.y) > box.y && Math.min(a.y, b.y) < box.y + box.height
+    : a.y > box.y && a.y < box.y + box.height
+      && Math.max(a.x, b.x) > box.x && Math.min(a.x, b.x) < box.x + box.width;
   const horizontal = source.y === target.y && Math.abs(source.x - target.x) > width;
   const vertical = source.x === target.x && Math.abs(source.y - target.y) > height;
   if (horizontal || vertical) {
@@ -80,7 +83,7 @@ export function routeConnection(source: ConnectionPoint, target: ConnectionPoint
     const dy = vertical ? Math.sign(target.y - source.y) * height / 2 : 0;
     const start = { x: source.x + dx, y: source.y + dy };
     const end = { x: target.x - dx, y: target.y - dy };
-    if (!nodes.some(node => intersects(start, end, node))) return {
+    if (!boxes.some(box => intersects(start, end, box))) return {
       path: `M${start.x},${start.y} L${end.x},${end.y}`,
       anchorX: (start.x + end.x) / 2, anchorY: (start.y + end.y) / 2,
     };
@@ -91,8 +94,8 @@ export function routeConnection(source: ConnectionPoint, target: ConnectionPoint
     [{ x: node.x, y: node.y + height / 2 }, { x: node.x, y: node.y + height / 2 + 16 }],
     [{ x: node.x, y: node.y - height / 2 }, { x: node.x, y: node.y - height / 2 - 16 }],
   ];
-  const xs = [...new Set(nodes.flatMap(node => [node.x - width / 2 - 20, node.x + width / 2 + 20]))];
-  const ys = [...new Set(nodes.flatMap(node => [node.y - height / 2 - 20, node.y + height / 2 + 20]))];
+  const xs = [...new Set(boxes.flatMap(box => [box.x - 20, box.x + box.width + 20]))];
+  const ys = [...new Set(boxes.flatMap(box => [box.y - 20, box.y + box.height + 20]))];
   const candidates: Point[][] = [];
   for (const [start, a] of ports(source)) {
     for (const [end, b] of ports(target)) {
@@ -110,8 +113,8 @@ export function routeConnection(source: ConnectionPoint, target: ConnectionPoint
       const a = candidate[i - 1], b = candidate[i];
       if (a.x === b.x && a.y === b.y) continue;
       score += Math.abs(a.x - b.x) + Math.abs(a.y - b.y) + 12;
-      for (const node of nodes) {
-        if (intersects(a, b, node)) score += 1_000_000;
+      for (const box of boxes) {
+        if (intersects(a, b, box)) score += 1_000_000;
         if (score >= bestScore) break;
       }
       if (score >= bestScore) break;

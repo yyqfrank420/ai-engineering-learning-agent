@@ -866,8 +866,14 @@ export function D3Graph({
       };
     };
 
+    let routingRegions: Array<{ memberNodes: RenderNode[]; bounds: Box }> = [];
     const computeRouteLink = (d: RenderLink): EdgeRoute => {
-      if (navigation) return routeConnection(d.source, d.target, nodes, NODE_W, NODE_H);
+      if (navigation) {
+        const obstacles = routingRegions.filter(region => (
+          !region.memberNodes.includes(d.source) && !region.memberNodes.includes(d.target)
+        )).map(region => region.bounds);
+        return routeConnection(d.source, d.target, nodes, NODE_W, NODE_H, obstacles);
+      }
       const laneOffset = parallelLaneOffset(d.parallelIndex, d.parallelCount);
       if (orientation === 'horizontal') {
         const forward = isForward(d);
@@ -1822,26 +1828,15 @@ export function D3Graph({
     // ── renderAll: position everything from current node.x/y ─────────────────
     // Called once on init, and on every drag tick.
     function renderAll() {
-      routeCache.clear();
-      // Update edge paths
-      link.attr('d', pathD);
-      linkHit.attr('d', pathD);
-
-      // Position nodes
-      nodeSel.attr('transform', (d: RenderNode) => `translate(${d.x},${d.y})`);
-
-      // Position step badges at exact edge midpoint
-      stepBadgeGroup.attr('transform', (d: RenderLink) => `translate(${midX(d)},${midY(d)})`);
-
       // Refit group boundaries to their member nodes. Some valid topologies
       // interleave responsibility zones; overlapping rectangles imply false
       // containment, so those diagrams fall back to per-zone eyebrow chips.
       const groupLayouts = groupEls.map((groupEl) => {
         const { grp: groupDef } = groupEl;
-        const memberNodes = groupDef.nodeIds
-          .map(id => nodeById[id])
-          .filter((n): n is RenderNode => n?.x != null && n?.y != null);
-        const PX = navigation ? 24 : 16, PT = navigation ? 42 : 8, PB = navigation ? 20 : 4;
+        const memberNodes = membersOf(groupDef);
+        if (!memberNodes.length) return null;
+        if (navigation) return { ...groupEl, memberNodes, bounds: boundsOf(groupDef) };
+        const PX = 16, PT = 8, PB = 4;
         const padding = zonePadding[groupDef.id];
         const minX = Math.min(...memberNodes.map((n: RenderNode) => n.x)) - NODE_W / 2 - PX - (padding?.left ?? 0);
         const maxX = Math.max(...memberNodes.map((n: RenderNode) => n.x)) + NODE_W / 2 + PX + (padding?.right ?? 0);
@@ -1852,7 +1847,7 @@ export function D3Graph({
           memberNodes,
           bounds: { x: minX, y: minY, width: maxX - minX, height: maxY - minY },
         };
-      }).filter(layout => layout.memberNodes.length > 0);
+      }).filter((layout): layout is NonNullable<typeof layout> => layout !== null);
 
       const boundaryLayouts = groupLayouts.filter(layout => (
         layout.memberNodes.length > 1
@@ -1867,6 +1862,13 @@ export function D3Graph({
           overlappingBoundaryIds.add(right.grp.id);
         });
       });
+
+      routingRegions = navigation ? groupLayouts : [];
+      routeCache.clear();
+      link.attr('d', pathD);
+      linkHit.attr('d', pathD);
+      nodeSel.attr('transform', (d: RenderNode) => `translate(${d.x},${d.y})`);
+      stepBadgeGroup.attr('transform', (d: RenderLink) => `translate(${midX(d)},${midY(d)})`);
 
       for (const {
         grp: groupDef,
