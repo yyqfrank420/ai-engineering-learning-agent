@@ -28,6 +28,7 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
       && next?.kind === 'tool' && next.status === 'complete' && next.phase === step.phase);
   });
   const latest = visibleSteps.at(-1);
+  if (!latest) return null;
   return (
     <>
     <details className="thinking-indicator" open={Boolean(liveActivity)}>
@@ -36,7 +37,6 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
         <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3" /></svg>
       </summary>
       <div className="thinking-steps" role="region" aria-label="Work activity">
-        {liveActivity && !visibleSteps.length && <p className="thinking-update">Working on your request.</p>}
         {visibleSteps.map(step => step.kind === 'update'
           ? <p key={step.sequence} className="thinking-update">{step.text}</p>
           : <div key={step.sequence} className="thinking-tool" data-status={step.status}>
@@ -50,7 +50,7 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
       </div>
     </details>
       {liveActivity && <span className="thinking-announcement" role="status" aria-live="polite" aria-atomic="true">
-        {latest?.text ?? 'Working on your request.'}
+        {latest.text}
       </span>}
     </>
   );

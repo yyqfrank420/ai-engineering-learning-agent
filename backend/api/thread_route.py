@@ -1,12 +1,13 @@
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
 from adapters.supabase_auth_adapter import get_current_user
 from agent.complexity import diagram_submission_action
-from api.chat_guards import byte_len
+from api.chat_guards import byte_len, chat_input_error
 from config import settings
 from graph.content_edit import (
     GraphContentEditRequest,
@@ -15,9 +16,10 @@ from graph.content_edit import (
     GraphEditNotFound,
     GraphEditTooLarge,
 )
-from storage.message_store import get_messages
+from storage.message_store import get_history, get_messages
 from storage.profile_store import upsert_profile
 from storage import runtime_state_store
+from storage.rate_limit_store import RateLimitDimension, reserve_rate_limit
 from storage.thread_store import (
     create_thread,
     delete_thread,
@@ -44,16 +46,41 @@ class DiagramIntentRequest(BaseModel):
 
 
 @router.post("/{thread_id}/diagram-intent")
-def diagram_intent_endpoint(
-    thread_id: str, body: DiagramIntentRequest, user=Depends(get_current_user)
+async def diagram_intent_endpoint(
+    thread_id: str, body: DiagramIntentRequest, request: Request, user=Depends(get_current_user)
 ):
-    thread = get_thread(user["id"], thread_id)
+    thread = await run_in_threadpool(get_thread, user["id"], thread_id)
     if thread is None:
         raise HTTPException(status_code=404, detail="Thread not found")
     if not body.message.strip():
         raise HTTPException(status_code=422, detail="Message is empty")
     if byte_len(body.message) > settings.max_message_bytes:
         raise HTTPException(status_code=413, detail="Message too large")
+    reservation = await run_in_threadpool(
+        reserve_rate_limit,
+        (
+            RateLimitDimension(
+                scope="diagram-intent-user-minute", identifier=user["id"],
+                event_type="diagram_intent_minute",
+                limit=settings.rate_limit_per_minute, window_s=60,
+            ),
+            RateLimitDimension(
+                scope="diagram-intent-user-hour", identifier=user["id"],
+                event_type="diagram_intent_hour",
+                limit=settings.rate_limit_per_hour, window_s=3600,
+            ),
+        ),
+    )
+    if reservation is None:
+        raise HTTPException(status_code=429, detail="Rate limit exceeded")
+    history = await run_in_threadpool(
+        get_history, user["id"], thread_id, limit=settings.max_messages_per_thread
+    )
+    if await chat_input_error(
+        body.message, history, user_id=user["id"], thread_id=thread_id,
+        request_id=getattr(request.state, "request_id", None),
+    ):
+        return {"action": "answer"}
     return {"action": diagram_submission_action(body.message, thread.get("graph_data"))}
 
 

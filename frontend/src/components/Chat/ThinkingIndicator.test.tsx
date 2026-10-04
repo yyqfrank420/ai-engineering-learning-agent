@@ -12,16 +12,19 @@ const live: LiveActivity = { clientRequestId: 'request', startedAt: 0, activity 
 describe('ThinkingIndicator public work activity', () => {
   afterEach(() => vi.useRealTimers());
 
-  it('shows visible startup text until the first public step arrives', () => {
-    const empty = { duration_ms: 0, steps: [] };
+  it('hides live and completed activity until actual public work arrives', () => {
+    const empty = { duration_ms: 14_000, steps: [] };
     const view = render(<ThinkingIndicator activity={empty} liveActivity={{ ...live, activity: empty }} />);
+    expect(view.container.textContent).toBe('');
+    expect(screen.queryByRole('status')).toBeNull();
+    expect(view.container.querySelector('details')).toBeNull();
+    view.rerender(<ThinkingIndicator activity={empty} />);
+    expect(view.container.textContent).toBe('');
+    expect(view.container.querySelector('details')).toBeNull();
+    view.rerender(<ThinkingIndicator activity={activity} liveActivity={live} />);
     const details = view.container.querySelector('details')!;
     expect(details.open).toBe(true);
-    expect(screen.getByRole('region', { name: 'Work activity' }).textContent).toBe('Working on your request.');
-    view.rerender(<ThinkingIndicator activity={activity} liveActivity={live} />);
-    expect(view.container.querySelector('details')).toBe(details);
-    expect(screen.getByRole('region', { name: 'Work activity' }).textContent).not.toContain('Working on your request.');
-    expect(details.open).toBe(true);
+    expect(screen.getByRole('region', { name: 'Work activity' }).textContent).toContain(activity.steps[0].text);
     view.rerender(<ThinkingIndicator activity={activity} />);
     expect(details.open).toBe(false);
   });

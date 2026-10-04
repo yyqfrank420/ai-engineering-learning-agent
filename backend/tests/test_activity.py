@@ -20,12 +20,9 @@ def test_mapper_only_records_known_public_workflow_events_and_tool_operations():
         progress(detail="external_effects = True", diagnostic="secret"), 5
     )
     assert update["kind"] == "update"
-    assert (
-        update["text"]
-        == "I'll start with the main parts. Once the draft has been checked, I'll add the connections."
-    )
+    assert update["text"] == "Generating diagram components"
     tool = recorder.record(progress("book"), 6)
-    assert tool["kind"] == "tool" and tool["text"] == "Searching the book"
+    assert tool["kind"] == "tool" and tool["text"] == "Retrieving book passages"
     assert "private" not in repr(recorder.snapshot(7))
     assert "external_effects" not in repr(recorder.snapshot(7))
     assert "secret" not in repr(recorder.snapshot(7))
@@ -39,21 +36,16 @@ def test_mapper_only_records_known_public_workflow_events_and_tool_operations():
         "Routing\u2026",
     ],
 )
-def test_initial_orchestrator_status_is_public_context_and_persists(startup_status):
+def test_initial_orchestrator_status_does_not_fabricate_public_activity(startup_status):
     recorder = ActivityRecorder()
     event = {
         "type": "worker_status",
         "worker": "orchestrator",
         "status": startup_status,
     }
-    step = recorder.record({**event, "detail": "PRIVATE_REASONING"}, 12)
-    assert step["phase"] == "context"
-    assert step["text"] == "Let me check your request and any existing diagram."
+    assert recorder.record({**event, "detail": "PRIVATE_REASONING"}, 12) is None
     assert recorder.record({**event, "status": "Routing\u2026"}, 15) is None
-    snapshot = recorder.snapshot(20)
-    assert len(snapshot["steps"]) == 1
-    assert "PRIVATE_REASONING" not in repr(snapshot)
-    MessageActivity.model_validate(snapshot)
+    assert recorder.snapshot(20) is None
 
 
 def test_steering_records_new_context_without_discarding_previous_work():
@@ -67,7 +59,7 @@ def test_steering_records_new_context_without_discarding_previous_work():
         },
         20,
     )
-    assert step["text"] == "I'll update the answer around your correction."
+    assert step["text"] == "Updating request context"
     assert [item["phase"] for item in recorder.snapshot(30)["steps"]] == [
         "book",
         "context",
@@ -185,10 +177,10 @@ def test_draft_summaries_use_current_facts_and_grammatical_counts(
     first = recorder.record(progress("components", "complete", draft=draft), 1)
     assert f"for Queue design has {components}" in first["text"]
     assert ("including" in first["text"]) == bool(nodes)
-    assert "before adding the connections" in first["text"]
+    assert "I'll" not in first["text"]
     second = recorder.record(progress("connections", "complete", draft=draft), 2)
     assert f"{connections} across {components}" in second["text"]
-    assert "before presenting the diagram" in second["text"]
+    assert "I'll" not in second["text"]
     assert "approved" not in first["text"] + second["text"]
 
 
@@ -327,11 +319,11 @@ def test_draft_clarification_and_failure_describe_known_outcome(phase):
     recorder = ActivityRecorder()
     assert (
         recorder.record(progress(phase, "degraded"), 1)["text"]
-        == "I need a little more detail before I can build this part of the diagram."
+        == "Clarification required"
     )
     assert (
         recorder.record(progress(phase, "rejected"), 2)["text"]
-        == "I couldn't finish this draft. You can retry the request."
+        == "Diagram draft could not be completed"
     )
 
 
@@ -345,17 +337,8 @@ def test_counts_too_large_for_public_sentences_are_rejected_without_formatting()
     )
 
 
-@pytest.mark.parametrize(
-    "phase,ending",
-    [
-        ("components", "I'll check it before adding the connections."),
-        (
-            "connections",
-            "I'll check how they fit together before presenting the diagram.",
-        ),
-    ],
-)
-def test_maximum_draft_display_values_keep_complete_sentences(phase, ending):
+@pytest.mark.parametrize("phase", ["components", "connections"])
+def test_maximum_draft_display_values_keep_complete_sentences(phase):
     recorder = ActivityRecorder()
     summary = {
         "title": "東京" * 100,
@@ -365,7 +348,8 @@ def test_maximum_draft_display_values_keep_complete_sentences(phase, ending):
     }
     text = recorder.record(progress(phase, "complete", draft=summary), 0)["text"]
     assert len(text) <= 400
-    assert text.endswith(ending)
+    assert text.endswith(".")
+    assert "I'll" not in text
 
 
 @pytest.mark.parametrize("phase", ["components", "connections"])

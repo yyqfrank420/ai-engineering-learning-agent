@@ -42,7 +42,8 @@ export async function fetchThread(session: AuthSession, threadId: string): Promi
 
 export async function checkDiagramIntent(session: AuthSession, threadId: string, message: string): Promise<DiagramIntentAction> {
   const response = await authedFetch(`/api/threads/${threadId}/diagram-intent`, session, {
-    method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(5000),
+    // Input classification allows 10 seconds; leave time for storage and network latency.
+    method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(15000),
   });
   if (!response.ok) throw new Error('Could not check diagram intent');
   const data = await response.json();

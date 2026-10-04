@@ -1170,7 +1170,7 @@ def test_websocket_reports_an_incomplete_idempotent_turn(temp_data_dir, monkeypa
             "Knowledge base is still loading",
         ),
         (
-            "api.chat_websocket.check_prompt_injection",
+            "api.chat_guards.check_prompt_injection",
             lambda *_args, **_kwargs: False,
             "Message blocked by security filter",
         ),
@@ -1206,7 +1206,9 @@ def test_websocket_preflight_failures_do_not_start_model_work(
             )
             events = _receive_until(socket, "done")
 
-    assert events[0]["type"] == "error"
+    assert events[0]["type"] == (
+        "response_delta" if expected_error == "Message blocked by security filter" else "error"
+    )
     assert expected_error in events[0]["content"]
 
 
@@ -1243,18 +1245,6 @@ def test_websocket_rejects_commands_then_stops_matching_work(
                 "worker": "orchestrator",
                 "status": "Question received \u2014 preparing the steerable workflow\u2026",
             }
-            startup_activity = socket.receive_json()
-            assert startup_activity == {
-                "type": "activity_step",
-                "sequence": 0,
-                "kind": "update",
-                "phase": "context",
-                "status": "active",
-                "text": "Let me check your request and any existing diagram.",
-                "elapsed_ms": startup_activity["elapsed_ms"],
-            }
-            assert startup_activity["elapsed_ms"] >= 0
-
             socket.send_json({"type": "unknown"})
             assert socket.receive_json() == {
                 "type": "command_rejected",
@@ -1501,6 +1491,7 @@ async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
     monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
     monkeypatch.setattr(ws, "_request_error", lambda *a: None)
     monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
+    monkeypatch.setattr(ws, "knowledge_base_ready", lambda _socket: True)
     monkeypatch.setattr(ws, "_make_agent_tools", lambda *a: (None, None, None))
     monkeypatch.setattr(ws, "enqueue_analytics_event", lambda **kw: None)
     metric_changes = []
@@ -1913,6 +1904,7 @@ def isolated_websocket_storage(monkeypatch):
     monkeypatch.setattr(ws.thread_store, "get_graph", lambda *a: None)
     monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
     monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
+    monkeypatch.setattr(ws, "knowledge_base_ready", lambda _socket: True)
     monkeypatch.setattr(ws, "_make_agent_tools", lambda *a: (None, None, None))
     monkeypatch.setattr(ws, "enqueue_analytics_event", lambda **kw: None)
     monkeypatch.setattr(

@@ -4950,8 +4950,8 @@ async def test_current_draft_activity_is_emitted_before_its_matching_preview(mon
     previews = [event for event in events if event["type"] == "graph_preview"]
     assert events.index(completed[0]) < events.index(previews[0]) < events.index(completed[1]) < events.index(previews[1])
     updates = [step["text"] for step in steps if step["status"] == "complete" and step["kind"] == "update"]
-    assert updates == ["The draft for Payment processing has 2 components, including Request gateway and Payment service. I'll check it before adding the connections.",
-                       "The draft now has 1 connection across 2 components. I'll check how they fit together before presenting the diagram."]
+    assert updates == ["The draft for Payment processing has 2 components, including Request gateway and Payment service.",
+                       "The draft now has 1 connection across 2 components."]
     assert "capabilities" not in repr(completed)
     assert "responsibility" not in repr(completed)
 
