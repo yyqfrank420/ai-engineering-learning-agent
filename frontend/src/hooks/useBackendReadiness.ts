@@ -62,7 +62,7 @@ export function useBackendReadiness(authSession: AuthSession | null) {
     setReadinessState({
       userId,
       readiness: 'preparing',
-      message: 'Starting the service…',
+      message: 'Starting the service… usually takes 30-60 seconds',
     });
     const isCurrent = () => preparationRef.current === preparation && !preparation.controller.signal.aborted;
 
