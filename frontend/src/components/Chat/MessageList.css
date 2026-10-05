@@ -78,9 +78,10 @@
 .message-markdown .katex-display { overflow-x: auto; overflow-y: hidden; padding-bottom: 4px; }
 .message-image-omitted { color: var(--text-secondary); font-style: italic; }
 
-.message-empty { max-width: 36ch; margin: 28px 0; }
-.message-empty h2 { margin: 0 0 14px; color: var(--text-primary); font-size: 23px; font-weight: 600; line-height: 1.3; letter-spacing: -0.025em; text-wrap: balance; }
-.message-empty p { margin: 8px 0; color: var(--text-secondary); font-size: 14px; line-height: 1.7; }
+.message-empty { width: 100%; max-width: min(100%, 440px); margin: auto; padding: 20px 24px; border: 1px solid rgba(167,139,250,.10); border-radius: 14px; background: rgba(255,255,255,.025); text-align: center; }
+.message-empty h2,
+.message-empty p + p { display: none; }
+.message-empty p { margin: 0; color: #b1bdcc; font-size: 14px; font-weight: 400; line-height: 1.6; }
 .message-streaming-cursor { display: inline-block; width: 6px; height: 14px; margin-left: 3px; border-radius: 2px; background: var(--accent); vertical-align: text-bottom; animation: blink 1s step-end infinite; }
 
 .message-jump {
