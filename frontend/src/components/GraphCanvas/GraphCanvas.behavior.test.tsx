@@ -519,7 +519,7 @@ describe('GraphCanvas behavior', () => {
     expect(screen.getByText('Dictionary').closest('[hidden]')).toBeNull();
   });
 
-  it('leaves generation feedback to the conversation while the canvas is empty', () => {
+  it('shows the decorative building state only while generating without a graph', () => {
     const view = render(<GraphCanvas {...baseProps} graphData={null} authSession={null} />);
     expect(screen.getByText(/No diagram is available yet/)).toBeTruthy();
 
@@ -531,7 +531,13 @@ describe('GraphCanvas behavior', () => {
         isBuilding={true}
       />,
     );
-    expect(screen.queryByRole('status')).toBeNull();
-    expect(view.container.textContent).toBe('');
+    expect(screen.getByRole('status').textContent).toBe('Building your diagram…');
+    expect(view.container.querySelector('.graph-canvas__building-visual[aria-hidden="true"] svg')).not.toBeNull();
+    expect(screen.queryByText(/No diagram is available yet/)).toBeNull();
+
+    view.rerender(<GraphCanvas {...baseProps} graphData={graph} isBuilding />);
+    expect(screen.queryByText('Building your diagram…')).toBeNull();
+    expect(view.container.querySelector('.graph-canvas__building-visual')).toBeNull();
+    expect(screen.getByTestId('d3-graph')).toBeTruthy();
   });
 });

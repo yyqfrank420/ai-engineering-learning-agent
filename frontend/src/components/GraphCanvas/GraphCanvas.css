@@ -16,7 +16,7 @@
   gap: 10px 12px;
   padding: 16px 20px;
   border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-panel);
+  background: linear-gradient(180deg, rgba(16,22,34,0.98), rgba(10,15,26,0.98));
 }
 
 .graph-canvas__header-icon { flex: none; color: var(--accent); }
@@ -51,7 +51,7 @@
 .graph-canvas__surface { position: relative; flex: 1; min-height: 0; overflow: hidden; container: graph-canvas / inline-size; }
 .graph-canvas__diagram { width: 100%; height: 100%; opacity: 1; transition: opacity 180ms var(--ease-out); }
 .graph-canvas__diagram--building { opacity: .56; }
-.graph-canvas__empty { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; padding: 32px; background: var(--bg-base); }
+.graph-canvas__empty { display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; padding: 32px; background: #0a0f1a; }
 .graph-canvas__empty-content { max-width: 300px; text-align: center; }
 .graph-canvas__empty-content > svg { color: var(--text-secondary); margin-bottom: 12px; }
 .graph-canvas__empty-title { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 500; line-height: 1.5; }
@@ -74,3 +74,11 @@
   .graph-canvas__walkthrough:active:not(:focus-visible),
   .graph-canvas__layout-error button:active:not(:focus-visible) { transform: none; }
 }
+
+.graph-canvas__building { width: min(360px, 100%); box-sizing: border-box; padding: 16px; text-align: center; }
+.graph-canvas__building-visual { width: 100%; margin-bottom: 20px; }
+.graph-canvas__building-visual svg { display: block; width: 100%; max-height: 120px; }
+.graph-canvas__building-track { stroke: #27354e; stroke-width: 2; }
+.graph-canvas__building-node rect { fill: #141f35; stroke: #697dba; }
+.graph-canvas__building-node path { stroke: #b5c6ec; stroke-width: 3; stroke-linecap: round; }
+.graph-canvas__building-endpoint { fill: #8aa5eb; }

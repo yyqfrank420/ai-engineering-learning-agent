@@ -1,24 +1,26 @@
 @import '@fontsource-variable/geist';
 
-/* Operating workspace: charcoal surfaces, violet controls, content-led hierarchy. */
+/* Purple-blue brand surfaces with the existing workspace layout. */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 :root {
   color-scheme: dark;
-  --bg-base: #10141b;
-  --bg-panel: #171d26;
-  --bg-overlay: #222b37;
+  --bg-base: #0d1117;
+  --bg-panel: #161b22;
+  --bg-overlay: #1c2128;
   --bg-inset: #12171f;
   --border-subtle: #28313e;
   --border-default: #3c485a;
   --text-primary: #eef2f7;
   --text-secondary: #b1bdcc;
   --text-tertiary: #96a3b5;
-  --accent: #b7a2fa;
+  --accent: #a78bfa;
   --accent-muted: rgba(183, 162, 250, 0.1);
   --accent-border: rgba(183, 162, 250, 0.35);
   --accent-contrast: #21163e;
   --accent-violet: var(--accent);
+  --accent-blue: #60a5fa;
+  --accent-grad: linear-gradient(135deg, #a78bfa, #60a5fa);
   --status-green: #73d39a;
   --status-red: #ff9997;
   --radius-sm: 6px;
@@ -124,15 +126,20 @@ h1, h2, h3 { text-wrap: balance; }
 
 /* The graph remains interactive in the existing stacked layout. */
 .split-pane { min-width: 0; min-height: 0; }
-.split-pane__conversation { background: var(--bg-panel); }
-.split-pane__graph { background: var(--bg-base); }
+.split-pane__conversation { background: transparent; }
+.split-pane__graph { background: transparent; }
 
 .app-shell { position: relative; height: 100%; overflow: hidden; }
 .app-workspace {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background: var(--bg-base);
+  background:
+    radial-gradient(ellipse 80% 60% at 10% -5%, rgba(124,58,237,.55) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 50% at 90% 105%, rgba(37,99,235,.45) 0%, transparent 60%),
+    radial-gradient(ellipse 50% 40% at 75% 25%, rgba(5,150,105,.18) 0%, transparent 50%),
+    radial-gradient(ellipse 40% 30% at 25% 70%, rgba(124,58,237,.12) 0%, transparent 50%),
+    #070a10;
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 15px;

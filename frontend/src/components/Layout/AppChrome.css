@@ -8,9 +8,12 @@
   flex-shrink: 0;
   position: relative;
   z-index: 10;
-  border-bottom: 1px solid var(--border-subtle);
-  background: var(--bg-panel);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 13, 19, 0.7);
   color: var(--text-primary);
+  backdrop-filter: blur(40px) saturate(180%);
+  -webkit-backdrop-filter: blur(40px) saturate(180%);
+  box-shadow: inset 0 -1px 0 rgba(255, 255, 255, 0.04), 0 1px 0 rgba(0, 0, 0, 0.4);
 }
 
 .title-bar__identity, .title-bar__actions {
@@ -30,22 +33,22 @@
   font-size: 14px;
   font-weight: 650;
   letter-spacing: -0.025em;
+  background: linear-gradient(90deg, #a78bfa, #60a5fa);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .title-bar__book, .title-bar__provider {
   padding: 4px 8px;
   flex-shrink: 0;
-  border-radius: var(--radius-sm);
+  border-radius: 999px;
   font-size: 12px;
   line-height: 1.3;
   font-weight: 500;
-  background: var(--accent-muted);
-  color: var(--text-primary);
-}
-
-.title-bar__book {
-  color: var(--text-secondary);
-  background: var(--bg-inset);
+  background: rgba(167, 139, 250, 0.1);
+  color: #a78bfa;
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.2);
 }
 
 .title-bar__thread, .title-bar__email {
@@ -80,15 +83,18 @@
   width: 6px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--status-green);
+  background: #3fb950;
+  box-shadow: 0 0 6px #3fb95066;
 }
 
 .title-bar__status--generating .title-bar__status-dot {
-  background: var(--accent);
+  background: #a78bfa;
+  box-shadow: 0 0 6px #a78bfa66;
 }
 
 .title-bar__status--disconnected .title-bar__status-dot {
-  background: var(--status-red);
+  background: #f85149;
+  box-shadow: 0 0 6px #f8514966;
 }
 
 .chrome-button, .thread-sidebar button {
@@ -105,20 +111,18 @@
   min-height: 36px;
   min-width: 36px;
   padding: 0 10px;
-  color: var(--text-secondary);
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm);
+  color: #c9d1d9;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
   font-size: 12px;
   font-weight: 500;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 .title-bar__toggle {
   padding: 0;
-}
-
-.title-bar__dashboard {
-  border-color: var(--border-default);
 }
 
 .chrome-button:focus-visible, .thread-sidebar button:focus-visible {
@@ -136,8 +140,11 @@
   width: 240px;
   flex-shrink: 0;
   overflow: hidden;
-  border-right: 1px solid var(--border-subtle);
-  background: var(--bg-panel);
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(10, 13, 19, 0.55);
+  backdrop-filter: blur(40px) saturate(160%);
+  -webkit-backdrop-filter: blur(40px) saturate(160%);
+  box-shadow: inset -1px 0 0 rgba(255, 255, 255, 0.03);
 }
 
 .thread-sidebar--closed {
@@ -163,18 +170,22 @@
   min-height: 40px;
   flex-shrink: 0;
   padding: 0 12px;
-  border: 0;
+  border: 1px solid rgba(167, 139, 250, 0.18);
   border-radius: var(--radius-md);
-  background: var(--accent);
-  color: var(--accent-contrast);
+  background: rgba(167, 139, 250, 0.1);
+  color: #a78bfa;
   font-size: 13px;
   font-weight: 600;
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  box-shadow: inset 0 1px 0 rgba(167, 139, 250, 0.08);
 }
 
 .thread-sidebar__new-chat:disabled {
   cursor: not-allowed;
-  background: var(--bg-overlay);
+  background: rgba(167, 139, 250, 0.04);
   color: var(--text-tertiary);
+  box-shadow: none;
 }
 
 .thread-sidebar__history {
@@ -216,8 +227,9 @@
 }
 
 .thread-sidebar__item--active {
-  background: var(--accent-muted);
+  background: rgba(167, 139, 250, 0.06);
   color: var(--text-primary);
+  box-shadow: inset 3px 0 0 rgba(167, 139, 250, 0.6);
 }
 
 .thread-sidebar__select {
@@ -303,10 +315,12 @@
   width: 224px;
   max-width: calc(100vw - 16px);
   padding: 14px;
-  background: var(--bg-overlay);
+  background: rgba(12, 16, 23, 0.92);
   border-radius: var(--radius-md);
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5), inset 0 1px 0 rgba(255, 255, 255, 0.07), inset 0 0 0 1px rgba(255, 255, 255, 0.1);
   color: var(--text-primary);
+  backdrop-filter: blur(24px) saturate(160%);
+  -webkit-backdrop-filter: blur(24px) saturate(160%);
 }
 
 .thread-delete-popup__text {
@@ -321,12 +335,14 @@
 }
 
 .thread-delete-popup__actions > .chrome-button {
-  background: var(--bg-inset);
+  background: rgba(255, 255, 255, 0.05);
 }
 
-.thread-delete-popup__confirm {
+.thread-delete-popup__actions > .thread-delete-popup__confirm {
   flex: 1;
-  color: var(--status-red);
+  color: #f85149;
+  background: rgba(248, 81, 73, 0.15);
+  border-color: rgba(248, 81, 73, 0.35);
 }
 
 @media (hover: hover) and (pointer: fine) {

@@ -5,7 +5,11 @@
   display: flex;
   overflow-y: auto;
   padding: 48px 24px;
-  background: var(--bg-base);
+  background:
+    linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,.45)),
+    radial-gradient(ellipse 80% 60% at 10% -5%, rgba(124,58,237,.55) 0%, transparent 60%),
+    radial-gradient(ellipse 70% 50% at 90% 105%, rgba(37,99,235,.45) 0%, transparent 60%),
+    #070a10;
   color: var(--text-primary);
   font-family: var(--font-sans);
   font-size: 15px;
@@ -18,9 +22,12 @@
   max-width: 420px;
   margin: auto;
   padding: 36px;
-  border: 1px solid var(--border-default);
-  border-radius: var(--radius-lg);
-  background: var(--bg-panel);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 20px;
+  background: rgba(12, 16, 23, 0.7);
+  backdrop-filter: blur(48px) saturate(200%);
+  -webkit-backdrop-filter: blur(48px) saturate(200%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.12), inset 0 -1px 0 rgba(0, 0, 0, 0.2), 0 24px 60px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(167, 139, 250, 0.07);
 }
 
 .auth-brand {
@@ -31,6 +38,10 @@
   font-size: 20px;
   font-weight: 650;
   letter-spacing: -0.025em;
+  background: linear-gradient(90deg, #a78bfa, #60a5fa);
+  background-clip: text;
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
 }
 
 .auth-book-badge {
@@ -38,9 +49,12 @@
   align-items: center;
   gap: 7px;
   margin-top: 10px;
-  color: var(--text-secondary);
+  color: #a78bfa;
   font-size: 14px;
   line-height: 1.5;
+  background: rgba(167, 139, 250, 0.1);
+  border-radius: 999px;
+  box-shadow: inset 0 0 0 1px rgba(167, 139, 250, 0.2);
 }
 
 .auth-heading {
@@ -79,8 +93,8 @@
 }
 
 .auth-button-google {
-  border-color: var(--border-default);
-  background: var(--bg-overlay);
+  border-color: rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
 }
 
@@ -122,14 +136,17 @@
   width: 100%;
   min-height: 46px;
   box-sizing: border-box;
-  border: 1px solid var(--border-default);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: var(--radius-sm);
   padding: 12px 14px;
-  background: var(--bg-inset);
+  background: rgba(255, 255, 255, 0.04);
   color: var(--text-primary);
   caret-color: var(--accent);
   font: 400 16px/1.4 var(--font-sans);
   transition: border-color 150ms var(--ease-out);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
 }
 
 .auth-input::placeholder {
@@ -138,7 +155,9 @@
 }
 
 .auth-input:focus {
-  border-color: var(--accent);
+  border-color: rgba(167, 139, 250, 0.5);
+  background: rgba(167, 139, 250, 0.06);
+  box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.06);
 }
 
 .auth-input:focus-visible,
@@ -161,8 +180,8 @@
 }
 
 .auth-button-primary {
-  background: var(--accent);
-  color: var(--accent-contrast);
+  background: linear-gradient(135deg, #7c3aed, #2563eb);
+  color: #fff;
 }
 
 .auth-button-ghost {
@@ -195,7 +214,7 @@
   }
 
   .auth-button-primary:hover:not(:disabled) {
-    background: color-mix(in srgb, var(--accent) 88%, var(--text-primary));
+    filter: brightness(1.08);
   }
 
   .auth-button-ghost:hover:not(:disabled) {
