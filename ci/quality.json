@@ -418,10 +418,10 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphCanvas.css",
-        "before_blob": "0000000000000000000000000000000000000000",
-        "after_blob": "d2e9f335095ddef31bf09b138b34d1fde783cf13",
-        "reason": "Add scoped public canvas header, empty-state and wrapper presentation. The private evaluator does not use these classes; fixed-candidate output remains unchanged.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "d2e9f335095ddef31bf09b138b34d1fde783cf13",
+        "after_blob": "69948f3d990f29f2f9096809b3210a4073664a04",
+        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
+        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
@@ -432,10 +432,10 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "4dd45c6d085ad4e961f0f141540651fe7f94568c",
-        "after_blob": "635296df1236277017fed06aa20508e36e00d622",
-        "reason": "Style the public canvas header, empty state and layout error controls; preserve editing, persistence, history, walkthrough and private evaluation operations.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "635296df1236277017fed06aa20508e36e00d622",
+        "after_blob": "86ad50f19ce3449c1cafbc7afad927f1d5e83372",
+        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
+        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
       },
       {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",

@@ -6,8 +6,9 @@ its editing workflow, history, and existing product identity.
 
 ## Visual system
 
-Use the semantic tokens in `frontend/src/index.css`. Charcoal surfaces distinguish
-navigation, conversation, canvas, and overlays. Violet identifies actions and focus.
+Use the semantic tokens in `frontend/src/index.css`. Preserve the purple-blue
+gradient brand and ambient radial backdrop. Translucent navigation and conversation
+surfaces expose that backdrop. Violet identifies actions and focus.
 Graph component colors retain their architectural meaning. Error and connection
 status colors communicate state.
 
@@ -18,9 +19,9 @@ measurements. Use 15px conversation text, 14px inspector body text, and 13px
 secondary content where space allows. Use monospace for code and measurements. Keep explanation measure at 72ch.
 
 Controls use 6px corners, fields and grouped surfaces use 10px, and larger message
-surfaces use 14px. Circular jump controls are the small-control exception. Keep
-opaque surfaces; reserve shadows for floating overlays. Avoid gradient text, glowing
-status dots, and decorative backdrop blur.
+surfaces use 14px. Circular jump controls are the small-control exception. Keep the
+branded gradient title and primary controls. Use the existing glass surfaces and
+backdrop blur while preserving readable text and visible focus.
 
 ## Interaction and layout
 

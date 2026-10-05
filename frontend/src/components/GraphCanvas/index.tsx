@@ -353,7 +353,23 @@ export function GraphCanvas({
   if (!graphData) {
     return (
       <div className="graph-canvas__empty">
-        {!isBuilding && <div className="graph-canvas__empty-content">
+        {isBuilding ? (
+          <section className="graph-canvas__building">
+            <div className="graph-canvas__building-visual" aria-hidden="true">
+              <svg viewBox="0 0 560 160" fill="none">
+                <path className="graph-canvas__building-track" d="M70 80H220M280 80H480M280 80V130H400" />
+                {[70, 250, 480].map(x => (
+                  <g key={x} className="graph-canvas__building-node">
+                    <rect x={x - 30} y="50" width="60" height="60" rx="14" />
+                    <path d={`M${x - 12} 73H${x + 12}M${x - 12} 85H${x + 5}`} />
+                  </g>
+                ))}
+                <circle cx="400" cy="130" r="7" className="graph-canvas__building-endpoint" />
+              </svg>
+            </div>
+            <h2 className="graph-canvas__empty-title" role="status">Building your diagram…</h2>
+          </section>
+        ) : <div className="graph-canvas__empty-content">
           <Graph size={32} weight="light" aria-hidden="true" />
           <p className="graph-canvas__empty-title" role="status">No diagram is available yet.</p>
           <p className="graph-canvas__empty-description">Continue in the conversation. When a diagram is available, explore its components and connections here.</p>
