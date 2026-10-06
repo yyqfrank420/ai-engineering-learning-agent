@@ -1,27 +1,23 @@
 .thread-sidebar__new-chat {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  min-height: 44px;
+  justify-content: flex-start;
+  align-self: flex-start;
+  gap: 6px;
+  min-height: 36px;
   flex-shrink: 0;
-  padding: 0 12px;
-  border: 1px solid rgba(167, 139, 250, 0.18);
-  border-radius: var(--radius-md);
-  background: rgba(167, 139, 250, 0.1);
-  color: #a78bfa;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text-secondary);
   font-size: 13px;
-  font-weight: 600;
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  box-shadow: inset 0 1px 0 rgba(167, 139, 250, 0.08);
+  font-weight: 500;
 }
 
 .thread-sidebar__new-chat:disabled {
   cursor: not-allowed;
-  background: rgba(167, 139, 250, 0.04);
   color: var(--text-tertiary);
-  box-shadow: none;
 }
 
 .thread-sidebar__list {
@@ -168,10 +164,11 @@
 .thread-sidebar button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .thread-sidebar button:active:not(:disabled):not(:focus-visible) { transform: scale(.97); }
 @media (hover: hover) and (pointer: fine) {
-  .thread-sidebar__new-chat:hover:not(:disabled) { filter: brightness(1.08); }
+  .thread-sidebar__new-chat:hover:not(:disabled) { color: var(--accent); }
   .thread-sidebar__item:hover:not(.thread-sidebar__item--active) { background: var(--bg-overlay); color: var(--text-primary); }
   .thread-sidebar__delete { opacity: 0; }
   .thread-sidebar__item:hover .thread-sidebar__delete, .thread-sidebar__item:focus-within .thread-sidebar__delete, .thread-sidebar__item--confirming .thread-sidebar__delete { opacity: 1; }
   .thread-sidebar__delete:hover:not(:disabled) { background: var(--bg-inset); color: var(--status-red); }
 }
+@media (pointer: coarse) { .thread-sidebar__new-chat { min-height: 44px; } }
 @media (prefers-reduced-motion: reduce) { .thread-sidebar button:active { transform: none; } }
