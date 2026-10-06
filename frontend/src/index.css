@@ -130,6 +130,9 @@ h1, h2, h3 { text-wrap: balance; }
 .split-pane__graph { background: transparent; }
 
 .app-workspace {
+  --navigation-inset: 24px;
+  --navigation-icon-width: 36px;
+  --navigation-gap: 12px;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -217,4 +220,14 @@ h1, h2, h3 { text-wrap: balance; }
 
 @media (pointer: coarse) {
   .split-pane__conversation [role="radio"] { min-height: 44px; }
+}
+
+@media (max-width: 1279px) {
+  .app-workspace {
+    --navigation-inset: 16px;
+    --navigation-icon-width: 44px;
+  }
+}
+@media (pointer: coarse) {
+  .app-workspace { --navigation-icon-width: 44px; }
 }
