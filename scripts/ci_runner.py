@@ -449,6 +449,8 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
 def _dispatch_eval(kind: str, args: argparse.Namespace) -> None:
     module = "eval.browser_runner" if kind == "browser" else "eval.live_runner"
     argv = [sys.executable, "-m", module, "--suite", args.suite, "--target", args.target]
+    if getattr(args, "require_empty_history", False):
+        argv.append("--require-empty-history")
     if args.output:
         argv.extend(["--output", args.output])
     if getattr(args, "input", None):
@@ -552,6 +554,8 @@ def build_parser() -> argparse.ArgumentParser:
         evaluation.add_argument("--target", required=True)
         evaluation.add_argument("--output")
         evaluation.add_argument("--case", action="append", default=[])
+        if name == "browser":
+            evaluation.add_argument("--require-empty-history", action="store_true")
         if name == "live":
             evaluation.add_argument("--input")
             evaluation.add_argument("--require-approved-corpus", action="store_true")

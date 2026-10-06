@@ -548,6 +548,14 @@ required` run and will not rebuild a missing approval. It then:
    rendering, cleanup, and one real-model browser journey;
 4. sends 100% traffic to that tagged candidate only after success.
 
+Production browser smoke uses a dedicated test account with empty saved history.
+The workflow passes `--require-empty-history`; after authentication, the browser
+runner checks `GET /api/threads` and refuses any saved history before launching
+the browser, creating a test thread, or calling a model. Use a dedicated empty
+account if this check fails. Keep other users and concurrent smoke runs off that
+account: this preflight does not lock history or prevent later concurrent writes.
+Other evaluation suites keep their existing behavior unless the flag is supplied.
+
 The previous Cloud Run revision is left available for compatible rollbacks. Once
 stored graphs contain connection labels longer than 100 characters, recovery must
 use a backend image that retains the 160-character admission limit. The older
