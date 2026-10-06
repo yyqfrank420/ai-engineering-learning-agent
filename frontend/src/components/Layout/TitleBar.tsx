@@ -45,7 +45,9 @@ export function TitleBar({
         </button>
         <span className="title-bar__product">AI Engineering</span>
         <span className="title-bar__book">Chip Huyen · O'Reilly</span>
-        <span className="title-bar__thread" title={threadTitle}>{threadTitle}</span>
+        {threadTitle !== 'New chat' && (
+          <span className="title-bar__thread" title={threadTitle}>{threadTitle}</span>
+        )}
       </div>
       <div className="title-bar__actions">
         {providerNotice && <span className="title-bar__provider" title={providerNotice}>{providerNotice}</span>}
