@@ -128,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", default="artifacts/live-eval/browser-results.json")
     parser.add_argument("--headed", action="store_true")
     parser.add_argument(
+        "--require-empty-history",
+        action="store_true",
+        help="Refuse to create test threads unless the authenticated account has no saved history",
+    )
+    parser.add_argument(
         "--case",
         action="append",
         default=[],
@@ -2607,6 +2612,23 @@ async def _execute_browser(args: argparse.Namespace) -> dict[str, Any]:
     session = await _internal_session(
         args.backend_target, args.email, args.internal_password
     )
+    if getattr(args, "require_empty_history", False):
+        # This preflight requires a dedicated account with no concurrent writers.
+        history = await asyncio.to_thread(
+            _blocking_json_request,
+            "GET",
+            args.backend_target.rstrip("/") + "/api/threads",
+            None,
+            session["access_token"],
+        )
+        threads = history.get("threads") if isinstance(history, dict) else None
+        if not isinstance(threads, list):
+            raise RuntimeError("Cannot verify empty test account history")
+        if threads:
+            raise RuntimeError(
+                "Browser evaluation requires an empty saved history. "
+                "Use a dedicated empty test account before running production smoke."
+            )
 
     timeout_seconds = browser_suite_timeout_seconds(cases)
     turn_timeout_seconds = application_turn_timeout_seconds()

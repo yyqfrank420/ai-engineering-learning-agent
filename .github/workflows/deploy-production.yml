@@ -166,7 +166,7 @@ jobs:
       - name: Run authentication, dashboard, persistence, graph, and real-model smoke
         env:
           EVAL_BACKEND_URL: ${{ env.CANDIDATE_URL }}
-        run: ./scripts/ci browser --suite smoke --target http://localhost:5173 --output artifacts/production-smoke/browser-results.json
+        run: ./scripts/ci browser --suite smoke --target http://localhost:5173 --output artifacts/production-smoke/browser-results.json --require-empty-history
 
       - name: Promote only the tested revision
         env:

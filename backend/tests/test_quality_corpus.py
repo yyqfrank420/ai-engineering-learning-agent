@@ -4513,3 +4513,192 @@ async def test_node_followup_waits_for_completed_refinement_and_matching_chips(
         assert [detail["code"] for detail in result] == [
             "node_followup_interaction_failed"
         ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("required", "threads", "refuses"),
+    [
+        (True, [{"id": "saved-history"}], True),
+        (True, [], False),
+        (False, [{"id": "saved-history"}], False),
+    ],
+)
+async def test_empty_history_preflight_precedes_browser_and_thread_creation(
+    tmp_path, monkeypatch, required, threads, refuses
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    request = Mock(return_value={"threads": threads})
+    auth = AsyncMock(return_value={"access_token": "offline-test-token"})
+    attempt = AsyncMock()
+    launch = Mock(side_effect=RuntimeError("stop before browser launch"))
+    monkeypatch.setattr(browser_runner, "_blocking_json_request", request)
+    monkeypatch.setattr(browser_runner, "_internal_session", auth)
+    monkeypatch.setattr(browser_runner, "_run_browser_attempt", attempt)
+    monkeypatch.setattr(browser_runner, "async_playwright", launch)
+    args = browser_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "smoke",
+            "--target",
+            "https://frontend.example",
+            "--backend-target",
+            "https://backend.example/",
+            "--email",
+            "eval@example.com",
+            "--internal-password",
+            "offline-password",
+            "--output",
+            str(tmp_path / "results.json"),
+        ]
+        + (["--require-empty-history"] if required else [])
+    )
+    expected = (
+        "dedicated empty test account" if refuses else "stop before browser launch"
+    )
+    with pytest.raises(RuntimeError, match=expected):
+        await browser_runner._execute_browser(args)
+    auth.assert_awaited_once()
+    attempt.assert_not_awaited()
+    if required:
+        request.assert_called_once_with(
+            "GET", "https://backend.example/api/threads", None, "offline-test-token"
+        )
+    else:
+        request.assert_not_called()
+    if refuses:
+        launch.assert_not_called()
+    else:
+        launch.assert_called_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("history", [None, [], {}, {"threads": None}, {"threads": {}}])
+async def test_empty_history_preflight_refuses_unverifiable_history(
+    tmp_path, monkeypatch, history
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    monkeypatch.setattr(
+        browser_runner,
+        "_internal_session",
+        AsyncMock(return_value={"access_token": "offline-test-token"}),
+    )
+    monkeypatch.setattr(
+        browser_runner, "_blocking_json_request", Mock(return_value=history)
+    )
+    launch = Mock()
+    monkeypatch.setattr(browser_runner, "async_playwright", launch)
+    args = browser_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "smoke",
+            "--target",
+            "https://frontend.example",
+            "--backend-target",
+            "https://backend.example",
+            "--output",
+            str(tmp_path / "results.json"),
+            "--require-empty-history",
+        ]
+    )
+    with pytest.raises(RuntimeError, match="Cannot verify empty test account history"):
+        await browser_runner._execute_browser(args)
+    launch.assert_not_called()
+
+
+@pytest.mark.parametrize("required", [False, True])
+def test_ci_browser_forwards_empty_history_opt_in(monkeypatch, required):
+    import importlib.util
+    from pathlib import Path
+    from unittest.mock import Mock
+
+    runner_path = Path(__file__).resolve().parents[2] / "scripts" / "ci_runner.py"
+    spec = importlib.util.spec_from_file_location("ci_history_guard_test", runner_path)
+    runner = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(runner)
+    monkeypatch.setattr(runner, "load_manifest", lambda: {"offline_groups": []})
+    args = runner.build_parser().parse_args(
+        ["browser", "--suite", "smoke", "--target", "http://localhost:5173"]
+        + (["--require-empty-history"] if required else [])
+    )
+    dispatch = Mock()
+    monkeypatch.setattr(runner.subprocess, "run", dispatch)
+    monkeypatch.setattr(runner, "_command_environment", lambda: {})
+    runner._dispatch_eval("browser", args)
+    argv = dispatch.call_args.args[0]
+    assert argv[1:3] == ["-m", "eval.browser_runner"]
+    assert ("--require-empty-history" in argv) is required
+    with pytest.raises(SystemExit):
+        runner.build_parser().parse_args(
+            [
+                "live",
+                "--suite",
+                "smoke",
+                "--target",
+                "http://localhost:5173",
+                "--require-empty-history",
+            ]
+        )
+
+
+@pytest.mark.asyncio
+async def test_empty_history_preflight_timeout_never_starts_browser_or_threads(
+    tmp_path, monkeypatch
+):
+    from unittest.mock import AsyncMock, Mock
+
+    from eval import browser_runner
+
+    requests = []
+
+    def request(method, url, payload, token):
+        requests.append((method, url, payload, token))
+        if url.endswith("/api/threads"):
+            raise TimeoutError("offline history lookup timeout")
+        assert url.endswith("/api/internal/dashboard/overview")
+        return {"kpis": {}, "providers": {}}
+
+    auth = AsyncMock(return_value={"access_token": "offline-test-token"})
+    launch = Mock()
+    attempt = AsyncMock()
+    monkeypatch.setattr(browser_runner, "_internal_session", auth)
+    monkeypatch.setattr(browser_runner, "_blocking_json_request", request)
+    monkeypatch.setattr(browser_runner, "async_playwright", launch)
+    monkeypatch.setattr(browser_runner, "_run_browser_attempt", attempt)
+    args = browser_runner.build_parser().parse_args(
+        [
+            "--suite",
+            "smoke",
+            "--target",
+            "https://frontend.example",
+            "--backend-target",
+            "https://backend.example",
+            "--output",
+            str(tmp_path / "results.json"),
+            "--require-empty-history",
+        ]
+    )
+    report = await browser_runner.run_browser(args)
+    assert report["status"] == "timed_out"
+    assert all(
+        result["execution_state"] == "not_started" for result in report["results"]
+    )
+    assert all(result["thread_id"] is None for result in report["results"])
+    assert requests == [
+        ("GET", "https://backend.example/api/threads", None, "offline-test-token"),
+        (
+            "GET",
+            "https://backend.example/api/internal/dashboard/overview",
+            None,
+            "offline-test-token",
+        ),
+    ]
+    assert auth.await_count == 2
+    launch.assert_not_called()
+    attempt.assert_not_awaited()
