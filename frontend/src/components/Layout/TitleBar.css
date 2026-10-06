@@ -5,9 +5,9 @@
 .title-bar__account-email, .title-bar__account-provider { font-size: 13px; color: var(--text-secondary); overflow-wrap: anywhere; }
 .title-bar__account-menu button { justify-content: flex-start; min-height: 44px; font-size: 14px; }
 @media (max-width: 1279px) {
-  .title-bar { height: auto; min-height: 56px; padding-inline: max(8px, env(safe-area-inset-left)) max(8px, env(safe-area-inset-right)); gap: 8px; }
-  .title-bar__identity, .title-bar__actions { gap: 8px; }
-  .title-bar__toggle { width: 44px; min-height: 44px; }
+  .title-bar { height: auto; min-height: 56px; padding-inline: max(var(--navigation-inset), env(safe-area-inset-left)) max(var(--navigation-inset), env(safe-area-inset-right)); gap: 8px; }
+  .title-bar__identity, .title-bar__actions { gap: var(--navigation-gap); }
+  .title-bar__toggle { width: var(--navigation-icon-width); min-height: 44px; }
   .title-bar__book, .title-bar__email, .title-bar__desktop-action { display: none; }
   .title-bar__account { display: block; }
   .title-bar__provider { max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
