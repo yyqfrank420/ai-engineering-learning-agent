@@ -35,6 +35,7 @@ import {
   NODE_RX,
   NODE_W,
   overviewEdgeLabelOpacity,
+  placeAddedNodes,
   planCompactLayout,
   planVerticalLayout,
   selectGraphLayout,
@@ -727,16 +728,9 @@ export function D3Graph({
       node.y = persistedPosition.y;
     }
 
-    // Saved nodes are fixed anchors. Only new nodes move out of occupied space.
     if (navigation && restoreViewState) {
-      const occupied = nodes.filter(node => restoreViewState.nodePositions[node.id]);
-      for (const node of nodes.filter(node => !restoreViewState.nodePositions[node.id])) {
-        while (occupied.some(other => Math.abs(other.x - node.x) < NODE_W + 24
-          && Math.abs(other.y - node.y) < NODE_H + 24)) {
-          node.x += NODE_W + 24;
-        }
-        occupied.push(node);
-      }
+      const positions = placeAddedNodes(nodes, new Set(Object.keys(restoreViewState.nodePositions)));
+      for (const node of nodes) Object.assign(node, positions.get(node.id));
     }
 
     const membersOf = (group: typeof groups[number]) => [...new Set(group.nodeIds)]

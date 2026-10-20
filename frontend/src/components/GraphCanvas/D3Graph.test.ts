@@ -11,6 +11,9 @@ import {
   MAX_PUBLISHED_GRAPH_NODES,
   MIN_PUBLISHED_TITLE_PX,
   NODE_TITLE_PX,
+  NODE_W,
+  NODE_H,
+  placeAddedNodes,
   overviewEdgeLabelOpacity,
   partitionVerticalLevels,
   planCompactLayout,
@@ -23,6 +26,95 @@ import {
   wrapNodeTechnology,
 } from './graphLayout';
 
+
+describe('incremental component placement', () => {
+  const parent = { id: 'runtime', x: 371.34765625, y: 156.17384338378906 };
+  const planner = { id: 'planner', x: 617.34765625, y: 156.17384338378906 };
+  const children = ['intake', 'loader', 'runner'].map((id, index) => ({
+    id, x: 1631 + index * 210, y: 90, parent_service_id: 'runtime',
+  }));
+  const saved = new Set(['runtime', 'planner']);
+
+  it('places internals near the saved parent with spacing in both dimensions', () => {
+    const positions = placeAddedNodes([parent, planner, ...children], saved);
+    expect(positions.get(parent.id)).toEqual({ x: parent.x, y: parent.y });
+    expect(positions.get(planner.id)).toEqual({ x: planner.x, y: planner.y });
+    for (const child of children) {
+      const position = positions.get(child.id)!;
+      expect(Math.abs(position.x - parent.x)).toBeLessThanOrEqual(NODE_W + 24);
+      expect(Math.abs(position.y - parent.y)).toBeLessThanOrEqual(NODE_H + 24);
+    }
+    const values = [...positions.values()];
+    for (let left = 0; left < values.length; left += 1) {
+      for (let right = left + 1; right < values.length; right += 1) {
+        expect(Math.abs(values[left].x - values[right].x) >= NODE_W + 24
+          || Math.abs(values[left].y - values[right].y) >= NODE_H + 24).toBe(true);
+      }
+    }
+  });
+
+  it('uses stable component ordering and searches around occupied nearby slots', () => {
+    const blockers = [
+      { id: 'below', x: parent.x, y: parent.y + NODE_H + 24 },
+      { id: 'above', x: parent.x, y: parent.y - NODE_H - 24 },
+    ];
+    const fixed = new Set([...saved, ...blockers.map(node => node.id)]);
+    const first = placeAddedNodes([parent, planner, ...blockers, ...children], fixed);
+    const reordered = placeAddedNodes([...children.slice().reverse(), parent, planner, ...blockers], fixed);
+    for (const child of children) expect(reordered.get(child.id)).toEqual(first.get(child.id));
+    for (const blocker of blockers) expect(first.get(blocker.id)).toEqual({ x: blocker.x, y: blocker.y });
+  });
+
+  it('places a newly added parent before its dependent child', () => {
+    const positions = placeAddedNodes([parent,
+      { id: 'a-child', x: 3000, y: 0, parent_service_id: 'z-parent' },
+      { id: 'z-parent', x: 2000, y: 0, parent_service_id: parent.id },
+    ], new Set([parent.id]));
+    const owner = positions.get('z-parent')!;
+    const child = positions.get('a-child')!;
+    expect(Math.hypot(owner.x - parent.x, owner.y - parent.y)).toBeLessThan(250);
+    expect(Math.hypot(child.x - owner.x, child.y - owner.y)).toBeLessThan(250);
+    expect(child).not.toEqual(owner);
+  });
+
+  it('preserves rightward placement when blockers cover consecutive default slots', () => {
+    const spacing = NODE_W + 24;
+    const positions = placeAddedNodes([
+      { id: 'first', x: spacing / 2, y: 100 },
+      { id: 'second', x: 2.5 * spacing, y: 100 },
+      { id: 'added', x: 0, y: 100 },
+    ], new Set(['first', 'second']));
+    expect(positions.get('added')).toEqual({ x: 4 * spacing, y: 100 });
+  });
+
+  it('bounds searches when finite coordinates cannot represent nearby offsets', () => {
+    const distant = { id: 'distant', x: 1e308, y: 1e308 };
+    const positions = placeAddedNodes([distant,
+      { ...distant, id: 'internal', parent_service_id: 'distant' },
+      { id: 'generic', x: distant.x, y: distant.y },
+    ], new Set(['distant']));
+    expect(positions.get('distant')).toEqual({ x: 1e308, y: 1e308 });
+    expect(positions.get('internal')).toEqual({ x: (NODE_W + 24) * 2, y: 0 });
+    expect(positions.get('generic')).toEqual({ x: 0, y: 0 });
+  });
+
+  it('rejects nonfinite coordinates before searching for placement', () => {
+    expect(() => placeAddedNodes([{ id: 'invalid', x: Infinity, y: 0 }], new Set()))
+      .toThrow('Graph node positions must be finite.');
+  });
+
+  it('retains default placement for generic additions and handles unavailable ownership', () => {
+    const positions = placeAddedNodes([parent,
+      { id: 'generic', x: parent.x, y: parent.y },
+      { id: 'orphan', x: 1200, y: 800, parent_service_id: 'missing' },
+      { id: 'cycle-a', x: 1400, y: 400, parent_service_id: 'cycle-b' },
+      { id: 'cycle-b', x: 1600, y: 400, parent_service_id: 'cycle-a' },
+    ], new Set([parent.id]));
+    expect(positions.get('generic')).toEqual({ x: parent.x + NODE_W + 24, y: parent.y });
+    expect(positions.get('orphan')).toEqual({ x: 1200, y: 800 });
+    expect(positions.size).toBe(5);
+  });
+});
 
 describe('graph layout policy', () => {
   it('samples a half-pixel free corridor without touching either obstacle', () => {
