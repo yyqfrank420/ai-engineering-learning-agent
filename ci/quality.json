@@ -446,10 +446,10 @@
       },
       {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
-        "before_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
-        "after_blob": "f4a1433776488d9396dbf6fdaa37bdbcc3b56532",
-        "reason": "Style history navigation and improve delete-dialog focus and placement; history requests, readiness predicates and thread callbacks retain their protocols.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "efe9225a332d7f79f9abc6298401ddb386cd6988",
+        "after_blob": "daaeced2564f8e60ad8963137836bde269a25045",
+        "reason": "Refine sidebar labels and compose icon only. History requests, readiness predicates, callbacks, dialog behavior and generation protocols are unchanged.",
+        "verification": "docs/verification/2026-10-20-sidebar-header.md"
       }
     ],
     "non_generation": [

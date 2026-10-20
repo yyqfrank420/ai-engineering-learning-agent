@@ -31,9 +31,9 @@ by side when the measured workspace width is at least 960px. Below 960px, full-h
 Chat and Diagram tabs share the workspace. Diagram editing remains available. Use
 dynamic viewport height and scroll within the individual panes.
 
-Header navigation and history share an icon column and a text column. Use a 24px
-screen-edge inset on desktop and 16px in compact layouts, with a 12px gap after
-the icon column. Keep header actions evenly spaced.
+Use a 24px screen-edge inset on desktop and 16px in compact layouts. The sidebar
+heading aligns to that inset. History actions and entries share a 24px icon column
+and a 12px text gap. Keep header actions evenly spaced.
 
 Every action has a readable disabled state and immediate visible keyboard focus.
 Use at least 36px compact controls, 44px primary composer controls, and larger touch
