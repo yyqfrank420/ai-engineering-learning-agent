@@ -30,12 +30,12 @@ Full backend coverage was justified by shared stream, activity, storage and CI c
 
 Development authentication and local SQLite storage were used. Providers were real, with existing model settings, review budgets and call limits. No production database was accessed. Provider credentials were held in subprocess memory.
 
-| Request | First component render | Connection phase | Total | Result |
+| Request | Component stage complete | Connection stage complete | Total | Result |
 | --- | --- | --- | --- | --- |
 | How do I build a Snowflake Cortex agent? | 46.5s | 91.7s | 132.4s | 14 components, 39 connections; saved answer and graph |
 | Build a data querying AI agent. | 24.4s | 59.1s | 116.3s | 10 components, 20 connections; saved answer and graph |
 
-The data-query run used the final runtime source and completed one bounded connection revision. Nine provider operations completed with no errors, fallbacks or queue wait. Two messages persisted and active stream records cleared. Browser inspection confirmed the final diagram, answer, collapsed sources and completed activity. During generation, recent work stayed visible while the full log was collapsed, including observed drafting and review updates. Browser errors were empty. Snowflake history reopening restored the saved diagram and answer.
+Stage timings come from provider or backend activity records, not browser paint measurements. Browser inspection separately confirmed the rendered result. The data-query run used the final runtime source and completed one bounded connection revision. Nine provider operations completed with no errors, fallbacks or queue wait. Two messages persisted and active stream records cleared. Browser inspection confirmed the final diagram, answer, collapsed sources and completed activity. During generation, recent work stayed visible while the full log was collapsed, including observed drafting and review updates. Browser errors were empty. Snowflake history reopening restored the saved diagram and answer.
 
 These are individual observations, not latency guarantees. A baseline automatic production-maturity Snowflake run was stopped after 473.8 seconds while still reviewing. It is not counted as a successful generation.
 
