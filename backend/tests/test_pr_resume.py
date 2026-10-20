@@ -74,6 +74,75 @@ def test_partition_keeps_full_provenance_and_does_not_regenerate_passes():
     assert browser == before
 
 
+@pytest.mark.parametrize("kinds,decision", [
+    (["quality"], "fail"),
+    (["infrastructure"], "infrastructure"),
+    (["infrastructure", "quality"], "fail"),
+])
+def test_failed_browser_capture_requires_fresh_generation_for_canonical_classification(
+    kinds, decision
+):
+    browser, semantic, corpus, ids = evidence()
+    browser["results"][3]["failure_details"] = [{"kind": kind} for kind in kinds]
+    semantic["evaluations"][3]["decision"] = decision
+    before = copy.deepcopy((browser, semantic))
+    groups = resume.partition(browser, semantic, corpus, ids)
+    assert ids[3] in groups["fresh"]
+    assert ids[3] not in groups["replay"] + groups["carried"]
+    assert (browser, semantic) == before
+
+
+@pytest.mark.parametrize("mutation", [
+    "judgments", "decision_fail", "decision_pass", "decision_manual_review",
+    "missing_details", "null_details", "empty_details", "nonlist_details",
+    "invalid_detail", "missing_kind", "unknown_kind", "unhashable_kind",
+])
+def test_browser_infrastructure_failure_rejects_unverified_evidence(mutation):
+    browser, semantic, corpus, ids = evidence()
+    result = browser["results"][3]
+    result["failure_details"] = [{"kind": "infrastructure"}]
+    evaluation = semantic["evaluations"][3]
+    evaluation["decision"] = "infrastructure"
+    if mutation == "judgments":
+        evaluation["judgments"] = copy.deepcopy(semantic["evaluations"][0]["judgments"])
+    elif mutation.startswith("decision_"):
+        evaluation["decision"] = mutation.removeprefix("decision_")
+    elif mutation == "missing_details":
+        result.pop("failure_details")
+    else:
+        result["failure_details"] = {
+            "null_details": None, "empty_details": [], "nonlist_details": {},
+            "invalid_detail": ["infrastructure"], "missing_kind": [{}],
+            "unknown_kind": [{"kind": "unknown"}], "unhashable_kind": [{"kind": {}}],
+        }[mutation]
+    before = copy.deepcopy((browser, semantic))
+    with pytest.raises(ValueError, match="unrecognized browser failure|unrecognized deterministic failure"):
+        resume.partition(browser, semantic, corpus, ids)
+    assert (browser, semantic) == before
+
+
+@pytest.mark.parametrize("decision", ["fail", "infrastructure"])
+def test_service_expansion_failure_cannot_be_disguised_as_browser_infrastructure(decision):
+    browser, semantic, corpus, ids = evidence()
+    result = browser["results"][5]
+    result.update(passed=False, deterministic_failures=["application turn timed out"],
+                  failure_details=[{"kind": "infrastructure"}])
+    evaluation = semantic["evaluations"][5]
+    expansion_failures = resume.live_runner._service_expansion_failures(
+        result, corpus.by_id[ids[5]], semantic["application_telemetry"],
+    )
+    assert expansion_failures
+    evaluation.update(decision=decision, judgments=[],
+                      deterministic_failures=[*result["deterministic_failures"], *expansion_failures])
+    before = copy.deepcopy((browser, semantic))
+    if decision == "infrastructure":
+        with pytest.raises(ValueError, match="unrecognized deterministic failure"):
+            resume.partition(browser, semantic, corpus, ids)
+    else:
+        assert ids[5] in resume.partition(browser, semantic, corpus, ids)["fresh"]
+    assert (browser, semantic) == before
+
+
 @pytest.mark.parametrize("mutation", ["duplicate", "missing", "partial", "dashboard", "manual", "generic_infra",
                                      "carry_failure", "judge_identity", "corpus", "deterministic", "case_state", "format", "replay", "citation"])
 def test_partition_fails_closed(mutation):

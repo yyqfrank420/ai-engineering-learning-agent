@@ -41,6 +41,16 @@ These are individual observations, not latency guarantees. A baseline automatic 
 
 Local evidence is retained in ignored work/pr logs and JSON summaries. Protected exact-tree CI and fresh live evaluation remain required before merge. Earlier PR checks do not approve this refreshed source tree. Deployment and production verification are recorded by the release workflows and PR.
 
+## Protected run and bounded recovery
+
+Protected run 39466742108 tested merge 5bdc452bbc7f44e1c2b57758b3013d05d001170a, tree 025c67afaa0cfaa4f97637c2c111b036b77cd014. All offline groups passed: 5,074 backend tests with no skips and 723 frontend tests. Seven browser journeys passed. Research lost its connection after about two minutes; the browser harness then waited until its 1,530-second deadline for a missing done event. The connection provider call completed successfully in 11.4 seconds, with no queue wait or fallback. The close initiator was not captured. This request is a failure and is not retained as passing evidence.
+
+Manual review found a minor bundled-citation precision concern in education. Its central metrics and feedback claims are supported by the exact supplied passage. The expansion report's monitor-ownership objection conflicts with an explicit deployment assumption; its split-contract objection comes from the judge's 500-character evidence segmentation. Neither establishes a release blocker. The original manual-review outcomes remain recorded.
+
+The recovery classifier previously accepted browser quality failures for fresh execution but rejected typed browser infrastructure failures. It now uses the existing authoritative deterministic classifier and requires those failures to run fresh too. Service-expansion failures still force quality classification. Missing or inconsistent evidence is rejected. Failed browser cases cannot be carried or replayed. Source-run identity, artifact digest, merge parents, reviewed-diff hash, corpus and evaluation-code identity, call limits, fresh deployment proof and fresh request identities are unchanged.
+
+The recovery change passed 185 targeted tests and two independent reviews. Read-only partitioning of the authenticated source artifact produces exactly one fresh case, research, and seven carried successes. The recovery run is limited to the original remaining 43 application attempts and two judge attempts. Its fresh result and protected approval remain required before merge. The generation runtime itself is unchanged.
+
 ## Rollback
 
 Revert application commits and redeploy the previously approved artifacts. No data migration or irreversible storage change is part of this release. Preserve compare-and-set and message-ordering guarantees when reverting related runtime code.
