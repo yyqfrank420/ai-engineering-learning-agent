@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 import type { BackendReadiness } from '../../hooks/useBackendReadiness';
 import type { AuthSession, ThreadSummary } from '../../types';
 import { listThreads, deleteThread } from '../../services/api';
-import { ChatCircle, Plus, Trash, X } from '@phosphor-icons/react';
+import { ChatCircle, NotePencil, Trash, X } from '@phosphor-icons/react';
 import './AppChrome.css';
 import './ThreadSidebar.css';
 
@@ -208,13 +208,13 @@ export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
       }}>
       <div className="thread-sidebar__inner">
         <div className="thread-sidebar__heading">
-          <h2>Chat history</h2>
+          <h2>Chats</h2>
           {isDrawer && <button type="button" className="thread-sidebar__close" aria-label="Close chat history" onClick={onClose} autoFocus>
             <X size={20} aria-hidden="true" />
           </button>}
         </div>
         <button type="button" ref={newChatRef} className="thread-sidebar__new-chat" aria-label="New chat" disabled={newChatDisabled} onClick={onNewChat}>
-          <Plus size={18} aria-hidden="true" />
+          <NotePencil size={20} aria-hidden="true" />
           New chat
         </button>
         {threads.length >= MAX_THREADS && <p className="thread-sidebar__limit">Limit reached ({MAX_THREADS} chats)</p>}
@@ -222,7 +222,7 @@ export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
           {fetching && threads.length === 0 && <p role="status" className="thread-sidebar__empty">Loading…</p>}
           {!fetching && threads.length === 0 && <p role="status" className="thread-sidebar__empty">
             {!authSession ? 'Sign in to view your chats' : backendReadiness === 'error' ? 'Could not connect to load chats'
-              : backendReady ? 'No chats yet' : 'Connecting to your chats…'}
+              : backendReady ? 'No chats yet' : 'Connecting…'}
           </p>}
           {grouped.map(group => <section key={group.label} aria-label={group.label} className="thread-sidebar__group">
             <h3 className="thread-sidebar__group-label">{group.label}</h3>

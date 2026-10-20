@@ -56,8 +56,8 @@ describe('ThreadSidebar active-work protection', () => {
   afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
   it.each([
-    ['unknown', 'Connecting to your chats…'],
-    ['preparing', 'Connecting to your chats…'],
+    ['unknown', 'Connecting…'],
+    ['preparing', 'Connecting…'],
     ['error', 'Could not connect to load chats'],
   ] as const)('shows %s readiness without a manual startup instruction', (backendReadiness, message) => {
     render(<ThreadSidebar authSession={session} activeThreadId={null} backendReadiness={backendReadiness}
