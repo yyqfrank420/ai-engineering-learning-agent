@@ -15,7 +15,7 @@ import { TYPE_STYLE, FALLBACK_STYLE } from '../../utils/graphColors';
 import { architectureRegions, regionRole } from './architectureRegions';
 import './D3Graph.css';
 import { diagramConnections, overviewConnections, routeConnection, type DiagramConnection } from './diagramConnections';
-import { snapBounds, resizeCenteredZone, zoneFrame, type Box, type AlignmentGuide } from './diagramAlignment';
+import { snapBounds, resizeCenteredZone, zoneFrame, ZONE_CONTENT_TOP_INSET, ZONE_VERTICAL_INSET, type Box, type AlignmentGuide } from './diagramAlignment';
 import {
   boundLabelCenter,
   BOTTOM_NODE_GAP,
@@ -1500,7 +1500,7 @@ export function D3Graph({
             const group = groups.find(group => group.nodeIds.includes(node.id));
             if (group) {
               const frame = boundsOf(group);
-              targets.push({ x: frame.x + 24, y: frame.y + 42, width: frame.width - 48, height: frame.height - 62 });
+              targets.push({ x: frame.x + 24, y: frame.y + ZONE_CONTENT_TOP_INSET, width: frame.width - 48, height: frame.height - ZONE_VERTICAL_INSET });
             }
             nodeDragStarts.set(node.id, { x: node.x, y: node.y, targets });
           })
@@ -1903,6 +1903,21 @@ export function D3Graph({
           .attr('height', navigation ? 22 : 15)
           .attr('display', navigation ? 'none' : null);
         labelText.attr('x', labelX + 8).attr('y', labelY + (navigation ? 15 : 11));
+        if (navigation) {
+          const element = labelText.node()!;
+          const lines = wrapNodeLabel(groupDef.label, text => {
+            element.textContent = text;
+            try {
+              return element.getBBox().width;
+            } finally {
+              element.textContent = '';
+            }
+          }, bounds.width - 36);
+          labelText.selectAll('tspan').data(lines).join('tspan')
+            .attr('x', labelX + 8)
+            .attr('y', (_line: string, index: number) => bounds.y + (lines.length === 1 ? 32 : 27 + index * 16))
+            .text((line: string) => line);
+        }
       }
 
       groupLabelsLayer.raise();
@@ -2195,6 +2210,7 @@ export function D3Graph({
     };
     const signalReady = () => {
       if (cancelled) return;
+      if (navigation) renderAll();
       firstFrame = window.requestAnimationFrame(() => {
         if (cancelled) return;
         secondFrame = window.requestAnimationFrame(notifyReady);

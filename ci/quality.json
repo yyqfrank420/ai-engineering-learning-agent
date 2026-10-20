@@ -313,10 +313,17 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
-        "before_blob": "059669e087882fba718ec3643b9ccf9feb540585",
-        "after_blob": "3de9ec5ff9c0d47d0baea3156a3190e054cdbcdf",
-        "reason": "Place newly expanded interactive nodes beside their saved parent only when navigation and restored view state are enabled. HiddenGraphEvaluator enables neither; private candidate SVG geometry is byte-identical in two fixed fixtures.",
-        "verification": "docs/verification/runtime-expansion-positioning-2026-10-20.md"
+        "before_blob": "3de9ec5ff9c0d47d0baea3156a3190e054cdbcdf",
+        "after_blob": "b3fa7b8d5888663c12de74fcab134d2846ad1bd2",
+        "reason": "Wrap interactive zone headings within their frames, reserve heading space and remeasure after fonts load. Private navigation-disabled SVGs remain byte-identical in two fixed fixtures.",
+        "verification": "docs/verification/2026-10-20-zone-label-overflow.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/diagramAlignment.ts",
+        "before_blob": "4b4dedd61ba8ba3333bc5e843900f6c2a2fe6564",
+        "after_blob": "37dca260c537ac3fc7fc01a9e7db31ee72bd4619",
+        "reason": "Increase interactive zone header space to 60 pixels and keep resize and alignment geometry consistent. Private rendering does not use these zone frames; complete private SVG comparisons passed.",
+        "verification": "docs/verification/2026-10-20-zone-label-overflow.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/graphLayout.ts",
