@@ -37,7 +37,6 @@ interface GraphCanvasProps {
   onClosePopup: () => void;
   sourceTexts: string[];
   isPreview?: boolean;
-  isAcceptedGraph?: boolean;
   isBuilding?: boolean;
   onGraphReady?: (key: string) => void;
   onSaveGraphEdit?: (edit: GraphContentEdit) => Promise<void>;
@@ -85,7 +84,6 @@ export function GraphCanvas({
   onClosePopup,
   sourceTexts,
   isPreview = false,
-  isAcceptedGraph = !isPreview,
   isBuilding = false,
   onGraphReady,
   onSaveGraphEdit,
@@ -390,12 +388,6 @@ export function GraphCanvas({
         <div className="graph-canvas__heading" title={graphData.title}>
           <h2 className="graph-canvas__title">{title}</h2>
           {subtitle && <p className="graph-canvas__subtitle">{subtitle}</p>}
-          {isAcceptedGraph && graphData.detail_level === 'overview' && (
-            <p className="graph-canvas__overview">
-              <span>Overview</span>
-              <span>Core workflow. Supporting detail is simplified.</span>
-            </p>
-          )}
         </div>
         <span className="graph-canvas__counts">
           {graphData.nodes.length} components
