@@ -124,12 +124,23 @@ class ActivityRecorder:
             or phase not in _STAGE_TEXT.keys() | _TOOL_TEXT.keys()
         ):
             return None
+        stream_elapsed_ms = event.get("stream_elapsed_ms")
+        if "stream_elapsed_ms" in event and (
+            event_type != "workflow_progress"
+            or status != "active"
+            or phase not in {"components", "connections", "review"}
+            or type(stream_elapsed_ms) is not int
+            or not 0 <= stream_elapsed_ms <= MAX_ACTIVITY_DURATION_MS
+        ):
+            return None
         kind = "tool" if phase in _TOOL_TEXT else "update"
         text = (
             _TOOL_TEXT[phase][1 if status == "complete" else 0]
             if kind == "tool"
             else context_text or _STAGE_TEXT[phase]
         )
+        if stream_elapsed_ms is not None:
+            text = f"{text} ({stream_elapsed_ms // 1000}s)"
         if status == "retry":
             if kind == "update":
                 text = _STAGE_TEXT["revise"]
@@ -195,6 +206,11 @@ class ActivityRecorder:
         ).model_dump()
         self._next_sequence += 1
         self._last_elapsed_ms = elapsed_ms
+        if self._steps and status == "active" and all(
+            self._steps[-1][key] == value
+            for key, value in {"kind": kind, "phase": phase, "status": "active"}.items()
+        ):
+            self._steps = self._steps[:-1]
         self._steps = [*self._steps, step][-MAX_ACTIVITY_STEPS:]
         self._bound_steps(elapsed_ms)
         return {"type": "activity_step", **step}

@@ -688,7 +688,7 @@ async def test_graph_worker_customises_growth_marketing_architecture(monkeypatch
         {"Agent", "Tool Use", "Planning", "Evaluation", "Foundation Model"} & labels
     )
     assert graph["design_origin"] == "applied"
-    assert graph["resolved_complexity"] == "production"
+    assert graph["resolved_complexity"] == "prototype"
     assert graph["assumptions"] == []
     assert len(graph["groups"]) == 4
     assert {edge["flow"] for edge in graph["edges"]} == {
@@ -715,7 +715,7 @@ async def test_graph_worker_customises_growth_marketing_architecture(monkeypatch
     assert '"reviewed_plan"' not in prompt
     assert '"challenger_review"' not in prompt
     assert '"diagram_commitments"' not in prompt
-    assert "Designing a production domain architecture" in events[0]["status"]
+    assert "Designing a prototype domain architecture" in events[0]["status"]
 
 
 def test_applied_graph_validator_rejects_generic_book_taxonomy():

@@ -443,7 +443,7 @@ describe('ChatInput', () => {
     expect(onRetryReadiness).toHaveBeenCalledOnce();
     view.rerender(<ChatInput {...defaultProps} backendReadiness="preparing" />);
     expect(screen.queryByRole('button', { name: 'Retry connection' })).toBeNull();
-    expect(screen.getByRole('status').textContent).toBe('Connecting…');
+    expect(screen.getByRole('status').textContent).toBe('Connecting… This can take 30 seconds to 1 minute.');
     expect(view.container.querySelector('.chat-readiness-spinner')).not.toBeNull();
     view.rerender(<ChatInput {...defaultProps} />);
     expect(view.container.querySelector('.chat-readiness-spinner')).toBeNull();

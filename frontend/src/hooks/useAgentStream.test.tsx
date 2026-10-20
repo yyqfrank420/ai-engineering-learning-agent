@@ -961,10 +961,38 @@ describe('useAgentStream', () => {
     emit({ type: 'response_reset' });
     expect(result.current.liveActivity?.activity.steps).toHaveLength(1);
     for (let sequence = 1; sequence <= 50; sequence++) emit({ ...step, sequence,
-      text: `Update ${sequence}`, elapsed_ms: sequence * 1000 });
+      phase: sequence % 2 ? 'connections' : 'components', text: `Update ${sequence}`, elapsed_ms: sequence * 1000 });
     expect(result.current.liveActivity?.activity.steps).toHaveLength(48);
     expect(result.current.liveActivity?.activity.steps[0].sequence).toBe(3);
     expect(result.current.messages).toHaveLength(1);
+  });
+
+  it('replaces consecutive active progress while retaining stage, kind, retry, and completion transitions', () => {
+    mocks.sendMessage.mockReturnValue(new Promise(() => {}));
+    const { result } = renderHook(() => useAgentStream(session, 'thread-1'));
+    act(() => result.current.sendMessage('design'));
+    const clientRequestId = mocks.sendMessage.mock.calls[0][4] as string;
+    const emit = (event: ServerEvent) => act(() => mocks.eventHandler?.(event, { kind: 'chat', clientRequestId }));
+    const step = { type: 'activity_step' as const, sequence: 0, kind: 'tool' as const,
+      phase: 'components' as const, status: 'active' as const, text: 'Generating components', elapsed_ms: 0 };
+    emit(step);
+    emit({ ...step, sequence: 1, text: 'Generating components (5s)', elapsed_ms: 5000 });
+    expect(result.current.liveActivity?.activity.steps).toEqual([
+      { sequence: 1, kind: 'tool', phase: 'components', status: 'active', text: 'Generating components (5s)', elapsed_ms: 5000 },
+    ]);
+    emit({ ...step, sequence: 1, text: 'Duplicate sequence', elapsed_ms: 6000 });
+    emit({ ...step, sequence: 2, text: 'Stale time', elapsed_ms: 4000 });
+    emit({ ...step, sequence: 2, text: 'Generating components (5s)', elapsed_ms: 6000 });
+    expect(result.current.liveActivity?.activity.steps).toHaveLength(1);
+    expect(result.current.liveActivity?.activity.steps[0].sequence).toBe(1);
+    emit({ ...step, sequence: 3, kind: 'update', text: 'I am assembling components.', elapsed_ms: 7000 });
+    emit({ ...step, sequence: 4, phase: 'connections', text: 'Generating connections', elapsed_ms: 8000 });
+    emit({ ...step, sequence: 5, phase: 'connections', status: 'retry', text: 'Retrying connections', elapsed_ms: 9000 });
+    emit({ ...step, sequence: 6, phase: 'connections', text: 'Generating connections again', elapsed_ms: 10000 });
+    emit({ ...step, sequence: 7, phase: 'connections', text: 'Generating connections (5s)', elapsed_ms: 15000 });
+    emit({ ...step, sequence: 8, phase: 'connections', status: 'complete', text: 'Connections complete', elapsed_ms: 16000 });
+    expect(result.current.liveActivity?.activity.steps.map(({ sequence }) => sequence)).toEqual([1, 3, 4, 5, 7, 8]);
+    expect(result.current.liveActivity?.activity.duration_ms).toBe(16000);
   });
 
   it('omits malformed optional activity without disrupting the answer', () => {

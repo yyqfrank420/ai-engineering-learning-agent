@@ -206,7 +206,6 @@ describe('GraphCanvas behavior', () => {
     expect(details.open).toBe(false);
     expect(screen.getByText('reviewed runtime').closest('details')).toBe(details);
     expect(screen.getByText('2 components · 2 zones').closest('details')).toBe(details);
-    expect(screen.getByText('Core workflow. Supporting detail is simplified.').closest('details')).toBe(details);
     fireEvent.click(summary);
     expect(details.open).toBe(true);
     fireEvent.click(summary);
@@ -214,19 +213,6 @@ describe('GraphCanvas behavior', () => {
     fireEvent.click(summary);
     view.rerender(<GraphCanvas {...baseProps} graphData={{ ...graph, title: 'A different architecture' }} />);
     expect(screen.getByLabelText('Diagram details').closest('details')!.open).toBe(false);
-  });
-
-  it('labels only an accepted overview and explains its reduced detail', () => {
-    const overview = { ...graph, detail_level: 'overview' as const };
-    const view = render(<GraphCanvas {...baseProps} graphData={graph} />);
-    expect(screen.queryByText('Overview')).toBeNull();
-
-    view.rerender(<GraphCanvas {...baseProps} graphData={overview} isPreview />);
-    expect(screen.queryByText('Overview')).toBeNull();
-
-    view.rerender(<GraphCanvas {...baseProps} graphData={overview} isPreview isAcceptedGraph />);
-    expect(screen.getByText('Overview')).toBeTruthy();
-    expect(screen.getByText('Core workflow. Supporting detail is simplified.')).toBeTruthy();
   });
 
   it.each([false, true])('reports visible layout readiness for preview=%s', isPreview => {

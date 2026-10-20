@@ -10,6 +10,8 @@ Use these as the current source of truth for the prototype:
   Canonical local/CI checks, protected staging evaluation, corpus approval, and production promotion.
 - [diagram-quality-followup-2026-09-28.md](diagram-quality-followup-2026-09-28.md)
   Diagram scope, edit preservation, citation fixes and their fresh local verification.
+- [canonical-data-query-agent.md](canonical-data-query-agent.md)
+  Approved diagram and explanation reference for future reviews.
 - [current-architecture.md](current-architecture.md)
   Current runtime shape, data flow, and deployment direction.
 - [cloud-run-cost-first.md](cloud-run-cost-first.md)

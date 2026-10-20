@@ -241,7 +241,7 @@ export function ChatInput({
           {(backendReadiness === 'unknown' || backendReadiness === 'preparing') && (
             <span className="chat-readiness-spinner" aria-hidden="true" />
           )}
-          <span>{readinessNotice}</span>
+          <span>{readinessNotice}{(backendReadiness === 'unknown' || backendReadiness === 'preparing') && ' This can take 30 seconds to 1 minute.'}</span>
         </div>
       )}
 

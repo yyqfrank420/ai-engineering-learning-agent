@@ -146,11 +146,10 @@ vi.mock('./components/Chat/ChatInput', () => ({
 }));
 
 vi.mock('./components/GraphCanvas', () => ({
-  GraphCanvas: ({ ref, graphData, isPreview, isAcceptedGraph, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
+  GraphCanvas: ({ ref, graphData, isPreview, onNodeClick, onTellMeMore, onExpandGraph, onSaveGraphEdit, onEditDraftChange, editingDisabled }: {
     ref?: React.Ref<{flushPendingLayout: () => Promise<void>}>;
     graphData: GraphData | null;
     isPreview?: boolean;
-    isAcceptedGraph?: boolean;
     onNodeClick: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onTellMeMore: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
     onExpandGraph: (node: { id: string; label: string; type: 'service'; technology: string; description: string; detail: null }) => void;
@@ -171,7 +170,6 @@ vi.mock('./components/GraphCanvas', () => ({
       <section data-testid="graph-canvas">
         <span data-testid="rendered-graph-title">{graphData?.title ?? ''}</span>
         <span data-testid="rendered-graph-preview">{isPreview ? 'yes' : 'no'}</span>
-        <span data-testid="rendered-graph-accepted">{isAcceptedGraph ? 'yes' : 'no'}</span>
         <span data-testid="graph-edit-disabled">{String(editingDisabled)}</span>
         <button onClick={() => onNodeClick(node)}>Choose node</button>
         <button onClick={() => onTellMeMore(node)}>Tell me more</button>
@@ -619,7 +617,6 @@ describe('App coordination', () => {
     await screen.findByTestId('graph-canvas');
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe('Private preview');
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
-    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('no');
     expect(writeThreadSnapshot).toHaveBeenCalledWith(
       'user-1',
       'thread-1',
@@ -635,7 +632,6 @@ describe('App coordination', () => {
     await screen.findByTestId('graph-canvas');
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
     expect(screen.getByTestId('rendered-graph-preview').textContent).toBe('yes');
-    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
   });
 
   it('grounds the same chip question in each selected node and preserves display/options', async () => {
@@ -712,7 +708,6 @@ describe('App coordination', () => {
     expect(agentState.startThreadAndSend).not.toHaveBeenCalled();
     expect(useAgentStream).toHaveBeenLastCalledWith(session, 'thread-1');
     expect(screen.getByTestId('rendered-graph-title').textContent).toBe(graph.title);
-    expect(screen.getByTestId('rendered-graph-accepted').textContent).toBe('yes');
     expect(screen.getByTestId('message-list').textContent).toBe('2 messages');
     expect(screen.getByText('Architecture thread')).toBeTruthy();
   });

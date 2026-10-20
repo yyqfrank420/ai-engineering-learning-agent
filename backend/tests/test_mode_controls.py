@@ -15,13 +15,13 @@ import pytest
 @pytest.mark.parametrize(
     "query,applied,maturity",
     [
-        ("build digital marketing ai", True, "production"),
-        ("Build an AI for restaurant reservations", True, "production"),
-        ("Create sales forecasting AI", True, "production"),
+        ("build digital marketing ai", True, "prototype"),
+        ("Build an AI for restaurant reservations", True, "prototype"),
+        ("Create sales forecasting AI", True, "prototype"),
         (
             "I want to learn how to build a trading bot with automatic backtesting",
             True,
-            "production",
+            "prototype",
         ),
         ("Build a prototype customer support chatbot", True, "prototype"),
         (
@@ -31,7 +31,7 @@ import pytest
         ),
         ("Design a production RAG system", True, "production"),
         ("Build a prototype recommendation engine", True, "prototype"),
-        ("Create an invoice processing pipeline", True, "production"),
+        ("Create an invoice processing pipeline", True, "prototype"),
         ("Build a prototype meeting notes assistant", True, "prototype"),
         ("What is agent planning?", False, "low"),
         ("Explain AI in plain English", False, "low"),
@@ -218,7 +218,37 @@ def test_terse_product_seeds_trigger_applied_design_enrichment(query):
     from agent.complexity import is_applied_system_design_request, resolve_complexity
 
     assert is_applied_system_design_request(query)
+    assert resolve_complexity("auto", query).resolved == "prototype"
+
+
+@pytest.mark.parametrize("query", [
+    "how to buuild snowflake agent",
+    "how to build snowflake agent",
+    "Build a customer support chatbot",
+])
+def test_first_applied_request_defaults_to_prototype_depth(query):
+    from agent.complexity import resolve_complexity
+
+    assert resolve_complexity("auto", query).resolved == "prototype"
+    assert resolve_complexity("production", query).resolved == "production"
+
+
+@pytest.mark.parametrize("query", [
+    "Build a Snowflake agent for production",
+    "Design a production chatbot",
+    "Build a high availability retrieval system",
+])
+def test_explicit_production_requirements_keep_production_depth(query):
+    from agent.complexity import resolve_complexity
+
     assert resolve_complexity("auto", query).resolved == "production"
+
+
+def test_explicit_prototype_depth_still_overrides_production_wording():
+    from agent.complexity import resolve_complexity
+
+    profile = resolve_complexity("prototype", "Build a production Snowflake agent")
+    assert profile.resolved == "prototype"
 
 
 def test_explanatory_runtime_flow_defaults_to_prototype_depth():

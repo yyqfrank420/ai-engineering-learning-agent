@@ -37,13 +37,19 @@ Assistant source URLs and book locations appear as numbered references. One
 Sources disclosure per answer starts collapsed; selecting a reference opens it
 and focuses its source. Preserve stored answer text and user-authored links.
 
-A first diagram shows a compact title. Description, counts, and overview notes
-live behind Diagram details. Hide version controls until history has multiple
-revisions or a preview, undo, redo, update, or error needs attention.
+A first diagram shows a compact title. Subtitle and counts live behind Diagram
+details. Keep the removed overview-description row absent. Hide version controls
+until history has multiple revisions or a preview, undo, redo, update, or error
+needs attention.
 
-Header navigation and history share an icon column and a text column. Use a 24px
-screen-edge inset on desktop and 16px in compact layouts, with a 12px gap after
-the icon column. Keep header actions evenly spaced.
+Use a 24px screen-edge inset on desktop and 16px in compact layouts. The sidebar
+heading aligns to that inset. History actions and entries share a 24px icon column
+and a 12px text gap. Keep header actions evenly spaced.
+
+During generation, keep the latest three public work updates visible below the
+elapsed-time summary. The complete work history stays expandable. Update the active
+operation in place as observed stream activity arrives; preserve completed work and
+retries. Completed activity starts collapsed.
 
 Every action has a readable disabled state and immediate visible keyboard focus.
 Use at least 36px compact controls, 44px primary composer controls, and larger touch
@@ -59,3 +65,9 @@ Keep product claims, provider notices, activity, sources, and errors truthful.
 Preserve the book badge until product naming and attribution prominence are decided.
 Frontend presentation changes do not change generation, retrieval, authentication
 services, database storage, or diagram topology.
+
+## Canonical example
+
+Use the [approved data querying AI agent](docs/canonical-data-query-agent.md) as
+a reference for zone grouping, label spacing, quiet diagram headers and explanations
+that follow the displayed components. Preserve these qualities as diagrams change.

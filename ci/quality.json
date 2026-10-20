@@ -92,6 +92,7 @@
             "backend/tests/test_message_ordering.py",
             "backend/tests/test_message_activity.py",
             "backend/tests/test_message_sequence_postgres.py",
+            "backend/tests/test_concurrent_storage_postgres.py",
             "backend/tests/test_observability_core.py",
             "backend/tests/test_postgres_schema_guardrails.py",
             "backend/tests/test_resource_limits.py",
@@ -313,10 +314,24 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
-        "before_blob": "3de0f433d1eeaa22b685cafde4e39f70d190e568",
-        "after_blob": "d886e53b34202f9e8cc2f6f47f1669983b4312d6",
-        "reason": "Route interactive navigation connections around unrelated current zone frames, including saved padding. The private renderer does not enable navigation and retains its geometry; generation, transport and publication behavior are unchanged.",
-        "verification": "docs/verification/2026-10-04-zone-routing.md"
+        "before_blob": "3de9ec5ff9c0d47d0baea3156a3190e054cdbcdf",
+        "after_blob": "b3fa7b8d5888663c12de74fcab134d2846ad1bd2",
+        "reason": "Wrap interactive zone headings within their frames, reserve heading space and remeasure after fonts load. Private navigation-disabled SVGs remain byte-identical in two fixed fixtures.",
+        "verification": "docs/verification/2026-10-20-zone-label-overflow.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/diagramAlignment.ts",
+        "before_blob": "4b4dedd61ba8ba3333bc5e843900f6c2a2fe6564",
+        "after_blob": "37dca260c537ac3fc7fc01a9e7db31ee72bd4619",
+        "reason": "Increase interactive zone header space to 60 pixels and keep resize and alignment geometry consistent. Private rendering does not use these zone frames; complete private SVG comparisons passed.",
+        "verification": "docs/verification/2026-10-20-zone-label-overflow.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/graphLayout.ts",
+        "before_blob": "1f0031b8ed6e766aaf288d6d7fc33e43e46ab6ad",
+        "after_blob": "375f289c2b8a6adae7831d9276243015ff5f020b",
+        "reason": "Add a pure placement function called only by interactive navigation with restored positions. Existing layout functions and private renderer execution remain unchanged; fixed private candidate SVG comparisons passed.",
+        "verification": "docs/verification/runtime-expansion-positioning-2026-10-20.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/diagramConnections.ts",
@@ -383,10 +398,10 @@
       },
       {
         "path": "frontend/src/App.tsx",
-        "before_blob": "aad27e009dc89acca804bed093256177f315f110",
-        "after_blob": "cd34e6baa969cff0d600696eed69f8b80ef4131a",
-        "reason": "Scope visible workspace styling, sign-out focus isolation and a workspace skip link; preserve generation, transport, candidate evaluation and workspace callback logic.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "3349d16fcb45c619c9a9601b60bf4f38336a1657",
+        "after_blob": "ad60dbad3323ef0ca5b7ecc15b27ff06df012b15",
+        "reason": "Remove the unused accepted-graph display flag passed only to the deleted header description. Graph selection, generation, transport, callbacks and persistence are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/Auth/AuthScreen.tsx",
@@ -418,10 +433,10 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphCanvas.css",
-        "before_blob": "d2e9f335095ddef31bf09b138b34d1fde783cf13",
-        "after_blob": "69948f3d990f29f2f9096809b3210a4073664a04",
-        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
-        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
+        "before_blob": "69948f3d990f29f2f9096809b3210a4073664a04",
+        "after_blob": "d144b7ccedf3fd2b0c8df3761223b1dd5ca03eca",
+        "reason": "Delete only the two CSS selectors for the removed overview description row. Canvas typography, geometry, private rendering and generation behavior are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
@@ -432,17 +447,17 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "635296df1236277017fed06aa20508e36e00d622",
-        "after_blob": "86ad50f19ce3449c1cafbc7afad927f1d5e83372",
-        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
-        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
+        "before_blob": "3c8309556586edde057612de13f57e6472732f21",
+        "after_blob": "e12a391bb53fc5db6f4b9056d54edf57b33c801f",
+        "reason": "Delete the overview supporting-description row and its unused display prop. Diagram rendering, private evaluation, readiness and graph actions are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
-        "before_blob": "118fb21569ae9d314423f0bf47bc556c12c755cf",
-        "after_blob": "f4a1433776488d9396dbf6fdaa37bdbcc3b56532",
-        "reason": "Style history navigation and improve delete-dialog focus and placement; history requests, readiness predicates and thread callbacks retain their protocols.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "efe9225a332d7f79f9abc6298401ddb386cd6988",
+        "after_blob": "daaeced2564f8e60ad8963137836bde269a25045",
+        "reason": "Refine sidebar labels and compose icon only. History requests, readiness predicates, callbacks, dialog behavior and generation protocols are unchanged.",
+        "verification": "docs/verification/2026-10-20-sidebar-header.md"
       }
     ],
     "non_generation": [

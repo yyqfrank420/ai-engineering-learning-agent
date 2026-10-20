@@ -80,8 +80,9 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
     now_epoch = time.time()
     with _connect() as conn:
         if settings.use_postgres:
+            # Serialize retention without blocking message foreign-key reads.
             profile = conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
             if profile is None:
@@ -573,9 +574,10 @@ def persist_turn(
     with _connect() as conn:
         if settings.use_postgres:
             # Lock the history owner before thread locks to serialize retention
-            # across concurrent completed turns for this user.
+            # across concurrent completed turns for this user. NO KEY UPDATE
+            # permits concurrent message inserts to check their profile FK.
             conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
         else:

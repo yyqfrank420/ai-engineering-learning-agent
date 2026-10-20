@@ -495,7 +495,6 @@ function AppWorkspace({ auth }: { auth: ReturnType<typeof useAuthSession> }) {
                     layoutLocked={history.busy || actionBusy || loadingThread}
                     graphData={displayedGraphData}
                     isPreview={graphPreview !== null}
-                    isAcceptedGraph={displayedGraphData !== null && displayedGraphData === graphData}
                     animateSequence={!isGenerating && publishedGraphKey === graphStructureKey(displayedGraphData)}
                     authSession={authSession}
                     activeThreadId={activeThreadId}

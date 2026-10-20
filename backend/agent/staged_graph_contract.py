@@ -116,7 +116,7 @@ _PRODUCTION_PROOFS = (
     "retrieval_and_reuse_trust",
     "state_effect_reconciliation",
 )
-_NODE_TECHNOLOGY = {
+NODE_TECHNOLOGY_LABELS = {
     "client": "Client",
     "service": "Application service",
     "component": "Component",
@@ -765,7 +765,7 @@ def project_graph_data(build: Mapping[str, Any]) -> dict[str, Any]:
                 if component["type"] == "component"
                 else {}
             ),
-            "technology": _NODE_TECHNOLOGY[component["type"]],
+            "technology": NODE_TECHNOLOGY_LABELS[component["type"]],
             "description": component["responsibility"],
             "tier": None,
             "lane": "bottom" if component["group_kind"] == "operations" else "main",

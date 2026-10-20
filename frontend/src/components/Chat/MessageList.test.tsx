@@ -28,6 +28,9 @@ describe('MessageList', () => {
     const user = { id: 'user', role: 'user' as const, content: 'Question' };
     const view = render(<MessageList messages={[user]} liveActivity={liveActivity} />);
     const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
     expect(details.open).toBe(true);
     const answer = { id: 'answer', role: 'assistant' as const, clientRequestId: 'run', content: 'Answer' };
     view.rerender(<MessageList messages={[user, answer]} liveActivity={liveActivity} />);

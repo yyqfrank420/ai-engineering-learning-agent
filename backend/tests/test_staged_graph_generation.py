@@ -622,7 +622,10 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
         )
 
     monkeypatch.setattr(generation, "stream_structured_llm", fake_stream)
-    state = {"resolved_maturity": "prototype"}
+    async def send(_event):
+        pass
+
+    state = {"resolved_maturity": "prototype", "send": send}
     if stage == "components":
         await generation.generate_component_candidate(
             request="Design a production-grade request path.",
@@ -643,6 +646,8 @@ async def test_generation_prompt_uses_selected_prototype_maturity(monkeypatch, s
             state=state,
         )
 
+    assert calls[0]["send"] is send
+    assert calls[0]["progress_phase"] == stage
     prompt = calls[0]["messages"][0]["content"]
     prompt_input = json.loads(prompt.split("\nINPUT\n", 1)[1])
     assert prompt_input["resolved_maturity"] == "prototype"

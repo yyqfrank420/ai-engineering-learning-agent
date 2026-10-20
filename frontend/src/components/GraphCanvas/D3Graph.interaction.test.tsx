@@ -148,6 +148,8 @@ describe('graph node activation', () => {
     expect(container.querySelectorAll('.edge-vis')[1].getAttribute('d')).toBe('M593,200 L1007,200');
     const originalPath = paths()[0].getAttribute('d');
     fireEvent.keyDown(frame, { key: 'ArrowUp', shiftKey: true });
+    fireEvent.keyDown(frame, { key: 'ArrowUp', shiftKey: true });
+    fireEvent.keyDown(frame, { key: 'ArrowUp', shiftKey: true });
     assertClearance();
     expect(paths()[0].getAttribute('d')).not.toBe(originalPath);
     const movedPath = paths()[0].getAttribute('d');
@@ -287,13 +289,13 @@ describe('graph node activation', () => {
       viewport: { x: 0, y: 0, k: 1 }, zonePadding: { zone: { left: 100, right: 0, top: 30, bottom: 10 } } };
     const view = render(<D3Graph {...props} initialViewState={saved} />);
     const bounds = (root: HTMLElement) => ['x', 'y', 'width', 'height'].map(attr => Number(root.querySelector('.group-box > rect')!.getAttribute(attr)));
-    expect(bounds(view.container)).toEqual([-17, -6, 534, 270]);
+    expect(bounds(view.container)).toEqual([-17, -24, 534, 288]);
     const normalized = props.onViewStateChange.mock.lastCall![0];
     expect(normalized.nodePositions).toEqual(saved.nodePositions);
     expect(normalized.zonePadding.zone).toEqual(saved.zonePadding.zone);
     view.unmount();
     const restored = render(<D3Graph {...props} initialViewState={normalized} />);
-    expect(bounds(restored.container)).toEqual([-17, -6, 534, 270]);
+    expect(bounds(restored.container)).toEqual([-17, -24, 534, 288]);
     expect(props.onViewStateChange.mock.lastCall![0].nodePositions).toEqual(normalized.nodePositions);
   });
 

@@ -1186,6 +1186,8 @@ async def _review(
             timeout_seconds=effective_timeout_s,
             max_output_tokens=_review_max_output_tokens(gate, maturity, guarantees),
             provider_attempt_limit=1,
+            send=(telemetry_context or {}).get("send"),
+            progress_phase="review" if (telemetry_context or {}).get("send") is not None else None,
         )
     except Exception as exc:
         result = _terminal_result(f"provider call failed: {type(exc).__name__}")

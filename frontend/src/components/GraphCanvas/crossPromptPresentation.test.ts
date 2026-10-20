@@ -261,6 +261,56 @@ describe('presentation across generated prompt shapes', () => {
     expect(onViewStateChange.mock.lastCall?.[0].viewport).toEqual(saved.viewport);
   });
 
+  it('anchors expanded internals beside the saved service and preserves them after reload', () => {
+    const original = cases[4];
+    const children = ['question-intake', 'spec-loader', 'ablation-runner'].map(id => ({
+      ...original.nodes[0], id, label: id, type: 'component' as const,
+      parent_service_id: 'summarizer',
+    }));
+    const data: GraphData = { ...original, nodes: [...original.nodes, ...children],
+      edges: [...original.edges,
+        ...children.map((node, index) => ({ ...original.edges[0],
+          source: index === 0 ? 'documents' : children[index - 1].id, target: node.id,
+        })),
+      ],
+      groups: original.groups?.map(group => group.id === 'zone_0'
+        ? { ...group, nodeIds: [...group.nodeIds, ...children.map(node => node.id)] } : group),
+    };
+    const saved: GraphViewState = {
+      layoutVersion: GRAPH_LAYOUT_VERSION,
+      nodePositions: {
+        writer: { x: 125, y: 156 }, ingest: { x: 125, y: 400 },
+        summarizer: { x: 371.34765625, y: 156.17384338378906 },
+        documents: { x: 1000, y: 400 },
+      },
+      viewport: { x: 35, y: 45, k: 0.8 },
+    };
+    const onViewStateChange = vi.fn();
+    const props = { currentStep: -1, activeNodeIds: new Set<string>(),
+      onNodeClick: () => undefined, onViewStateChange, navigation: true };
+    const view = render(createElement(D3Graph, { ...props, graphData: original, initialViewState: saved }));
+    view.rerender(createElement(D3Graph, { ...props, graphData: data, initialViewState: saved }));
+    for (const [id, anchor] of Object.entries(saved.nodePositions)) {
+      expect(position(view.container, id)).toEqual(anchor);
+    }
+    const owner = saved.nodePositions.summarizer;
+    for (const child of children) {
+      const placed = position(view.container, child.id);
+      expect(Math.hypot(placed.x - owner.x, placed.y - owner.y)).toBeLessThan(250);
+    }
+    const expandedPositions = Object.fromEntries(data.nodes.map(node => [node.id, position(view.container, node.id)]));
+    const persisted = onViewStateChange.mock.lastCall?.[0] as GraphViewState;
+    expect(persisted.viewport).toEqual(saved.viewport);
+    expect(persisted.nodePositions).toEqual(expandedPositions);
+    view.unmount();
+    const reloaded = render(createElement(D3Graph, { ...props, graphData: data, initialViewState: persisted }));
+    for (const [id, anchor] of Object.entries(expandedPositions)) {
+      expect(position(reloaded.container, id)).toEqual(anchor);
+    }
+    expect(reloaded.container.querySelectorAll('.edge-vis')).toHaveLength(diagramConnections(data.edges).length);
+    expect(onViewStateChange.mock.lastCall?.[0].viewport).toEqual(saved.viewport);
+  });
+
   it('uses changed content with the same server version and retains saved positions through expansion', () => {
     const first = cases[4];
     const expanded: GraphData = {

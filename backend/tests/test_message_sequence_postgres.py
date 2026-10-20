@@ -18,7 +18,12 @@ def test_message_sequence_migration_installs_database_owned_order(legacy_turns):
         pytest.skip(
             "Set MESSAGE_SEQUENCE_TEST_DATABASE_URL to a disposable local PostgreSQL database"
         )
-    if urlparse(database_url).hostname not in {"localhost", "127.0.0.1", "::1"}:
+    parsed_url = urlparse(database_url)
+    if (
+        parsed_url.hostname not in {"localhost", "127.0.0.1", "::1"}
+        or parsed_url.query
+        or parsed_url.fragment
+    ):
         pytest.fail(
             "Message sequence migration tests require a local disposable database"
         )

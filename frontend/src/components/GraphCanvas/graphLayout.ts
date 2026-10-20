@@ -113,6 +113,85 @@ export function initialFitScale(
   );
 }
 
+interface PositionedGraphNode {
+  id: string;
+  x: number;
+  y: number;
+  parent_service_id?: string;
+}
+
+/** Preserve saved anchors while placing new internals beside their owning service. */
+export function placeAddedNodes(
+  nodes: readonly PositionedGraphNode[],
+  savedNodeIds: ReadonlySet<string>,
+): Map<string, { x: number; y: number }> {
+  if (nodes.some(node => !Number.isFinite(node.x) || !Number.isFinite(node.y))) {
+    throw new Error('Graph node positions must be finite.');
+  }
+  const placed = new Map(nodes.filter(node => savedNodeIds.has(node.id))
+    .map(node => [node.id, { x: node.x, y: node.y }]));
+  const horizontalSpacing = NODE_W + COMPACT_NODE_GAP;
+  const verticalSpacing = NODE_H + COMPACT_NODE_GAP;
+  const isFree = (position: { x: number; y: number }) => [...placed.values()].every(other => (
+    Math.abs(other.x - position.x) >= horizontalSpacing
+    || Math.abs(other.y - position.y) >= verticalSpacing
+  ));
+  const fallbackPosition = () => {
+    // Each occupied card can block at most one of these widely spaced slots.
+    for (let index = 0; index <= placed.size; index += 1) {
+      const position = { x: index * 2 * horizontalSpacing, y: 0 };
+      if (isFree(position)) return position;
+    }
+    throw new Error('Could not place an added graph node.');
+  };
+  const placeDefault = (node: PositionedGraphNode) => {
+    for (let offset = 0; offset <= 2 * placed.size; offset += 1) {
+      const position = { x: node.x + offset * horizontalSpacing, y: node.y };
+      if (Number.isFinite(position.x) && isFree(position)) {
+        placed.set(node.id, position);
+        return;
+      }
+    }
+    placed.set(node.id, fallbackPosition());
+  };
+  const addedNodes = nodes.filter(node => !savedNodeIds.has(node.id));
+  for (const node of addedNodes.filter(node => !node.parent_service_id)) placeDefault(node);
+  const pending = addedNodes.filter(node => node.parent_service_id)
+    .sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+
+  while (pending.length > 0) {
+    const ready = pending.findIndex(node => placed.has(node.parent_service_id!));
+    // Invalid or cyclic ownership must still render without blocking placement.
+    const [node] = pending.splice(ready < 0 ? 0 : ready, 1);
+    const parent = placed.get(node.parent_service_id!);
+    if (!parent) {
+      placeDefault(node);
+      continue;
+    }
+    for (let radius = 1; radius <= placed.size + 1; radius += 1) {
+      const candidates: Array<{ x: number; y: number }> = [];
+      for (let column = -radius; column <= radius; column += 1) {
+        for (let row = -radius; row <= radius; row += 1) {
+          if (Math.max(Math.abs(column), Math.abs(row)) !== radius) continue;
+          candidates.push({ x: column * horizontalSpacing, y: row * verticalSpacing });
+        }
+      }
+      candidates.sort((a, b) => (
+        a.x ** 2 + a.y ** 2 - b.x ** 2 - b.y ** 2 || b.y - a.y || b.x - a.x
+      ));
+      const position = candidates.map(offset => ({ x: parent.x + offset.x, y: parent.y + offset.y }))
+        .find(position => Number.isFinite(position.x) && Number.isFinite(position.y) && isFree(position));
+      if (position) {
+        placed.set(node.id, position);
+        break;
+      }
+    }
+    // Extreme finite coordinates can round every local offset back to the parent.
+    if (!placed.has(node.id)) placed.set(node.id, fallbackPosition());
+  }
+  return placed;
+}
+
 export function labelAxisCandidates(
   anchor: number,
   extent: number,

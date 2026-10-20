@@ -347,6 +347,10 @@ async def test_staged_generation_dispatches_high_expansions_through_specialist_t
     assert len(calls) == 1
     assert len(tool_calls) == (1 if complexity == "high" else 0)
     call = calls[0]
+    assert call["send"] is state["send"]
+    assert call["progress_phase"] == stage
+    if complexity == "high":
+        assert tool_calls[0]["send"] is state["send"]
     assert call["model"] == (
         settings.service_expansion_model
         if complexity == "high"

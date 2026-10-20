@@ -117,9 +117,10 @@ def register_active_stream(
     with _connect() as conn:
         # Retention takes this same brief owner lock while selecting/deleting
         # idle drafts. Registration must be atomic with that decision.
+        # NO KEY UPDATE keeps message foreign-key reads compatible.
         if settings.use_postgres:
             profile = conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
             if profile is None:

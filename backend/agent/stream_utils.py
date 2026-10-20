@@ -13,7 +13,8 @@ import asyncio
 from contextlib import aclosing
 from dataclasses import dataclass
 import json
-from typing import Callable, Awaitable
+from time import monotonic
+from typing import Callable, Awaitable, Literal
 
 from adapters.llm_adapter import stream_response, stream_response_compat
 from agent.prompt_security import protect_system_prompt
@@ -41,10 +42,22 @@ async def stream_structured_llm(
     timeout_seconds: float | None = None,
     max_output_tokens: int | None = None,
     provider_attempt_limit: int | None = None,
+    send: Callable[[dict], Awaitable[None]] | None = None,
+    progress_phase: Literal["components", "connections", "review"] | None = None,
 ) -> StructuredLLMResponse:
     """Run one schema-constrained provider call with ordinary telemetry."""
     if timeout_seconds is not None and timeout_seconds <= 0:
         raise ValueError("timeout_seconds must be positive")
+    if (send is None) != (progress_phase is None):
+        raise ValueError("send and progress_phase must be supplied together")
+    if progress_phase is not None and progress_phase not in (
+        "components", "connections", "review"
+    ):
+        raise ValueError("unsupported progress_phase")
+    if send is not None and not callable(send):
+        raise ValueError("send must be callable")
+    started_s = monotonic()
+    last_progress_s = None
     accumulated = ""
     metadata: dict = {}
     async with asyncio.timeout(timeout_seconds):
@@ -64,6 +77,16 @@ async def stream_structured_llm(
         )
         async with aclosing(response):
             async for event_type, content in response:
+                if send is not None and event_type in {"thinking", "text"} and content:
+                    observed_s = monotonic()
+                    if last_progress_s is None or observed_s - last_progress_s >= 5:
+                        await send({
+                            "type": "workflow_progress",
+                            "phase": progress_phase,
+                            "status": "active",
+                            "stream_elapsed_ms": int((observed_s - started_s) * 1000),
+                        })
+                        last_progress_s = observed_s
                 if event_type == "text":
                     accumulated += content
                 elif event_type == "response_metadata":
