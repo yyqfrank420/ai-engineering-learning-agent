@@ -246,7 +246,8 @@ def test_run_agent_records_phase_spans(monkeypatch):
     async def fake_search_phase(state, rag_tools):
         return {**state, "rag_chunks": []}, None
 
-    async def fake_apply_graph(state, graph_tools):
+    async def fake_staged_graph(state):
+        assert state["graph_intent"] == "create"
         return state
 
     async def fake_expand(state, graph_tools, search_tool_wait_task):
@@ -257,7 +258,8 @@ def test_run_agent_records_phase_spans(monkeypatch):
 
     monkeypatch.setattr("agent.graph.orchestrator_route", fake_route)
     monkeypatch.setattr("agent.graph.run_search_phase", fake_search_phase)
-    monkeypatch.setattr("agent.graph.apply_graph_worker", fake_apply_graph)
+    monkeypatch.setattr(settings, "graph_pipeline_mode", "staged")
+    monkeypatch.setattr("agent.graph.run_staged_graph_pipeline", fake_staged_graph)
     monkeypatch.setattr("agent.graph.maybe_expand_with_search_tool", fake_expand)
     monkeypatch.setattr("agent.graph.orchestrator_synthesise", fake_synth)
 
@@ -299,5 +301,5 @@ def test_run_agent_records_phase_spans(monkeypatch):
     span_names = [span["name"] for span in get_recorded_spans()]
     assert "agent.orchestrator_route" in span_names
     assert "agent.rag_phase" in span_names
-    assert "agent.graph_phase" in span_names
+    assert "agent.staged_graph_pipeline" in span_names
     assert "agent.synthesis_phase" in span_names

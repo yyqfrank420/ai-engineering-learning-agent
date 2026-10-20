@@ -80,7 +80,8 @@ async def test_run_agent_uses_search_tool_after_weak_retrieval(monkeypatch):
         })
         return updated_state, asyncio.create_task(wait_task())
 
-    async def fake_apply_graph(state, graph_tools):
+    async def fake_staged_graph(state):
+        assert state["graph_intent"] == "create"
         graph_calls.append(state.get("research_context", ""))
         if state.get("research_context"):
             return {**state, "graph_data": {"title": "Researched graph", "nodes": [], "edges": [], "sequence": []}}
@@ -97,7 +98,8 @@ async def test_run_agent_uses_search_tool_after_weak_retrieval(monkeypatch):
 
     monkeypatch.setattr(agent_graph, "orchestrator_route", fake_route)
     monkeypatch.setattr(agent_graph, "run_search_phase", fake_search_phase)
-    monkeypatch.setattr(agent_graph, "apply_graph_worker", fake_apply_graph)
+    monkeypatch.setattr("config.settings.graph_pipeline_mode", "staged")
+    monkeypatch.setattr(agent_graph, "run_staged_graph_pipeline", fake_staged_graph)
     monkeypatch.setattr(agent_graph, "maybe_expand_with_search_tool", fake_expand_with_search)
     monkeypatch.setattr(agent_graph, "orchestrator_synthesise", fake_synth)
 
@@ -155,7 +157,8 @@ async def test_run_agent_warns_when_it_can_answer_but_cannot_build_graph(monkeyp
             "retrieval_notice": "",
         }, None
 
-    async def fake_apply_graph(state, graph_tools):
+    async def fake_staged_graph(state):
+        assert state["graph_intent"] == "create"
         if state.get("graph_data") is None and not state.get("research_context"):
             await send({
                 "type": "graph_notice",
@@ -171,7 +174,8 @@ async def test_run_agent_warns_when_it_can_answer_but_cannot_build_graph(monkeyp
 
     monkeypatch.setattr(agent_graph, "orchestrator_route", fake_route)
     monkeypatch.setattr(agent_graph, "run_search_phase", fake_search_phase)
-    monkeypatch.setattr(agent_graph, "apply_graph_worker", fake_apply_graph)
+    monkeypatch.setattr("config.settings.graph_pipeline_mode", "staged")
+    monkeypatch.setattr(agent_graph, "run_staged_graph_pipeline", fake_staged_graph)
     monkeypatch.setattr(agent_graph, "orchestrator_synthesise", fake_synth)
 
     state = {
