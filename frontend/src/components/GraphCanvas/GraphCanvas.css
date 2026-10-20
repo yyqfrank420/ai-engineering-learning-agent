@@ -23,8 +23,6 @@
 .graph-canvas__heading { flex: 1 1 240px; min-width: 0; }
 .graph-canvas__title { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .graph-canvas__subtitle { margin: 3px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-.graph-canvas__overview { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
-.graph-canvas__overview > span:first-child { color: var(--accent); font-weight: 600; }
 .graph-canvas__counts { flex: none; color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; line-height: 1.5; }
 .graph-canvas__walkthrough,
 .graph-canvas__layout-error button {

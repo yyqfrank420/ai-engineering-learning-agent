@@ -397,10 +397,10 @@
       },
       {
         "path": "frontend/src/App.tsx",
-        "before_blob": "aad27e009dc89acca804bed093256177f315f110",
-        "after_blob": "cd34e6baa969cff0d600696eed69f8b80ef4131a",
-        "reason": "Scope visible workspace styling, sign-out focus isolation and a workspace skip link; preserve generation, transport, candidate evaluation and workspace callback logic.",
-        "verification": "docs/verification/2026-10-04-frontend-design.md"
+        "before_blob": "3349d16fcb45c619c9a9601b60bf4f38336a1657",
+        "after_blob": "ad60dbad3323ef0ca5b7ecc15b27ff06df012b15",
+        "reason": "Remove the unused accepted-graph display flag passed only to the deleted header description. Graph selection, generation, transport, callbacks and persistence are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/Auth/AuthScreen.tsx",
@@ -432,10 +432,10 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/GraphCanvas.css",
-        "before_blob": "d2e9f335095ddef31bf09b138b34d1fde783cf13",
-        "after_blob": "69948f3d990f29f2f9096809b3210a4073664a04",
-        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
-        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
+        "before_blob": "69948f3d990f29f2f9096809b3210a4073664a04",
+        "after_blob": "d144b7ccedf3fd2b0c8df3761223b1dd5ca03eca",
+        "reason": "Delete only the two CSS selectors for the removed overview description row. Canvas typography, geometry, private rendering and generation behavior are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/NodeDetailPopup.css",
@@ -446,10 +446,10 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/index.tsx",
-        "before_blob": "635296df1236277017fed06aa20508e36e00d622",
-        "after_blob": "86ad50f19ce3449c1cafbc7afad927f1d5e83372",
-        "reason": "Restore the public canvas gradient and former decorative loading visual; generation state, persistence, private evaluation and diagram geometry are unchanged.",
-        "verification": "docs/verification/2026-10-05-purple-brand-restoration.md"
+        "before_blob": "3c8309556586edde057612de13f57e6472732f21",
+        "after_blob": "e12a391bb53fc5db6f4b9056d54edf57b33c801f",
+        "reason": "Delete the overview supporting-description row and its unused display prop. Diagram rendering, private evaluation, readiness and graph actions are unchanged.",
+        "verification": "docs/verification/2026-10-20-diagram-header-description.md"
       },
       {
         "path": "frontend/src/components/Layout/ThreadSidebar.tsx",
