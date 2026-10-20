@@ -1,4 +1,4 @@
-import { render, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, waitFor } from '@testing-library/react';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { GraphData, GraphEdge, GraphNode } from '../../types';
@@ -1180,6 +1180,88 @@ describe('dense production graph rendering', () => {
 });
 
 
+describe('navigation zone labels', () => {
+  const label = 'Grounded retrieval and response orchestration with policy and evidence checks';
+  const graph: GraphData = {
+    graph_type: 'architecture',
+    design_origin: 'applied',
+    title: 'Zone header regression',
+    nodes: [node('retrieval', 'Retrieval')],
+    edges: [],
+    groups: [{ id: 'retrieval-zone', label, kind: 'runtime', nodeIds: ['retrieval'] }],
+    sequence: [],
+  };
+
+  it.each([label, 'UnbrokenResponsibility'.repeat(12)])('contains long labels inside the zone header on first draw: %s', name => {
+    const measure = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox').mockImplementation(function(this: SVGElement) {
+      return { x: 0, y: 0, width: (this.textContent?.length ?? 0) * 8, height: 14 } as DOMRect;
+    });
+    try {
+      const view = render(<D3Graph graphData={{ ...graph, groups: [{ ...graph.groups![0], label: name }] }}
+        navigation currentStep={-1} activeNodeIds={new Set()} onNodeClick={() => undefined} />);
+      const zone = view.container.querySelector('.group-box > rect')!;
+      const text = view.container.querySelector('.group-labels-layer > text')!;
+      const lines = [...text.querySelectorAll('tspan')];
+      expect(lines.length).toBeGreaterThan(0);
+      expect(lines.length).toBeLessThanOrEqual(2);
+      expect(zone.getAttribute('aria-label')).toBe(`Move ${name} zone`);
+      for (const line of lines) {
+        expect((line.textContent?.length ?? 0) * 8).toBeLessThanOrEqual(Number(zone.getAttribute('width')) - 36);
+        expect(Number(line.getAttribute('x'))).toBe(Number(zone.getAttribute('x')) + 18);
+        expect(Number(line.getAttribute('y'))).toBeGreaterThan(Number(zone.getAttribute('y')));
+        expect(Number(line.getAttribute('y'))).toBeLessThan(Number(zone.getAttribute('y')) + 60);
+      }
+      const firstBaseline = Number(lines[0].getAttribute('y'));
+      const lastBaseline = Number(lines.at(-1)!.getAttribute('y'));
+      const nodePosition = parsePosition(view.container.querySelector('g.node')!.getAttribute('transform'));
+      expect(firstBaseline - 14.5 - Number(zone.getAttribute('y'))).toBeGreaterThanOrEqual(12);
+      expect(nodePosition.y - NODE_H / 2 - (lastBaseline + 2.5)).toBeGreaterThanOrEqual(12);
+      view.unmount();
+    } finally {
+      measure.mockRestore();
+    }
+  });
+
+  it('remeasures attached zone labels after fonts settle and when the zone is resized', async () => {
+    const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
+    let resolveFonts: () => void = () => undefined;
+    Object.defineProperty(document, 'fonts', {
+      configurable: true,
+      value: { ready: new Promise<void>(resolve => { resolveFonts = resolve; }) },
+    });
+    let characterWidth = 2;
+    const measure = vi.spyOn(SVGElement.prototype as SVGGraphicsElement, 'getBBox').mockImplementation(function(this: SVGElement) {
+      expect(this.isConnected).toBe(true);
+      return { x: 0, y: 0, width: (this.textContent?.length ?? 0) * characterWidth, height: 14 } as DOMRect;
+    });
+    try {
+      const view = render(<D3Graph graphData={graph} navigation currentStep={-1}
+        activeNodeIds={new Set()} onNodeClick={() => undefined} />);
+      const text = view.container.querySelector('.group-labels-layer > text')!;
+      expect(text.querySelectorAll('tspan')).toHaveLength(1);
+      characterWidth = 8;
+      await act(async () => { resolveFonts(); });
+      expect(text.querySelectorAll('tspan')).toHaveLength(2);
+      const before = text.textContent;
+      const rightBorder = view.container.querySelector('.zone-resize[data-side="e"]')!;
+      for (let index = 0; index < 30; index += 1) {
+        fireEvent.keyDown(rightBorder, { key: 'ArrowRight', shiftKey: true });
+      }
+      expect(text.textContent).not.toBe(before);
+      expect([...text.querySelectorAll('tspan')].map(line => line.textContent).join(' ')).toBe(label);
+      const zone = view.container.querySelector('.group-box > rect')!;
+      for (const line of text.querySelectorAll('tspan')) {
+        expect((line.textContent?.length ?? 0) * characterWidth).toBeLessThanOrEqual(Number(zone.getAttribute('width')) - 36);
+      }
+      view.unmount();
+    } finally {
+      measure.mockRestore();
+      if (originalFonts) Object.defineProperty(document, 'fonts', originalFonts);
+      else delete (document as unknown as { fonts?: unknown }).fonts;
+    }
+  });
+});
+
 describe('private geometry readiness', () => {
   it('signals completed SVG geometry with unresolved fonts and paused animation frames', () => {
     const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
@@ -1206,7 +1288,7 @@ describe('private geometry readiness', () => {
     }
   });
 
-  it('does not schedule stale frames when fonts finish after unmount', async () => {
+  it.each([false, true])('does not schedule stale frames when fonts finish after unmount (navigation=%s)', async navigation => {
     const originalFonts = Object.getOwnPropertyDescriptor(document, 'fonts');
     let resolveFonts: () => void = () => undefined;
     Object.defineProperty(document, 'fonts', {
@@ -1217,7 +1299,7 @@ describe('private geometry readiness', () => {
     const ready = vi.fn();
     try {
       const view = render(<D3Graph graphData={modelServingPaidCandidate} currentStep={-1}
-        activeNodeIds={new Set()} onNodeClick={() => undefined} onLayoutReady={ready} />);
+        navigation={navigation} activeNodeIds={new Set()} onNodeClick={() => undefined} onLayoutReady={ready} />);
       view.unmount();
       frame.mockClear();
       resolveFonts();

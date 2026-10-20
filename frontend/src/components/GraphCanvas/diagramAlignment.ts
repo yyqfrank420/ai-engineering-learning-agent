@@ -2,6 +2,9 @@ export interface Box { x: number; y: number; width: number; height: number }
 export interface AlignmentGuide { axis: 'x' | 'y'; position: number; start: number; end: number }
 export interface ZonePadding { top: number; right: number; bottom: number; left: number }
 
+export const ZONE_CONTENT_TOP_INSET = 60;
+export const ZONE_VERTICAL_INSET = ZONE_CONTENT_TOP_INSET + 20;
+
 export function snapBounds(box: Box, targets: Box[], threshold: number,
   anchors: { x?: number[]; y?: number[] } = {}): { dx: number; dy: number; guides: AlignmentGuide[] } {
   const result = { dx: 0, dy: 0, guides: [] as AlignmentGuide[] };
@@ -27,22 +30,22 @@ export function snapBounds(box: Box, targets: Box[], threshold: number,
 }
 
 export function zoneFrame(content: Box, padding: ZonePadding): Box {
-  return { x: content.x - 24 - padding.left, y: content.y - 42 - padding.top,
+  return { x: content.x - 24 - padding.left, y: content.y - ZONE_CONTENT_TOP_INSET - padding.top,
     width: content.width + 48 + padding.left + padding.right,
-    height: content.height + 62 + padding.top + padding.bottom };
+    height: content.height + ZONE_VERTICAL_INSET + padding.top + padding.bottom };
 }
 
 export function resizeCenteredZone(frame: Box, content: Box, side: string, dx: number, dy: number) {
   const width = Math.max(content.width + 48, Math.min(content.width + 20048,
     frame.width + (side.includes('w') ? -dx : side.includes('e') ? dx : 0)));
-  const height = Math.max(content.height + 62, Math.min(content.height + 20062,
+  const height = Math.max(content.height + ZONE_VERTICAL_INSET, Math.min(content.height + 20000 + ZONE_VERTICAL_INSET,
     frame.height + (side.includes('n') ? -dy : side.includes('s') ? dy : 0)));
   const next = { x: frame.x + (side.includes('w') ? frame.width - width : 0),
     y: frame.y + (side.includes('n') ? frame.height - height : 0), width, height };
   const horizontal = (width - content.width - 48) / 2;
-  const vertical = (height - content.height - 62) / 2;
+  const vertical = (height - content.height - ZONE_VERTICAL_INSET) / 2;
   return { frame: next,
     contentOffset: { x: next.x + width / 2 - content.x - content.width / 2,
-      y: next.y + 42 + (height - 62) / 2 - content.y - content.height / 2 },
+      y: next.y + ZONE_CONTENT_TOP_INSET + (height - ZONE_VERTICAL_INSET) / 2 - content.y - content.height / 2 },
     padding: { top: vertical, bottom: vertical, left: horizontal, right: horizontal } };
 }

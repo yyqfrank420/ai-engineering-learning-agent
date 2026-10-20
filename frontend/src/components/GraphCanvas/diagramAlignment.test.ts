@@ -34,6 +34,7 @@ describe('centered zone frames', () => {
   const frame = zoneFrame(content, padding);
 
   it('centers an old asymmetric frame without changing its boundaries', () => {
+    expect(frame).toEqual({ x: -24, y: 10, width: 448, height: 270 });
     const result = resizeCenteredZone(frame, content, '', 0, 0);
     expect(result.frame).toEqual(frame);
     expect(result.contentOffset).toEqual({ x: -50, y: -10 });
@@ -56,7 +57,7 @@ describe('centered zone frames', () => {
   it('clamps to the contents and bounds expansion without mutating input', () => {
     const min = resizeCenteredZone(frame, content, 'nw', 10000, 10000);
     expect(min.frame.width).toBe(content.width + 48);
-    expect(min.frame.height).toBe(content.height + 62);
+    expect(min.frame.height).toBe(content.height + 80);
     const max = resizeCenteredZone(frame, content, 'se', 50000, 50000);
     expect(Object.values(max.padding).every(value => value === 10000)).toBe(true);
     expect(content.x).toBe(100);
