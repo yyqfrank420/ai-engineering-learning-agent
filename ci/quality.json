@@ -313,10 +313,17 @@
       },
       {
         "path": "frontend/src/components/GraphCanvas/D3Graph.tsx",
-        "before_blob": "3de0f433d1eeaa22b685cafde4e39f70d190e568",
-        "after_blob": "d886e53b34202f9e8cc2f6f47f1669983b4312d6",
-        "reason": "Route interactive navigation connections around unrelated current zone frames, including saved padding. The private renderer does not enable navigation and retains its geometry; generation, transport and publication behavior are unchanged.",
-        "verification": "docs/verification/2026-10-04-zone-routing.md"
+        "before_blob": "059669e087882fba718ec3643b9ccf9feb540585",
+        "after_blob": "3de9ec5ff9c0d47d0baea3156a3190e054cdbcdf",
+        "reason": "Place newly expanded interactive nodes beside their saved parent only when navigation and restored view state are enabled. HiddenGraphEvaluator enables neither; private candidate SVG geometry is byte-identical in two fixed fixtures.",
+        "verification": "docs/verification/runtime-expansion-positioning-2026-10-20.md"
+      },
+      {
+        "path": "frontend/src/components/GraphCanvas/graphLayout.ts",
+        "before_blob": "1f0031b8ed6e766aaf288d6d7fc33e43e46ab6ad",
+        "after_blob": "375f289c2b8a6adae7831d9276243015ff5f020b",
+        "reason": "Add a pure placement function called only by interactive navigation with restored positions. Existing layout functions and private renderer execution remain unchanged; fixed private candidate SVG comparisons passed.",
+        "verification": "docs/verification/runtime-expansion-positioning-2026-10-20.md"
       },
       {
         "path": "frontend/src/components/GraphCanvas/diagramConnections.ts",
