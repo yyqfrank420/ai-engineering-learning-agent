@@ -49,3 +49,9 @@ Keep product claims, provider notices, activity, sources, and errors truthful.
 Preserve the book badge until product naming and attribution prominence are decided.
 Frontend presentation changes do not change generation, retrieval, authentication
 services, database storage, or diagram topology.
+
+## Canonical example
+
+Use the [approved data querying AI agent](docs/canonical-data-query-agent.md) as
+a reference for zone grouping, label spacing, quiet diagram headers and explanations
+that follow the displayed components. Preserve these qualities as diagrams change.
