@@ -268,7 +268,7 @@ def test_persist_turn_commits_messages_metadata_and_graph_together(temp_data_dir
         persist_turn(
             "user-1",
             thread["id"],
-            title="RAG",
+            expected_graph_version=None, base_revision_id=None, title="RAG",
             user_content="Explain RAG",
             assistant_content="Retrieval-augmented generation…",
             graph_data=graph,
@@ -295,7 +295,7 @@ def test_persist_turn_commits_server_only_graph_contract_with_graph(temp_data_di
         persist_turn(
             "user-1",
             thread["id"],
-            title="RAG",
+            expected_graph_version=None, base_revision_id=None, title="RAG",
             user_content="Explain RAG",
             assistant_content="Retrieval-augmented generation…",
             graph_data=graph,
@@ -304,7 +304,9 @@ def test_persist_turn_commits_server_only_graph_contract_with_graph(temp_data_di
         is True
     )
 
-    assert get_graph_artifact("user-1", thread["id"]) == (graph, contract)
+    assert get_graph_artifact("user-1", thread["id"]) == (
+        graph, contract, get_thread("user-1", thread["id"])["active_graph_revision_id"]
+    )
     assert "graph_contract" not in get_thread("user-1", thread["id"])
 
 
@@ -317,7 +319,7 @@ def test_persist_turn_rejects_mismatched_contract_without_partial_turn(temp_data
         persist_turn(
             "user-1",
             thread["id"],
-            title="RAG",
+            expected_graph_version=None, base_revision_id=None, title="RAG",
             user_content="Explain RAG",
             assistant_content="Retrieval-augmented generation…",
             graph_data={"version": "graph-v1", "nodes": [], "edges": []},
@@ -329,7 +331,7 @@ def test_persist_turn_rejects_mismatched_contract_without_partial_turn(temp_data
         raise AssertionError("persist_turn() should reject a mismatched graph contract")
 
     assert get_messages("user-1", thread["id"]) == []
-    assert get_graph_artifact("user-1", thread["id"]) == (None, None)
+    assert get_graph_artifact("user-1", thread["id"]) == (None, None, None)
 
 
 def test_get_graph_artifact_discards_invalid_contract_version_and_preserves_graph(
@@ -342,7 +344,7 @@ def test_get_graph_artifact_discards_invalid_contract_version_and_preserves_grap
     assert persist_turn(
         "user-1",
         thread["id"],
-        title="RAG",
+        expected_graph_version=None, base_revision_id=None, title="RAG",
         user_content="Explain RAG",
         assistant_content="Retrieval-augmented generation…",
         graph_data=graph,
@@ -358,7 +360,9 @@ def test_get_graph_artifact_discards_invalid_contract_version_and_preserves_grap
             "UPDATE chat_threads SET graph_contract = ? WHERE id = ? AND user_id = ?",
             (json.dumps(contract), thread["id"], "user-1"),
         )
-        assert get_graph_artifact("user-1", thread["id"]) == (graph, None)
+        assert get_graph_artifact("user-1", thread["id"]) == (
+            graph, None, get_thread("user-1", thread["id"])["active_graph_revision_id"]
+        )
 
 
 def test_legacy_graph_and_view_state_write_preserve_contract_compatibility(
@@ -372,7 +376,7 @@ def test_legacy_graph_and_view_state_write_preserve_contract_compatibility(
     assert persist_turn(
         "user-1",
         thread["id"],
-        title="RAG",
+        expected_graph_version=None, base_revision_id=None, title="RAG",
         user_content="Explain RAG",
         assistant_content="Retrieval-augmented generation…",
         graph_data=graph,
@@ -391,11 +395,14 @@ def test_legacy_graph_and_view_state_write_preserve_contract_compatibility(
     assert get_graph_artifact("user-1", thread["id"]) == (
         {**graph, "view_state": updated_view_state},
         contract,
+        get_thread("user-1", thread["id"])["active_graph_revision_id"],
     )
 
     assert persist_turn(
         "user-1",
         thread["id"],
+        expected_graph_version="graph-v1",
+        base_revision_id=get_thread("user-1", thread["id"])["active_graph_revision_id"],
         title="Legacy graph",
         user_content="Explain legacy graph",
         assistant_content="Legacy answer",
@@ -412,7 +419,7 @@ def test_persist_turn_deduplicates_completed_client_request(temp_data_dir):
     first = persist_turn(
         "user-1",
         thread["id"],
-        title="Original",
+        expected_graph_version=None, base_revision_id=None, title="Original",
         user_content="Explain RAG",
         assistant_content="Original answer",
         graph_data=None,
@@ -421,7 +428,7 @@ def test_persist_turn_deduplicates_completed_client_request(temp_data_dir):
     retry = persist_turn(
         "user-1",
         thread["id"],
-        title="Retry must not overwrite",
+        expected_graph_version=None, base_revision_id=None, title="Retry must not overwrite",
         user_content="Explain RAG",
         assistant_content="Different retry output",
         graph_data=None,
@@ -489,65 +496,38 @@ def test_runtime_state_search_tool_expiry_and_delete(temp_data_dir, monkeypatch)
     )
 
 
-def test_runtime_state_active_stream_limits_release_and_prune(
-    temp_data_dir, monkeypatch
-):
+def test_runtime_state_registers_nonexclusive_activity_and_prunes(temp_data_dir, monkeypatch):
     init_db()
     upsert_profile("user-1", "friend@example.com")
     monkeypatch.setattr(runtime_state_store.time, "time", lambda: 100.0)
-
-    unlimited = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=0, ttl_s=10
-    )
-    assert unlimited
-
-    first = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=10
-    )
-    assert first
-    assert (
-        runtime_state_store.try_acquire_active_stream(
-            "user-1", "chat", limit=1, ttl_s=10
-        )
-        is None
-    )
-
-    runtime_state_store.release_active_stream(first)
-    second = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=10
-    )
-    assert second
-
-    monkeypatch.setattr(runtime_state_store.time, "time", lambda: 200.0)
-    runtime_state_store.prune_active_streams(older_than_epoch=200)
-    assert runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=10
-    )
-
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        registrations = list(executor.map(
+            lambda _: runtime_state_store.register_active_stream(
+                "user-1", "chat-thread", ttl_s=10, scope_id="thread-1"
+            ), range(4),
+        ))
+    assert len(set(registrations)) == 4
+    assert len(fetchall("SELECT id FROM active_streams")) == 4
+    runtime_state_store.release_active_stream(registrations[0])
+    assert len(fetchall("SELECT id FROM active_streams")) == 3
+    runtime_state_store.prune_active_streams(older_than_epoch=111)
+    assert fetchall("SELECT id FROM active_streams") == []
     runtime_state_store.release_active_stream(None)
 
 
-def test_runtime_state_scopes_active_stream_exclusivity(temp_data_dir, monkeypatch):
+def test_runtime_state_keeps_scopes_and_independent_cleanup(temp_data_dir):
     init_db()
     upsert_profile("user-1", "friend@example.com")
-    monkeypatch.setattr(runtime_state_store.time, "time", lambda: 100.0)
-
-    first = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60, scope_id="thread-1"
+    first = runtime_state_store.register_active_stream(
+        "user-1", "chat-thread", ttl_s=60, scope_id="thread-1"
     )
-    assert first
-    assert (
-        runtime_state_store.try_acquire_active_stream(
-            "user-1", "chat", limit=1, ttl_s=60, scope_id="thread-1"
-        )
-        is None
+    second = runtime_state_store.register_active_stream(
+        "user-1", "chat-thread", ttl_s=60, scope_id="thread-2"
     )
-    second = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60, scope_id="thread-2"
-    )
-    assert second
-
     runtime_state_store.release_active_stream(first)
+    assert fetchall("SELECT id, stream_type FROM active_streams") == [
+        {"id": second, "stream_type": "chat-thread:scope:thread-2"}
+    ]
     runtime_state_store.release_active_stream(second)
 
 
@@ -856,3 +836,59 @@ def test_release_delete_preserves_provider_inserted_after_precheck(
     assert [row["id"] for row in fetchall("SELECT id FROM rate_limit_events")] == [
         "later-provider"
     ]
+
+
+def test_get_graph_artifact_returns_one_owned_snapshot_and_normalizes_revision_id(monkeypatch):
+    import uuid
+    from storage import thread_store
+
+    revision_id = uuid.uuid4()
+    graph = {"version": "A", "nodes": [], "edges": []}
+    contract = {"graph_version": "A"}
+    queries = []
+
+    def fetch_snapshot(query, params):
+        queries.append((query, params))
+        return {
+            "graph_data": graph, "graph_contract": contract,
+            "active_graph_revision_id": revision_id,
+        }
+
+    monkeypatch.setattr(thread_store, "fetchone", fetch_snapshot)
+    assert get_graph_artifact("owner", "thread") == (graph, contract, str(revision_id))
+    assert len(queries) == 1
+    assert "SELECT graph_data, graph_contract, active_graph_revision_id" in queries[0][0]
+    assert queries[0][1] == ("thread", "owner")
+    monkeypatch.setattr(thread_store, "fetchone", lambda *args: None)
+    assert get_graph_artifact("other", "thread") == (None, None, None)
+
+
+def test_completed_turn_returns_canonical_graph_revision_for_duplicate_request(temp_data_dir):
+    init_db()
+    upsert_profile("owner", "owner@example.test")
+    thread = create_thread("owner")["id"]
+    for version in ["first", "duplicate"]:
+        assert persist_turn(
+            "owner", thread, title=version, user_content="Question",
+            assistant_content=version, graph_data={"version": version, "nodes": [], "edges": []},
+            expected_graph_version=None, base_revision_id=None,
+            client_request_id="same-request",
+        )
+    revision_id = get_thread("owner", thread)["active_graph_revision_id"]
+    assert get_completed_turn("owner", thread, "same-request") == {
+        "user_content": "Question", "assistant_content": "first",
+        "graph_revision_id": revision_id,
+    }
+
+
+def test_completed_turn_normalizes_postgres_revision_uuid(monkeypatch):
+    import uuid
+    from storage import thread_store
+
+    revision_id = uuid.uuid4()
+    monkeypatch.setattr(thread_store, "fetchall", lambda *args: [
+        {"role": "user", "content": "Question"},
+        {"role": "assistant", "content": "Answer", "retry_request": None,
+         "activity": None, "graph_revision_id": revision_id},
+    ])
+    assert get_completed_turn("owner", "thread", "request")["graph_revision_id"] == str(revision_id)

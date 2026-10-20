@@ -31,7 +31,6 @@ from api.chat_guards import (
     byte_len,
     chat_input_error,
     check_rate_limit,
-    internal_test_stream_scope,
     graph_continuity_error,
     is_production_traffic,
     knowledge_base_ready,
@@ -48,7 +47,7 @@ from observability import (
     record_cancel,
     record_timeout,
 )
-from storage import message_store, runtime_state_store, thread_store
+from storage import graph_history_store, message_store, runtime_state_store, thread_store
 from storage.errors import ThreadMessageLimitExceeded
 from storage.profile_store import upsert_profile
 
@@ -66,7 +65,7 @@ _MAX_WS_FRAME_BYTES = max(16_384, 6 * max_effective_message_bytes() + 4_096)
 async def _run_blocking(
     operation: Callable[..., Any],
     *args: Any,
-    stream_acquisition: bool = False,
+    stream_registration: bool = False,
     **kwargs: Any,
 ) -> Any:
     """Finish API storage work before cancellation can unwind held resources."""
@@ -93,16 +92,16 @@ async def _run_blocking(
                 raise asyncio.CancelledError from exc
             raise
         if cancelled:
-            if stream_acquisition and result is not None:
+            if stream_registration and result is not None:
                 # Assignment in the caller never happened, so its finally cannot
-                # release this lease. Finish release even under repeated cancellation.
+                # release this activity. Finish release even under repeated cancellation.
                 try:
                     await _run_blocking(
                         runtime_state_store.release_active_stream, result
                     )
                 except Exception as exc:
                     logger.warning(
-                        "Cancelled WebSocket lease cleanup failed (release_active_stream: %s)",
+                        "Cancelled WebSocket activity cleanup failed (release_active_stream: %s)",
                         type(exc).__name__,
                     )
                     raise asyncio.CancelledError from exc
@@ -156,7 +155,6 @@ async def chat_websocket(websocket: WebSocket) -> None:
         return
 
     await websocket.accept()
-    stream_id: str | None = None
     thread_stream_id: str | None = None
     receiver_task: asyncio.Task | None = None
     agent_task: asyncio.Task | None = None
@@ -280,39 +278,14 @@ async def chat_websocket(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "done"})
             return
 
-        stream_id = await _run_blocking(
-            runtime_state_store.try_acquire_active_stream,
-            user_id,
-            "chat",
-            limit=settings.max_active_chat_streams_per_user,
-            ttl_s=settings.agent_timeout_s + 30,
-            scope_id=internal_test_stream_scope(user, body.thread_id),
-            stream_acquisition=True,
-        )
-        if stream_id is None:
-            await _send_error(
-                websocket,
-                "Another response is already running. Stop it or wait for it to finish.",
-            )
-            await websocket.send_json({"type": "done"})
-            return
-
         thread_stream_id = await _run_blocking(
-            runtime_state_store.try_acquire_active_stream,
+            runtime_state_store.register_active_stream,
             user_id,
             "chat-thread",
-            limit=1,
             ttl_s=settings.agent_timeout_s + 30,
             scope_id=body.thread_id,
-            stream_acquisition=True,
+            stream_registration=True,
         )
-        if thread_stream_id is None:
-            await _send_error(
-                websocket,
-                "Another response is already running. Stop it or wait for it to finish.",
-            )
-            await websocket.send_json({"type": "done"})
-            return
         thread = await _run_blocking(thread_store.get_thread, user_id, body.thread_id)
         if thread is None:
             await _send_error(websocket, "Thread not found")
@@ -336,8 +309,12 @@ async def chat_websocket(websocket: WebSocket) -> None:
                 thread_store.persist_turn, user_id, body.thread_id,
                 title=thread["title"], user_content=body.content,
                 assistant_content=input_error, graph_data=None,
+                expected_graph_version=None,
+                base_revision_id=None,
                 client_request_id=body.client_request_id,
             )
+            if await replay_completed_turn():
+                return
             await websocket.send_json({"type": "response_delta", "content": input_error})
             await websocket.send_json({"type": "done"})
             return
@@ -346,7 +323,7 @@ async def chat_websocket(websocket: WebSocket) -> None:
             await websocket.send_json({"type": "done"})
             return
         rag_tools, graph_tools, node_detail_tools = _make_agent_tools(websocket)
-        base_graph, base_graph_contract = await _run_blocking(
+        base_graph, base_graph_contract, base_revision_id = await _run_blocking(
             thread_store.get_graph_artifact, user_id, body.thread_id
         )
         continuity_error = graph_continuity_error(
@@ -408,7 +385,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
             nonlocal graph_preview_sent
             if not graph_preview_sent:
                 return
-            await send_authoritative_graph(approved_graph_at_request_start)
+            await send_authoritative_graph(await _run_blocking(
+                thread_store.get_graph, user_id, body.thread_id
+            ))
             graph_preview_sent = False
 
         async def send_done() -> None:
@@ -734,6 +713,9 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     )
                     record_timeout()
                     final_state = None
+                except Exception:
+                    await restore_graph_preview()
+                    raise
                 break
 
             if restart_requested:
@@ -774,8 +756,10 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     title=title,
                     user_content=content,
                     assistant_content=final_state["response_text"],
-                    graph_data=final_state.get("graph_data"),
-                    graph_contract=final_state.get("graph_contract"),
+                    graph_data=final_graph if has_new_graph else None,
+                    graph_contract=final_state.get("graph_contract") if has_new_graph else None,
+                    expected_graph_version=(base_graph or {}).get("version"),
+                    base_revision_id=base_revision_id,
                     client_request_id=body.client_request_id,
                     retry_request=body.failed_generation_retry_request(
                         final_state, original_request
@@ -797,6 +781,24 @@ async def chat_websocket(websocket: WebSocket) -> None:
                     )
                     await send_authoritative_graph(persisted_graph)
                     graph_preview_sent = False
+                    canonical_turn = await _run_blocking(
+                        thread_store.get_completed_turn, user_id, body.thread_id, body.client_request_id
+                    )
+                    if canonical_turn is not None and canonical_turn["assistant_content"] != final_state["response_text"]:
+                        await send({"type": "response_reset"})
+                        await send({"type": "response_delta", "content": canonical_turn["assistant_content"]})
+                        if canonical_turn.get("retry_request") is not None:
+                            await send({"type": "generation_failed"})
+                    if has_new_graph and (persisted_graph or {}).get("version") != final_graph.get("version"):
+                        candidate_saved = body.client_request_id is None
+                        revision_id = (canonical_turn or {}).get("graph_revision_id")
+                        if revision_id is not None:
+                            revision = await _run_blocking(
+                                graph_history_store.get_revision, user_id, body.thread_id, revision_id
+                            )
+                            candidate_saved = revision["graph_data"].get("version") == final_graph.get("version")
+                        if candidate_saved:
+                            await send({"type": "graph_notice", "message": "Your diagram was saved in history because another diagram changed while it was being generated."})
             except ThreadMessageLimitExceeded:
                 await restore_graph_preview()
                 await send(
@@ -863,16 +865,10 @@ async def chat_websocket(websocket: WebSocket) -> None:
             raise
         finally:
             try:
-                try:
-                    if thread_stream_id is not None:
-                        await _run_blocking(
-                            runtime_state_store.release_active_stream, thread_stream_id
-                        )
-                finally:
-                    if stream_id is not None:
-                        await _run_blocking(
-                            runtime_state_store.release_active_stream, stream_id
-                        )
+                if thread_stream_id is not None:
+                    await _run_blocking(
+                        runtime_state_store.release_active_stream, thread_stream_id
+                    )
             finally:
                 if active_metric_counted:
                     change_active_chat_streams(-1)

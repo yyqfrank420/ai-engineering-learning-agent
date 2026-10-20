@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 from adapters.database_adapter import execute, fetchone, init_db
 from adapters.supabase_auth_adapter import get_current_user
-from graph.content_edit import GraphEditConflict, GraphEditNotFound
+from graph.content_edit import GraphEditConflict, GraphEditInvalid, GraphEditNotFound
 from main import create_app
 from storage import graph_history_store as history, runtime_state_store
 from storage.message_store import get_messages
@@ -16,6 +16,7 @@ from storage.thread_store import (
     delete_thread,
     get_graph,
     get_graph_artifact,
+    get_thread,
     persist_turn,
     save_graph,
 )
@@ -31,9 +32,12 @@ def graph(version):
 
 
 def save(thread, value, request_id=None):
+    current, _, revision_id = get_graph_artifact("owner", thread)
     return persist_turn(
         "owner",
         thread,
+        expected_graph_version=(current or {}).get("version"),
+        base_revision_id=revision_id,
         title="Test",
         user_content=value["title"] if value else "Question",
         assistant_content="Answer",
@@ -163,7 +167,7 @@ def test_legacy_seed_before_replacement(thread):
     )
 
 
-def test_history_api_excludes_contract_and_respects_generation_lease(thread):
+def test_history_api_excludes_contract_and_allows_restore_during_generation(thread):
     save(thread, graph("A"))
     a = history.list_history("owner", thread)["current_revision_id"]
     save(thread, graph("B"))
@@ -176,15 +180,15 @@ def test_history_api_excludes_contract_and_respects_generation_lease(thread):
         path = f"/api/threads/{thread}/graph"
         assert "secret-contract" not in client.get(path + "/history").text
         assert "secret-contract" not in client.get(path + "/history/" + a).text
-        lease = runtime_state_store.try_acquire_active_stream(
-            "owner", "chat-thread", limit=1, ttl_s=60, scope_id=thread
+        lease = runtime_state_store.register_active_stream(
+            "owner", "chat-thread", ttl_s=60, scope_id=thread
         )
         try:
             assert (
                 client.post(
                     path + "/restore", json={"revision_id": a, "expected_version": "B"}
                 ).status_code
-                == 409
+                == 200
             )
         finally:
             runtime_state_store.release_active_stream(lease)
@@ -295,33 +299,55 @@ def test_database_rejects_cross_thread_and_owner_links(thread):
         )
 
 
-def test_concurrent_content_commits_have_unique_order_and_parent_chain(thread):
+def test_concurrent_generations_from_same_base_create_siblings(thread):
     from concurrent.futures import ThreadPoolExecutor
 
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        list(
-            pool.map(
-                lambda number: save(
-                    thread, graph(f"version-{number}"), f"request-{number}"
-                ),
-                range(4),
-            )
+    save(thread, graph("A"))
+    base = get_thread("owner", thread)["active_graph_revision_id"]
+
+    def complete(number):
+        value = graph(f"version-{number}")
+        value["view_state"] = {"nodePositions": {"a": {"x": number, "y": 1}}}
+        assert persist_turn(
+            "owner", thread, title=f"Title {number}", user_content=f"Request {number}",
+            assistant_content=f"Answer {number}", graph_data=value,
+            expected_graph_version="A", base_revision_id=base,
+            client_request_id=f"request-{number}",
         )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        list(pool.map(complete, range(2)))
     state = history.list_history("owner", thread)
-    assert [item["revision_number"] for item in state["revisions"]] == [1, 2, 3, 4]
-    assert [item["parent_revision_id"] for item in state["revisions"]] == [None] + [
-        item["id"] for item in state["revisions"][:-1]
-    ]
-    assert (
-        len(
-            {
-                item["graph_revision_id"]
-                for item in get_messages("owner", thread)
-                if item["role"] == "assistant"
-            }
-        )
-        == 4
+    assert [item["revision_number"] for item in state["revisions"]] == [1, 2, 3]
+    assert [item["parent_revision_id"] for item in state["revisions"]] == [None, base, base]
+    assert state["current_revision_id"] == state["revisions"][1]["id"]
+    active = get_graph("owner", thread)
+    active_number = int(active["version"].split("-")[-1])
+    assert get_thread("owner", thread)["title"] == f"Title {active_number}"
+    messages = get_messages("owner", thread)
+    assert len(messages) == 6
+    assert len({item["graph_revision_id"] for item in messages if item["role"] == "assistant"}) == 3
+    branch = history.get_revision("owner", thread, state["revisions"][2]["id"])["graph_data"]
+    assert branch["view_state"]["nodePositions"]["a"]["x"] != active_number
+
+    # A repeated stale completion must preserve the first response and revision.
+    complete(1 - active_number)
+    assert history.list_history("owner", thread) == state
+    assert len(get_messages("owner", thread)) == 6
+
+
+def test_answer_only_completion_cannot_restore_its_stale_starting_graph(thread):
+    save(thread, graph("A"))
+    base = get_thread("owner", thread)["active_graph_revision_id"]
+    save(thread, graph("B"))
+    assert persist_turn(
+        "owner", thread, title="Old title", user_content="Explain A",
+        assistant_content="Answer", graph_data=None,
+        expected_graph_version="A", base_revision_id=base,
     )
+    assert get_graph("owner", thread)["version"] == "B"
+    assert len(history.list_history("owner", thread)["revisions"]) == 2
+    assert get_messages("owner", thread)[-1]["graph_revision_id"] is None
 
 
 def test_postgres_uuid_active_pointer_is_normalized_for_restore_retry(monkeypatch):
@@ -369,6 +395,8 @@ def test_generation_labels_distinguish_requests_and_are_bounded(thread):
         persist_turn(
             "owner",
             thread,
+            expected_graph_version=(get_graph("owner", thread) or {}).get("version"),
+            base_revision_id=get_thread("owner", thread)["active_graph_revision_id"],
             title="Chat",
             user_content=request,
             assistant_content="Answer",
@@ -378,3 +406,52 @@ def test_generation_labels_distinguish_requests_and_are_bounded(thread):
     assert revisions[0]["label"] == "Build a support pipeline"
     assert revisions[1]["label"] == ("Add a review queue " + "detail " * 40)[:160]
     assert len(revisions[1]["label"]) == 160
+
+
+@pytest.mark.parametrize("parent_scope", ["same-owner-other-thread", "other-owner", "missing"])
+def test_stale_generation_rejects_invalid_parent_without_partial_turn(thread, parent_scope):
+    save(thread, graph("A"))
+    if parent_scope == "missing":
+        import uuid
+        parent = str(uuid.uuid4())
+    else:
+        owner = "owner" if parent_scope == "same-owner-other-thread" else "other"
+        foreign_thread = create_thread(owner)["id"]
+        persist_turn(
+            owner, foreign_thread, title="Foreign", user_content="Question",
+            assistant_content="Answer", graph_data=graph("Foreign"),
+            expected_graph_version=None, base_revision_id=None,
+        )
+        parent = get_thread(owner, foreign_thread)["active_graph_revision_id"]
+    before = history.list_history("owner", thread)
+    with pytest.raises(GraphEditInvalid, match="Parent graph revision not found"):
+        persist_turn(
+            "owner", thread, title="Stale", user_content="Stale request",
+            assistant_content="Stale answer", graph_data=graph("Stale"),
+            expected_graph_version="older", base_revision_id=parent,
+        )
+    assert history.list_history("owner", thread) == before
+    assert len(get_messages("owner", thread)) == 2
+    assert get_graph("owner", thread)["version"] == "A"
+
+
+def test_parallel_versionless_results_cannot_replace_first_commit(thread):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def complete(title):
+        return persist_turn(
+            "owner", thread, title=title, user_content=title,
+            assistant_content="Answer", graph_data={"title": title, "nodes": [], "edges": []},
+            expected_graph_version=None, base_revision_id=None,
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert all(pool.map(complete, ["First request", "Second request"]))
+    state = history.list_history("owner", thread)
+    assert len(state["revisions"]) == 2
+    assert [revision["parent_revision_id"] for revision in state["revisions"]] == [None, None]
+    assert state["current_revision_id"] == state["revisions"][0]["id"]
+    active = history.get_revision("owner", thread, state["revisions"][0]["id"])["graph_data"]
+    assert get_graph("owner", thread) == active
+    assert get_thread("owner", thread)["title"] == active["title"]
+    assert len(get_messages("owner", thread)) == 4

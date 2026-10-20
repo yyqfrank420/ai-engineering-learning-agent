@@ -47,18 +47,21 @@ draft and runs against the current saved diagram.
 
 Empty drafts do not appear in history, count toward the saved-chat limit, or become
 the latest saved chat. A message or stored graph makes a thread visible. Retained
-draft IDs remain addressable. An active first-turn lease prevents draft eviction.
+draft IDs remain addressable. A nonexclusive first-turn activity record prevents draft eviction.
 The sidebar refreshes after generation finishes and ignores stale history responses.
 
 Opening a blank composer never evicts a saved conversation. The existing history
 cap is applied in the completed-turn transaction. Concurrent completions serialize
 on the user's profile row in Postgres and SQLite's write lock locally.
 Idle empty drafts have a separate cap of `max_threads_per_user`. Creating a draft keeps
-its new ID and removes the oldest unleased empty drafts above that cap. A thread-scoped
-chat lease protects an in-flight turn from cleanup. An older idle tab can lose its
+its new ID and removes the oldest idle empty drafts above that cap. A thread-scoped
+activity record protects an in-flight turn from cleanup. An older idle tab can lose its
 draft after enough newer drafts are opened; its next request reports that the thread
-is missing before generation starts. Draft admission, stream leases, and completed
-turns take the same per-user lock in Postgres and SQLite's write lock locally.
+is missing before generation starts. Draft admission, activity registration, and completed
+turns use brief database transactions. Model calls run outside those transactions.
+Parallel requests are admitted across chats and within the same chat. Activity records
+protect retention; they do not reserve exclusive generation access. Active work can
+temporarily exceed the history cap; the next completion prunes eligible excess history.
 
 ## Request and Steering Flow
 
@@ -304,8 +307,7 @@ Edits are drafts until explicit Save. Cancel discards the draft. Closing or chan
 not silently discard unsaved text. The UI distinguishes unsaved, saving, saved, and failed states;
 a failed save retains the draft for correction or retry. `PATCH /api/threads/{thread_id}/graph`
 accepts only the editable fields and an `expected_version`. The server applies the edit to the
-canonical stored graph, validates it, and persists a new version atomically. A stale version or
-active generation lease returns 409. Node IDs, edge ordering and endpoints, sequence membership,
+canonical stored graph, validates it, and persists a new version atomically. A stale version returns 409. Node IDs, edge ordering and endpoints, sequence membership,
 groups, and saved layout remain stable. An edge index selects a directed record only within the
 submitted `expected_version`; applied `edge_id` and `relation` are derived metadata and can change
 when its label changes. No client-side preview becomes canonical before the successful response.
@@ -380,11 +382,17 @@ returns to the working graph. Chat scrolling never switches the graph. Before a 
 canvas flushes pending layout saves. Failed saves keep the user in place. Existing positions remain
 fixed during extension; new components are placed around them.
 
-History endpoints are owner-scoped. Restore shares the generation lease and compares the current
-graph version, then assigns a fresh activation version. Repeating an already-active restore is a
+History endpoints are owner-scoped. Restore compares the current graph version in a brief
+transaction, then assigns a fresh activation version. Repeating an already-active restore is a
 no-op. Old diagrams first become checkpoints when read or changed by this release; overwritten
 historical graphs cannot be recovered without another saved artifact. See
 [the continuity contract](graph-history-contract.md) for operation boundaries and rollout rules.
+
+Generation commits compare both the request-start graph version and active revision.
+A result based on an older graph is stored as a historical branch and linked to its
+answer. It cannot replace the newer active graph. Answer-only turns save no graph.
+Simultaneous duplicate request IDs retain the first committed turn, and transports
+reconcile their final answer and graph with durable storage.
 
 Every production frontend turn includes a UUID `client_request_id`. Completed user/assistant
 pairs are unique on that key at the database boundary, and a network retry replays the stored
@@ -559,8 +567,9 @@ Input sanitation is the first domain step after authentication, ownership, paylo
 rate limits, and idempotent replay. The shared chat input gate runs prompt injection checks
 and a tool-free topic classifier before constructing agent tools, checking diagram actions,
 or starting the core workflow. It also checks diagram-intent preflight, retries, and each
-steering update. Unrelated requests receive a short redirect to AI engineering or AI system
-architecture. Verdicts use a schema-constrained response. A provider refusal is a
+steering update. Prompt `input_sanitation_v3` accepts AI, ML, and data topics, including
+independent SQL, analytics, data science, warehousing, and pipelines. Unrelated requests
+receive a short redirect to that scope. Verdicts use a schema-constrained response. A provider refusal is a
 security rejection; incomplete or malformed output fails validation. Unsafe input and
 classifier failure block core work. A rejected steering
 update leaves the active request running. The classifier treats history and selected text

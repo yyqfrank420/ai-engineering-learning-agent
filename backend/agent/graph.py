@@ -19,6 +19,7 @@ from langgraph.graph import END, START, StateGraph
 from agent.architecture_playbook import build_evidence_bundle
 from agent.complexity import (
     is_graph_extension_request,
+    requests_no_diagram,
     resolve_complexity,
     resolve_graph_operation,
     resolve_design_query,
@@ -970,18 +971,23 @@ async def run_agent(
     """Execute the request-scoped LangGraph workflow and return its final state."""
     action = state.get("graph_action")
     if (
+        action == "answer"
+        or state.get("graph_mode") == "off"
+        or requests_no_diagram(state.get("user_message", ""))
+    ):
+        state = {**state, "graph_mode": "off"}
+    if (
         action is None
         and state.get("graph_mode") != "off"
         and is_graph_extension_request(state.get("user_message", ""), state.get("graph_data"))
     ):
         action = "extend"
         state = {**state, "graph_action": action}
-    if action == "answer":
-        state = {**state, "graph_mode": "off"}
+    if state.get("graph_mode") == "off":
         graph_intent = None
     elif action == "extend":
         graph_intent = "edit"
-    elif action == "new":
+    elif action == "new" or not state.get("graph_data"):
         graph_intent = "create"
     else:
         graph_intent = resolve_graph_operation(
@@ -990,7 +996,7 @@ async def run_agent(
             and state.get("graph_mode") != "off",
         )
     if (graph_intent == "create" and state.get("graph_data")) or (
-        action == "extend" and not state.get("graph_data")
+        graph_intent == "edit" and action == "extend" and not state.get("graph_data")
     ):
         question = (
             "Start a new chat for a different diagram, or extend the saved diagram?"
@@ -1024,13 +1030,7 @@ async def run_agent(
             },
         }
     graph_operation = state.get("graph_operation")
-    if graph_intent == "edit" and state.get("graph_mode") == "off":
-        graph_operation = {
-            "kind": "edit",
-            "status": "failed",
-            "failure_code": "graph_mode_disabled",
-        }
-    elif graph_intent == "edit" and not _has_applied_graph(state.get("graph_data")):
+    if graph_intent == "edit" and not _has_applied_graph(state.get("graph_data")):
         graph_operation = {
             "kind": "edit",
             "status": "failed",

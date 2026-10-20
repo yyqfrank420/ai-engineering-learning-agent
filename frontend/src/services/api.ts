@@ -46,7 +46,14 @@ export async function checkDiagramIntent(session: AuthSession, threadId: string,
       // Input classification allows 10 seconds; leave time for storage and network latency.
       method: 'POST', body: JSON.stringify({ message }), signal: AbortSignal.timeout(15_000),
     });
-    if (!response.ok) throw new Error('Could not check diagram intent');
+    if (!response.ok) {
+      const body = response.status === 422
+        ? await response.json().catch(() => null) as { detail?: unknown } | null
+        : null;
+      throw new Error(typeof body?.detail === 'string' && body.detail.trim()
+        ? body.detail
+        : 'Could not check diagram intent');
+    }
     const data = await response.json();
     if (!['send', 'answer', 'ask', 'extend', 'new_chat'].includes(data.action)) throw new Error('Invalid diagram intent');
     return data.action;

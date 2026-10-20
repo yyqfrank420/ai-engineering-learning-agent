@@ -19,6 +19,7 @@ interface Props {
 
 export function GraphHistoryControls({ history, previewId, undoId, redoId, disabled, busy, error, onUndo, onRedo, onPreview, onRestore, onReturn, onReload }: Props) {
   const locked = disabled || busy;
+  if ((history?.revisions.length ?? 0) < 2 && !undoId && !redoId && !previewId && !busy && !error) return null;
   return <div className="graph-history">
     <div className="graph-history-toolbar" role="group" aria-label="Diagram history">
       <button aria-label="Undo diagram change" title="Undo diagram change" disabled={locked || !undoId} onClick={onUndo}>

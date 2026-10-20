@@ -238,8 +238,6 @@ class Settings(BaseSettings):
     rate_limit_per_hour: int = 100
     # Per-user active LLM streams. Enforced through shared storage so Cloud Run
     # instance scaling does not multiply spend limits.
-    max_active_chat_streams_per_user: int = 1
-    max_active_node_streams_per_user: int = 2
     # Max incoming chat message payload (bytes)
     max_message_bytes: int = 2048
     # Local prompt-injection pattern score rejection threshold (0-1)
@@ -470,8 +468,6 @@ class Settings(BaseSettings):
             "ANTHROPIC_MAX_CONCURRENT_STREAMS": self.anthropic_max_concurrent_streams,
             "RATE_LIMIT_PER_MINUTE": self.rate_limit_per_minute,
             "RATE_LIMIT_PER_HOUR": self.rate_limit_per_hour,
-            "MAX_ACTIVE_CHAT_STREAMS_PER_USER": self.max_active_chat_streams_per_user,
-            "MAX_ACTIVE_NODE_STREAMS_PER_USER": self.max_active_node_streams_per_user,
             "OTP_REQUEST_WINDOW_S": self.otp_request_window_s,
             "OTP_REQUEST_PER_EMAIL_LIMIT": self.otp_request_per_email_limit,
             "OTP_REQUEST_PER_IP_LIMIT": self.otp_request_per_ip_limit,

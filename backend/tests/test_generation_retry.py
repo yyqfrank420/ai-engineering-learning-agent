@@ -28,6 +28,8 @@ def test_retry_roundtrip_is_assistant_only_owned_and_idempotent(temp_data_dir):
         user_content=request["content"],
         assistant_content="Diagram failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="attempt",
         retry_request=request,
     )
@@ -89,7 +91,8 @@ def test_retry_content_byte_boundary_and_no_partial_writes(temp_data_dir, monkey
     thread = create_thread("owner")
     monkeypatch.setattr(settings, "max_message_bytes", 4)
     args = dict(
-        title="Failed", user_content="draw", assistant_content="failed", graph_data=None
+        title="Failed", user_content="draw", assistant_content="failed", graph_data=None,
+        expected_graph_version=None, base_revision_id=None,
     )
     assert persist_turn(
         "owner", thread["id"], **args, retry_request=request_options("éé")
@@ -120,6 +123,8 @@ def test_sqlite_additive_upgrade_preserves_old_turns(temp_data_dir):
         user_content="old",
         assistant_content="answer",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="old",
     )
     execute("ALTER TABLE chat_messages DROP COLUMN retry_request")
@@ -169,6 +174,8 @@ def test_corrupt_optional_retry_metadata_does_not_hide_conversation(
         user_content="draw",
         assistant_content="failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="attempt",
     )
     execute(
@@ -261,6 +268,8 @@ def test_retry_source_requires_owned_confirmed_failure(temp_data_dir, source_kin
             user_content="draw",
             assistant_content="result",
             graph_data=None,
+            expected_graph_version=None,
+            base_revision_id=None,
             client_request_id="source",
             retry_request=request_options("draw")
             if source_kind == "other_owner"
@@ -296,6 +305,8 @@ def test_retry_restores_effective_content_and_original_options_across_chain(
         user_content=effective,
         assistant_content="failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="source",
         retry_request=original,
     )
@@ -322,6 +333,8 @@ def test_retry_restores_effective_content_and_original_options_across_chain(
         user_content=resolved.content,
         assistant_content="failed again",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="fresh",
         retry_request=retry,
     )
@@ -361,6 +374,8 @@ def test_retry_transport_repeats_effective_request_and_replays_duplicate(
         user_content=effective,
         assistant_content="failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="source",
         retry_request=original,
     )
@@ -432,6 +447,8 @@ def test_retry_canonical_envelope_boundary(temp_data_dir, effective_extra):
         user_content=effective,
         assistant_content="failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="source",
         retry_request=request_options(),
     )
@@ -464,6 +481,8 @@ def test_retry_overflow_steer_preserves_active_agent(temp_data_dir, monkeypatch)
         user_content=effective,
         assistant_content="failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="source",
         retry_request=request_options(),
     )
@@ -611,6 +630,7 @@ def test_retry_source_restored_before_replayed_steering_and_envelope_checked(
         persist_turn(
             "owner", thread["id"], title="Failed", user_content=content,
             assistant_content="failed", graph_data=None, client_request_id=request_id,
+            expected_graph_version=None, base_revision_id=None,
             retry_request=request_options("Original"),
         )
     body = ChatRequest(

@@ -33,6 +33,144 @@ async def test_composer_diagram_choice_reaches_workflow_admission(
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "auto", "on"])
+@pytest.mark.parametrize("message", [
+    "how to buuild snowflake agent",
+    "What is agent planning?",
+    "Explain caching",
+    "AI engineering?",
+    "Design a model whose input is text only.",
+])
+async def test_first_topic_defaults_to_graph_without_composer_action(
+    monkeypatch, mode, message
+):
+    from agent import graph as agent_graph
+
+    class CaptureWorkflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_intent"] == "create"
+            assert state["user_message"] == message
+            return state
+
+    monkeypatch.setattr(
+        agent_graph, "build_agent_workflow", lambda *args, **kwargs: CaptureWorkflow()
+    )
+    state = {"user_message": message, "graph_data": None}
+    if mode is not None:
+        state["graph_mode"] = mode
+    await agent_graph.run_agent(state, [], [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", [None, "new", "extend", "answer"])
+@pytest.mark.parametrize("saved_graph", [None, {"nodes": [{"id": "cache"}]}])
+@pytest.mark.parametrize("message,mode", [
+    ("Explain caching", "off"),
+    ("Explain caching. No diagram.", "on"),
+    ("Explain caching without a graph", "auto"),
+    ("Explain caching. Text only please.", "on"),
+    ("Reply using only text about caching", "on"),
+])
+async def test_graph_exclusions_precede_actions_and_continuity_guards(
+    monkeypatch, action, saved_graph, message, mode
+):
+    from agent import graph as agent_graph
+
+    class CaptureWorkflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_mode"] == "off"
+            assert state["graph_intent"] is None
+            assert state["graph_data"] == saved_graph
+            return state
+
+    monkeypatch.setattr(
+        agent_graph, "build_agent_workflow", lambda *args, **kwargs: CaptureWorkflow()
+    )
+    await agent_graph.run_agent({
+        "user_message": message, "graph_mode": mode, "graph_action": action,
+        "graph_data": saved_graph, "diagram_requested": True,
+    }, [], [], [])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("saved_graph", [None, {"nodes": [{"id": "cache"}]}])
+async def test_explicit_answer_preserves_graph_without_creation(monkeypatch, saved_graph):
+    from agent import graph as agent_graph
+
+    class CaptureWorkflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_mode"] == "off"
+            assert state["graph_intent"] is None
+            assert state["graph_data"] == saved_graph
+            return state
+
+    monkeypatch.setattr(
+        agent_graph, "build_agent_workflow", lambda *args, **kwargs: CaptureWorkflow()
+    )
+    await agent_graph.run_agent({
+        "user_message": "Explain caching", "graph_mode": "on",
+        "graph_action": "answer", "graph_data": saved_graph,
+    }, [], [], [])
+
+
+@pytest.mark.asyncio
+async def test_existing_graph_conceptual_followup_does_not_create_graph(monkeypatch):
+    from agent import graph as agent_graph
+
+    saved_graph = {"nodes": [{"id": "cache", "label": "Cache"}], "edges": []}
+
+    class CaptureWorkflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_intent"] is None
+            assert state["graph_data"] == saved_graph
+            return state
+
+    monkeypatch.setattr(
+        agent_graph, "build_agent_workflow", lambda *args, **kwargs: CaptureWorkflow()
+    )
+    await agent_graph.run_agent({
+        "user_message": "What is agent planning?", "graph_mode": "on",
+        "graph_data": saved_graph,
+    }, [], [], [])
+
+
+@pytest.mark.parametrize("message", [
+    "What is RLHF?",
+    "Explain caching",
+    "Design a weather prediction system",
+])
+def test_first_graph_new_topic_does_not_inherit_prior_design(message):
+    from agent.nodes.orchestrator_node import _continued_design_query
+
+    history = [{"role": "user", "content": "Build me an agent for operations."}]
+    assert _continued_design_query(message, history) is None
+
+
+def test_first_graph_requirement_continuation_uses_user_requirements_only():
+    from agent.nodes.orchestrator_node import _continued_design_query
+
+    history = [
+        {"role": "user", "content": "Build me an agent for operations."},
+        {"role": "assistant", "content": "Invented requirement: write to all tickets."},
+        {"role": "user", "content": "Read-only ticket access."},
+    ]
+    assert _continued_design_query("Customer support triage.", history) == (
+        "Build me an agent for operations.\n\nAdditional user requirements:\n"
+        "Read-only ticket access.\nCustomer support triage."
+    )
+
+
+def test_first_graph_requirement_continuation_stops_at_prior_topic_switch():
+    from agent.nodes.orchestrator_node import _continued_design_query
+
+    history = [
+        {"role": "user", "content": "Build me an agent for operations."},
+        {"role": "user", "content": "What is RLHF?"},
+    ]
+    assert _continued_design_query("Use human feedback.", history) is None
+
+
 @pytest.fixture(autouse=True)
 def legacy_pipeline_for_algorithm_tests(monkeypatch):
     from config import settings
@@ -2322,70 +2460,21 @@ async def test_langgraph_does_not_emit_graph_notice_when_graph_mode_on(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_run_agent_preserves_edit_request_without_applied_graph(
-    monkeypatch,
-):
-    import agent.graph as agent_graph
+async def test_first_graph_default_does_not_infer_an_edit_target(monkeypatch):
+    from agent import graph as agent_graph
 
-    events = []
-
-    async def send(event):
-        events.append(event)
-
-    async def fake_route(incoming_state):
-        return {**incoming_state, "route": "search"}
-
-    async def fake_search(incoming_state, _tools):
-        return incoming_state, None
-
-    async def fake_apply_graph(incoming_state, _tools):
-        assert incoming_state["graph_intent"] == "edit"
-        assert incoming_state["graph_operation"] == {
-            "kind": "edit",
-            "status": "failed",
-            "failure_code": "graph_edit_target_unavailable",
-        }
-        return {
-            **incoming_state,
-            "graph_changed": False,
-            "graph_data": None,
-        }
-
-    async def fake_review(incoming_state, **_kwargs):
-        return {**incoming_state, "graph_review": {"approved": True}}
-
-    async def fake_synth(incoming_state):
-        return {**incoming_state, "response_text": "ok"}
-
-    async def fake_architect(_incoming_state):
-        return {}
-
-    async def fake_expand(incoming_state, _graph_tools, _search_tool_wait_task):
-        return incoming_state
+    class CaptureWorkflow:
+        async def ainvoke(self, state, config):
+            assert state["graph_intent"] == "create"
+            assert state.get("graph_operation") is None
+            return state
 
     monkeypatch.setattr(
-        agent_graph, "resolve_graph_operation", lambda *_args, **_kwargs: "edit"
+        agent_graph, "build_agent_workflow", lambda *args, **kwargs: CaptureWorkflow()
     )
-    monkeypatch.setattr(agent_graph, "orchestrator_route", fake_route)
-    monkeypatch.setattr(agent_graph, "run_search_phase", fake_search)
-    monkeypatch.setattr(agent_graph, "apply_graph_worker", fake_apply_graph)
-    monkeypatch.setattr(agent_graph, "architect_node", fake_architect)
-    monkeypatch.setattr(agent_graph, "maybe_expand_with_search_tool", fake_expand)
-    monkeypatch.setattr(agent_graph, "graph_critic_node", fake_review)
-    monkeypatch.setattr(agent_graph, "orchestrator_synthesise", fake_synth)
-
-    state = _state(send)
-    state["graph_mode"] = "auto"
-
-    result = await agent_graph.run_agent(state, [], [], [])
-
-    assert result["graph_data"] is None
-    assert result["graph_operation"] == {
-        "kind": "edit",
-        "status": "failed",
-        "failure_code": "graph_edit_target_unavailable",
-    }
-    assert any(event.get("type") == "graph_notice" for event in events)
+    await agent_graph.run_agent({
+        "user_message": "Rename the cache node", "graph_mode": "on", "graph_data": None,
+    }, [], [], [])
 
 
 @pytest.mark.asyncio
@@ -3164,15 +3253,15 @@ async def test_clarification_reply_routes_user_requirements_back_to_components(
         [],
         [],
     )
-    assert len(router_calls) == 1
-    assert len(component_requests) == (2 if continue_design else 1)
+    assert router_calls == []
+    assert len(component_requests) == 2
+    assert reply in component_requests[1]
+    assert second["graph_intent"] == "create"
+    assert second["graph_operation"]["status"] == "needs_clarification"
     if continue_design:
         assert first_request in component_requests[1]
-        assert reply in component_requests[1]
-        assert second["graph_intent"] == "create"
     else:
-        assert second["graph_intent"] is None
-        assert second["response_text"] == "RLHF uses human feedback."
+        assert first_request not in component_requests[1]
 
 
 @pytest.mark.parametrize(

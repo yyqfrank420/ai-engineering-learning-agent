@@ -47,15 +47,6 @@ def _parse_sse_events(response_text: str) -> list[dict]:
     return events
 
 
-def test_only_signed_internal_test_sessions_scope_active_streams_by_thread():
-    from api.chat_guards import internal_test_stream_scope
-
-    internal_user = {"claims": {"app_metadata": {"provider": "internal_test"}}}
-    assert internal_test_stream_scope(internal_user, "thread-1") == "thread-1"
-    assert internal_test_stream_scope({"claims": {}}, "thread-1") is None
-    assert internal_test_stream_scope({}, "thread-1") is None
-
-
 def test_cors_allows_vercel_preview_origin():
     app = create_app(load_resources=False)
     client = TestClient(app)
@@ -667,7 +658,7 @@ def test_chat_replays_completed_idempotent_turn_before_admission_checks(
     persist_turn(
         "user-1",
         thread["id"],
-        title="Stored",
+        expected_graph_version=None, base_revision_id=None, title="Stored",
         user_content="Explain RAG",
         assistant_content="Canonical stored answer",
         graph_data=None,
@@ -711,7 +702,7 @@ def test_chat_replays_completed_idempotent_turn_with_graph_before_admission_chec
     persist_turn(
         "user-1",
         thread["id"],
-        title="Stored",
+        expected_graph_version=None, base_revision_id=None, title="Stored",
         user_content="Explain RAG",
         assistant_content="Canonical stored answer",
         graph_data=graph,
@@ -780,7 +771,6 @@ def test_chat_blocks_prompt_injection(temp_data_dir, monkeypatch):
 def test_node_selected_correlates_request_ids_and_releases_stream(
     temp_data_dir, monkeypatch
 ):
-    monkeypatch.setattr(settings, "max_active_node_streams_per_user", 1)
     init_db()
     upsert_profile("user-1", "friend@example.com")
     thread = create_thread("user-1")
@@ -841,11 +831,8 @@ def test_node_selected_correlates_request_ids_and_releases_stream(
             },
         }
         assert closed == [True]
-        acquired = runtime_state_store.try_acquire_active_stream(
-            "user-1", "node-selected", limit=1, ttl_s=60
-        )
-        assert acquired is not None
-        runtime_state_store.release_active_stream(acquired)
+        from adapters.database_adapter import fetchone
+        assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 def test_node_selected_rejects_oversized_payload(temp_data_dir, monkeypatch):
@@ -910,16 +897,20 @@ def test_node_selected_rejects_missing_thread_id_and_title(temp_data_dir):
     assert "Missing node title" in missing_title.text
 
 
-def test_node_selected_rejects_concurrent_stream(temp_data_dir, monkeypatch):
-    monkeypatch.setattr(settings, "max_active_node_streams_per_user", 1)
+def test_node_selected_allows_concurrent_stream(temp_data_dir, monkeypatch):
     init_db()
     upsert_profile("user-1", "friend@example.com")
     thread = create_thread("user-1")
-    active_id = runtime_state_store.try_acquire_active_stream(
-        "user-1", "node-selected", limit=1, ttl_s=60
+    active_id = runtime_state_store.register_active_stream(
+        "user-1", "node-selected", ttl_s=60
     )
     assert active_id
     app = _authed_app()
+    async def fake_suggestions(*args, **kwargs):
+        yield {"type": "suggested_questions", "questions": ["Explain the architecture"]}
+        yield {"type": "done"}
+
+    monkeypatch.setattr("api.sse_handler.stream_suggested_questions", fake_suggestions)
 
     with TestClient(app) as client:
         response = client.post(
@@ -932,7 +923,8 @@ def test_node_selected_rejects_concurrent_stream(temp_data_dir, monkeypatch):
             },
         )
 
-    assert "Too many node detail requests" in response.text
+    assert "Too many node detail requests" not in response.text
+    assert "suggested_questions" in response.text
     runtime_state_store.release_active_stream(active_id)
 
 
@@ -1018,19 +1010,21 @@ def test_chat_rejects_when_knowledge_base_not_loaded(temp_data_dir):
     assert "Knowledge base is still loading" in response.text
 
 
-def test_chat_rejects_when_user_already_has_active_stream(temp_data_dir, monkeypatch):
-    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 1)
+def test_chat_allows_an_existing_active_stream(temp_data_dir, monkeypatch):
     init_db()
     upsert_profile("user-1", "friend@example.com")
     thread = create_thread("user-1")
-    active_id = runtime_state_store.try_acquire_active_stream(
+    active_id = runtime_state_store.register_active_stream(
         "user-1",
         "chat",
-        limit=1,
         ttl_s=60,
     )
     assert active_id
     app = _authed_app()
+    async def fake_agent(state, *args):
+        return {**state, "response_text": "Concurrent answer"}
+
+    monkeypatch.setattr("api.sse_handler.run_agent", fake_agent)
 
     with TestClient(app) as client:
         response = client.post(
@@ -1039,12 +1033,12 @@ def test_chat_rejects_when_user_already_has_active_stream(temp_data_dir, monkeyp
         )
 
     assert response.status_code == 200
-    assert "Another response is already running" in response.text
+    assert "Another response is already running" not in response.text
+    assert "done" in response.text
     runtime_state_store.release_active_stream(active_id)
 
 
 def test_chat_stream_releases_active_stream_lock(temp_data_dir, monkeypatch):
-    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 1)
     init_db()
     upsert_profile("user-1", "friend@example.com")
     thread = create_thread("user-1")
@@ -1096,14 +1090,8 @@ def test_chat_stream_releases_active_stream_lock(temp_data_dir, monkeypatch):
     assert captured_state["terminal_deadline_s"] - captured_state[
         "workflow_started_at_s"
     ] == pytest.approx(settings.agent_timeout_s - settings.agent_terminal_headroom_s)
-    acquired = runtime_state_store.try_acquire_active_stream(
-        "user-1",
-        "chat",
-        limit=1,
-        ttl_s=60,
-    )
-    assert acquired
-    runtime_state_store.release_active_stream(acquired)
+    from adapters.database_adapter import fetchone
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 def test_request_otp_requires_captcha_after_burst(temp_data_dir, monkeypatch):
@@ -1205,7 +1193,7 @@ def test_chat_stream_persists_messages_and_graph(temp_data_dir, monkeypatch):
                 "type": "graph_data",
                 "data": {
                     "title": "Study graph",
-                    "nodes": [],
+                    "nodes": [{"id": "n1"}],
                     "edges": [],
                     "sequence": [],
                 },
@@ -1217,9 +1205,10 @@ def test_chat_stream_persists_messages_and_graph(temp_data_dir, monkeypatch):
         return {
             **state,
             "response_text": "Hello world",
+            "graph_publication": "approved",
             "graph_data": {
                 "title": "Study graph",
-                "nodes": [],
+                "nodes": [{"id": "n1"}],
                 "edges": [],
                 "sequence": [],
             },
@@ -1263,7 +1252,7 @@ def test_chat_stream_persists_messages_and_graph(temp_data_dir, monkeypatch):
     assert saved_messages[1]["activity"] is None
     assert get_graph("user-1", thread["id"]) == {
         "title": "Study graph",
-        "nodes": [],
+        "nodes": [{"id": "n1"}],
         "edges": [],
         "sequence": [],
     }
@@ -1292,7 +1281,7 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
     existing_graph = {
         "version": "graph-v1",
         "title": "Existing graph",
-        "nodes": [],
+        "nodes": [{"id": "n1"}],
         "edges": [],
         "sequence": [],
     }
@@ -1303,7 +1292,7 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
     persist_turn(
         "user-1",
         thread["id"],
-        title="Existing graph",
+        expected_graph_version=None, base_revision_id=None, title="Existing graph",
         user_content="First turn",
         assistant_content="Stored graph",
         graph_data=existing_graph,
@@ -1313,7 +1302,7 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
     final_graph = {
         "version": "graph-v2",
         "title": "Final graph",
-        "nodes": [],
+        "nodes": [{"id": "n1"}],
         "edges": [],
         "sequence": [],
     }
@@ -1338,6 +1327,7 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
         return {
             **state,
             "response_text": "answer",
+            "graph_publication": "approved",
             "graph_data": final_graph,
             "graph_contract": final_contract,
         }
@@ -1365,7 +1355,7 @@ def test_chat_stream_keeps_graph_contract_server_only(temp_data_dir, monkeypatch
     assert observed_states[0]["graph_contract"] == existing_contract
     assert observed_states[0]["approved_graph_contract"] == existing_contract
     assert persisted_contracts == [final_contract]
-    assert get_graph_artifact("user-1", thread["id"]) == (final_graph, final_contract)
+    assert get_graph_artifact("user-1", thread["id"])[:2] == (final_graph, final_contract)
     assert all("graph_contract" not in event for event in events)
 
 
@@ -1374,6 +1364,7 @@ async def test_chat_holds_stream_lease_through_persistence_and_terminal_publicat
     temp_data_dir, monkeypatch
 ):
     from starlette.requests import Request
+    from adapters.database_adapter import fetchone
 
     import api.sse_handler as sse_handler
 
@@ -1381,7 +1372,6 @@ async def test_chat_holds_stream_lease_through_persistence_and_terminal_publicat
     upsert_profile("user-1", "friend@example.com")
     thread = create_thread("user-1")
     request = Request({"type": "http", "app": _authed_app(), "state": {}})
-    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 1)
     monkeypatch.setattr(sse_handler, "_make_agent_tools", lambda _: ([], [], []))
     monkeypatch.setattr(request, "is_disconnected", AsyncMock(return_value=False))
     persist_calls = []
@@ -1391,10 +1381,7 @@ async def test_chat_holds_stream_lease_through_persistence_and_terminal_publicat
         return {**state, "response_text": "Saved answer", "graph_data": None}
 
     def persist_while_exclusive(*args, **kwargs):
-        competing_stream = runtime_state_store.try_acquire_active_stream(
-            "user-1", "chat", limit=1, ttl_s=60
-        )
-        assert competing_stream is None
+        assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 1
         persist_calls.append(kwargs["assistant_content"])
         return original_persist_turn(*args, **kwargs)
 
@@ -1410,12 +1397,7 @@ async def test_chat_holds_stream_lease_through_persistence_and_terminal_publicat
     events = []
     async for chunk in response.body_iterator:
         events.extend(_parse_sse_events(chunk))
-        assert (
-            runtime_state_store.try_acquire_active_stream(
-                "user-1", "chat", limit=1, ttl_s=60
-            )
-            is None
-        )
+        assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 1
     assert events[-2]["type"] == "graph_data"
     assert events[-1]["type"] == "done"
     assert persist_calls == ["Saved answer"]
@@ -1423,11 +1405,8 @@ async def test_chat_holds_stream_lease_through_persistence_and_terminal_publicat
         message_store.get_messages("user-1", thread["id"])[-1]["content"]
         == "Saved answer"
     )
-    acquired = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60
-    )
-    assert acquired
-    runtime_state_store.release_active_stream(acquired)
+    from adapters.database_adapter import fetchone
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 @pytest.mark.asyncio
@@ -1474,11 +1453,8 @@ async def test_chat_releases_stream_lease_after_setup_or_persistence_failure(
         with pytest.raises(RuntimeError, match="Injected failure"):
             await anext(response.body_iterator)
     assert message_store.get_messages("user-1", thread["id"]) == []
-    acquired = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60
-    )
-    assert acquired
-    runtime_state_store.release_active_stream(acquired)
+    from adapters.database_adapter import fetchone
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 @pytest.mark.asyncio
@@ -1538,11 +1514,8 @@ async def test_chat_releases_stream_lease_and_cancels_agent_when_stream_ends(
             await anext(response.body_iterator)
     assert cancelled.is_set()
     assert message_store.get_messages("user-1", thread["id"]) == []
-    acquired = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60
-    )
-    assert acquired
-    runtime_state_store.release_active_stream(acquired)
+    from adapters.database_adapter import fetchone
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 def test_chat_agent_error_emits_error_and_skips_persistence(temp_data_dir, monkeypatch):
@@ -1641,11 +1614,8 @@ def test_chat_stream_emits_timeout_and_releases_lock(temp_data_dir, monkeypatch)
         )
 
     assert "Response timed out" in response.text
-    acquired = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat", limit=1, ttl_s=60
-    )
-    assert acquired
-    runtime_state_store.release_active_stream(acquired)
+    from adapters.database_adapter import fetchone
+    assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
 
 
 def test_chat_stream_reports_unsaved_large_graph(temp_data_dir, monkeypatch):
@@ -1659,6 +1629,7 @@ def test_chat_stream_reports_unsaved_large_graph(temp_data_dir, monkeypatch):
         return {
             **state,
             "response_text": "answer",
+            "graph_publication": "approved",
             "graph_data": {"nodes": [{"id": "n1"}], "edges": []},
         }
 
@@ -1779,14 +1750,14 @@ def test_chat_rechecks_completed_turn_after_thread_admission(
     thread = create_thread("user-1")
     app = _authed_app()
     canonical = {"version": "persisted-v1", "nodes": [], "edges": []}
-    original_acquire = runtime_state_store.try_acquire_active_stream
+    original_acquire = runtime_state_store.register_active_stream
 
     def acquire_after_commit(*args, **kwargs):
         if args[1] == "chat-thread":
             persist_turn(
                 "user-1",
                 thread["id"],
-                title="Stored",
+                expected_graph_version=None, base_revision_id=None, title="Stored",
                 user_content="Build an agent",
                 assistant_content="Canonical answer",
                 graph_data=canonical,
@@ -1798,7 +1769,7 @@ def test_chat_rechecks_completed_turn_after_thread_admission(
         pytest.fail("completed request must replay before running the model")
 
     monkeypatch.setattr(
-        runtime_state_store, "try_acquire_active_stream", acquire_after_commit
+        runtime_state_store, "register_active_stream", acquire_after_commit
     )
     monkeypatch.setattr(sse_handler, "run_agent", unexpected_model)
     with TestClient(app) as client:

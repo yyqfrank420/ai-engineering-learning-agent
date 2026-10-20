@@ -51,10 +51,14 @@ portrait, landscape, and software-keyboard layouts.
 - Keep D3 as the diagram renderer for direct control over appearance and interaction.
   Improve the existing renderer without migrating to another editor framework.
 - Validate topic relevance and prompt injection before routing, retrieval, or diagram work.
-  Redirect unrelated requests to AI engineering and AI system architecture.
+  Accept AI, machine learning, and data topics, including independent data science,
+  analytics, SQL, databases, warehouses, and pipelines. Redirect unrelated requests
+  to this scope.
   Explicit unrelated follow-ups stay out of scope even when a prior diagram exists.
 - The composer always uses automatic depth with diagrams and research enabled.
-  Broad learning requests include a diagram without a separate choice dialog.
+  First accepted AI, ML, or data requests without a saved graph attempt a diagram,
+  including conceptual questions and API retries. Explicit answer-only and no-diagram
+  requests are respected. Broad learning requests include a diagram without a separate choice dialog.
   Follow-up explanations preserve the current diagram unless a change is requested.
 - A successful diagram request produces a fresh custom diagram. Cached or reference
   diagrams do not substitute for generation. Provider and connection failures must

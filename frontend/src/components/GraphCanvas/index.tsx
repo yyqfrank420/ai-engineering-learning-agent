@@ -6,7 +6,7 @@
 
 import { useState, useEffect, useLayoutEffect, useMemo, useRef, useImperativeHandle, useCallback } from 'react';
 import type { Ref } from 'react';
-import { Graph, Play } from '@phosphor-icons/react';
+import { Graph, Info, Play } from '@phosphor-icons/react';
 import type { AuthSession, GraphContentEdit, GraphData, GraphNode, GraphViewState, SelectedNode } from '../../types';
 import { useGraph } from '../../hooks/useGraph';
 import { graphStructureKey } from '../../utils/graphStructureKey';
@@ -389,18 +389,25 @@ export function GraphCanvas({
         <Graph className="graph-canvas__header-icon" size={20} aria-hidden="true" />
         <div className="graph-canvas__heading" title={graphData.title}>
           <h2 className="graph-canvas__title">{title}</h2>
-          {subtitle && <p className="graph-canvas__subtitle">{subtitle}</p>}
-          {isAcceptedGraph && graphData.detail_level === 'overview' && (
-            <p className="graph-canvas__overview">
-              <span>Overview</span>
-              <span>Core workflow. Supporting detail is simplified.</span>
-            </p>
-          )}
         </div>
-        <span className="graph-canvas__counts">
-          {graphData.nodes.length} components
-          {zoneCount > 0 ? ` · ${zoneCount} zones` : ''}
-        </span>
+        <details className="graph-canvas__details" key={graphContentKey}>
+          <summary aria-label="Diagram details" title="Diagram details">
+            <Info size={18} aria-hidden="true" />
+          </summary>
+          <div className="graph-canvas__details-content">
+            {subtitle && <p className="graph-canvas__subtitle">{subtitle}</p>}
+            <p className="graph-canvas__counts">
+              {graphData.nodes.length} components
+              {zoneCount > 0 ? ` · ${zoneCount} ${zoneCount === 1 ? 'zone' : 'zones'}` : ''}
+            </p>
+            {isAcceptedGraph && graphData.detail_level === 'overview' && (
+              <p className="graph-canvas__overview">
+                <span>Overview</span>
+                <span>Core workflow. Supporting detail is simplified.</span>
+              </p>
+            )}
+          </div>
+        </details>
         {hasSequence && sequenceDismissed && (
           <button
             type="button"

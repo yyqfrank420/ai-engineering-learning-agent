@@ -6,12 +6,14 @@
 //          LaTeX ($...$ inline, $$...$$ block) is rendered via KaTeX.
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react';
 import { ArrowClockwise, ArrowDown } from '@phosphor-icons/react';
 import type { ReactNode } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import type { Root, RootContent } from 'mdast';
+import remarkMath from 'remark-math';
+import type { Root, RootContent, PhrasingContent } from 'mdast';
+import type { Components } from 'react-markdown';
 import type { VFile } from 'vfile';
 import { InlineMath, BlockMath } from 'react-katex';
 import 'katex/dist/katex.min.css';
@@ -33,33 +35,12 @@ interface MessageListProps {
   retryingMessageId?: string | null;
 }
 
-// ── LaTeX pre-processor ───────────────────────────────────────────────────────
-// react-markdown doesn't handle LaTeX natively. Split the text on $...$ / $$...$$
-// boundaries before handing the plain-text portions to ReactMarkdown.
-
-type Segment = { type: 'text'; value: string } | { type: 'inline-math' | 'block-math'; value: string };
 type MarkdownChildrenProps = { children?: ReactNode };
 type MarkdownCodeProps = MarkdownChildrenProps & { className?: string };
-type MarkdownAnchorProps = MarkdownChildrenProps & { href?: string };
+type MarkdownAnchorProps = MarkdownChildrenProps & { href?: string; className?: string; 'aria-label'?: string };
 type MarkdownImageProps = { alt?: string };
 
-function splitLatex(text: string): Segment[] {
-  const segments: Segment[] = [];
-  const regex = /(\$\$[\s\S]+?\$\$|\$[^$\n]+?\$)/g;
-  let last = 0;
-  let m: RegExpExecArray | null;
-  while ((m = regex.exec(text)) !== null) {
-    if (m.index > last) segments.push({ type: 'text', value: text.slice(last, m.index) });
-    const raw = m[0];
-    if (raw.startsWith('$$')) segments.push({ type: 'block-math', value: raw.slice(2, -2).trim() });
-    else                       segments.push({ type: 'inline-math', value: raw.slice(1, -1).trim() });
-    last = regex.lastIndex;
-  }
-  if (last < text.length) segments.push({ type: 'text', value: text.slice(last) });
-  return segments;
-}
-
-const mdComponents = {
+const mdComponents: Components = {
   // react-markdown v10 omits the old inline prop; a language class or trailing
   // newline identifies block code. The pre renderer owns block layout.
   code: ({ children, className }: MarkdownCodeProps) => {
@@ -73,9 +54,23 @@ const mdComponents = {
   table: ({ children }: MarkdownChildrenProps) => (
     <div className="message-table-scroll"><table>{children}</table></div>
   ),
-  a: ({ href, children }: MarkdownAnchorProps) => (
-    <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>
+  a: ({ href, children, className, 'aria-label': label }: MarkdownAnchorProps) => (
+    <a href={href} className={className} aria-label={label}
+      target={className === 'message-source-reference' ? undefined : '_blank'} rel="noopener noreferrer"
+      onClick={className === 'message-source-reference' ? (event) => {
+        event.preventDefault();
+        const target = document.getElementById(href?.slice(1) ?? '');
+        const details = target?.closest('details');
+        if (details) details.open = true;
+        target?.focus();
+      } : undefined}>{children}</a>
   ),
+  span: ({ node, children }) => {
+    const math = node?.properties['dataMath'];
+    if (typeof math !== 'string') return <span>{children}</span>;
+    return node?.properties['dataMathBlock']
+      ? <BlockMath math={math} /> : <InlineMath math={math} />;
+  },
   // Model-authored remote images can act as tracking pixels. Keep this study
   // interface text-only so reading an answer never fetches those images.
   img: ({ alt }: MarkdownImageProps) => (
@@ -83,48 +78,93 @@ const mdComponents = {
   ),
 };
 
-// Book locations are citation labels, not URL destinations. CommonMark leaves
-// these malformed self-links as prose text; preserve code and actual link nodes.
-function remarkBookCitationLabels() {
+interface AnswerSource { key: string; label: string; url?: string }
+
+// Work on parsed Markdown so code, escaped literals, and link destinations remain intact.
+function remarkMessagePresentation({ isAssistant, sourceId }: { isAssistant: boolean; sourceId: string }) {
   return (tree: Root, file: VFile) => {
-    const source = String(file);
-    function visit(node: Root | RootContent) {
-      if (node.type === 'text') {
-        const start = node.position?.start.offset;
-        const end = node.position?.end.offset;
-        // Parsed text loses escapes; leave deliberate Markdown literals intact.
-        if (start === undefined || end === undefined || source.slice(start, end).includes("\\")) {
-          return;
+    const original = String(file);
+    const sources: AnswerSource[] = [];
+    const definitions = new Map(tree.children.filter(node => node.type === 'definition').map(node => [node.identifier.toUpperCase(), node.url]));
+    const reference = (source: AnswerSource): PhrasingContent => {
+      let index = sources.findIndex(item => item.key === source.key);
+      if (index === -1) { index = sources.length; sources.push(source); }
+      return { type: 'link', url: `#${sourceId}-${index + 1}`, children: [{ type: 'text', value: `[${index + 1}]` }],
+        data: { hProperties: { className: 'message-source-reference', ariaLabel: `Source ${index + 1}: ${source.label}` } } };
+    };
+    function textParts(node: Extract<RootContent, { type: 'text' }>): PhrasingContent[] {
+      const start = node.position?.start.offset;
+      const end = node.position?.end.offset;
+      const escaped = start === undefined || end === undefined || /\\[[\]()$]/.test(original.slice(start, end));
+      const parts: PhrasingContent[] = [];
+      // The self-link branch consumes unsupported labels too, preserving them verbatim.
+      const tokens = /!?\[([^\]\n]+)\]\(([^)\n]+)\)|\((Chapter [1-9][0-9]*(?:, p\.\s?[1-9][0-9]*)?|Book, p\.\s?[1-9][0-9]*|Book excerpt)\)/g;
+      let last = 0;
+      for (const match of node.value.matchAll(tokens)) {
+        const offset = match.index;
+        if (offset > last) parts.push({ type: 'text', value: node.value.slice(last, offset) });
+        const [raw, label, destination, book] = match;
+        const selfCitation = !raw.startsWith('!') && label === destination && /^(Chapter [1-9][0-9]*(?:, p\.\s?[1-9][0-9]*)?|Book, p\.\s?[1-9][0-9]*|Book excerpt)$/.test(label ?? '');
+        if (isAssistant && !escaped && (book || selfCitation)) {
+          const citation = (book || label).replace(/p\.\s*/g, 'p.');
+          parts.push(reference({ key: citation, label: citation }));
+        } else parts.push({ type: 'text', value: raw });
+        last = offset + raw.length;
+      }
+      if (last < node.value.length) parts.push({ type: 'text', value: node.value.slice(last) });
+      return parts;
+    }
+    function visit(node: Root | RootContent, collectSources = true) {
+      if (!('children' in node)) return;
+      const allowSources = collectSources && node.type !== 'link' && node.type !== 'linkReference';
+      node.children = node.children.flatMap((child): typeof child[] => {
+        if (child.type === 'math' || child.type === 'inlineMath') {
+          const offset = child.position?.start.offset;
+          const block = child.type === 'math' || (offset !== undefined && original.slice(offset, offset + 2) === '$$');
+          return [{ type: 'text', value: '', data: { hName: 'span', hProperties: { dataMath: child.value, dataMathBlock: block } } }];
         }
-        node.value = node.value.replace(
-          /(?<!!)\[(Chapter [1-9][0-9]*(?:, p\.[1-9][0-9]*)?|Book, p\.[1-9][0-9]*|Book excerpt)\]\(\1\)/g,
-          '$1',
-        );
-      } else if ('children' in node && node.type !== 'link' && node.type !== 'linkReference') {
-        node.children.forEach(visit);
+        if (child.type === 'text') return allowSources ? textParts(child) : [child];
+        const label = child.type === 'link' || child.type === 'linkReference'
+          ? child.children.map(part => 'value' in part ? part.value : '').join('') : '';
+        // Link labels retain math formatting while citations inside them remain part of the label.
+        visit(child, allowSources);
+        if (isAssistant && allowSources && (child.type === 'link' || child.type === 'linkReference')) {
+          const destination = child.type === 'link' ? child.url : definitions.get(child.identifier.toUpperCase());
+          if (!destination) return [child];
+          let url: URL;
+          try { url = new URL(destination); } catch { return [child]; }
+          if (url.protocol !== 'https:' && url.protocol !== 'http:') return [child];
+          const rawUrl = /^(?:https?:\/\/|www\.)\S+$/.test(label);
+          const source = { key: url.href, url: url.href, label: rawUrl ? url.hostname : label || url.hostname };
+          const citation = reference(source);
+          // Named links carry meaning in a sentence; raw URLs only need the reference.
+          return rawUrl ? [citation] : [...child.children, { type: 'text', value: ' ' }, citation];
+        }
+        return [child];
+      }) as typeof node.children;
+      if (node.type === 'paragraph' && node.children.some(child => child.data?.hProperties?.dataMathBlock)) {
+        node.data = { ...node.data, hName: 'div' };
       }
     }
     visit(tree);
+    if (sources.length) tree.children.push({ type: 'blockquote', data: { hName: 'details', hProperties: { className: 'message-sources' } }, children: [
+      { type: 'paragraph', data: { hName: 'summary' }, children: [{ type: 'text', value: `Sources (${sources.length})` }] },
+      { type: 'list', ordered: true, children: sources.map((source, index) => ({ type: 'listItem', spread: false,
+        data: { hProperties: { id: `${sourceId}-${index + 1}`, tabIndex: -1 } }, children: [{ type: 'paragraph', children: source.url
+          ? [{ type: 'link', url: source.url, children: [{ type: 'text', value: source.label }] },
+            ...(source.label !== source.url ? [{ type: 'text' as const, value: ` (${source.url})` }] : [])]
+          : [{ type: 'text', value: source.label }] }] })) },
+    ] });
   };
 }
 
-// ── Message content renderer ──────────────────────────────────────────────────
-// Splits on LaTeX first, then renders each text segment through ReactMarkdown.
 function MessageContent({ content, isAssistant }: { content: string; isAssistant: boolean }) {
-  const segments = splitLatex(content);
-  return (
-    <div className="message-markdown">
-      {segments.map((seg, i) => {
-        if (seg.type === 'block-math') return <BlockMath key={i} math={seg.value} />;
-        if (seg.type === 'inline-math') return <InlineMath key={i} math={seg.value} />;
-        return (
-          <ReactMarkdown key={i} remarkPlugins={isAssistant ? [remarkGfm, remarkBookCitationLabels] : [remarkGfm]} components={mdComponents}>
-            {seg.value}
-          </ReactMarkdown>
-        );
-      })}
-    </div>
-  );
+  const sourceId = useId();
+  return <div className="message-markdown">
+    <ReactMarkdown remarkPlugins={[remarkGfm, remarkMath, [remarkMessagePresentation, { isAssistant, sourceId }]]} components={mdComponents}>
+      {content}
+    </ReactMarkdown>
+  </div>;
 }
 
 export function MessageList({ messages, liveActivity = null, revisionIds = [], viewedRevisionId = null, onViewDiagram, historyDisabled = false, onRetryMessage, retryDisabled = false, retryingMessageId = null }: MessageListProps) {

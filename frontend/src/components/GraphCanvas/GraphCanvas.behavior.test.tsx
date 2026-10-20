@@ -199,6 +199,23 @@ describe('GraphCanvas behavior', () => {
     expect(updateThreadGraph).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps secondary diagram information collapsed until requested', () => {
+    const view = render(<GraphCanvas {...baseProps} graphData={{ ...graph, detail_level: 'overview' }} />);
+    const summary = screen.getByLabelText('Diagram details');
+    const details = summary.closest('details')!;
+    expect(details.open).toBe(false);
+    expect(screen.getByText('reviewed runtime').closest('details')).toBe(details);
+    expect(screen.getByText('2 components · 2 zones').closest('details')).toBe(details);
+    expect(screen.getByText('Core workflow. Supporting detail is simplified.').closest('details')).toBe(details);
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
+    fireEvent.click(summary);
+    expect(details.open).toBe(false);
+    fireEvent.click(summary);
+    view.rerender(<GraphCanvas {...baseProps} graphData={{ ...graph, title: 'A different architecture' }} />);
+    expect(screen.getByLabelText('Diagram details').closest('details')!.open).toBe(false);
+  });
+
   it('labels only an accepted overview and explains its reduced detail', () => {
     const overview = { ...graph, detail_level: 'overview' as const };
     const view = render(<GraphCanvas {...baseProps} graphData={graph} />);

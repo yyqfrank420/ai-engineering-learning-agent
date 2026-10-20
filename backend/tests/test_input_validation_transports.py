@@ -115,6 +115,7 @@ def test_sse_rejects_raw_steering_before_effective_prompt_reaches_core(
         )
     assert events == [
         {"type": "response_delta", "content": REJECTION},
+        {"type": "graph_data", "data": None},
         {"type": "done"},
     ]
     assert observed[1][0] == "Dinner suggestions please"
@@ -134,8 +135,8 @@ def test_diagram_intent_rejection_bypasses_diagram_choice(temp_data_dir, monkeyp
         response = client.post(
             f"/api/threads/{thread['id']}/diagram-intent", json={"message": "Dinner?"}
         )
-    assert response.status_code == 200
-    assert response.json() == {"action": "answer"}
+    assert response.status_code == 422
+    assert response.json() == {"detail": REJECTION}
 
 
 @pytest.mark.parametrize("reject_composite", [False, True])
@@ -226,6 +227,8 @@ def test_retry_validates_reconstructed_canonical_input(
         user_content=canonical,
         assistant_content="Previous generation failed",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id="source-request",
         retry_request={
             "content": "Design a RAG assistant",
@@ -262,9 +265,12 @@ def test_retry_validates_reconstructed_canonical_input(
                 socket.send_json({"type": "auth", "access_token": "test-token"})
                 assert socket.receive_json()["type"] == "ready"
                 socket.send_json({"type": "start", **payload})
-                events = [socket.receive_json(), socket.receive_json()]
+                events = []
+                while not events or events[-1]["type"] != "done":
+                    events.append(socket.receive_json())
     assert events == [
         {"type": "response_delta", "content": REJECTION},
+        {"type": "graph_data", "data": None},
         {"type": "done"},
     ]
     assert observed == [canonical]

@@ -35,7 +35,6 @@ from api.chat_guards import (
     chat_input_error,
     check_prompt_injection,
     check_rate_limit,
-    internal_test_stream_scope,
     graph_continuity_error,
     is_production_traffic,
     knowledge_base_ready,
@@ -44,7 +43,7 @@ from api.chat_guards import (
 from api.node_selected_service import stream_suggested_questions
 from api.sse_utils import sse, sse_error, streaming_response
 from config import settings
-from storage import message_store, runtime_state_store, thread_store
+from storage import graph_history_store, message_store, runtime_state_store, thread_store
 from storage.errors import ThreadMessageLimitExceeded
 from storage.profile_store import upsert_profile
 
@@ -328,43 +327,14 @@ async def chat_endpoint(
         return sse_error(limit_error)
 
     async def stream():
-        stream_id = None
         thread_stream_id = None
         try:
-            stream_id = runtime_state_store.try_acquire_active_stream(
-                user_id,
-                "chat",
-                limit=settings.max_active_chat_streams_per_user,
-                ttl_s=settings.agent_timeout_s + 30,
-                scope_id=internal_test_stream_scope(user, thread_id),
-            )
-            if stream_id is None:
-                record_chat_rejected("active_stream_limit")
-                yield sse(
-                    {
-                        "type": "error",
-                        "content": "Another response is already running. Stop it or wait for it to finish.",
-                    }
-                )
-                return
-            thread_stream_id = runtime_state_store.try_acquire_active_stream(
+            thread_stream_id = runtime_state_store.register_active_stream(
                 user_id,
                 "chat-thread",
-                limit=1,
                 ttl_s=settings.agent_timeout_s + 30,
                 scope_id=thread_id,
             )
-            if thread_stream_id is None:
-                record_chat_rejected("active_stream_limit")
-                yield sse(
-                    {
-                        "type": "error",
-                        "content": "Another response is already running. Stop it or wait for it to finish.",
-                    }
-                )
-                yield sse({"type": "done"})
-                return
-            # Recheck under both leases before reading context or running a model.
             if thread_store.get_thread(user_id, thread_id) is None:
                 record_chat_rejected("thread_not_found")
                 yield sse({"type": "error", "content": "Thread not found"})
@@ -402,6 +372,8 @@ async def chat_endpoint(
                         user_id, thread_id, title=thread["title"],
                         user_content=content, assistant_content=input_error,
                         graph_data=None, client_request_id=body.client_request_id,
+                        expected_graph_version=None,
+                        base_revision_id=None,
                     )
                 except ThreadMessageLimitExceeded:
                     yield sse({"type": "error", "content": "Thread message limit reached. Start a new chat to continue."})
@@ -411,6 +383,11 @@ async def chat_endpoint(
                     logger.exception("Input rejection persistence failed")
                     yield sse({"type": "error", "content": "Response could not be saved. Please try again."})
                     yield sse({"type": "done"})
+                    return
+                canonical_turn = thread_store.get_completed_turn(user_id, thread_id, body.client_request_id)
+                if canonical_turn is not None:
+                    async for event in replay_completed_turn(canonical_turn):
+                        yield event
                     return
                 yield sse({"type": "response_delta", "content": input_error})
                 yield sse({"type": "done"})
@@ -437,7 +414,7 @@ async def chat_endpoint(
             first_token_latency_ms: int | None = None
             response_delta_count = 0
             graph_event_count = 0
-            existing_graph, existing_graph_contract = thread_store.get_graph_artifact(
+            existing_graph, existing_graph_contract, base_revision_id = thread_store.get_graph_artifact(
                 user_id, thread_id
             )
             continuity_error = graph_continuity_error(
@@ -596,6 +573,8 @@ async def chat_endpoint(
                                 "graph_event_count": graph_event_count,
                             },
                         )
+                        if graph_event_count:
+                            yield sse({"type": "graph_data", "data": thread_store.get_graph(user_id, thread_id)})
                         yield sse(
                             {
                                 "type": "error",
@@ -696,6 +675,8 @@ async def chat_endpoint(
                         },
                     )
                     logger.error("Agent stream failed: %s", type(exc).__name__)
+                    if graph_event_count:
+                        yield sse({"type": "graph_data", "data": thread_store.get_graph(user_id, thread_id)})
                     yield sse(
                         {
                             "type": "error",
@@ -706,6 +687,12 @@ async def chat_endpoint(
 
                 final_state = agent_task.result()
                 output_shape = output_shape_from_final_state(final_state)
+                final_graph = final_state.get("graph_data")
+                has_new_graph = (
+                    final_state.get("graph_publication") in {"approved", "user_accepted"}
+                    and bool(final_graph and final_graph.get("nodes"))
+                    and final_graph != existing_graph
+                )
                 try:
                     title = thread["title"]
                     if title == "New chat":
@@ -719,8 +706,10 @@ async def chat_endpoint(
                         title=title,
                         user_content=content,
                         assistant_content=final_state["response_text"],
-                        graph_data=final_state.get("graph_data"),
-                        graph_contract=final_state.get("graph_contract"),
+                        graph_data=final_graph if has_new_graph else None,
+                        graph_contract=final_state.get("graph_contract") if has_new_graph else None,
+                        expected_graph_version=(existing_graph or {}).get("version"),
+                        base_revision_id=base_revision_id,
                         client_request_id=body.client_request_id,
                         retry_request=body.failed_generation_retry_request(final_state, original_request),
                         activity=saved_activity,
@@ -736,6 +725,8 @@ async def chat_endpoint(
                             }
                         )
                 except ThreadMessageLimitExceeded:
+                    if graph_event_count:
+                        yield sse({"type": "graph_data", "data": thread_store.get_graph(user_id, thread_id)})
                     yield sse(
                         {
                             "type": "error",
@@ -744,6 +735,8 @@ async def chat_endpoint(
                     )
                     return
                 except Exception:
+                    if graph_event_count:
+                        yield sse({"type": "graph_data", "data": thread_store.get_graph(user_id, thread_id)})
                     logger.exception("Chat result persistence failed")
                     enqueue_analytics_event(
                         event_name="stream_failed",
@@ -818,16 +811,25 @@ async def chat_endpoint(
                     }
                 )
                 canonical_turn = thread_store.get_completed_turn(user_id, thread_id, body.client_request_id)
+                if canonical_turn is not None and canonical_turn["assistant_content"] != final_state["response_text"]:
+                    yield sse({"type": "response_reset"})
+                    yield sse({"type": "response_delta", "content": canonical_turn["assistant_content"]})
+                    if canonical_turn.get("retry_request") is not None:
+                        yield sse({"type": "generation_failed"})
+                if has_new_graph and (thread_store.get_graph(user_id, thread_id) or {}).get("version") != final_graph.get("version"):
+                    candidate_saved = body.client_request_id is None
+                    revision_id = (canonical_turn or {}).get("graph_revision_id")
+                    if revision_id is not None:
+                        revision = graph_history_store.get_revision(user_id, thread_id, revision_id)
+                        candidate_saved = revision["graph_data"].get("version") == final_graph.get("version")
+                    if candidate_saved:
+                        yield sse({"type": "graph_notice", "message": "Your diagram was saved in history because another diagram changed while it was being generated."})
                 canonical_activity = canonical_turn.get("activity") if canonical_turn is not None else None
                 if canonical_turn is None and body.client_request_id is None:
                     canonical_activity = saved_activity
                 yield sse({"type": "done", **({"activity": canonical_activity} if canonical_activity is not None else {})})
         finally:
-            # A new turn must not read its base graph before this turn commits.
-            try:
-                runtime_state_store.release_active_stream(thread_stream_id)
-            finally:
-                runtime_state_store.release_active_stream(stream_id)
+            runtime_state_store.release_active_stream(thread_stream_id)
 
     return streaming_response(stream())
 
@@ -884,40 +886,25 @@ async def node_selected_endpoint(
     if limit_error:
         return sse_error(limit_error, include_done=True)
 
-    stream_id = runtime_state_store.try_acquire_active_stream(
-        user_id,
-        "node-selected",
-        limit=settings.max_active_node_streams_per_user,
-        ttl_s=45,
-    )
-    if stream_id is None:
-        return sse_error(
-            "Too many node detail requests are already running", include_done=True
-        )
-
     history = message_store.get_history(
         user_id, thread_id, limit=settings.max_messages_per_thread
     )
 
     async def stream():
-        try:
-            async for event in stream_suggested_questions(
-                node_title,
-                node_description,
-                history,
-                telemetry={
-                    "operation": "node_selected_chips",
-                    "user_id": user_id,
-                    "thread_id": thread_id,
-                    "metadata": {
-                        "node_id": body.node_id,
-                        "request_id": request_id,
-                        "client_request_id": body.client_request_id,
-                    },
+        async for event in stream_suggested_questions(
+            node_title,
+            node_description,
+            history,
+            telemetry={
+                "operation": "node_selected_chips",
+                "user_id": user_id,
+                "thread_id": thread_id,
+                "metadata": {
+                    "node_id": body.node_id,
+                    "request_id": request_id,
+                    "client_request_id": body.client_request_id,
                 },
-            ):
-                yield sse(event)
-        finally:
-            runtime_state_store.release_active_stream(stream_id)
-
+            },
+        ):
+            yield sse(event)
     return streaming_response(stream())

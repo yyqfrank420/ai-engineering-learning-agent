@@ -18,7 +18,6 @@ from graph.content_edit import (
 )
 from storage.message_store import get_history, get_messages
 from storage.profile_store import upsert_profile
-from storage import runtime_state_store
 from storage.rate_limit_store import RateLimitDimension, reserve_rate_limit
 from storage.thread_store import (
     create_thread,
@@ -76,11 +75,12 @@ async def diagram_intent_endpoint(
     history = await run_in_threadpool(
         get_history, user["id"], thread_id, limit=settings.max_messages_per_thread
     )
-    if await chat_input_error(
+    input_error = await chat_input_error(
         body.message, history, user_id=user["id"], thread_id=thread_id,
         request_id=getattr(request.state, "request_id", None),
-    ):
-        return {"action": "answer"}
+    )
+    if input_error:
+        raise HTTPException(status_code=422, detail=input_error)
     return {"action": diagram_submission_action(body.message, thread.get("graph_data"))}
 
 
@@ -144,28 +144,16 @@ async def edit_thread_graph_endpoint(
     thread = get_thread(user["id"], thread_id)
     if thread is None or thread.get("graph_data") is None:
         raise HTTPException(status_code=404, detail="Thread graph not found")
-    stream_id = runtime_state_store.try_acquire_active_stream(
-        user["id"],
-        "chat-thread",
-        limit=1,
-        ttl_s=settings.agent_timeout_s + 30,
-        scope_id=thread_id,
-    )
-    if stream_id is None:
-        raise HTTPException(status_code=409, detail="A response is already running")
     try:
-        try:
-            graph = edit_graph_content(user["id"], thread_id, body)
-        except GraphEditNotFound as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except GraphEditConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except GraphEditInvalid as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except GraphEditTooLarge as exc:
-            raise HTTPException(status_code=413, detail=str(exc)) from exc
-    finally:
-        runtime_state_store.release_active_stream(stream_id)
+        graph = edit_graph_content(user["id"], thread_id, body)
+    except GraphEditNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GraphEditConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GraphEditInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GraphEditTooLarge as exc:
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
     return {"graph_data": graph}
 
 
@@ -216,19 +204,11 @@ async def restore_graph_endpoint(thread_id: str, body: RestoreGraphRequest, user
 
     if get_thread(user["id"], thread_id) is None:
         raise HTTPException(status_code=404, detail="Thread not found")
-    stream_id = runtime_state_store.try_acquire_active_stream(
-        user["id"], "chat-thread", limit=1, ttl_s=settings.agent_timeout_s + 30, scope_id=thread_id,
-    )
-    if stream_id is None:
-        raise HTTPException(status_code=409, detail="A response is already running")
     try:
-        try:
-            return restore_revision(user["id"], thread_id, str(body.revision_id), body.expected_version)
-        except GraphEditNotFound as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except GraphEditConflict as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        except GraphEditInvalid as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-    finally:
-        runtime_state_store.release_active_stream(stream_id)
+        return restore_revision(user["id"], thread_id, str(body.revision_id), body.expected_version)
+    except GraphEditNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except GraphEditConflict as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except GraphEditInvalid as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -47,7 +47,7 @@ def test_completed_threads_keep_saved_history_within_limit(temp_data_dir, monkey
     for i in range(6):
         t = thread_store.create_thread(user_id, title=f"chat {i}")
         created_ids.append(t["id"])
-        thread_store.persist_turn(user_id, t["id"], title=f"chat {i}",
+        thread_store.persist_turn(user_id, t["id"], expected_graph_version=None, base_revision_id=None, title=f"chat {i}",
                                   user_content="question", assistant_content="answer", graph_data=None)
 
     remaining = thread_store.list_threads(user_id, limit=20)
@@ -76,7 +76,7 @@ def test_empty_drafts_have_separate_bound_without_evicting_saved_chats(temp_data
     assert drafts[-1]["id"] in retained_drafts
 
 
-def test_draft_retention_preserves_saved_graph_other_user_and_active_lease(
+def test_draft_retention_preserves_saved_graph_other_user_and_active_work(
     temp_data_dir, monkeypatch
 ):
     init_db()
@@ -96,12 +96,16 @@ def test_draft_retention_preserves_saved_graph_other_user_and_active_lease(
     )
     other_draft = thread_store.create_thread(other_user_id)
     protected = thread_store.create_thread(user_id)
-    lease = runtime_state_store.try_acquire_active_stream(
-        user_id, "chat-thread", limit=1, ttl_s=10, scope_id=protected["id"]
+    lease = runtime_state_store.register_active_stream(
+        user_id, "chat-thread", ttl_s=10, scope_id=protected["id"]
     )
+    second_activity = runtime_state_store.register_active_stream(
+        user_id, "chat-thread", ttl_s=10, scope_id=protected["id"]
+    )
+    runtime_state_store.release_active_stream(lease)
     newest = thread_store.create_thread(user_id)
 
-    assert lease is not None
+    assert second_activity != lease
     assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, protected, newest))
     assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
 
@@ -111,7 +115,7 @@ def test_draft_retention_preserves_saved_graph_other_user_and_active_lease(
     assert thread_store.get_thread(user_id, newest["id"]) is None
     assert all(thread_store.get_thread(user_id, thread["id"]) for thread in (saved, graph_only, latest))
     assert thread_store.get_thread(other_user_id, other_draft["id"]) is not None
-    runtime_state_store.release_active_stream(lease)
+    runtime_state_store.release_active_stream(second_activity)
 
 
 def test_concurrent_draft_creation_keeps_one_bounded_pool(temp_data_dir, monkeypatch):
@@ -151,7 +155,7 @@ def test_thread_eviction_cascades_messages(temp_data_dir, monkeypatch):
     execute("UPDATE chat_threads SET last_seen_at = ? WHERE id = ?", ("2000-01-01", first["id"]))
     third = thread_store.create_thread(user_id, title="third")
     assert message_store.count_messages(user_id, first["id"]) == 2
-    thread_store.persist_turn(user_id, third["id"], title="third",
+    thread_store.persist_turn(user_id, third["id"], expected_graph_version=None, base_revision_id=None, title="third",
                               user_content="question", assistant_content="answer", graph_data=None)
 
     db_path = temp_data_dir / "sessions.db"
@@ -178,7 +182,7 @@ def test_concurrent_first_turns_apply_history_limit_atomically(temp_data_dir, mo
     def complete(draft):
         start.wait(timeout=5)
         return thread_store.persist_turn(
-            user_id, draft["id"], title="Saved conversation",
+            user_id, draft["id"], expected_graph_version=None, base_revision_id=None, title="Saved conversation",
             user_content="question", assistant_content="answer", graph_data=None,
             client_request_id=draft["id"],
         )
@@ -289,7 +293,7 @@ def test_save_graph_returns_true_under_limit(temp_data_dir, monkeypatch):
     assert thread_store.persist_turn(
         user_id,
         thread["id"],
-        title="Current",
+        expected_graph_version=None, base_revision_id=None, title="Current",
         user_content="question",
         assistant_content="answer",
         graph_data=current_graph,
@@ -319,7 +323,7 @@ def test_save_graph_returns_false_over_limit(temp_data_dir, monkeypatch):
     assert thread_store.persist_turn(
         user_id,
         thread["id"],
-        title="Current",
+        expected_graph_version=None, base_revision_id=None, title="Current",
         user_content="question",
         assistant_content="answer",
         graph_data=current_graph,
@@ -405,7 +409,7 @@ def test_save_graph_updates_layout_for_matching_version(temp_data_dir):
     assert thread_store.persist_turn(
         user_id,
         thread["id"],
-        title="Current",
+        expected_graph_version=None, base_revision_id=None, title="Current",
         user_content="question",
         assistant_content="answer",
         graph_data=current_graph,
@@ -422,3 +426,88 @@ def test_save_graph_updates_layout_for_matching_version(temp_data_dir):
         **current_graph,
         "view_state": view_state,
     }
+
+
+def test_completed_retention_protects_active_work_until_next_completion(temp_data_dir, monkeypatch):
+    from adapters.database_adapter import execute
+    from config import settings
+
+    init_db()
+    monkeypatch.setattr(settings, "max_threads_per_user", 1)
+    user_id = make_user()
+    protected = thread_store.create_thread(user_id)["id"]
+    thread_store.persist_turn(
+        user_id, protected, title="Protected", user_content="Question",
+        assistant_content="Answer", graph_data=None,
+        expected_graph_version=None, base_revision_id=None,
+    )
+    execute("UPDATE chat_threads SET last_seen_at = ? WHERE id = ?", ("2000-01-01", protected))
+    registrations = [runtime_state_store.register_active_stream(
+        user_id, "chat-thread", ttl_s=60, scope_id=protected,
+    ) for _ in range(2)]
+    runtime_state_store.release_active_stream(registrations[0])
+    newest = thread_store.create_thread(user_id)["id"]
+    thread_store.persist_turn(
+        user_id, newest, title="Newest", user_content="Question",
+        assistant_content="Answer", graph_data=None,
+        expected_graph_version=None, base_revision_id=None,
+    )
+    assert thread_store.get_thread(user_id, protected) is not None
+    assert thread_store.get_thread(user_id, newest) is not None
+    runtime_state_store.release_active_stream(registrations[1])
+    thread_store.persist_turn(
+        user_id, newest, title="Newest", user_content="Follow-up",
+        assistant_content="Answer", graph_data=None,
+        expected_graph_version=None, base_revision_id=None,
+    )
+    assert thread_store.get_thread(user_id, protected) is None
+    assert message_store.count_messages(user_id, newest) == 4
+
+
+def test_draft_retention_waits_for_inflight_activity_registration(temp_data_dir, monkeypatch):
+    from concurrent.futures import TimeoutError
+    from threading import Event
+    from config import settings
+
+    init_db()
+    monkeypatch.setattr(settings, "max_threads_per_user", 1)
+    user_id = make_user()
+    protected = thread_store.create_thread(user_id)["id"]
+    inserted = Event()
+    finish_registration = Event()
+    original_connect = runtime_state_store._connect
+
+    class PausedConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def execute(self, query, params=()):
+            result = self.connection.execute(query, params)
+            if "INSERT INTO active_streams" in query:
+                inserted.set()
+                assert finish_registration.wait(timeout=5)
+            return result
+
+    @contextmanager
+    def paused_connect():
+        with original_connect() as connection:
+            yield PausedConnection(connection)
+
+    monkeypatch.setattr(runtime_state_store, "_connect", paused_connect)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        registration = executor.submit(
+            runtime_state_store.register_active_stream,
+            user_id, "chat-thread", ttl_s=60, scope_id=protected,
+        )
+        try:
+            assert inserted.wait(timeout=5)
+            creation = executor.submit(thread_store.create_thread, user_id)
+            with pytest.raises(TimeoutError):
+                creation.result(timeout=0.05)
+        finally:
+            finish_registration.set()
+        activity_id = registration.result(timeout=5)
+        newest = creation.result(timeout=5)
+    assert thread_store.get_thread(user_id, protected) is not None
+    assert thread_store.get_thread(user_id, newest["id"]) is not None
+    runtime_state_store.release_active_stream(activity_id)

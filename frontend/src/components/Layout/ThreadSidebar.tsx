@@ -20,6 +20,14 @@ interface ThreadSidebarProps {
 
 // Matches settings.max_threads_per_user in backend/config.py.
 const MAX_THREADS = 5;
+const DEFAULT_HISTORY_WIDTH = 240;
+const MIN_HISTORY_WIDTH = 200;
+const MAX_HISTORY_WIDTH = 480;
+const MIN_WORKSPACE_WIDTH = 640;
+
+function historyMaxWidth(availableWidth: number): number {
+  return Math.max(MIN_HISTORY_WIDTH, Math.min(MAX_HISTORY_WIDTH, availableWidth - MIN_WORKSPACE_WIDTH));
+}
 export const HISTORY_OVERLAY_QUERY = '(max-width: 1279px)';
 
 type Group = 'Today' | 'Yesterday' | 'This week' | 'Older';
@@ -69,6 +77,35 @@ export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
   const newChatRef = useRef<HTMLButtonElement>(null);
   const pendingNewChatFocusRef = useRef(false);
   const confirmationRef = useRef<HTMLDivElement>(null);
+  const [historyWidth, setHistoryWidth] = useState(DEFAULT_HISTORY_WIDTH);
+  const [maxHistoryWidth, setMaxHistoryWidth] = useState(() => historyMaxWidth(window.innerWidth));
+  const previousBodyStyle = useRef({ cursor: '', userSelect: '' });
+  const resizeRef = useRef<{ pointerId: number; startX: number; startWidth: number; target: HTMLDivElement } | null>(null);
+
+  const finishResize = useCallback(() => {
+    const resize = resizeRef.current;
+    if (!resize) return;
+    resizeRef.current = null;
+    Object.assign(document.body.style, previousBodyStyle.current);
+    if (resize?.target.hasPointerCapture(resize.pointerId)) resize.target.releasePointerCapture(resize.pointerId);
+  }, []);
+
+  useEffect(() => {
+    const updateBounds = () => {
+      const availableWidth = dialogRef.current?.parentElement?.clientWidth || window.innerWidth;
+      const maximum = historyMaxWidth(availableWidth);
+      setMaxHistoryWidth(maximum);
+      setHistoryWidth(width => Math.min(width, maximum));
+    };
+    const frame = window.requestAnimationFrame(updateBounds);
+    window.addEventListener('resize', updateBounds);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', updateBounds);
+    };
+  }, []);
+
+  useEffect(() => () => finishResize(), [isOpen, isDrawer, finishResize]);
 
   useEffect(() => {
     const query = window.matchMedia?.(HISTORY_OVERLAY_QUERY);
@@ -193,6 +230,7 @@ export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
 
   return (
     <dialog ref={dialogRef} id="chat-history" aria-label="Chat history"
+      style={isDrawer ? undefined : { width: historyWidth }}
       aria-modal={isDrawer ? true : undefined}
       inert={!isOpen} aria-hidden={!isOpen}
       className={`thread-sidebar ${isDrawer ? 'thread-sidebar--drawer' : 'thread-sidebar--inline'} ${isOpen ? 'thread-sidebar--open' : 'thread-sidebar--closed'}`}
@@ -206,6 +244,41 @@ export function ThreadSidebar({ authSession, activeThreadId, backendReadiness,
         const rect = event.currentTarget.getBoundingClientRect();
         if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) onClose?.();
       }}>
+      {!isDrawer && <div role="separator" tabIndex={0} className="thread-sidebar__resize"
+        aria-label="Resize chat history" aria-orientation="vertical" aria-controls="chat-history"
+        aria-valuemin={MIN_HISTORY_WIDTH} aria-valuemax={maxHistoryWidth} aria-valuenow={historyWidth}
+        aria-valuetext={`${historyWidth} pixels`} aria-keyshortcuts="ArrowLeft ArrowRight Home End Enter"
+        title="Drag to resize. Use arrow keys to adjust, or double-click or press Enter to reset."
+        onPointerDown={event => {
+          if (event.button !== 0 || resizeRef.current) return;
+          event.preventDefault();
+          event.currentTarget.focus();
+          event.currentTarget.setPointerCapture(event.pointerId);
+          resizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startWidth: historyWidth, target: event.currentTarget };
+          previousBodyStyle.current = { cursor: document.body.style.cursor, userSelect: document.body.style.userSelect };
+          document.body.style.cursor = 'col-resize';
+          document.body.style.userSelect = 'none';
+        }}
+        onPointerMove={event => {
+          const resize = resizeRef.current;
+          if (!resize || resize.pointerId !== event.pointerId) return;
+          setHistoryWidth(Math.max(MIN_HISTORY_WIDTH, Math.min(maxHistoryWidth, resize.startWidth + event.clientX - resize.startX)));
+        }}
+        onPointerUp={event => { if (resizeRef.current?.pointerId === event.pointerId) finishResize(); }}
+        onPointerCancel={event => { if (resizeRef.current?.pointerId === event.pointerId) finishResize(); }}
+        onLostPointerCapture={finishResize}
+        onDoubleClick={() => setHistoryWidth(Math.min(DEFAULT_HISTORY_WIDTH, maxHistoryWidth))}
+        onKeyDown={event => {
+          const step = event.shiftKey ? 50 : 10;
+          const nextWidth = event.key === 'ArrowLeft' ? historyWidth - step
+            : event.key === 'ArrowRight' ? historyWidth + step
+            : event.key === 'Home' ? MIN_HISTORY_WIDTH
+            : event.key === 'End' ? maxHistoryWidth
+            : event.key === 'Enter' ? DEFAULT_HISTORY_WIDTH : null;
+          if (nextWidth === null) return;
+          event.preventDefault();
+          setHistoryWidth(Math.max(MIN_HISTORY_WIDTH, Math.min(maxHistoryWidth, nextWidth)));
+        }} />}
       <div className="thread-sidebar__inner">
         <div className="thread-sidebar__heading">
           <h2>Chat history</h2>

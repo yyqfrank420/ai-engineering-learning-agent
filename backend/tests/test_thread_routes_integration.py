@@ -113,7 +113,7 @@ def test_thread_routes_create_list_latest_get_update_and_delete(temp_data_dir):
         assert persist_turn(
             "user-1",
             thread_id,
-            title="Launch plan",
+            expected_graph_version=None, base_revision_id=None, title="Launch plan",
             user_content="hello",
             assistant_content="hi",
             graph_data=current_graph,
@@ -197,7 +197,7 @@ def test_sse_rechecks_draft_after_lease_admission(temp_data_dir, monkeypatch):
     app = _app()
     app.state.vectorstore = object()
     app.state.parent_docs = [{"page_content": "agent design"}]
-    acquire = runtime_state_store.try_acquire_active_stream
+    acquire = runtime_state_store.register_active_stream
     agent = AsyncMock()
     monkeypatch.setattr(sse_handler, "run_agent", agent)
 
@@ -207,7 +207,7 @@ def test_sse_rechecks_draft_after_lease_admission(temp_data_dir, monkeypatch):
         return acquire(user_id, stream_type, **kwargs)
 
     monkeypatch.setattr(
-        runtime_state_store, "try_acquire_active_stream", admission_after_eviction
+        runtime_state_store, "register_active_stream", admission_after_eviction
     )
     with TestClient(app) as client:
         response = client.post(
@@ -256,7 +256,7 @@ def test_thread_routes_reject_missing_thread_and_oversized_payloads(temp_data_di
     assert persist_turn(
         "user-1",
         thread_with_graph["id"],
-        title="Existing",
+        expected_graph_version=None, base_revision_id=None, title="Existing",
         user_content="question",
         assistant_content="answer",
         graph_data=current_graph,

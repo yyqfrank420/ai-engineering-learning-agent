@@ -166,6 +166,8 @@ describe('ChatInput', () => {
     fireEvent.keyDown(input, { key: 'Enter' });
     expect(checkSubmission).toHaveBeenCalledOnce();
     expect(onSend).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/Preparing your request/i)).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
     expect(input.value).toBe('Explain the arrows');
     await act(async () => reject(new Error('Send was not accepted.')));
     expect(screen.getByRole('alert').textContent).toBe('Send was not accepted.');
@@ -236,6 +238,9 @@ describe('ChatInput', () => {
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     fireEvent.keyDown(screen.getByRole('textbox'), { key: 'Enter' });
     expect(checkSubmission).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/Preparing your request/i)).toBeNull();
+    expect(screen.queryByRole('status')).toBeNull();
+    expect((screen.getByRole('button', { name: 'Send message' }) as HTMLButtonElement).disabled).toBe(true);
     const message = 'Checking your request timed out. Your draft is saved. Please try again.';
     await act(async () => reject(new Error(message)));
     expect(screen.getByRole('alert').textContent).toBe(message);

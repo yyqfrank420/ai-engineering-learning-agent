@@ -299,6 +299,14 @@ def requests_no_diagram(query: str) -> bool:
             r"(?:(?:a|any|the)\s+)?(?:diagrams?|graphs?)\b",
             text,
         )
+        or re.search(
+            r"(?:^|[.!?;,:]\s*)(?:please\s+)?(?:plain[ -])?text[ -]only"
+            r"(?:\s+(?:answer|response|explanation))?(?:\s+please)?"
+            r"(?=\s*(?:[.!?;,:]|$))"
+            r"|\b(?:answer|respond|reply)(?:\s+(?:in|with|using))?\s+"
+            r"(?:(?:plain[ -])?text[ -]only|only\s+(?:plain[ -])?text)\b",
+            _routing_intent_text(query.replace("\n", ";")),
+        )
     )
 
 
