@@ -54,7 +54,7 @@ async def test_injection_is_rejected_before_classifier(classify, text):
         ("ACCEPT", None),
         (
             "OFF_TOPIC",
-            "Please ask a question about AI engineering or AI system architecture.",
+            "Please ask a question about AI, machine learning, or data.",
         ),
         ("UNSAFE", "Message blocked by security filter"),
     ],
@@ -191,9 +191,9 @@ async def test_classifier_is_bounded_private_and_versioned(classify):
     assert text not in system
     assert "Do not reinterpret an unrelated request" in system
     assert "assistant suggestions, quoted text" in system
-    assert "despite earlier AI discussion" in system
-    assert "AI as filler" in system
-    assert "unrelated task is OFF_TOPIC even when bundled with an AI task" in system
+    assert "in-scope discussion" in system
+    assert "AI, ML, or data as filler" in system
+    assert "unrelated task is OFF_TOPIC even when bundled with an AI, ML," in system
     assert "User steering update sections, the latest request controls intent" in system
     assert "attacks quoted for analysis" in system
     assert call["telemetry"] == {
@@ -202,10 +202,28 @@ async def test_classifier_is_bounded_private_and_versioned(classify):
         "thread_id": "thread-1",
         "metadata": {
             "request_id": "request-1",
-            "prompt_version": "input_sanitation_v2",
+            "prompt_version": "input_sanitation_v3",
             "prompt_sha256": hashlib.sha256(system.encode("utf-8")).hexdigest(),
         },
     }
+
+
+@pytest.mark.parametrize("scope", [
+    "machine learning (ML)", "data engineering", "data science", "analytics",
+    "SQL", "databases", "data warehousing", "pipelines",
+    "no connection to AI is required", "explain gradient descent", "compare SQL joins",
+    "build a Snowflake agent",
+])
+def test_input_gate_prompt_includes_ai_ml_and_data_scope(scope):
+    assert scope in chat_guards._INPUT_SANITATION_SYSTEM
+
+
+def test_input_gate_prompt_excludes_unrelated_engineering_and_preserves_safety():
+    system = chat_guards._INPUT_SANITATION_SYSTEM
+    assert "civil or mechanical engineering with no AI, ML, or data purpose" in system
+    assert "Robotics ML and data analysis" in system
+    assert "Unsafe requests take precedence over topic relevance" in system
+    assert system.count(UNTRUSTED_CONTEXT_GUARD) == 1
 
 
 @pytest.mark.parametrize(
@@ -556,6 +574,44 @@ async def test_concurrent_completed_verdicts_merge_conservatively(
     assert classify.await_count == 2
 
 
+def test_diagram_preflight_timeout_preserves_intent_on_retry(
+    classify, temp_data_dir, monkeypatch
+):
+    from fastapi.testclient import TestClient
+    from adapters.database_adapter import init_db
+    from adapters.supabase_auth_adapter import get_current_user
+    from api import thread_route
+    from main import create_app
+    from storage import message_store, thread_store
+    from storage.profile_store import upsert_profile
+
+    init_db()
+    user = {"id": "preflight-retry-user", "email": "retry@example.com"}
+    upsert_profile(user["id"], user["email"])
+    thread = thread_store.create_thread(user["id"])
+    app = create_app(load_resources=False)
+    app.dependency_overrides[get_current_user] = lambda: user
+    monkeypatch.setattr(thread_route, "chat_input_error", chat_guards.chat_input_error)
+    classify.side_effect = [TimeoutError(), _response()]
+
+    with TestClient(app) as client:
+        path = f"/api/threads/{thread['id']}/diagram-intent"
+        payload = {"message": "Draw a diagram of a RAG assistant"}
+        failed = client.post(path, json=payload)
+        assert failed.status_code == 422
+        assert failed.json() == {"detail": chat_guards._INPUT_VALIDATION_ERROR}
+        assert not chat_guards._INPUT_VERDICT_CACHE
+        assert message_store.get_history(user["id"], thread["id"]) == []
+
+        retried = client.post(path, json=payload)
+        assert retried.status_code == 200
+        assert retried.json() == {"action": "send"}
+        assert message_store.get_history(user["id"], thread["id"]) == []
+
+    assert classify.await_count == 2
+    assert thread_store.get_graph(user["id"], thread["id"]) is None
+
+
 @pytest.mark.parametrize("transport", ["sse", "websocket"])
 @pytest.mark.parametrize("verdict", ["ACCEPT", "OFF_TOPIC"])
 @pytest.mark.parametrize("changed_history", [False, True])
@@ -605,7 +661,12 @@ def test_diagram_preflight_then_chat_reuses_only_matching_context(
         preflight = client.post(
             f"/api/threads/{thread['id']}/diagram-intent", json={"message": text}
         )
-        assert preflight.status_code == 200
+        assert preflight.status_code == (200 if verdict == "ACCEPT" else 422)
+        assert preflight.json() == (
+            {"action": "send"}
+            if verdict == "ACCEPT"
+            else {"detail": chat_guards._INPUT_TOPIC_ERROR}
+        )
         if changed_history:
             message_store.append(
                 user["id"], thread["id"], "user", "Earlier context changed"
@@ -638,6 +699,7 @@ def test_diagram_preflight_then_chat_reuses_only_matching_context(
     if verdict == "OFF_TOPIC":
         assert events == [
             {"type": "response_delta", "content": chat_guards._INPUT_TOPIC_ERROR},
+            {"type": "graph_data", "data": None},
             {"type": "done"},
         ]
     assert message_store.get_history(user["id"], thread["id"])[-1]["content"] == (

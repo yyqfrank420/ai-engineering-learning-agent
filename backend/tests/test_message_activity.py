@@ -31,6 +31,7 @@ def save_turn(thread_id, value=None, request_id="request"):
     return persist_turn(
         "owner", thread_id, title="Diagram", user_content="Draw it",
         assistant_content="Here is the answer.", graph_data=None,
+        expected_graph_version=None, base_revision_id=None,
         client_request_id=request_id, activity=value,
     )
 

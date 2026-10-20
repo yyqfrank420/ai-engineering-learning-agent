@@ -28,6 +28,9 @@ describe('MessageList', () => {
     const user = { id: 'user', role: 'user' as const, content: 'Question' };
     const view = render(<MessageList messages={[user]} liveActivity={liveActivity} />);
     const details = view.container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
     expect(details.open).toBe(true);
     const answer = { id: 'answer', role: 'assistant' as const, clientRequestId: 'run', content: 'Answer' };
     view.rerender(<MessageList messages={[user, answer]} liveActivity={liveActivity} />);
@@ -261,8 +264,10 @@ describe('MessageList', () => {
       content: labels.map((label) => `([${label}](${label}))`).join(' '),
     }]} />);
 
-    expect(screen.getByText(labels.map((label) => `(${label})`).join(' '))).toBeTruthy();
-    expect(container.querySelector('a')).toBeNull();
+    expect(container.querySelector('.message-markdown > p')?.textContent).toBe('([1]) ([2]) ([3]) ([4])');
+    expect(container.querySelector('details')?.open).toBe(false);
+    expect([...container.querySelectorAll('.message-sources li')].map(node => node.textContent)).toEqual(labels);
+    expect(container.querySelector('.message-sources a')).toBeNull();
   });
 
   it('preserves code, real links, mismatched citations and unsupported book labels', () => {
@@ -274,6 +279,7 @@ describe('MessageList', () => {
       '[Book, p.0](Book, p.0)',
       '[Chapter 2, pp.3-4](Chapter 2, pp.3-4)',
       '[Chapter two](Chapter two)',
+      '![Chapter 3](Chapter 3)',
     ];
     const { container } = render(<MessageList messages={[{
       id: 'citation-boundaries', role: 'assistant',
@@ -307,6 +313,101 @@ describe('MessageList', () => {
     const content = '([Chapter 10, p.473](Chapter 10, p.473))';
     render(<MessageList messages={[{ id: 'user-citation', role: 'user', content }]} />);
     expect(screen.getByText(content)).toBeTruthy();
+  });
+
+  it('collects assistant links and book locations into one collapsed deduplicated disclosure', () => {
+    const content = 'Read [the guide](https://example.com/guide), https://example.com/guide and <https://example.com/other>. ' +
+      'Details (Chapter 6, p.299), repeated (Chapter 6, p.299).\n\n[Reference][guide]\n\n[guide]: https://example.com/guide';
+    const { container } = render(<MessageList messages={[{ id: 'sources', role: 'assistant', content }]} />);
+    const details = container.querySelector('details')!;
+    expect(details.open).toBe(false);
+    expect(screen.getByText('Sources (3)')).toBeTruthy();
+    expect(details.querySelectorAll('li')).toHaveLength(3);
+    const prose = container.querySelector('.message-markdown > p')!;
+    expect(prose.textContent).toContain('Read the guide [1], [1] and [2].');
+    expect(prose.textContent).not.toContain('https://');
+    expect(prose.textContent).not.toContain('Chapter 6');
+    expect(content).toContain('(Chapter 6, p.299)');
+    const reference = screen.getAllByRole('link', { name: 'Source 3: Chapter 6, p.299' })[0];
+    reference.focus();
+    fireEvent.click(reference);
+    expect(details.open).toBe(true);
+    expect(document.activeElement).toBe(details.querySelectorAll('li')[2]);
+    expect(details.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
+  });
+
+  it('preserves source disclosure identity and open state during streaming with math', () => {
+    const answer = { id: 'stream', role: 'assistant' as const, isStreaming: true, content: 'https://example.com/one $x$' };
+    const view = render(<MessageList messages={[answer]} />);
+    const details = view.container.querySelector('details')!;
+    details.open = true;
+    view.rerender(<MessageList messages={[{ ...answer, content: answer.content + ' https://example.com/two $$y = 2$$' }]} />);
+    expect(view.container.querySelectorAll('details')).toHaveLength(1);
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(details.open).toBe(true);
+    expect(details.querySelectorAll('li')).toHaveLength(2);
+    expect(view.container.querySelectorAll('.katex')).toHaveLength(2);
+    expect(view.container.querySelector('p .katex-display')).toBeNull();
+  });
+
+  it('preserves code, escaped citations and user links while keeping unsafe links inert', () => {
+    const content = String.raw`\[Chapter 3\]\(Chapter 3\) and \*literal\*.
+
+${"`"}https://example.com/code $code$ (Chapter 6, p.299)${"`"}
+
+[unsafe](javascript:alert) ![pixel](https://example.com/pixel)
+
+$\frac{x}{y}$`;
+    const { container } = render(<MessageList messages={[
+      { id: 'safe', role: 'assistant', content },
+      { id: 'user-links', role: 'user', content: 'https://example.com/user (Chapter 6, p.299)' },
+    ]} />);
+    expect(container.querySelector('details')).toBeNull();
+    expect(container.querySelector('code')?.textContent).toContain('$code$');
+    expect(container.querySelector('.message-user a')?.getAttribute('href')).toBe('https://example.com/user');
+    expect(screen.getByText('unsafe').getAttribute('href')).toBe('');
+    expect(container.querySelector('img')).toBeNull();
+    expect(container.querySelectorAll('.katex')).toHaveLength(1);
+  });
+
+  it('parses math before Markdown formatting and preserves escaped dollars and code', () => {
+    const { container } = render(<MessageList messages={[{ id: 'math', role: 'assistant', content: String.raw`$a *b* + \{c\}$
+
+$$\begin{matrix}a & b \\ c & d\end{matrix}$$
+
+Escaped \$5 and identifier ${"`"}USER$${"`"}.
+
+https://example.com/math` }]} />);
+    expect(container.querySelectorAll('.katex')).toHaveLength(2);
+    expect(container.querySelector('em')).toBeNull();
+    expect([...container.querySelectorAll('annotation')].map(node => node.textContent)).toEqual([
+      String.raw`a *b* + \{c\}`, String.raw`\begin{matrix}a & b \\ c & d\end{matrix}`,
+    ]);
+    expect(container.querySelector('code')?.textContent).toBe('USER$');
+    expect(container.querySelector('.message-markdown')?.textContent).toContain('Escaped $5');
+    expect(container.querySelectorAll('details')).toHaveLength(1);
+  });
+
+  it.each(['assistant', 'user'] as const)('renders math inside %s link labels without extracting nested book citations', (role) => {
+    const content = '[loss $L$ (Chapter 6, p.299)](https://example.com/loss) and [**risk** $R$ (Book excerpt)][risk].\n\n[risk]: https://example.com/risk';
+    const { container } = render(<MessageList messages={[{ id: 'math-links', role, content }]} />);
+    const markdown = container.querySelector('.message-markdown')!;
+    expect(markdown.querySelectorAll('.katex')).toHaveLength(2);
+    expect([...markdown.querySelectorAll('annotation')].map(node => node.textContent)).toEqual(['L', 'R']);
+    expect(markdown.querySelector('code')).toBeNull();
+    expect(markdown.querySelector('strong')?.textContent).toBe('risk');
+    if (role === 'assistant') {
+      expect(markdown.querySelector('summary')?.textContent).toBe('Sources (2)');
+      expect(markdown.querySelectorAll('.message-source-reference')).toHaveLength(2);
+      expect(markdown.querySelector('p')?.textContent).toContain('(Chapter 6, p.299)');
+      expect(markdown.querySelector('p')?.textContent).toContain('(Book excerpt)');
+    } else {
+      expect(markdown.querySelector('details')).toBeNull();
+      expect(markdown.querySelectorAll('a .katex')).toHaveLength(2);
+      expect([...markdown.querySelectorAll('a')].map(node => node.getAttribute('href'))).toEqual([
+        'https://example.com/loss', 'https://example.com/risk',
+      ]);
+    }
   });
 
   it('renders a stable empty state', () => {

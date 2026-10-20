@@ -37,8 +37,8 @@ Learners ask for a system, inspect its graph, follow its execution sequence, sel
 components for explanations, and request changes or local expansion through chat.
 They also arrange blocks, move zones, and reshape zone borders.
 
-Generation can take one to two minutes. Learners need understandable activity feedback
-throughout that wait, followed by a diagram and an explanation that agree.
+Generation time varies with the requested depth. Learners need visible activity
+that updates throughout the work, followed by a diagram and an explanation that agree.
 
 On narrow workspaces, Chat and Diagram views each use the available workspace.
 Switching views preserves conversation drafts, diagram state, and editing controls.
@@ -51,10 +51,16 @@ portrait, landscape, and software-keyboard layouts.
 - Keep D3 as the diagram renderer for direct control over appearance and interaction.
   Improve the existing renderer without migrating to another editor framework.
 - Validate topic relevance and prompt injection before routing, retrieval, or diagram work.
-  Redirect unrelated requests to AI engineering and AI system architecture.
+  Accept AI, machine learning, and data topics, including independent data science,
+  analytics, SQL, databases, warehouses, and pipelines. Redirect unrelated requests
+  to this scope.
   Explicit unrelated follow-ups stay out of scope even when a prior diagram exists.
 - The composer always uses automatic depth with diagrams and research enabled.
-  Broad learning requests include a diagram without a separate choice dialog.
+  Unhinted applied designs begin at prototype depth so learners get a clear overview
+  they can expand. Explicit production requests and requirements retain production depth.
+  First accepted AI, ML, or data requests without a saved graph attempt a diagram,
+  including conceptual questions and API retries. Explicit answer-only and no-diagram
+  requests are respected. Broad learning requests include a diagram without a separate choice dialog.
   Follow-up explanations preserve the current diagram unless a change is requested.
 - A successful diagram request produces a fresh custom diagram. Cached or reference
   diagrams do not substitute for generation. Provider and connection failures must
@@ -64,6 +70,8 @@ portrait, landscape, and software-keyboard layouts.
 - Reduce initial information density without removing architectural depth. Keep
   component responsibilities and connection details available through interaction.
 - Show concise live activity from actual workflow events after input validation.
+  Keep recent work visible even when the full history is collapsed. Long drafting
+  and review calls report observed activity without exposing private reasoning.
   Empty activity and rejected requests have no thinking panel. Keep one
   Stop control in the composer and use an upward arrow for sending. Stop during a
   rendered preview accepts that candidate and skips remaining AI reviews. If only

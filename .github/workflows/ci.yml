@@ -72,8 +72,24 @@ jobs:
         with:
           terraform_version: 1.11.4
 
+      - name: Start disposable Postgres for storage checks
+        if: matrix.group == 'backend-coverage' || matrix.group == 'storage-security' || matrix.group == 'infra-migrations'
+        run: |
+          docker run --detach --name ci-storage-postgres --publish 127.0.0.1::5432 --env POSTGRES_PASSWORD=ci-local-only postgres:17.6
+          for attempt in $(seq 1 30); do
+            if docker exec ci-storage-postgres pg_isready -U postgres; then break; fi
+            sleep 1
+          done
+          docker exec ci-storage-postgres psql -v ON_ERROR_STOP=1 -U postgres -c 'CREATE ROLE anon; CREATE ROLE authenticated;'
+          port="$(docker port ci-storage-postgres 5432/tcp | cut -d: -f2)"
+          echo "MESSAGE_SEQUENCE_TEST_DATABASE_URL=postgresql://postgres:ci-local-only@127.0.0.1:$port/postgres" >> "$GITHUB_ENV"
+
       - name: Run canonical offline group
         run: ./scripts/ci offline --group '${{ matrix.group }}' --event-file "$GITHUB_EVENT_PATH"
+
+      - name: Stop disposable Postgres
+        if: always() && (matrix.group == 'backend-coverage' || matrix.group == 'storage-security' || matrix.group == 'infra-migrations')
+        run: docker rm --force ci-storage-postgres
 
   ci-required:
     name: CI required

@@ -377,6 +377,34 @@ Answer in the same language as the user's latest message unless they ask to swit
 </guardrails>"""
 
 
+def _continued_design_query(user_message: str, history: list[dict]) -> str | None:
+    intent_text = _routing_intent_text(user_message)
+    if (
+        is_applied_system_design_request(user_message)
+        or _CONCEPT_QUESTION.match(intent_text)
+        or _TOPIC_SWITCH_REQUEST.match(intent_text)
+    ):
+        return None
+    user_requirements = [user_message]
+    for message in reversed(history):
+        if message.get("role") != "user" or not isinstance(message.get("content"), str):
+            continue
+        content = message["content"]
+        intent_text = _routing_intent_text(content)
+        if is_applied_system_design_request(content):
+            return (
+                content
+                + "\n\nAdditional user requirements:\n"
+                + "\n".join(reversed(user_requirements))
+            )
+        # A new explanatory topic closes the prior design's constraint chain.
+        if _CONCEPT_QUESTION.match(intent_text) or _TOPIC_SWITCH_REQUEST.match(intent_text):
+            break
+        if intent_text:
+            user_requirements.append(content)
+    return None
+
+
 async def orchestrator_route(state: AgentState) -> AgentState:
     """
     Phase 0: determine whether to use memory or fan out to workers.
@@ -429,7 +457,16 @@ async def orchestrator_route(state: AgentState) -> AgentState:
         state.get("graph_data"),
     )
     if graph_intent in {"create", "edit"}:
-        return {**state, "route": "search"}
+        continued_query = (
+            _continued_design_query(state["user_message"], state.get("history") or [])
+            if graph_intent == "create" and not state.get("graph_data")
+            else None
+        )
+        return {
+            **state,
+            "route": "search",
+            **({"design_query": continued_query} if continued_query else {}),
+        }
 
     if _is_memory_followup(state.get("user_message", ""), state.get("history") or []):
         return {**state, "route": "memory"}
@@ -485,30 +522,16 @@ async def orchestrator_route(state: AgentState) -> AgentState:
 
     token = route_token.strip().upper()
     if token == "DESIGN" and state.get("graph_mode", "auto") != "off":
-        user_requirements = [state["user_message"]]
-        for message in reversed(state.get("history") or []):
-            if message.get("role") != "user" or not isinstance(
-                message.get("content"), str
-            ):
-                continue
-            content = message["content"]
-            intent_text = _routing_intent_text(content)
-            if is_applied_system_design_request(content):
-                return {
-                    **state,
-                    "route": "search",
-                    "graph_intent": "create",
-                    "design_query": content
-                    + "\n\nAdditional user requirements:\n"
-                    + "\n".join(reversed(user_requirements)),
-                }
-            # A new explanatory topic closes the prior design's constraint chain.
-            if _CONCEPT_QUESTION.match(intent_text) or _TOPIC_SWITCH_REQUEST.match(
-                intent_text
-            ):
-                break
-            if intent_text:
-                user_requirements.append(content)
+        continued_query = _continued_design_query(
+            state["user_message"], state.get("history") or []
+        )
+        if continued_query:
+            return {
+                **state,
+                "route": "search",
+                "graph_intent": "create",
+                "design_query": continued_query,
+            }
     if token == "SIMPLE":
         route = "simple"
     elif token == "MEMORY":

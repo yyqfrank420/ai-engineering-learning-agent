@@ -9,11 +9,12 @@ want. It never turns the word "ask" into automatic permission to replace a diagr
 The composer retains the draft during intent checks and failed thread creation. A clear
 addition can extend the current diagram; uncertain intent offers Extend this diagram and
 Start a new chat. The separate option creates and opens a new conversation before sending
-its request. Requests for explanations keep the current diagram. Initial broad learning
-requests still produce a custom diagram without a choice screen.
+its request. Requests for explanations keep the current diagram. First accepted AI, ML, and data
+requests attempt a custom diagram without a choice screen, including conceptual questions.
+Only an explicit answer-only or no-diagram request opts out.
 
-Typed graph actions travel through both transports. The server checks the current graph
-under the shared thread lease before provider calls. Extension requires the expected
+Typed graph actions travel through both transports. The server reads the current graph and revision together before provider calls.
+Concurrent requests are admitted without account-wide or thread-exclusive generation locks. Extension requires the expected
 current graph version. A new diagram cannot replace an existing diagram in the same chat.
 Stale clients get a visible conflict. Agent entry also enforces this invariant for steering
 and internal callers.
@@ -33,7 +34,10 @@ The database owns graph revisions. Each checkpoint stores graph content and its 
 server-only semantic contract. Parent links retain the branch created by an edit after
 Undo. A thread points to its active revision; its current graph is the materialized working
 copy. Assistant messages link to the revision produced by their turn. No graph contract is
-returned through a public history response.
+returned through a public history response. Concurrent generation commits compare their
+base version and active revision. A result based on an older graph becomes a historical
+branch linked to its answer, without replacing the newer active graph. Both answers and
+their diagram revisions remain available.
 
 Undo restores the active revision's parent. During the session, Redo follows the path just
 undone. Explicit restore, a content change, or a thread switch clears that path; without a

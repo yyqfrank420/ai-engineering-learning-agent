@@ -1643,6 +1643,152 @@ async def test_stream_structured_llm_collects_text_and_usage_metadata(monkeypatc
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["components", "connections", "review"])
+async def test_structured_progress_uses_observed_chunks_and_five_second_cadence(
+    monkeypatch, phase
+):
+    import agent.stream_utils as stream_utils
+
+    now = [100.0]
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def provider(**_kwargs):
+        for elapsed, kind, content in [
+            (0.5, "response_metadata", '{}'),
+            (1.0, "thinking", ""),
+            (1.5, "text", ""),
+            (2.0, "signature", "PRIVATE_SIGNATURE"),
+            (2.5, "thinking", "PRIVATE_THOUGHT"),
+            (7.49, "thinking", "PRIVATE_THOUGHT"),
+            (7.5, "text", '{"private_answer":'),
+            (12.49, "thinking", "PRIVATE_THOUGHT"),
+            (12.5, "text", '"retained"}'),
+            (30.0, "response_metadata", json.dumps({
+                "finish_reason": "end_turn", "input_tokens": 42,
+                "output_tokens": 17, "provider": "test", "model": "model",
+            })),
+        ]:
+            now[0] = 100 + elapsed
+            yield kind, content
+
+    monkeypatch.setattr(stream_utils, "monotonic", lambda: now[0])
+    monkeypatch.setattr(stream_utils, "stream_response", provider)
+    result = await stream_utils.stream_structured_llm(
+        model="model", system="system", messages=[], response_schema={},
+        temperature=0, effort="low", send=send, progress_phase=phase,
+    )
+    assert events == [
+        {"type": "workflow_progress", "phase": phase, "status": "active",
+         "stream_elapsed_ms": elapsed}
+        for elapsed in (2500, 7500, 12500)
+    ]
+    assert result.text == '{"private_answer":"retained"}'
+    assert (result.input_tokens, result.output_tokens) == (42, 17)
+    assert result.finish_reason == "end_turn"
+    assert "PRIVATE" not in repr(events)
+    assert "private_answer" not in repr(events)
+
+
+@pytest.mark.asyncio
+async def test_structured_progress_stays_silent_without_nonempty_output_chunks(monkeypatch):
+    import agent.stream_utils as stream_utils
+
+    events = []
+
+    async def send(event):
+        events.append(event)
+
+    async def provider(**_kwargs):
+        yield "thinking", ""
+        yield "text", ""
+        yield "signature", "PRIVATE_SIGNATURE"
+        yield "provider_switch", "private-provider"
+        yield "response_metadata", '{"finish_reason":"end_turn"}'
+
+    monkeypatch.setattr(stream_utils, "stream_response", provider)
+    result = await stream_utils.stream_structured_llm(
+        model="model", system="system", messages=[], response_schema={},
+        temperature=0, effort="low", send=send, progress_phase="review",
+    )
+    assert events == []
+    assert result.text == ""
+    assert result.finish_reason == "end_turn"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["cancel", "timeout"])
+@pytest.mark.parametrize("stall", ["provider", "callback"])
+async def test_structured_progress_preserves_cancellation_timeout_and_stream_cleanup(
+    monkeypatch, failure, stall
+):
+    import agent.stream_utils as stream_utils
+
+    started = asyncio.Event()
+    closed = []
+    events = []
+
+    async def send(event):
+        events.append(event)
+        if stall == "callback":
+            started.set()
+            await asyncio.Future()
+
+    async def provider(**_kwargs):
+        try:
+            yield "thinking", "PRIVATE_THOUGHT"
+            started.set()
+            await asyncio.Future()
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr(stream_utils, "stream_response", provider)
+    task = asyncio.create_task(stream_utils.stream_structured_llm(
+        model="model", system="system", messages=[], response_schema={},
+        temperature=0, effort="low", send=send, progress_phase="components",
+        timeout_seconds=0.02 if failure == "timeout" else None,
+    ))
+    await started.wait()
+    if failure == "cancel":
+        task.cancel()
+    with pytest.raises(asyncio.CancelledError if failure == "cancel" else TimeoutError):
+        await task
+    assert closed == [True]
+    assert len(events) == 1
+    assert set(events[0]) == {"type", "phase", "status", "stream_elapsed_ms"}
+    assert "PRIVATE" not in repr(events)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback,phase,error", [
+    (None, "review", "supplied together"),
+    ("callback", None, "supplied together"),
+    ("callback", "unsupported", "unsupported progress_phase"),
+    (False, "review", "send must be callable"),
+])
+async def test_structured_progress_rejects_invalid_configuration_before_provider(
+    monkeypatch, callback, phase, error
+):
+    import agent.stream_utils as stream_utils
+
+    async def send(_event):
+        pass
+
+    def provider(**_kwargs):
+        raise AssertionError("Invalid progress configuration must not call the provider")
+
+    monkeypatch.setattr(stream_utils, "stream_response", provider)
+    with pytest.raises(ValueError, match=error):
+        await stream_utils.stream_structured_llm(
+            model="model", system="system", messages=[], response_schema={},
+            temperature=0, effort="low",
+            send=send if callback == "callback" else callback, progress_phase=phase,
+        )
+
+
+@pytest.mark.asyncio
 async def test_stream_helpers_reject_non_positive_timeouts():
     import agent.stream_utils as stream_utils
 

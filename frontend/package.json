@@ -16,13 +16,17 @@
     "@phosphor-icons/react": "^2.1.10",
     "@supabase/supabase-js": "^2.101.1",
     "d3": "^7.9.0",
-    "katex": "^0.16.44",
+    "katex": "0.18.2",
     "posthog-js": "^1.278.0",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-katex": "^3.1.0",
     "react-markdown": "^10.1.0",
-    "remark-gfm": "^4.0.1"
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
+  },
+  "overrides": {
+    "katex": "$katex"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.4",

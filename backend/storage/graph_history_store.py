@@ -38,7 +38,17 @@ def append_revision(
     parent_id: str | None,
     source: Literal["generation", "content_edit"],
     label: str | None = None,
+    activate: bool = True,
 ) -> str:
+    if parent_id is not None:
+        parent = conn.execute(
+            _adapt_query(
+                "SELECT id FROM graph_revisions WHERE id = ? AND thread_id = ? AND user_id = ?"
+            ),
+            (parent_id, thread_id, user_id),
+        ).fetchone()
+        if parent is None:
+            raise GraphEditInvalid("Parent graph revision not found")
     revision_id = str(uuid.uuid4())
     number = conn.execute(
         _adapt_query(
@@ -67,12 +77,13 @@ def append_revision(
             source,
         ),
     )
-    conn.execute(
-        _adapt_query(
-            "UPDATE chat_threads SET active_graph_revision_id = ? WHERE id = ? AND user_id = ?"
-        ),
-        (revision_id, thread_id, user_id),
-    )
+    if activate:
+        conn.execute(
+            _adapt_query(
+                "UPDATE chat_threads SET active_graph_revision_id = ? WHERE id = ? AND user_id = ?"
+            ),
+            (revision_id, thread_id, user_id),
+        )
     return revision_id
 
 

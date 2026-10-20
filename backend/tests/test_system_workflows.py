@@ -52,6 +52,7 @@ def test_recruiter_demo_happy_path_system_workflow(temp_data_dir, monkeypatch):
         await state["send"]({"type": "done"})
         return {
             **state,
+            "graph_publication": "approved",
             "response_text": "Agents can plan and use tools.",
             "graph_data": {
                 "graph_type": "concept",

@@ -80,8 +80,9 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
     now_epoch = time.time()
     with _connect() as conn:
         if settings.use_postgres:
+            # Serialize retention without blocking message foreign-key reads.
             profile = conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
             if profile is None:
@@ -111,7 +112,7 @@ def create_thread(user_id: str, title: str = "New chat") -> dict:
         ).fetchone()
         thread = dict(row) if row else None
 
-        # Blank drafts have a separate bound from saved history. A chat lease
+        # Blank drafts have a separate bound from saved history. Chat activity
         # protects a first turn until it either commits or stops.
         idle_drafts = conn.execute(
             _adapt_query(
@@ -257,8 +258,8 @@ def get_graph(user_id: str, thread_id: str) -> dict | None:
 def get_graph_artifact(
     user_id: str,
     thread_id: str,
-) -> tuple[dict | None, dict | None]:
-    """Return the persisted graph and server-only contract for workflow recovery.
+) -> tuple[dict | None, dict | None, str | None]:
+    """Return one snapshot of graph, server-only contract, and active revision.
 
     Thread API reads deliberately select only ``graph_data``. Keep callers that
     need the contract on this storage boundary rather than adding it to thread
@@ -266,14 +267,14 @@ def get_graph_artifact(
     """
     row = fetchone(
         """
-        SELECT graph_data, graph_contract
+        SELECT graph_data, graph_contract, active_graph_revision_id
         FROM chat_threads
         WHERE id = ? AND user_id = ?
         """,
         (thread_id, user_id),
     )
     if row is None:
-        return None, None
+        return None, None, None
 
     def deserialize(value: object) -> dict | None:
         if value is None:
@@ -284,10 +285,15 @@ def get_graph_artifact(
             return None
         return parsed if isinstance(parsed, dict) else None
 
+    revision_id = (
+        str(row["active_graph_revision_id"])
+        if row.get("active_graph_revision_id")
+        else None
+    )
     graph_data = deserialize(row.get("graph_data"))
     graph_contract = deserialize(row.get("graph_contract"))
     if graph_contract is None:
-        return graph_data, None
+        return graph_data, None, revision_id
 
     graph_version = graph_data.get("version") if graph_data is not None else None
     contract_version = graph_contract.get("graph_version")
@@ -300,9 +306,9 @@ def get_graph_artifact(
             "thread_store: ignoring graph contract with invalid graph_version for thread %s",
             thread_id,
         )
-        return graph_data, None
+        return graph_data, None, revision_id
 
-    return graph_data, graph_contract
+    return graph_data, graph_contract, revision_id
 
 
 def save_graph(user_id: str, thread_id: str, graph_data: dict) -> bool:
@@ -513,6 +519,8 @@ def persist_turn(
     user_content: str,
     assistant_content: str,
     graph_data: dict | None,
+    expected_graph_version: str | None,
+    base_revision_id: str | None,
     graph_contract: dict | None = None,
     client_request_id: str | None = None,
     retry_request: dict | None = None,
@@ -523,7 +531,8 @@ def persist_turn(
     Returns False only when the graph exceeds its size limit; the messages and
     thread metadata are still committed together. Reusing a non-null
     ``client_request_id`` returns without duplicating an already completed turn.
-    Any database error rolls the complete turn back, avoiding partial history.
+    A result based on an older graph is archived without replacing the active
+    graph. Any database error rolls the complete turn back.
     """
     serialized_retry = (
         RetryRequest.model_validate(retry_request).model_dump_json()
@@ -565,9 +574,10 @@ def persist_turn(
     with _connect() as conn:
         if settings.use_postgres:
             # Lock the history owner before thread locks to serialize retention
-            # across concurrent completed turns for this user.
+            # across concurrent completed turns for this user. NO KEY UPDATE
+            # permits concurrent message inserts to check their profile FK.
             conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
         else:
@@ -616,20 +626,43 @@ def persist_turn(
             )
 
         revision_id = None
-        if serialized_graph is not None:
-            current = graph_history_store.decode_graph_json(thread["graph_data"])
-            committed = graph_history_store.preserve_latest_layout(graph_data, current)
+        current = graph_history_store.decode_graph_json(thread["graph_data"])
+        current_version = current.get("version") if isinstance(current, dict) else None
+        current_revision_id = (
+            str(thread["active_graph_revision_id"])
+            if thread["active_graph_revision_id"]
+            else None
+        )
+        # Legacy graphs may have no version. The revision pointer also prevents
+        # parallel commits from replacing a versionless result from the same base.
+        matches_base = (
+            current_version == expected_graph_version
+            and current_revision_id == base_revision_id
+        )
+        activate_graph = False
+        if serialized_graph is not None and graph_data != current:
+            committed = (
+                graph_history_store.preserve_latest_layout(graph_data, current)
+                if matches_base
+                else graph_data
+            )
             candidate = json.dumps(committed, ensure_ascii=False)
             if len(candidate.encode("utf-8")) > settings.max_graph_data_bytes:
-                serialized_graph = None
                 graph_saved = False
             else:
-                serialized_graph = candidate
-                parent_id = graph_history_store.seed_current(conn, user_id, thread_id, thread)
+                parent_id = (
+                    graph_history_store.seed_current(conn, user_id, thread_id, thread)
+                    if matches_base
+                    else base_revision_id
+                )
                 if committed != current:
                     revision_id = graph_history_store.append_revision(
                         conn, user_id, thread_id, committed, graph_contract,
-                        parent_id=parent_id, source="generation", label=user_content)
+                        parent_id=parent_id, source="generation", label=user_content,
+                        activate=matches_base,
+                    )
+                    serialized_graph = candidate
+                    activate_graph = matches_base
 
         for role, content in (("user", user_content), ("assistant", assistant_content)):
             conn.execute(
@@ -654,7 +687,7 @@ def persist_turn(
                 ),
             )
 
-        if serialized_graph is not None:
+        if activate_graph:
             conn.execute(
                 _adapt_query(
                     """
@@ -667,28 +700,39 @@ def persist_turn(
                 (title, serialized_graph, serialized_contract, thread_id, user_id),
             )
         else:
+            # A superseded completion can append messages, but cannot rename the
+            # conversation selected by a newer graph result.
             conn.execute(
                 _adapt_query(
                     """
                     UPDATE chat_threads
-                    SET title = ?, updated_at = CURRENT_TIMESTAMP, last_seen_at = CURRENT_TIMESTAMP
+                    SET title = CASE WHEN ? THEN ? ELSE title END,
+                        updated_at = CURRENT_TIMESTAMP, last_seen_at = CURRENT_TIMESTAMP
                     WHERE id = ? AND user_id = ?
                     """
                 ),
-                (title, thread_id, user_id),
+                (matches_base, title, thread_id, user_id),
             )
 
         # Opening a blank composer must never evict a conversation. Apply the
-        # existing history cap only after a completed turn is safely stored.
+        # existing history cap only after a completed turn is safely stored. Active
+        # work may temporarily exceed the cap; the next completion prunes excess.
         prior_threads = conn.execute(
             _adapt_query(
                 """
                 SELECT id FROM chat_threads
                 WHERE user_id = ? AND id <> ? AND {}
+                  AND NOT EXISTS (
+                    SELECT 1 FROM active_streams
+                    WHERE active_streams.user_id = chat_threads.user_id
+                      AND active_streams.stream_type =
+                          'chat-thread:scope:' || CAST(chat_threads.id AS TEXT)
+                      AND active_streams.expires_at_epoch >= ?
+                  )
                 ORDER BY last_seen_at DESC, created_at DESC, id DESC
                 """.format(_HAS_CONTENT_SQL)  # nosec B608
             ),
-            (user_id, thread_id),
+            (user_id, thread_id, time.time()),
         ).fetchall()
         for prior in prior_threads[settings.max_threads_per_user - 1 :]:
             conn.execute(
@@ -721,7 +765,7 @@ def get_completed_turn(
 
     rows = fetchall(
         """
-        SELECT role, content, retry_request, activity
+        SELECT role, content, retry_request, activity, graph_revision_id
         FROM chat_messages
         WHERE user_id = ? AND thread_id = ? AND client_request_id = ?
         """,
@@ -736,7 +780,9 @@ def get_completed_turn(
     assistant_row = next(row for row in rows if row["role"] == "assistant")
     retry_request = decode_retry_request(assistant_row["retry_request"])
     activity = decode_message_activity(assistant_row["activity"])
+    revision_id = assistant_row["graph_revision_id"]
     return {
+        **({"graph_revision_id": str(revision_id)} if revision_id is not None else {}),
         **({"retry_request": retry_request} if retry_request is not None else {}),
         **({"activity": activity} if activity is not None else {}),
         "user_content": content_by_role["user"],

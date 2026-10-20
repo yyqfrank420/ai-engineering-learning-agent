@@ -382,4 +382,93 @@ describe('ThreadSidebar active-work protection', () => {
     if (!isDrawer) chosen.remove();
   });
 
+  it('resizes desktop history with keyboard bounds and reset without changing focus', () => {
+    vi.stubGlobal('innerWidth', 1440);
+    renderSidebar(false);
+    const separator = screen.getByRole('separator', { name: 'Resize chat history' });
+    separator.focus();
+    fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('250');
+    fireEvent.keyDown(separator, { key: 'Home' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('200');
+    fireEvent.keyDown(separator, { key: 'ArrowLeft' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('200');
+    fireEvent.keyDown(separator, { key: 'End' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('480');
+    fireEvent.keyDown(separator, { key: 'ArrowRight' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('480');
+    fireEvent.keyDown(separator, { key: 'Enter' });
+    expect(separator.getAttribute('aria-valuenow')).toBe('240');
+    expect(document.activeElement).toBe(separator);
+  });
+
+  it('clamps captured pointer resizing and preserves existing body styles on cancellation', () => {
+    vi.stubGlobal('innerWidth', 1440);
+    document.body.style.cursor = 'wait';
+    document.body.style.userSelect = 'text';
+    renderSidebar(false);
+    const separator = screen.getByRole('separator', { name: 'Resize chat history' });
+    separator.setPointerCapture = vi.fn();
+    separator.hasPointerCapture = vi.fn(() => true);
+    separator.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(separator, { pointerId: 1, button: 0, clientX: 240 });
+    fireEvent.pointerMove(separator, { pointerId: 2, clientX: 900 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('240');
+    fireEvent.pointerMove(separator, { pointerId: 1, clientX: 900 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('480');
+    fireEvent.pointerMove(separator, { pointerId: 1, clientX: 0 });
+    expect(separator.getAttribute('aria-valuenow')).toBe('200');
+    fireEvent.pointerCancel(separator, { pointerId: 1 });
+    expect(separator.releasePointerCapture).toHaveBeenCalledWith(1);
+    expect(document.body.style.cursor).toBe('wait');
+    expect(document.body.style.userSelect).toBe('text');
+    fireEvent.doubleClick(separator);
+    expect(separator.getAttribute('aria-valuenow')).toBe('240');
+    document.body.style.cursor = '';
+    document.body.style.userSelect = '';
+  });
+
+  it('bounds resized history against its parent and retains the selected width across reopening', () => {
+    vi.stubGlobal('innerWidth', 1440);
+    const props = { authSession: session, activeThreadId: 'thread-1', backendReadiness: 'ready' as const,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
+    const { container, rerender } = render(<ThreadSidebar {...props} />);
+    const separator = screen.getByRole('separator', { name: 'Resize chat history' });
+    fireEvent.keyDown(separator, { key: 'End' });
+    Object.defineProperty(container, 'clientWidth', { configurable: true, value: 1000 });
+    fireEvent(window, new Event('resize'));
+    expect(separator.getAttribute('aria-valuemax')).toBe('360');
+    expect(separator.getAttribute('aria-valuenow')).toBe('360');
+    rerender(<ThreadSidebar {...props} isOpen={false} />);
+    rerender(<ThreadSidebar {...props} />);
+    expect(separator.getAttribute('aria-valuenow')).toBe('360');
+    expect((screen.getByRole('dialog', { name: 'Chat history' }) as HTMLElement).style.width).toBe('360px');
+  });
+
+  it.each(['close', 'unmount', 'capture loss', 'drawer'])('cleans up pointer resizing on %s', reason => {
+    let drawerChange: (() => void) | undefined;
+    const query = { matches: false, addEventListener: vi.fn((_event: string, listener: () => void) => { drawerChange = listener; }), removeEventListener: vi.fn() };
+    vi.stubGlobal('matchMedia', vi.fn(() => query));
+    const props = { authSession: session, activeThreadId: 'thread-1', backendReadiness: 'ready' as const,
+      onNewChat: vi.fn(), onSelectThread: vi.fn(), onDeleteThread: vi.fn(), isLoading: false, isOpen: true };
+    const { rerender, unmount } = render(<ThreadSidebar {...props} />);
+    const separator = screen.getByRole('separator', { name: 'Resize chat history' });
+    separator.setPointerCapture = vi.fn();
+    separator.hasPointerCapture = vi.fn(() => true);
+    separator.releasePointerCapture = vi.fn();
+    fireEvent.pointerDown(separator, { pointerId: 1, button: 0, clientX: 240 });
+    expect(document.body.style.cursor).toBe('col-resize');
+    if (reason === 'close') rerender(<ThreadSidebar {...props} isOpen={false} />);
+    if (reason === 'unmount') unmount();
+    if (reason === 'capture loss') fireEvent.lostPointerCapture(separator, { pointerId: 1 });
+    if (reason === 'drawer') {
+      query.matches = true;
+      act(() => drawerChange?.());
+      expect(screen.queryByRole('separator')).toBeNull();
+      expect((screen.getByRole('dialog', { name: 'Chat history' }) as HTMLElement).style.width).toBe('');
+    }
+    expect(document.body.style.cursor).toBe('');
+    expect(document.body.style.userSelect).toBe('');
+  });
+
 });

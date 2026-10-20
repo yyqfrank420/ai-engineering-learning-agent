@@ -20,7 +20,7 @@ from storage.profile_store import upsert_profile
 _REAL_SCANNER = chat_guards.check_prompt_injection
 _REJECTION_ERRORS = {
     "ACCEPT": None,
-    "OFF_TOPIC": "Please ask a question about AI engineering or AI system architecture.",
+    "OFF_TOPIC": "Please ask a question about AI, machine learning, or data.",
     "UNSAFE": "Message blocked by security filter",
 }
 _REJECTED_CASES = tuple(
@@ -50,8 +50,8 @@ def gate_model(case, monkeypatch):
 
 
 def test_input_gate_corpus_is_immutable_and_identifiable():
-    assert len(INPUT_GATE_CASES) == 10
-    assert len({case.id for case in INPUT_GATE_CASES}) == 10
+    assert len(INPUT_GATE_CASES) == 18
+    assert len({case.id for case in INPUT_GATE_CASES}) == 18
     assert {case.expected_verdict for case in INPUT_GATE_CASES} == {
         "ACCEPT",
         "OFF_TOPIC",
@@ -155,6 +155,7 @@ def _assert_corpus_rejection(case, transport, gate_model, temp_data_dir, monkeyp
     expected_error = _REJECTION_ERRORS[case.expected_verdict]
     assert events == [
         {"type": "response_delta", "content": expected_error},
+        {"type": "graph_data", "data": None},
         {"type": "done"},
     ]
     messages = message_store.get_messages(user["id"], thread["id"])

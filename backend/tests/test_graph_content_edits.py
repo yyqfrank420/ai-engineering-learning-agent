@@ -109,7 +109,7 @@ def _seed(graph=None, contract=None):
     assert persist_turn(
         "user-1",
         thread["id"],
-        title="Payment architecture",
+        expected_graph_version=None, base_revision_id=None, title="Payment architecture",
         user_content="Design payments",
         assistant_content="Here is the architecture.",
         graph_data=graph,
@@ -178,7 +178,7 @@ def test_patch_persists_requested_content_and_preserves_graph_layout(temp_data_d
     assert [node["id"] for node in after["nodes"]] == [
         node["id"] for node in before["nodes"]
     ]
-    assert get_graph_artifact("user-1", thread_id) == (after, None)
+    assert get_graph_artifact("user-1", thread_id)[:2] == (after, None)
 
 
 def test_edit_invalidates_source_claims_and_prior_review_approval(temp_data_dir):
@@ -216,7 +216,7 @@ def test_edit_invalidates_source_claims_and_prior_review_approval(temp_data_dir)
             edges=[{"index": 0, "label": "records approved payment"}],
         )
     assert response.status_code == 200
-    after, stored_contract = get_graph_artifact("user-1", thread_id)
+    after, stored_contract, _revision_id = get_graph_artifact("user-1", thread_id)
     assert after == response.json()["graph_data"]
     assert after["nodes"][0]["user_edited_fields"] == ["description"]
     for field in (
@@ -293,7 +293,7 @@ def test_versionless_legacy_graph_can_be_edited_by_index(temp_data_dir):
     assert after["edges"][0] == before["edges"][0]
     assert after["edges"][1]["label"] == "returns durable receipt"
     assert after["view_state"] == before["view_state"]
-    assert get_graph_artifact("user-1", thread_id) == (after, None)
+    assert get_graph_artifact("user-1", thread_id)[:2] == (after, None)
 
 
 def test_next_chat_turn_reads_the_edited_graph_as_its_baseline(
@@ -376,7 +376,7 @@ def test_noop_keeps_version_and_subsequent_edit_uses_current_version(temp_data_d
         )
         assert same.status_code == 200
         assert same.json()["graph_data"] == before
-        assert get_graph_artifact("user-1", thread_id) == (before, contract)
+        assert get_graph_artifact("user-1", thread_id)[:2] == (before, contract)
 
         changed = _patch(
             client,
@@ -492,6 +492,8 @@ def test_postgres_edit_locks_the_owned_graph_row_before_writing(
                 return Cursor({"graph_data": current, "graph_contract": None, "active_graph_revision_id": "base"})
             if query.startswith("SELECT graph_data, graph_contract FROM graph_revisions"):
                 return Cursor({"graph_data": current, "graph_contract": None})
+            if query.startswith("SELECT id FROM graph_revisions"):
+                return Cursor({"id": "base"})
             if "MAX(revision_number)" in query:
                 return Cursor({"n": 2})
             return Cursor()
@@ -693,10 +695,10 @@ def test_rejects_flow_edit_that_conflicts_with_a_loop_edge(temp_data_dir):
     assert get_graph("user-1", thread_id) == before
 
 
-def test_content_edit_rejects_an_active_generation_lease(temp_data_dir):
+def test_content_edit_allows_an_active_generation(temp_data_dir):
     thread_id, before = _seed()
-    lease = runtime_state_store.try_acquire_active_stream(
-        "user-1", "chat-thread", limit=1, ttl_s=60, scope_id=thread_id
+    lease = runtime_state_store.register_active_stream(
+        "user-1", "chat-thread", ttl_s=60, scope_id=thread_id
     )
     assert lease is not None
     try:
@@ -707,8 +709,8 @@ def test_content_edit_rejects_an_active_generation_lease(temp_data_dir):
                 before["version"],
                 nodes=[{"id": "gateway", "label": "Concurrent edit"}],
             )
-        assert response.status_code == 409
-        assert get_graph("user-1", thread_id) == before
+        assert response.status_code == 200
+        assert get_graph("user-1", thread_id)["version"] != before["version"]
     finally:
         runtime_state_store.release_active_stream(lease)
 

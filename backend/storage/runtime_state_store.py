@@ -103,55 +103,30 @@ def prune_search_tool_requests(*, older_than_epoch: float) -> None:
     )
 
 
-def try_acquire_active_stream(
+def register_active_stream(
     user_id: str,
     stream_type: str,
     *,
-    limit: int,
     ttl_s: float,
     scope_id: str | None = None,
-) -> str | None:
-    if limit <= 0:
-        return str(uuid.uuid4())
-
+) -> str:
+    """Record nonexclusive activity so retention preserves in-flight threads."""
     now = time.time()
     stream_id = str(uuid.uuid4())
-    expires_at = now + ttl_s
     effective_stream_type = f"{stream_type}:scope:{scope_id}" if scope_id else stream_type
-
     with _connect() as conn:
+        # Retention takes this same brief owner lock while selecting/deleting
+        # idle drafts. Registration must be atomic with that decision.
+        # NO KEY UPDATE keeps message foreign-key reads compatible.
         if settings.use_postgres:
-            # Use the same owner lock as draft admission and completed-turn
-            # retention. Every per-user stream count shares this lock order.
             profile = conn.execute(
-                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR UPDATE"),
+                _adapt_query("SELECT id FROM profiles WHERE id = ? FOR NO KEY UPDATE"),
                 (user_id,),
             ).fetchone()
             if profile is None:
                 raise ValueError("Profile does not exist")
         else:
             conn.execute("BEGIN IMMEDIATE")
-
-        conn.execute(
-            _adapt_query(
-                "DELETE FROM active_streams WHERE user_id = ? AND expires_at_epoch < ?"
-            ),
-            (user_id, now),
-        )
-        row = conn.execute(
-            _adapt_query(
-                """
-                SELECT COUNT(*) AS n
-                FROM active_streams
-                WHERE user_id = ? AND stream_type = ?
-                """
-            ),
-            (user_id, effective_stream_type),
-        ).fetchone()
-        active_count = row["n"] if row else 0
-        if active_count >= limit:
-            return None
-
         conn.execute(
             _adapt_query(
                 """
@@ -159,9 +134,8 @@ def try_acquire_active_stream(
                 VALUES (?, ?, ?, ?, ?)
                 """
             ),
-            (stream_id, user_id, effective_stream_type, now, expires_at),
+            (stream_id, user_id, effective_stream_type, now, now + ttl_s),
         )
-
     return stream_id
 
 

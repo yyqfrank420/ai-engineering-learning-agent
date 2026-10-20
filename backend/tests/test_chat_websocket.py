@@ -222,8 +222,10 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
     }
     monkeypatch.setattr(
         "api.chat_websocket.thread_store.get_graph_artifact",
-        lambda _user_id, _thread_id: (approved_graph, approved_graph_contract),
+        lambda _user_id, _thread_id: (approved_graph, approved_graph_contract, None),
     )
+    monkeypatch.setattr(chat_websocket.thread_store, "get_graph", lambda *args: approved_graph)
+
     calls: list[str] = []
     input_graphs: list[dict | None] = []
     terminal_deadlines: list[float] = []
@@ -353,7 +355,7 @@ def test_websocket_steer_cancels_draft_restarts_and_persists_combined_turn(
     assert approved_contracts[1] is not approved_graph_contract
     assert approved_contracts[0] is not approved_contracts[1]
     assert input_graphs == [approved_graph, approved_graph]
-    assert persisted_contracts == [approved_graph_contract]
+    assert persisted_contracts == [None]
     reset_index = next(
         index for index, event in enumerate(events) if event["type"] == "response_reset"
     )
@@ -460,8 +462,10 @@ def test_websocket_stop_restores_request_start_graph_without_exposing_contract(
     }
     monkeypatch.setattr(
         "api.chat_websocket.thread_store.get_graph_artifact",
-        lambda _user_id, _thread_id: (approved_graph, approved_graph_contract),
+        lambda _user_id, _thread_id: (approved_graph, approved_graph_contract, None),
     )
+    monkeypatch.setattr(chat_websocket.thread_store, "get_graph", lambda *args: approved_graph)
+
     observed_states: list[dict] = []
     cancelled = False
 
@@ -546,7 +550,7 @@ def test_websocket_replays_completed_idempotent_turn_without_running_agent(
     persist_turn(
         user["id"],
         thread["id"],
-        title="Stored",
+        expected_graph_version=None, base_revision_id=None, title="Stored",
         user_content="Explain RAG",
         assistant_content="Canonical stored answer",
         graph_data=None,
@@ -600,7 +604,7 @@ def test_websocket_replays_completed_idempotent_turn_with_graph_before_done(
     persist_turn(
         user["id"],
         thread["id"],
-        title="Stored",
+        expected_graph_version=None, base_revision_id=None, title="Stored",
         user_content="Explain RAG",
         assistant_content="Canonical stored answer",
         graph_data=graph,
@@ -644,7 +648,7 @@ def test_internal_eval_websocket_acquires_a_thread_scoped_guard(
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
     user["claims"] = {"app_metadata": {"provider": "internal_test"}}
     observed: dict[str, str | None] = {}
-    original_acquire = runtime_state_store.try_acquire_active_stream
+    original_acquire = runtime_state_store.register_active_stream
 
     def acquire(*args, **kwargs):
         observed["scope_id"] = kwargs.get("scope_id")
@@ -655,7 +659,7 @@ def test_internal_eval_websocket_acquires_a_thread_scoped_guard(
         await state["send"]({"type": "done"})
         return {**state, "response_text": "ok", "graph_data": None}
 
-    monkeypatch.setattr(runtime_state_store, "try_acquire_active_stream", acquire)
+    monkeypatch.setattr(runtime_state_store, "register_active_stream", acquire)
     monkeypatch.setattr("api.chat_websocket.run_agent", fake_run_agent)
 
     with TestClient(app) as client:
@@ -689,7 +693,7 @@ def test_websocket_keeps_candidate_private_until_browser_evaluation(
         "design_origin": "applied",
         "version": "graph-v1",
         "title": "Reviewed design",
-        "nodes": [],
+        "nodes": [{"id": "n1"}],
         "edges": [],
         "sequence": [],
     }
@@ -700,7 +704,7 @@ def test_websocket_keeps_candidate_private_until_browser_evaluation(
         await state["send"]({"type": "graph_data", "data": graph})
         await state["send"]({"type": "response_delta", "content": "approved"})
         await state["send"]({"type": "done"})
-        return {**state, "response_text": "approved", "graph_data": graph}
+        return {**state, "response_text": "approved", "graph_publication": "approved", "graph_data": graph}
 
     monkeypatch.setattr("api.chat_websocket.run_agent", fake_run_agent)
 
@@ -881,7 +885,7 @@ def test_websocket_persists_approved_overview_when_explanation_is_unavailable(
         "This is an overview of the core workflow, with supporting detail simplified."
     )
     assert "The diagram is ready to inspect." in fallback["content"]
-    assert get_graph_artifact(user["id"], thread["id"]) == (graph, contract)
+    assert get_graph_artifact(user["id"], thread["id"])[:2] == (graph, contract)
     assert reloaded.status_code == 200
     assert reloaded.json()["thread"]["graph_data"] == graph
     assert "graph_contract" not in reloaded.json()["thread"]
@@ -988,7 +992,7 @@ def test_websocket_persists_approved_overview_after_explanation_provider_error(
     assert fallback["content"].startswith(
         "Your overview is ready, with supporting detail simplified."
     )
-    assert get_graph_artifact(user["id"], thread["id"]) == (graph, contract)
+    assert get_graph_artifact(user["id"], thread["id"])[:2] == (graph, contract)
     assert reloaded.status_code == 200
     assert reloaded.json()["thread"]["graph_data"] == graph
     assert "graph_contract" not in reloaded.json()["thread"]
@@ -1064,7 +1068,7 @@ def test_websocket_rejects_invalid_start_protocol(
 
 def test_websocket_rechecks_draft_after_lease_admission(temp_data_dir, monkeypatch):
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
-    acquire = runtime_state_store.try_acquire_active_stream
+    acquire = runtime_state_store.register_active_stream
 
     def admission_after_eviction(user_id, stream_type, **kwargs):
         if stream_type == "chat-thread":
@@ -1075,7 +1079,7 @@ def test_websocket_rechecks_draft_after_lease_admission(temp_data_dir, monkeypat
         pytest.fail("model work started for a pruned draft")
 
     monkeypatch.setattr(
-        runtime_state_store, "try_acquire_active_stream", admission_after_eviction
+        runtime_state_store, "register_active_stream", admission_after_eviction
     )
     monkeypatch.setattr(chat_websocket, "run_agent", fail_if_called)
     with TestClient(app) as client:
@@ -1339,14 +1343,14 @@ def test_websocket_rechecks_completed_turn_after_thread_admission(
 
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
     canonical = {"version": "persisted-v1", "nodes": [], "edges": []}
-    original_acquire = runtime_state_store.try_acquire_active_stream
+    original_acquire = runtime_state_store.register_active_stream
 
     def acquire_after_commit(*args, **kwargs):
         if args[1] == "chat-thread":
             persist_turn(
                 user["id"],
                 thread["id"],
-                title="Stored",
+                expected_graph_version=None, base_revision_id=None, title="Stored",
                 user_content="Build an agent",
                 assistant_content="Canonical answer",
                 graph_data=canonical,
@@ -1358,7 +1362,7 @@ def test_websocket_rechecks_completed_turn_after_thread_admission(
         pytest.fail("completed request must replay before running the model")
 
     monkeypatch.setattr(
-        runtime_state_store, "try_acquire_active_stream", acquire_after_commit
+        runtime_state_store, "register_active_stream", acquire_after_commit
     )
     monkeypatch.setattr(chat_websocket, "run_agent", unexpected_model)
     with TestClient(app) as client:
@@ -1390,83 +1394,47 @@ def test_websocket_rechecks_completed_turn_after_thread_admission(
 
 
 @pytest.mark.parametrize("secondary_transport", ["websocket", "sse"])
+@pytest.mark.parametrize("same_thread", [False, True])
 @pytest.mark.parametrize("duplicate", [False, True])
-def test_chat_thread_serialization_allows_other_threads_with_user_capacity(
-    temp_data_dir, monkeypatch, secondary_transport, duplicate
+def test_concurrent_chats_execute_without_admission_rejection(
+    temp_data_dir, monkeypatch, secondary_transport, same_thread, duplicate
 ):
     from adapters.database_adapter import fetchone
     from adapters.supabase_auth_adapter import get_current_user
     from test_api_security import _parse_sse_events
 
     app, user, thread = _ready_app(temp_data_dir, monkeypatch)
-    other_thread = create_thread(user["id"])
+    other_thread = thread if same_thread else create_thread(user["id"])
     app.dependency_overrides[get_current_user] = lambda: user
-    monkeypatch.setattr(settings, "max_active_chat_streams_per_user", 3)
     calls = []
 
-    async def blocking_agent(state, *_tools):
+    async def agent(state, *_tools):
         calls.append(state["session_id"])
         await state["send"]({"type": "response_delta", "content": "running"})
-        await asyncio.Event().wait()
+        if len(calls) == 1:
+            await asyncio.Event().wait()
+        return {**state, "response_text": "running"}
 
-    monkeypatch.setattr(chat_websocket, "run_agent", blocking_agent)
-    monkeypatch.setattr("api.sse_handler.run_agent", blocking_agent)
+    monkeypatch.setattr(chat_websocket, "run_agent", agent)
+    monkeypatch.setattr("api.sse_handler.run_agent", agent)
     headers = {"origin": "http://localhost:5173"}
     with TestClient(app) as client:
         with client.websocket_connect("/api/chat/ws", headers=headers) as first:
             first.send_json({"type": "auth", "access_token": "test-token"})
-            assert first.receive_json() == {
-                "type": "ready",
-                "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
-            }
-            first.send_json(
-                {
-                    "type": "start",
-                    "thread_id": thread["id"],
-                    "content": "Build an agent",
-                    "client_request_id": "first",
-                }
-            )
+            assert first.receive_json()["type"] == "ready"
+            first.send_json({"type": "start", "thread_id": thread["id"], "content": "Build an agent", "client_request_id": "first"})
             _receive_until(first, "response_delta")
-            body = {
-                "thread_id": thread["id"],
-                "content": "Build an agent",
-                "client_request_id": "first" if duplicate else "second",
-            }
+            body = {"thread_id": other_thread["id"], "content": "Build an agent", "client_request_id": "first" if duplicate else "second"}
             if secondary_transport == "websocket":
-                with client.websocket_connect(
-                    "/api/chat/ws", headers=headers
-                ) as second:
+                with client.websocket_connect("/api/chat/ws", headers=headers) as second:
                     second.send_json({"type": "auth", "access_token": "test-token"})
-                    assert second.receive_json() == {
-                        "type": "ready",
-                        "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
-                    }
+                    assert second.receive_json()["type"] == "ready"
                     second.send_json({"type": "start", **body})
-                    rejected = _receive_until(second, "done")
+                    events = _receive_until(second, "done")
             else:
-                rejected = _parse_sse_events(client.post("/api/chat", json=body).text)
-            assert rejected[0]["type"] == "error"
-            assert "already running" in rejected[0]["content"]
-            assert calls == [thread["id"]]
-            with client.websocket_connect("/api/chat/ws", headers=headers) as other:
-                other.send_json({"type": "auth", "access_token": "test-token"})
-                assert other.receive_json() == {
-                    "type": "ready",
-                    "turn_timeout_ms": int((settings.agent_timeout_s + 60) * 1000),
-                }
-                other.send_json(
-                    {
-                        "type": "start",
-                        "thread_id": other_thread["id"],
-                        "content": "Build a different agent",
-                        "client_request_id": "other",
-                    }
-                )
-                _receive_until(other, "response_delta")
-                assert calls == [thread["id"], other_thread["id"]]
-                other.send_json({"type": "stop", "client_request_id": "other"})
-                _receive_until(other, "stopped")
+                events = _parse_sse_events(client.post("/api/chat", json=body).text)
+            assert not any(event["type"] == "error" for event in events)
+            assert calls == [thread["id"], other_thread["id"]]
             first.send_json({"type": "stop", "client_request_id": "first"})
             _receive_until(first, "stopped")
     assert fetchone("SELECT COUNT(*) AS n FROM active_streams")["n"] == 0
@@ -1515,7 +1483,7 @@ async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
     monkeypatch.setattr(ws, "upsert_profile", lambda *a: None)
     monkeypatch.setattr(ws.thread_store, "get_thread", lambda *a: {"title": "New chat"})
     monkeypatch.setattr(ws.thread_store, "get_completed_turn", lambda *a: None)
-    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None))
+    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None, None))
     monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
     monkeypatch.setattr(ws, "_request_error", lambda *a: None)
     monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
@@ -1530,7 +1498,7 @@ async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
         acquired.append(args[1])
         return args[1]
 
-    monkeypatch.setattr(ws.runtime_state_store, "try_acquire_active_stream", acquire)
+    monkeypatch.setattr(ws.runtime_state_store, "register_active_stream", acquire)
     monkeypatch.setattr(
         ws.runtime_state_store, "release_active_stream", released.append
     )
@@ -1570,8 +1538,8 @@ async def test_outer_cancellation_cleanup_failure_releases_leases(monkeypatch):
     task.cancel()
     with pytest.raises(RuntimeError, match="cleanup failed"):
         await task
-    assert acquired == ["chat", "chat-thread"]
-    assert released == ["chat-thread", "chat"]
+    assert acquired == ["chat-thread"]
+    assert released == ["chat-thread"]
     assert metric_changes == [1, -1]
     socket.close.assert_awaited_once()
 
@@ -1587,7 +1555,7 @@ def test_blank_turn_requires_a_new_approved_nonempty_graph(
         persist_turn(
             user["id"],
             thread["id"],
-            title="Existing",
+            expected_graph_version=None, base_revision_id=None, title="Existing",
             user_content="before",
             assistant_content="before",
             graph_data=old_graph,
@@ -1724,7 +1692,7 @@ def test_failed_generation_notice_is_persisted_with_existing_graph(
     persist_turn(
         user["id"],
         thread["id"],
-        title="Existing",
+        expected_graph_version=None, base_revision_id=None, title="Existing",
         user_content="before",
         assistant_content="before",
         graph_data=graph,
@@ -1928,7 +1896,7 @@ def isolated_websocket_storage(monkeypatch):
     monkeypatch.setattr(ws, "upsert_profile", lambda *a: None)
     monkeypatch.setattr(ws.thread_store, "get_thread", lambda *a: {"title": "New chat"})
     monkeypatch.setattr(ws.thread_store, "get_completed_turn", lambda *a: None)
-    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None))
+    monkeypatch.setattr(ws.thread_store, "get_graph_artifact", lambda *a: (None, None, None))
     monkeypatch.setattr(ws.thread_store, "get_graph", lambda *a: None)
     monkeypatch.setattr(ws.message_store, "get_history", lambda *a, **kw: [])
     monkeypatch.setattr(ws, "_new_turn_preflight_error", lambda *a: None)
@@ -1937,7 +1905,7 @@ def isolated_websocket_storage(monkeypatch):
     monkeypatch.setattr(ws, "enqueue_analytics_event", lambda **kw: None)
     monkeypatch.setattr(
         ws.runtime_state_store,
-        "try_acquire_active_stream",
+        "register_active_stream",
         lambda _user, kind, **kw: kind,
     )
     monkeypatch.setattr(
@@ -1968,7 +1936,7 @@ def isolated_websocket_storage(monkeypatch):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lease_kind", ["chat", "chat-thread"])
+@pytest.mark.parametrize("lease_kind", ["chat-thread"])
 async def test_cancelled_lease_acquisition_finishes_and_releases_lease(
     monkeypatch, isolated_websocket_storage, lease_kind
 ):
@@ -1984,7 +1952,7 @@ async def test_cancelled_lease_acquisition_finishes_and_releases_lease(
         return kind
 
     monkeypatch.setattr(
-        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+        chat_websocket.runtime_state_store, "register_active_stream", acquire
     )
     monkeypatch.setattr(
         chat_websocket.runtime_state_store,
@@ -2006,7 +1974,7 @@ async def test_cancelled_lease_acquisition_finishes_and_releases_lease(
         finish.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert released == (["chat"] if lease_kind == "chat" else ["chat-thread", "chat"])
+    assert released == (["chat"] if lease_kind == "chat" else ["chat-thread"])
     isolated_websocket_storage.close.assert_awaited_once()
 
 
@@ -2067,7 +2035,6 @@ async def test_persistence_finishes_before_done_and_lease_release(
         "commit-start",
         "commit-finish",
         "release-chat-thread",
-        "release-chat",
     ]
     assert any(
         call.args[0].get("type") == "done"
@@ -2112,7 +2079,7 @@ async def test_both_lease_releases_finish_after_repeated_cleanup_cancellation(
         finish.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert released == ["chat-thread", "chat"]
+    assert released == ["chat-thread"]
     isolated_websocket_storage.close.assert_awaited_once()
 
 
@@ -2136,7 +2103,7 @@ async def test_second_lease_release_runs_when_first_release_fails(
     )
     with pytest.raises(RuntimeError, match="release failed"):
         await chat_websocket.chat_websocket(isolated_websocket_storage)
-    assert released == ["chat-thread", "chat"]
+    assert released == ["chat-thread"]
     isolated_websocket_storage.close.assert_awaited_once()
 
 
@@ -2259,7 +2226,7 @@ async def test_cancelled_search_request_creation_finishes_before_row_and_lease_c
         finish.set()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert lifecycle == ["created", "deleted", "chat-thread", "chat"]
+    assert lifecycle == ["created", "deleted", "chat-thread"]
 
 
 @pytest.mark.asyncio
@@ -2283,7 +2250,7 @@ async def test_anyio_scope_shutdown_releases_lease_acquired_by_shielded_worker(
 
     monkeypatch.setattr(chat_websocket, "run_agent", agent)
     monkeypatch.setattr(
-        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+        chat_websocket.runtime_state_store, "register_active_stream", acquire
     )
     monkeypatch.setattr(
         chat_websocket.runtime_state_store,
@@ -2297,7 +2264,7 @@ async def test_anyio_scope_shutdown_releases_lease_acquired_by_shielded_worker(
             group.cancel_scope.cancel()
         finally:
             finish.set()
-    assert released == ["chat-thread", "chat"]
+    assert released == ["chat-thread"]
 
 
 @pytest.mark.asyncio
@@ -2346,7 +2313,7 @@ async def test_cancelled_failed_commit_preserves_cancellation_without_terminal_s
         await task
     assert isinstance(raised.value.__cause__, RuntimeError)
     assert isolated_websocket_storage.send_json.await_count == sent_before_cancel
-    assert lifecycle == ["commit-failed", "chat-thread", "chat"]
+    assert lifecycle == ["commit-failed", "chat-thread"]
     assert "Cancelled WebSocket worker failed (persist: RuntimeError)" in caplog.text
     assert "private storage failure details" not in caplog.text
     assert "private draft" not in caplog.text
@@ -2368,7 +2335,7 @@ async def test_uncancelled_worker_error_preserves_original_exception(failure, ca
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("lease_kind", ["chat", "chat-thread"])
+@pytest.mark.parametrize("lease_kind", ["chat-thread"])
 async def test_cancelled_acquisition_cleanup_failure_preserves_pending_cancellation(
     monkeypatch, isolated_websocket_storage, lease_kind, caplog
 ):
@@ -2391,7 +2358,7 @@ async def test_cancelled_acquisition_cleanup_failure_preserves_pending_cancellat
         released.append(lease)
 
     monkeypatch.setattr(
-        chat_websocket.runtime_state_store, "try_acquire_active_stream", acquire
+        chat_websocket.runtime_state_store, "register_active_stream", acquire
     )
     monkeypatch.setattr(
         chat_websocket.runtime_state_store, "release_active_stream", release
@@ -2413,11 +2380,11 @@ async def test_cancelled_acquisition_cleanup_failure_preserves_pending_cancellat
     with pytest.raises(asyncio.CancelledError) as raised:
         await task
     assert isinstance(raised.value.__cause__, RuntimeError)
-    assert attempted == (["chat"] if lease_kind == "chat" else ["chat-thread", "chat"])
-    assert released == ([] if lease_kind == "chat" else ["chat"])
+    assert attempted == (["chat"] if lease_kind == "chat" else ["chat-thread"])
+    assert released == []
     assert isolated_websocket_storage.send_json.await_count == sent_before_cancel
     assert (
-        "Cancelled WebSocket lease cleanup failed (release_active_stream: RuntimeError)"
+        "Cancelled WebSocket activity cleanup failed (release_active_stream: RuntimeError)"
         in caplog.text
     )
     assert "private cleanup failure" not in caplog.text

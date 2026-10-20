@@ -158,12 +158,18 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
         judgments = evaluation.get("judgments")
         require(isinstance(judgments, list), "missing judgments")
         if deterministic_failures:
-            require(decision == "fail" and not judgments, "unrecognized deterministic failure")
+            details = result.get("failure_details")
             if not result["passed"]:
-                details = result.get("failure_details")
                 require(isinstance(details, list) and bool(details)
-                        and all(isinstance(d, dict) and d.get("kind") == "quality" for d in details),
+                        and all(isinstance(d, dict) and d.get("kind") in ("quality", "infrastructure") for d in details),
                         "unrecognized browser failure")
+            classification = (
+                "quality" if expansion_failures
+                else live_runner._classify_deterministic(deterministic_failures, details)
+            )
+            expected_decision = "infrastructure" if classification == "infrastructure" else "fail"
+            require(decision == expected_decision and not judgments,
+                    "unrecognized deterministic failure")
             groups["fresh"].append(case_id)
         elif decision == "infrastructure" and not judgments:
             require(bool(re.match(
@@ -178,7 +184,7 @@ def partition(browser: dict, semantic: dict, corpus, ids: list[str]) -> dict[str
             groups[mode].append(case_id)
         else:
             raise ValueError("unvalidated or partial semantic result cannot resume")
-    require(bool(groups["fresh"]), "resume requires a fresh quality-failed case")
+    require(bool(groups["fresh"]), "resume requires a fresh failed browser or semantic case")
     reusable = [case_id for case_id in ids if case_id not in groups["fresh"]]
     if reusable:
         subset_browser_capture(browser, selected_case_ids=reusable,

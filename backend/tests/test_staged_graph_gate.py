@@ -198,16 +198,21 @@ def test_review_uses_explicit_timeout_independently_of_telemetry(
     review = (
         gate.review_components if stage == "components" else gate.review_connections
     )
+    async def send(_event):
+        pass
+
     result = asyncio.run(
         review(
             user_request="Design a service.",
             evidence_bundle={},
             resolved_maturity="prototype",
             candidate_records=[],
-            telemetry_context={"terminal_deadline_s": 0, "staged_attempt": -1},
+            telemetry_context={"terminal_deadline_s": 0, "staged_attempt": -1, "send": send},
             timeout_seconds=timeout_seconds,
         )
     )
+    assert calls[0]["send"] is send
+    assert calls[0]["progress_phase"] == "review"
     assert result["approved"] is True
     assert calls[0]["timeout_seconds"] == (
         gate.settings.staged_gate_timeout_s

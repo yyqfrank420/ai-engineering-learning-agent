@@ -2590,6 +2590,15 @@ async def test_component_correction_tracks_capability_context(
 async def test_every_candidate_is_rendered_before_its_gate(monkeypatch):
     events: list[object] = []
     _install_success_boundaries(monkeypatch, events=events)
+    render = workflow._render
+
+    async def render_with_user_captions(state, graph, **kwargs):
+        assert [node["technology"] for node in graph["nodes"]] == [
+            "Gateway", "Application service",
+        ]
+        return await render(state, graph, **kwargs)
+
+    monkeypatch.setattr(workflow, "_render", render_with_user_captions)
 
     result = await workflow.run_staged_graph_pipeline(_state())
 

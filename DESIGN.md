@@ -25,15 +25,31 @@ backdrop blur while preserving readable text and visible focus.
 
 ## Interaction and layout
 
-The desktop header is 48px high and the history rail is 240px wide. Below 1280px,
+The desktop header is 48px high. History starts at 240px wide and resizes between
+200px and 480px, leaving at least 640px for the workspace. Its edge supports dragging,
+arrow keys, and reset with Enter or a double-click. Below 1280px,
 the header has a minimum height of 56px and history opens as a modal. Panes sit side
 by side when the measured workspace width is at least 960px. Below 960px, full-height
 Chat and Diagram tabs share the workspace. Diagram editing remains available. Use
 dynamic viewport height and scroll within the individual panes.
 
+Assistant source URLs and book locations appear as numbered references. One
+Sources disclosure per answer starts collapsed; selecting a reference opens it
+and focuses its source. Preserve stored answer text and user-authored links.
+
+A first diagram shows a compact title. Subtitle and counts live behind Diagram
+details. Keep the removed overview-description row absent. Hide version controls
+until history has multiple revisions or a preview, undo, redo, update, or error
+needs attention.
+
 Use a 24px screen-edge inset on desktop and 16px in compact layouts. The sidebar
 heading aligns to that inset. History actions and entries share a 24px icon column
 and a 12px text gap. Keep header actions evenly spaced.
+
+During generation, keep the latest three public work updates visible below the
+elapsed-time summary. The complete work history stays expandable. Update the active
+operation in place as observed stream activity arrives; preserve completed work and
+retries. Completed activity starts collapsed.
 
 Every action has a readable disabled state and immediate visible keyboard focus.
 Use at least 36px compact controls, 44px primary composer controls, and larger touch

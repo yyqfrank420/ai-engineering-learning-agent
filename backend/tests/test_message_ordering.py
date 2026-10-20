@@ -23,6 +23,8 @@ def _persist(thread_id, turn):
         user_content=f"user-{turn}",
         assistant_content=f"assistant-{turn}",
         graph_data=None,
+        expected_graph_version=None,
+        base_revision_id=None,
         client_request_id=f"turn-{turn}",
     )
 

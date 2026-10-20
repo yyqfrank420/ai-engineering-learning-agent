@@ -299,6 +299,14 @@ def requests_no_diagram(query: str) -> bool:
             r"(?:(?:a|any|the)\s+)?(?:diagrams?|graphs?)\b",
             text,
         )
+        or re.search(
+            r"(?:^|[.!?;,:]\s*)(?:please\s+)?(?:plain[ -])?text[ -]only"
+            r"(?:\s+(?:answer|response|explanation))?(?:\s+please)?"
+            r"(?=\s*(?:[.!?;,:]|$))"
+            r"|\b(?:answer|respond|reply)(?:\s+(?:in|with|using))?\s+"
+            r"(?:(?:plain[ -])?text[ -]only|only\s+(?:plain[ -])?text)\b",
+            _routing_intent_text(query.replace("\n", ";")),
+        )
     )
 
 
@@ -614,23 +622,12 @@ def resolve_complexity(requested: str, query: str) -> ComplexityProfile:
             )
             for clause in _intent_clauses(text)
         )
-        explanatory_flow = (
-            bool(_CONCEPT_QUESTION.match(text))
-            and any(phrase in text for phrase in _DESIGN_FLOW_PHRASES)
-            and not any(hint in text for hint in _PRODUCTION_HINTS)
-        )
         if is_applied_system_design_request(query) and prototype_requested:
             resolved = "prototype"
-        elif is_applied_system_design_request(query) and explanatory_flow:
-            # A concept walkthrough can need an applied runtime diagram without
-            # implicitly requesting every production-hardening guarantee.
-            resolved = "prototype"
-        elif is_applied_system_design_request(query):
-            # The default architecture experience targets an implementation-
-            # ready system map. Users can still explicitly choose prototype.
-            resolved = "production"
         elif any(hint in text for hint in _PRODUCTION_HINTS):
             resolved = "production"
+        elif is_applied_system_design_request(query):
+            resolved = "prototype"
         else:
             resolved = "low"
     else:

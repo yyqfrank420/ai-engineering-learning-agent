@@ -3,7 +3,7 @@ import json
 import pytest
 
 from agent.activity import ActivityRecorder
-from storage.message_activity import MessageActivity
+from storage.message_activity import MAX_ACTIVITY_DURATION_MS, MessageActivity
 
 
 def progress(phase="components", status="active", **extra):
@@ -376,3 +376,81 @@ def test_duplicate_public_labels_are_named_once():
     text = recorder.record(progress("components", "complete", draft=summary), 0)["text"]
     assert "including Queue." in text
     assert "Queue and Queue" not in text
+
+
+@pytest.mark.parametrize(
+    "phase,wording",
+    [("components", "Generating diagram components"),
+     ("connections", "Generating diagram connections"),
+     ("review", "Checking the draft")],
+)
+@pytest.mark.parametrize("stream_ms", [0, 5999, MAX_ACTIVITY_DURATION_MS])
+def test_stream_progress_uses_fixed_wording_and_transport_owned_time(phase, wording, stream_ms):
+    recorder = ActivityRecorder()
+    step = recorder.record(progress(phase, stream_elapsed_ms=stream_ms,
+        title="PRIVATE_REASONING", detail="PRIVATE_REASONING", content="PRIVATE_REASONING"), 42)
+    assert step["text"] == f"{wording} ({stream_ms // 1000}s)"
+    assert step["elapsed_ms"] == 42
+    saved = recorder.snapshot(43)
+    MessageActivity.model_validate(saved)
+    assert "PRIVATE_REASONING" not in repr(step) + repr(saved)
+    assert "stream_elapsed_ms" not in repr(saved)
+
+
+@pytest.mark.parametrize("value", [None, True, False, -1, 0.0, "5000", [], {}, MAX_ACTIVITY_DURATION_MS + 1])
+def test_invalid_stream_elapsed_does_not_create_activity(value):
+    recorder = ActivityRecorder()
+    assert recorder.record(progress(stream_elapsed_ms=value), 1) is None
+    assert recorder.snapshot(1) is None
+    assert recorder.record(progress(stream_elapsed_ms=0), 2)["sequence"] == 0
+
+
+@pytest.mark.parametrize("phase,status", [("book", "active"), ("explain", "active"),
+    ("components", "complete"), ("connections", "retry"), ("review", "rejected")])
+def test_stream_elapsed_is_only_accepted_for_active_provider_stages(phase, status):
+    recorder = ActivityRecorder()
+    assert recorder.record(progress(phase, status, stream_elapsed_ms=5000), 1) is None
+    assert recorder.snapshot(1) is None
+
+
+def test_active_stream_progress_coalesces_without_erasing_completed_stages_or_retries():
+    recorder = ActivityRecorder()
+    recorder.record(progress("book"), 1)
+    recorder.record(progress("book", "complete"), 2)
+    assert recorder.record(progress(), 3)["sequence"] == 2
+    assert recorder.record(progress(stream_elapsed_ms=5000), 4)["sequence"] == 3
+    assert recorder.record(progress(stream_elapsed_ms=5999), 5) is None
+    assert recorder.record(progress(stream_elapsed_ms=10000), 3)["elapsed_ms"] == 4
+    draft = {"component_count": 2, "connection_count": 0}
+    recorder.record(progress("components", "complete", draft=draft), 6)
+    recorder.record(progress("review", stream_elapsed_ms=5000), 7)
+    recorder.record(progress("review", stream_elapsed_ms=10000), 8)
+    recorder.record(progress("review", "complete"), 9)
+    recorder.record(progress("components", "retry"), 10)
+    recorder.record(progress("components", stream_elapsed_ms=0), 11)
+    recorder.record(progress("connections", stream_elapsed_ms=5000), 12)
+    steps = recorder.snapshot(12)["steps"]
+    assert [(step["phase"], step["status"]) for step in steps] == [
+        ("book", "active"), ("book", "complete"), ("components", "active"),
+        ("components", "complete"), ("review", "active"), ("review", "complete"),
+        ("components", "retry"), ("components", "active"), ("connections", "active"),
+    ]
+    assert steps[2]["text"].endswith("(10s)")
+    assert steps[4]["text"].endswith("(10s)")
+    assert all(a["sequence"] < b["sequence"] for a, b in zip(steps, steps[1:]))
+    MessageActivity.model_validate(recorder.snapshot(12))
+
+
+def test_frequent_stream_progress_retains_one_current_row_inside_bounded_history():
+    recorder = ActivityRecorder()
+    for second in range(100):
+        recorder.record(progress(stream_elapsed_ms=second * 1000), second * 1000)
+    saved = recorder.snapshot(100000)
+    assert len(saved["steps"]) == 1
+    assert saved["steps"][0]["sequence"] == 99
+    assert saved["steps"][0]["text"].endswith("(99s)")
+    for index in range(100):
+        recorder.record(progress("review", "retry" if index % 2 else "complete"), 100000 + index)
+    saved = recorder.snapshot(100100)
+    assert len(saved["steps"]) == 48
+    MessageActivity.model_validate(saved)

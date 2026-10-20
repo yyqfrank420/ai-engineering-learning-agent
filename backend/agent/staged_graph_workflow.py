@@ -45,6 +45,7 @@ from agent.nodes.staged_graph_generation import (
 )
 from agent.staged_graph_contract import (
     GraphContractError,
+    NODE_TECHNOLOGY_LABELS,
     assign_server_ids,
     component_fingerprint,
     connection_fingerprint,
@@ -625,9 +626,7 @@ def _component_preview(build: Mapping[str, Any]) -> GraphData:
                     if "parent_service_id" in component
                     else {}
                 ),
-                "technology": "Component"
-                if component["type"] == "component"
-                else "Pending connection contract",
+                "technology": NODE_TECHNOLOGY_LABELS[component["type"]],
                 "description": component["responsibility"],
                 "tier": None,
                 "lane": "bottom" if component["group_kind"] == "operations" else "main",

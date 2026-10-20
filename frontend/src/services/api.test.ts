@@ -109,6 +109,28 @@ describe('API service boundary', () => {
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
+  it('reports a validation failure and preserves diagram intent on a later retry', async () => {
+    const detail = 'Unable to validate your message. Please try again.';
+    fetchMock
+      .mockResolvedValueOnce(response({ detail }, { ok: false, status: 422 }))
+      .mockResolvedValueOnce(response({ action: 'send' }));
+
+    await expect(checkDiagramIntent(session, 'thread-1', 'Draw a RAG diagram')).rejects.toThrow(detail);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    await expect(checkDiagramIntent(session, 'thread-1', 'Draw a RAG diagram')).resolves.toBe('send');
+  });
+
+  it.each([
+    response({ detail: [{ msg: 'invalid field' }] }, { ok: false, status: 422 }),
+    response({ detail: '' }, { ok: false, status: 422 }),
+    response({}, { ok: false, status: 422, jsonError: new Error('invalid JSON') }),
+    response({ detail: 'Internal provider failure' }, { ok: false, status: 500 }),
+  ])('uses a stable fallback for unexpected intent failures', async failed => {
+    fetchMock.mockResolvedValueOnce(failed);
+    await expect(checkDiagramIntent(session, 'thread-1', 'Draw a RAG diagram'))
+      .rejects.toThrow('Could not check diagram intent');
+  });
+
   it('sends authenticated thread operations and returns their typed payloads', async () => {
     const thread = { thread: { id: 'thread-1' }, messages: [] };
     fetchMock

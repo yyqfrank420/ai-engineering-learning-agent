@@ -1,6 +1,6 @@
 """Plan service decomposition and draft it through the reviewed graph boundary."""
 
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 import json
 import re
 from typing import Any, Literal
@@ -209,6 +209,7 @@ async def expand_application_services(
     telemetry: dict[str, Any],
     timeout_seconds: float | None,
     max_output_tokens: int,
+    send: Callable[[dict], Awaitable[None]] | None = None,
 ) -> StructuredLLMResponse:
     """Draft complex service internals; callers retain validation and publication ownership."""
     targets = expansion.get("target_service_ids")
@@ -235,6 +236,8 @@ async def expand_application_services(
         response_schema=response_schema,
         temperature=settings.graph_temperature,
         effort="medium",
+        send=send,
+        progress_phase=stage if send is not None else None,
         timeout_seconds=timeout_seconds,
         max_output_tokens=max_output_tokens,
         provider_attempt_limit=1,

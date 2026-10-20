@@ -10,20 +10,28 @@
 }
 
 .graph-canvas__header {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 10px 12px;
-  padding: 16px 20px;
+  padding: 8px 20px;
   border-bottom: 1px solid var(--border-subtle);
-  background: linear-gradient(180deg, rgba(16,22,34,0.98), rgba(10,15,26,0.98));
+  background: var(--bg-panel);
 }
 
 .graph-canvas__header-icon { flex: none; color: var(--accent); }
-.graph-canvas__heading { flex: 1 1 240px; min-width: 0; }
+.graph-canvas__heading { flex: 1 1 0; min-width: 0; }
 .graph-canvas__title { margin: 0; color: var(--text-primary); font-size: 15px; font-weight: 600; line-height: 1.4; overflow-wrap: anywhere; }
 .graph-canvas__subtitle { margin: 3px 0 0; color: var(--text-secondary); font-size: 13px; line-height: 1.5; overflow-wrap: anywhere; }
-.graph-canvas__counts { flex: none; color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; line-height: 1.5; }
+.graph-canvas__counts { margin: 6px 0 0; color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; line-height: 1.5; }
+.graph-canvas__details { flex: none; }
+.graph-canvas__details > summary { display: grid; place-items: center; width: 36px; height: 36px; border-radius: var(--radius-sm); color: var(--text-secondary); cursor: pointer; list-style: none; }
+.graph-canvas__details > summary::-webkit-details-marker { display: none; }
+.graph-canvas__details > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.graph-canvas__details[open] > summary { color: var(--accent); background: var(--accent-muted); }
+.graph-canvas__details-content { position: absolute; z-index: 15; top: calc(100% - 1px); right: 20px; width: min(320px, calc(100% - 40px)); padding: 12px; border: 1px solid var(--border-default); border-radius: var(--radius-sm); background: var(--bg-panel); }
+.graph-canvas__details-content > :first-child { margin-top: 0; }
 .graph-canvas__walkthrough,
 .graph-canvas__layout-error button {
   display: inline-flex;
@@ -56,14 +64,17 @@
 .graph-canvas__empty-description { margin: 8px 0 0; color: var(--text-secondary); font-size: 14px; line-height: 1.65; }
 
 @media (hover: hover) and (pointer: fine) {
+  .graph-canvas__details > summary:hover { color: var(--text-primary); background: var(--bg-overlay); }
   .graph-canvas__walkthrough:hover,
   .graph-canvas__layout-error button:hover { border-color: var(--accent); background: var(--bg-overlay); }
 }
 @media (max-width: 640px) {
-  .graph-canvas__header { padding: 14px 16px; gap: 8px; }
-  .graph-canvas__heading { flex-basis: calc(100% - 32px); }
-  .graph-canvas__counts { margin-left: 28px; }
+  .graph-canvas__header { padding: 8px 16px; gap: 8px; }
+  .graph-canvas__details-content { right: 16px; width: min(320px, calc(100% - 32px)); }
   .graph-canvas__empty { padding: 24px; }
+}
+@media (pointer: coarse) {
+  .graph-canvas__details > summary { width: 44px; height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   .graph-canvas__diagram,

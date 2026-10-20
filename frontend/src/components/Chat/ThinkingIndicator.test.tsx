@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LiveActivity, MessageActivity } from '../../types';
 import { ThinkingIndicator } from './ThinkingIndicator';
@@ -23,17 +23,19 @@ describe('ThinkingIndicator public work activity', () => {
     expect(view.container.querySelector('details')).toBeNull();
     view.rerender(<ThinkingIndicator activity={activity} liveActivity={live} />);
     const details = view.container.querySelector('details')!;
-    expect(details.open).toBe(true);
+    expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
     expect(screen.getByRole('region', { name: 'Work activity' }).textContent).toContain(activity.steps[0].text);
     view.rerender(<ThinkingIndicator activity={activity} />);
-    expect(details.open).toBe(false);
+    expect(view.container.querySelector('details')?.open).toBe(false);
   });
 
-  it('opens live updates with quieter tool rows and a timer outside announcements', () => {
+  it('keeps live updates collapsed with a timer outside announcements', () => {
     vi.useFakeTimers();
     vi.setSystemTime(65_000);
     const view = render(<ThinkingIndicator activity={activity} liveActivity={live} />);
-    expect(view.container.querySelector('details')?.open).toBe(true);
+    expect(view.container.querySelector('details')?.open).toBe(false);
     expect(screen.getByText('Working for 1m 5s')).toBeTruthy();
     expect(view.container.querySelector('.thinking-update')?.textContent).toBe(activity.steps[0].text);
     expect(view.container.querySelector('.thinking-tool')?.textContent).toBe('Searched the book');
@@ -45,13 +47,53 @@ describe('ThinkingIndicator public work activity', () => {
     expect(view.container.textContent).not.toContain('%');
   });
 
+  it('shows the latest three actual events below the summary and updates immediately', () => {
+    const steps = Array.from({ length: 4 }, (_, sequence) => ({ ...activity.steps[0], sequence, text: `Public update ${sequence}` }));
+    const current = { ...activity, steps };
+    const view = render(<ThinkingIndicator activity={current} liveActivity={{ ...live, activity: current }} />);
+    const preview = screen.getByRole('region', { name: 'Current work' });
+    expect([...preview.children].map(row => row.textContent)).toEqual(['Public update 1', 'Public update 2', 'Public update 3']);
+    expect(view.container.querySelector('summary')!.compareDocumentPosition(preview) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const updated = { ...current, steps: [...steps, { ...steps[0], sequence: 4, text: 'Fresh actual update' }] };
+    view.rerender(<ThinkingIndicator activity={updated} liveActivity={{ ...live, activity: updated }} />);
+    expect([...preview.children].map(row => row.textContent)).toEqual(['Public update 2', 'Public update 3', 'Fresh actual update']);
+    expect(screen.getAllByRole('status')).toHaveLength(1);
+    expect(screen.getByRole('status').textContent).toBe('Fresh actual update');
+    const details = view.container.querySelector('details')!;
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
+    expect(screen.queryByRole('region', { name: 'Current work' })).toBeNull();
+    expect(screen.getByRole('region', { name: 'Work activity' }).children).toHaveLength(5);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
+    expect(screen.getByRole('region', { name: 'Current work' })).toBeTruthy();
+    view.rerender(<ThinkingIndicator activity={updated} />);
+    expect(screen.queryByRole('region', { name: 'Current work' })).toBeNull();
+    expect(view.container.querySelector('.thinking-steps')!.children).toHaveLength(5);
+  });
+
+  it('keeps compact live event text plain and stable across timer ticks', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(65_000);
+    const text = '<img src="https://example.test/pixel"> **plain text**';
+    const current = { ...activity, steps: [{ ...activity.steps[0], text, phase: 'challenger' as const }] };
+    const view = render(<ThinkingIndicator activity={current} liveActivity={{ ...live, activity: current }} />);
+    const preview = screen.getByRole('region', { name: 'Current work' });
+    expect(preview.textContent).toBe(text);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(preview.textContent).toBe(text);
+    expect(preview.querySelector('img, a, strong')).toBeNull();
+    expect(view.container.textContent).not.toContain('challenger');
+  });
+
   it('uses the saved duration and a native collapsed disclosure after completion', () => {
     const view = render(<ThinkingIndicator activity={activity} />);
     const details = view.container.querySelector('details')!;
     expect(details.open).toBe(false);
     expect(screen.getByText('Worked for 1m 5s')).toBeTruthy();
     expect(screen.queryByRole('status')).toBeNull();
-    details.open = true;
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
     const region = screen.getByRole('region', { name: 'Work activity' });
     region.scrollTop = 35;
     view.rerender(<ThinkingIndicator activity={{ ...activity, duration_ms: 65_999 }} />);
@@ -60,16 +102,45 @@ describe('ThinkingIndicator public work activity', () => {
     expect(region.scrollTop).toBe(35);
   });
 
-  it('preserves a user toggle across live events and collapses once when completed', () => {
+  it('preserves user toggles across live events and timers, then collapses once on completion', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(65_000);
     const view = render(<ThinkingIndicator activity={activity} liveActivity={live} />);
     const details = view.container.querySelector('details')!;
-    details.open = false;
+    expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
     const updated = { ...activity, steps: [...activity.steps, { ...activity.steps[0], sequence: 2, text: 'I have a draft ready to check.' }] };
     view.rerender(<ThinkingIndicator activity={updated} liveActivity={{ ...live, activity: updated }} />);
+    act(() => vi.advanceTimersByTime(2000));
+    expect(view.container.querySelector('details')).toBe(details);
+    expect(details.open).toBe(true);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
+    view.rerender(<ThinkingIndicator activity={activity} liveActivity={live} />);
     expect(details.open).toBe(false);
+    fireEvent.click(details.querySelector('summary')!);
+    fireEvent(details, new Event('toggle'));
+    details.querySelector('summary')!.focus();
     view.rerender(<ThinkingIndicator activity={updated} />);
     expect(view.container.querySelector('details')).toBe(details);
-    expect(details.open).toBe(false);
+    expect(document.activeElement).toBe(details.querySelector('summary'));
+    const completedDetails = view.container.querySelector('details')!;
+    expect(completedDetails.open).toBe(false);
+    fireEvent.click(completedDetails.querySelector('summary')!);
+    fireEvent(completedDetails, new Event('toggle'));
+    view.rerender(<ThinkingIndicator activity={{ ...updated, duration_ms: 67_000 }} />);
+    expect(view.container.querySelector('details')).toBe(completedDetails);
+    expect(completedDetails.open).toBe(true);
+  });
+
+  it('starts collapsed for a new request even when the previous request was expanded', () => {
+    const view = render(<ThinkingIndicator activity={activity} liveActivity={live} />);
+    fireEvent.click(view.container.querySelector('summary')!);
+    fireEvent(view.container.querySelector('details')!, new Event('toggle'));
+    expect(view.container.querySelector('details')?.open).toBe(true);
+    view.rerender(<ThinkingIndicator activity={activity} liveActivity={{ ...live, clientRequestId: 'next-request' }} />);
+    expect(view.container.querySelector('details')?.open).toBe(false);
   });
 
   it('coalesces adjacent tool start and completion without changing saved activity', () => {

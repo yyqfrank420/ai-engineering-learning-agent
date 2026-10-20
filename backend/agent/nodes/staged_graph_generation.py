@@ -888,6 +888,8 @@ async def _run_generation(
                 else settings.graph_builder_max_completion_tokens
             ),
             provider_attempt_limit=1,
+            send=state.get("send"),
+            progress_phase=stage if state.get("send") is not None else None,
         )
         expansion = state.get("service_expansion") or {}
         if expansion.get("complexity") == "high":
@@ -900,6 +902,7 @@ async def _run_generation(
                 telemetry=generation_call["telemetry"],
                 timeout_seconds=timeout_seconds,
                 max_output_tokens=generation_call["max_output_tokens"],
+                send=state.get("send"),
             )
         else:
             response = await stream_structured_llm(**generation_call)

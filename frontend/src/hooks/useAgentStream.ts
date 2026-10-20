@@ -381,7 +381,10 @@ export function useAgentStream(authSession: AuthSession | null, activeThreadId: 
           if (latest && (step.sequence <= latest.sequence || step.elapsed_ms < latest.elapsed_ms)) return previous;
           if (latest && step.kind === latest.kind && step.phase === latest.phase
             && step.status === latest.status && step.text === latest.text) return previous;
-          const steps = [...previous.activity.steps, step].slice(-48);
+          const replacesActive = latest?.status === 'active' && step.status === 'active'
+            && step.kind === latest.kind && step.phase === latest.phase;
+          const precedingSteps = replacesActive ? previous.activity.steps.slice(0, -1) : previous.activity.steps;
+          const steps = [...precedingSteps, step].slice(-48);
           while (new TextEncoder().encode(JSON.stringify({ duration_ms: step.elapsed_ms, steps })).length > 32768) steps.shift();
           return { ...previous, startedAt: Math.min(previous.startedAt, receivedAt - step.elapsed_ms),
             activity: { duration_ms: step.elapsed_ms, steps } };

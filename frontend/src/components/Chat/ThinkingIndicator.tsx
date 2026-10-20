@@ -15,6 +15,8 @@ function formatDuration(milliseconds: number): string {
 export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorProps) {
   const [now, setNow] = useState(() => Date.now());
   const liveRequestId = liveActivity?.clientRequestId;
+  const [disclosure, setDisclosure] = useState({ requestId: liveRequestId, open: false });
+  const isOpen = disclosure.requestId === liveRequestId && disclosure.open;
   useEffect(() => {
     if (!liveRequestId) return;
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
@@ -29,26 +31,31 @@ export function ThinkingIndicator({ activity, liveActivity }: ThinkingIndicatorP
   });
   const latest = visibleSteps.at(-1);
   if (!latest) return null;
+  const stepRows = visibleSteps.map(step => step.kind === 'update'
+    ? <p key={step.sequence} className="thinking-update">{step.text}</p>
+    : <div key={step.sequence} className="thinking-tool" data-status={step.status}>
+        <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
+          {step.status === 'complete'
+            ? <path d="m3 8 3 3 7-7" />
+            : <><circle cx="7" cy="7" r="4" /><path d="m10 10 3 3" /></>}
+        </svg>
+        <span>{step.text}</span>
+      </div>);
   return (
     <>
-    <details className="thinking-indicator" open={Boolean(liveActivity)}>
-      <summary className="thinking-summary">
-        <span>{liveActivity ? 'Working for' : 'Worked for'} {formatDuration(duration)}</span>
-        <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3" /></svg>
-      </summary>
-      <div className="thinking-steps" role="region" aria-label="Work activity">
-        {visibleSteps.map(step => step.kind === 'update'
-          ? <p key={step.sequence} className="thinking-update">{step.text}</p>
-          : <div key={step.sequence} className="thinking-tool" data-status={step.status}>
-              <svg aria-hidden="true" viewBox="0 0 16 16" fill="none">
-                {step.status === 'complete'
-                  ? <path d="m3 8 3 3 7-7" />
-                  : <><circle cx="7" cy="7" r="4" /><path d="m10 10 3 3" /></>}
-              </svg>
-              <span>{step.text}</span>
-            </div>)}
-      </div>
-    </details>
+      <details className="thinking-indicator" open={isOpen}
+        onToggle={event => setDisclosure({ requestId: liveRequestId, open: event.currentTarget.open })}>
+        <summary className="thinking-summary">
+          <span>{liveActivity ? 'Working for' : 'Worked for'} {formatDuration(duration)}</span>
+          <svg aria-hidden="true" viewBox="0 0 16 16" fill="none"><path d="m5 6 3 3 3-3" /></svg>
+        </summary>
+        <div className="thinking-steps" role="region" aria-label="Work activity">
+          {stepRows}
+        </div>
+      </details>
+      {liveActivity && !isOpen && <div className="thinking-preview" role="region" aria-label="Current work">
+        {stepRows.slice(-3)}
+      </div>}
       {liveActivity && <span className="thinking-announcement" role="status" aria-live="polite" aria-atomic="true">
         {latest.text}
       </span>}

@@ -66,7 +66,7 @@ def seed_graph(user, thread):
     assert persist_turn(
         user["id"],
         thread["id"],
-        title="Existing",
+        expected_graph_version=None, base_revision_id=None, title="Existing",
         user_content="Initial",
         assistant_content="Saved",
         graph_data=graph,
@@ -180,3 +180,152 @@ def test_authoritative_event_reads_committed_graph(
     assert get_graph(user["id"], thread["id"]) == committed
     published = [event["data"] for event in events if event["type"] == "graph_data"]
     assert published == [committed]
+
+
+@pytest.mark.parametrize("transport", ["sse", "ws"])
+@pytest.mark.parametrize("publishes_graph", [False, True])
+@pytest.mark.parametrize("client_request_id", [None, "concurrent-diagram"])
+def test_concurrent_graph_update_remains_authoritative(
+    continuity_app, monkeypatch, transport, publishes_graph, client_request_id
+):
+    from storage.thread_store import get_graph_artifact
+
+    app, user, thread = continuity_app
+    original = seed_graph(user, thread)
+    newer = {**original, "version": "newer", "nodes": [{"id": "newer"}]}
+    candidate = {**original, "version": "candidate", "nodes": [{"id": "candidate"}]}
+
+    async def fake_agent(state, *args):
+        _, _, revision_id = get_graph_artifact(user["id"], thread["id"])
+        persist_turn(
+            user["id"], thread["id"], title="Newer", user_content="Concurrent",
+            assistant_content="Newer diagram", graph_data=newer,
+            expected_graph_version=original["version"], base_revision_id=revision_id,
+        )
+        await state["send"]({"type": "response_delta", "content": "Answer"})
+        return {**state, "response_text": "Answer", "graph_data": candidate if publishes_graph else original,
+                "graph_publication": "approved" if publishes_graph else None}
+
+    monkeypatch.setattr("api.sse_handler.run_agent", fake_agent)
+    monkeypatch.setattr("api.chat_websocket.run_agent", fake_agent)
+    with TestClient(app) as client:
+        events = request_events(client, transport, {
+            "thread_id": thread["id"], "content": "Explain this diagram", "graph_action": "answer",
+            "client_request_id": client_request_id,
+        })
+    assert get_graph(user["id"], thread["id"]) == newer
+    assert [e["data"] for e in events if e["type"] == "graph_data"] == [newer]
+    notices = [e for e in events if e["type"] == "graph_notice"]
+    assert notices == ([{"type": "graph_notice", "message": "Your diagram was saved in history because another diagram changed while it was being generated."}] if publishes_graph else [])
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("transport", ["sse", "ws"])
+def test_simultaneous_duplicate_reconciles_streamed_answer(
+    continuity_app, monkeypatch, transport
+):
+    app, user, thread = continuity_app
+
+    async def fake_agent(state, *args):
+        persist_turn(
+            user["id"], thread["id"], title="Canonical", user_content="Explain agents",
+            assistant_content="Canonical answer", graph_data=None,
+            expected_graph_version=None, base_revision_id=None, client_request_id="duplicate",
+        )
+        await state["send"]({"type": "response_delta", "content": "Superseded answer"})
+        return {**state, "response_text": "Superseded answer"}
+
+    monkeypatch.setattr("api.sse_handler.run_agent", fake_agent)
+    monkeypatch.setattr("api.chat_websocket.run_agent", fake_agent)
+    with TestClient(app) as client:
+        events = request_events(client, transport, {
+            "thread_id": thread["id"], "content": "Explain agents", "client_request_id": "duplicate",
+        })
+    reset_index = next(i for i, e in enumerate(events) if e["type"] == "response_reset")
+    assert events[reset_index + 1] == {"type": "response_delta", "content": "Canonical answer"}
+    assert events[-1]["type"] == "done"
+
+
+@pytest.mark.parametrize("transport", ["sse", "ws"])
+def test_failed_preview_restores_concurrently_updated_graph(
+    continuity_app, monkeypatch, transport
+):
+    from storage.thread_store import get_graph_artifact
+
+    app, user, thread = continuity_app
+    original = seed_graph(user, thread)
+    newer = {**original, "version": "newer", "nodes": [{"id": "newer"}]}
+
+    async def fake_agent(state, *args):
+        _, _, revision_id = get_graph_artifact(user["id"], thread["id"])
+        persist_turn(
+            user["id"], thread["id"], title="Newer", user_content="Concurrent",
+            assistant_content="Newer diagram", graph_data=newer,
+            expected_graph_version=original["version"], base_revision_id=revision_id,
+        )
+        await state["send"]({"type": "graph_preview", "data": {**original, "version": "draft"}})
+        raise RuntimeError("Generation failed")
+
+    monkeypatch.setattr("api.sse_handler.run_agent", fake_agent)
+    monkeypatch.setattr("api.chat_websocket.run_agent", fake_agent)
+    with TestClient(app) as client:
+        events = request_events(client, transport, {
+            "thread_id": thread["id"], "content": "Explain this diagram", "graph_action": "answer",
+        })
+    assert [e["data"] for e in events if e["type"] == "graph_data"] == [newer]
+    assert any(e["type"] == "error" for e in events)
+    assert get_graph(user["id"], thread["id"]) == newer
+
+
+@pytest.mark.parametrize("transport", ["sse", "ws"])
+def test_duplicate_graph_with_equal_answer_does_not_claim_history_save(
+    continuity_app, monkeypatch, transport
+):
+    app, user, thread = continuity_app
+    canonical = {"version": "canonical", "nodes": [{"id": "canonical"}], "edges": []}
+    discarded = {"version": "discarded", "nodes": [{"id": "discarded"}], "edges": []}
+
+    async def fake_agent(state, *args):
+        persist_turn(
+            user["id"], thread["id"], title="Canonical", user_content="Explain agents",
+            assistant_content="Same answer", graph_data=canonical,
+            expected_graph_version=None, base_revision_id=None, client_request_id="duplicate",
+        )
+        await state["send"]({"type": "response_delta", "content": "Same answer"})
+        return {**state, "response_text": "Same answer", "graph_data": discarded, "graph_publication": "approved"}
+
+    monkeypatch.setattr("api.sse_handler.run_agent", fake_agent)
+    monkeypatch.setattr("api.chat_websocket.run_agent", fake_agent)
+    with TestClient(app) as client:
+        events = request_events(client, transport, {
+            "thread_id": thread["id"], "content": "Explain agents", "client_request_id": "duplicate",
+        })
+    assert not any(e["type"] == "graph_notice" for e in events)
+    assert [e["data"] for e in events if e["type"] == "graph_data"] == [canonical]
+    assert get_graph(user["id"], thread["id"]) == canonical
+
+
+@pytest.mark.parametrize("transport", ["sse", "ws"])
+@pytest.mark.parametrize("graph_winner", [False, True])
+def test_validation_rejection_replays_concurrent_canonical_turn(
+    continuity_app, monkeypatch, transport, graph_winner
+):
+    from api.sse_handler import ChatRequest
+
+    app, user, thread = continuity_app
+    canonical_graph = {"version": "canonical", "nodes": [{"id": "agent"}], "edges": []} if graph_winner else None
+
+    async def reject_after_concurrent_commit(self, *args, **kwargs):
+        persist_turn(
+            user["id"], thread["id"], title="Canonical", user_content="Explain agents",
+            assistant_content="Canonical answer", graph_data=canonical_graph,
+            expected_graph_version=None, base_revision_id=None, client_request_id="duplicate",
+        )
+        return "Rejected answer"
+
+    monkeypatch.setattr(ChatRequest, "input_error", reject_after_concurrent_commit)
+    with TestClient(app) as client:
+        events = request_events(client, transport, {
+            "thread_id": thread["id"], "content": "Explain agents", "client_request_id": "duplicate",
+        })
+    assert events == [{"type": "response_delta", "content": "Canonical answer"}, {"type": "graph_data", "data": canonical_graph}, {"type": "done"}]
