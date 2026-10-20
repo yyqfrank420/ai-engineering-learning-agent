@@ -178,7 +178,6 @@ export function ChatInput({
     onMouseEnter={() => setContainerHovered(true)}
     onMouseLeave={() => setContainerHovered(false)}
     >
-      {checkingIntent && <div role="status" style={prepareNoticeStyle}>Preparing your request…</div>}
       {submissionError && <div role="alert" style={prepareNoticeStyle}>{submissionError}</div>}
       {graphChoiceStatus === 'visible' && (
         <div className="chat-graph-choice" role="group" aria-label="Where to continue">
